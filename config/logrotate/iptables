@@ -1,0 +1,13 @@
+/var/log/iptables.log
+{
+    rotate 7
+    daily
+    missingok
+    notifempty
+    su root adm
+    delaycompress
+    compress
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}
