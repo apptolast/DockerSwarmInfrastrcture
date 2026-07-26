@@ -1,0 +1,133 @@
+---
+- name: Read the active UFW policy
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - status
+      - verbose
+  environment:
+    LC_ALL: C
+  register: host_baseline_ufw_status
+  changed_when: false
+  check_mode: false
+
+- name: Verify UFW keeps every default policy denied
+  ansible.builtin.assert:
+    that:
+      - '"Status: active" in host_baseline_ufw_status.stdout'
+      - >-
+        host_baseline_ufw_status.stdout is search(
+          "Default:[ ]+deny \\(incoming\\),[ ]+deny \\(outgoing\\),"
+          ~ "[ ]+deny \\(routed\\)"
+        )
+      - >-
+        host_baseline_ufw_status.stdout
+        is search("22/tcp[ ]+LIMIT IN")
+    fail_msg: >-
+      UFW must already be active with deny incoming/outgoing/routed and the
+      rate-limited SSH rule. This role never resets or weakens UFW.
+    quiet: true
+
+- name: Read IPv4 firewall policies
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_baseline_iptables
+  changed_when: false
+  check_mode: false
+
+- name: Read IPv6 firewall policies
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_baseline_ip6tables
+  changed_when: false
+  check_mode: false
+
+- name: Verify kernel firewall policies remain fail-closed
+  ansible.builtin.assert:
+    that:
+      - '"-P INPUT DROP" in host_baseline_iptables.stdout_lines'
+      - '"-P FORWARD DROP" in host_baseline_iptables.stdout_lines'
+      - '"-P OUTPUT DROP" in host_baseline_iptables.stdout_lines'
+      - '"-P INPUT DROP" in host_baseline_ip6tables.stdout_lines'
+      - '"-P FORWARD DROP" in host_baseline_ip6tables.stdout_lines'
+      - '"-P OUTPUT DROP" in host_baseline_ip6tables.stdout_lines'
+    fail_msg: "IPv4 and IPv6 INPUT/FORWARD/OUTPUT policies must all be DROP."
+    quiet: true
+
+- name: Verify required IPv4 host-egress exceptions
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -C
+      - ufw-user-output
+      - -p
+      - "{{ item.protocol }}"
+      - --dport
+      - "{{ item.port | string }}"
+      - -j
+      - ACCEPT
+  loop: "{{ host_baseline_required_host_egress }}"
+  loop_control:
+    label: "{{ item.protocol }}/{{ item.port }}"
+  changed_when: false
+  check_mode: false
+
+- name: Verify required IPv6 host-egress exceptions
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -C
+      - ufw6-user-output
+      - -p
+      - "{{ item.protocol }}"
+      - --dport
+      - "{{ item.port | string }}"
+      - -j
+      - ACCEPT
+  loop: "{{ host_baseline_required_host_egress }}"
+  loop_control:
+    label: "{{ item.protocol }}/{{ item.port }}"
+  changed_when: false
+  check_mode: false
+
+- name: Verify required public IPv4 edge ports
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -C
+      - ufw-user-input
+      - -p
+      - tcp
+      - --dport
+      - "{{ item | string }}"
+      - -j
+      - ACCEPT
+  loop: "{{ host_baseline_required_public_tcp_ports }}"
+  changed_when: false
+  check_mode: false
+
+- name: Verify required public IPv6 edge ports
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -C
+      - ufw6-user-input
+      - -p
+      - tcp
+      - --dport
+      - "{{ item | string }}"
+      - -j
+      - ACCEPT
+  loop: "{{ host_baseline_required_public_tcp_ports }}"
+  changed_when: false
+  check_mode: false

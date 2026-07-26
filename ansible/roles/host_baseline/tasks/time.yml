@@ -1,0 +1,68 @@
+---
+- name: Gather package facts for time-provider validation
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Verify Chrony is the only installed time daemon
+  ansible.builtin.assert:
+    that:
+      - '"chrony" in ansible_facts.packages'
+      - '"systemd-timesyncd" not in ansible_facts.packages'
+    fail_msg: >-
+      Chrony must be installed and systemd-timesyncd must remain absent. The
+      baseline does not replace the active time provider.
+    quiet: true
+
+- name: Verify Chrony is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - chrony.service
+  register: host_baseline_chrony_active
+  changed_when: false
+  check_mode: false
+  failed_when: host_baseline_chrony_active.stdout != "active"
+
+- name: Verify Chrony is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - chrony.service
+  register: host_baseline_chrony_enabled
+  changed_when: false
+  check_mode: false
+  failed_when: host_baseline_chrony_enabled.stdout != "enabled"
+
+- name: Read Chrony synchronization state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/chronyc
+      - tracking
+  register: host_baseline_chrony_tracking
+  changed_when: false
+  check_mode: false
+
+- name: Verify the system clock is synchronized
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timedatectl
+      - show
+      - --property=NTPSynchronized
+      - --value
+  register: host_baseline_ntp_synchronized
+  changed_when: false
+  check_mode: false
+  failed_when:
+    - host_baseline_ntp_synchronized.stdout != "yes"
+    - host_baseline_ntp_synchronized.stdout != "true"
+
+- name: Verify Chrony reports a normal leap state
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_chrony_tracking.stdout
+        is search("Leap status[ ]+:[ ]+Normal")
+    fail_msg: "Chrony is running but does not report a synchronized leap state."
+    quiet: true

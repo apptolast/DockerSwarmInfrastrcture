@@ -1,0 +1,5 @@
+# Managed by Ansible. The late filename deliberately wins over inherited host
+# defaults. IPv4 forwarding stays enabled because Docker Swarm requires it.
+{% for setting in host_baseline_sysctl | dict2items %}
+{{ setting.key }} = {{ setting.value }}
+{% endfor %}

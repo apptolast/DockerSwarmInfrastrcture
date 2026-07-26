@@ -9,14 +9,36 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 readonly SOURCE_CONFIG="${PROJECT_DIR}/config/daemon.json"
 readonly TARGET_CONFIG="/etc/docker/daemon.json"
-readonly EXPECTED_SHA256="d526660c82329ffb132a48c2b1f4d3e303ccbfb667c9876fb1cb36997efe6873"
+readonly EXPECTED_SHA256="b2759d7fc799030511d1de541edcfc18549e40409921546d775132f7e9737baa"
+
+allow_edge_absent=false
+
+usage() {
+  printf 'Usage: %s [--allow-edge-absent]\n' "${0##*/}"
+}
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
-for command_name in cmp docker dockerd sha256sum stat systemctl; do
+case "${1:-}" in
+  "")
+    ;;
+  --allow-edge-absent)
+    allow_edge_absent=true
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+for command_name in cmp docker dockerd python3 sha256sum stat systemctl; do
   command -v "${command_name}" >/dev/null ||
     fail "required command not found: ${command_name}"
 done
@@ -68,9 +90,36 @@ IFS='|' read -r node_hostname node_status node_availability node_manager_status 
 [[ "${node_manager_status}" == "Leader" ]] ||
   fail "manager status is ${node_manager_status}"
 
-service_count="$(docker service ls --quiet | wc -l)"
-[[ "${service_count}" -eq 0 ]] ||
-  fail "expected no persistent services, found ${service_count}"
+node_contract="$(
+  docker node inspect \
+    self \
+    --format \
+    '{{index .Spec.Labels "platform.edge"}}|{{.ManagerStatus.Addr}}'
+)"
+[[ "${node_contract}" == "true|159.195.156.57:2377" ]] ||
+  fail "manager labels or advertised address differ from the contract"
+
+cluster_contract="$(docker info --format '{{json .Swarm.Cluster}}')"
+jq --exit-status '
+  .DefaultAddrPool == ["10.0.0.0/8"] and
+  .SubnetSize == 24 and
+  .DataPathPort == 4789
+' <<<"${cluster_contract}" >/dev/null ||
+  fail "the immutable Swarm network contract differs from config/platform.yml"
+
+metadata_args=()
+if [[ "${allow_edge_absent}" == true ]]; then
+  metadata_args+=(--allow-absent)
+fi
+python3 \
+  "${PROJECT_DIR}/scripts/validate-deployment-metadata.py" \
+  "${metadata_args[@]}"
+
+if docker service inspect edge_traefik >/dev/null 2>&1; then
+  bash "${PROJECT_DIR}/scripts/validate-edge.sh"
+elif [[ "${allow_edge_absent}" == false ]]; then
+  fail "edge_traefik is absent; use --allow-edge-absent only during bootstrap"
+fi
 
 if (( EUID == 0 )); then
   bash \

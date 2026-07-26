@@ -1,8 +1,43 @@
 .env
 .env.*
 !.env.example
+.ansible/
+.build/
+.terraform.d/
+.tools/
+.venv/
 *.key
 *.pem
 *.swp
 *.tmp
 *.backup.*
+
+# Ansible runtime inputs and retry artifacts.
+ansible/inventory/production/group_vars/vault.yml
+ansible/inventory/**/group_vars/vault.yml
+ansible/inventory/**/host_vars/
+.vault-password*
+*.vault
+*.retry
+
+# Terraform local cache, state, plans and backend credentials.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars.json
+*.tfvars
+!*.tfvars.example
+*.tfbackend
+!*.tfbackend.example
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# Additional credential and private-key containers.
+*.p12
+*.pfx
+*.age
+*.secret
+*.token

@@ -1,0 +1,185 @@
+---
+- name: Keep unattended security upgrades installed
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Enable daily APT metadata and unattended upgrade runs
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+- name: Render and parse the unattended-upgrade candidate in memory
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/apt-config
+      - -c
+      - /dev/stdin
+      - dump
+    stdin: >-
+      {{ lookup("ansible.builtin.template", "unattended-upgrades.conf.j2") }}
+    stdin_add_newline: true
+  register: host_baseline_unattended_candidate
+  changed_when: false
+  check_mode: false
+
+- name: Verify the rendered candidate disables every automatic reboot
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_unattended_candidate.stdout_lines
+        | select("match", "^Unattended-Upgrade::Allowed-Origins::")
+        | list | length == 0
+      - >-
+        host_baseline_unattended_candidate.stdout_lines
+        | select("match", "^Unattended-Upgrade::Origins-Pattern::")
+        | list | length == 3
+      - >-
+        'Unattended-Upgrade::Automatic-Reboot "false";'
+        in host_baseline_unattended_candidate.stdout_lines
+      - >-
+        'Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
+        in host_baseline_unattended_candidate.stdout_lines
+    fail_msg: >-
+      The rendered unattended-upgrade candidate has inherited origins or
+      permits an automatic reboot.
+    quiet: true
+
+- name: Create the immutable host-baseline backup directory
+  ansible.builtin.file:
+    path: /var/backups/dockerswarm
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Inspect superseded unattended-upgrade overrides
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ host_baseline_unattended_legacy_files }}"
+  register: host_baseline_unattended_legacy_state
+
+- name: Preserve each original unattended-upgrade override once
+  ansible.builtin.copy:
+    src: "{{ item.item }}"
+    dest: >-
+      /var/backups/dockerswarm/{{ item.item | basename }}.pre-ansible
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+    remote_src: true
+  loop: "{{ host_baseline_unattended_legacy_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not ansible_check_mode
+    - item.stat.exists
+
+- name: Inspect preserved unattended-upgrade overrides
+  ansible.builtin.stat:
+    path: >-
+      /var/backups/dockerswarm/{{ item.item | basename }}.pre-ansible
+  loop: "{{ host_baseline_unattended_legacy_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: host_baseline_unattended_backup_state
+  when:
+    - not ansible_check_mode
+    - item.stat.exists
+
+- name: Verify every required legacy backup is private
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.pw_name == "root"
+      - item.stat.gr_name == "root"
+      - item.stat.mode == "0600"
+    fail_msg: >-
+      A legacy unattended-upgrade override was not safely preserved, so its
+      source configuration will not be removed.
+    quiet: true
+  loop: "{{ host_baseline_unattended_backup_state.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  when:
+    - not ansible_check_mode
+    - not item.skipped | default(false)
+
+- name: Remove superseded unattended-upgrade overrides
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ host_baseline_unattended_legacy_files }}"
+
+- name: Install the authoritative security-update policy
+  ansible.builtin.template:
+    src: unattended-upgrades.conf.j2
+    dest: /etc/apt/apt.conf.d/99-dockerswarm-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Keep the APT refresh timer enabled
+  ansible.builtin.systemd_service:
+    name: apt-daily.timer
+    enabled: true
+    state: started
+
+- name: Keep the unattended-upgrade timer enabled
+  ansible.builtin.systemd_service:
+    name: apt-daily-upgrade.timer
+    enabled: true
+    state: started
+
+- name: Read the effective APT configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/apt-config
+      - dump
+  register: host_baseline_apt_config
+  changed_when: false
+  check_mode: false
+
+- name: Verify the unattended-upgrade policy is authoritative
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_apt_config.stdout_lines
+        | select("match", "^Unattended-Upgrade::Allowed-Origins::")
+        | list | length == 0
+      - >-
+        host_baseline_apt_config.stdout_lines
+        | select("match", "^Unattended-Upgrade::Origins-Pattern::")
+        | list | length == 3
+      - >-
+        'Unattended-Upgrade::Automatic-Reboot "false";'
+        in host_baseline_apt_config.stdout_lines
+      - >-
+        'Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
+        in host_baseline_apt_config.stdout_lines
+    fail_msg: >-
+      Effective unattended-upgrades settings are not limited to the three
+      reviewed security origins, or automatic reboot remains enabled.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Dry-run unattended security upgrades
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/unattended-upgrade
+      - --dry-run
+      - --debug
+  environment:
+    LC_ALL: C
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - host_baseline_run_expensive_validations | bool

@@ -1,0 +1,60 @@
+---
+- name: Render and parse the sysctl candidate in memory
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - --dry-run
+      - --load=/dev/stdin
+    stdin: >-
+      {{ lookup("ansible.builtin.template", "sysctl.conf.j2") }}
+    stdin_add_newline: true
+  changed_when: false
+  check_mode: false
+
+- name: Install authoritative Swarm-compatible kernel hardening
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/99-z-dockerswarm-host-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sysctl --dry-run --load=%s
+  notify: Host baseline apply sysctl
+
+- name: Dry-run the complete persistent sysctl configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - --dry-run
+      - --system
+  changed_when: false
+  check_mode: false
+
+- name: Apply kernel settings before runtime verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Read every managed kernel setting
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -n
+      - "{{ item.key }}"
+  loop: "{{ host_baseline_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: host_baseline_runtime_sysctl
+  changed_when: false
+  check_mode: false
+
+- name: Verify every managed kernel setting
+  ansible.builtin.assert:
+    that:
+      - item.stdout == item.item.value
+    fail_msg: >-
+      {{ item.item.key }} is {{ item.stdout }}, expected
+      {{ item.item.value }}.
+    quiet: true
+  loop: "{{ host_baseline_runtime_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: not ansible_check_mode

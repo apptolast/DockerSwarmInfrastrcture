@@ -1,0 +1,414 @@
+---
+- name: Verify the supported production host
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_version is version("26.04", "==")
+      - platform_environment == "production"
+      - platform_public_ipv4 is match("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$")
+      - platform_public_interface in ansible_interfaces
+      - ansible_default_ipv4.interface == platform_public_interface
+      - ansible_default_ipv4.address == platform_public_ipv4
+      - platform_public_tcp_ports | sort == [80, 443]
+      - platform_docker_packages | length == 5
+      - platform_docker_packages | unique | length == 5
+      - platform_swarm_default_addr_pool | length == 1
+      - platform_swarm_default_addr_pool_mask_length | int == 24
+    fail_msg: >-
+      This role is intentionally constrained to the reviewed Ubuntu 26.04
+      production host and the exact public edge ports 80/443.
+
+- name: Install baseline packages required by the platform
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gpg
+      - jq
+      - logrotate
+      - python3
+      - python3-debian
+      - python3-jsondiff
+      - python3-venv
+      - python3-yaml
+      - rsyslog
+      - ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove packages that conflict with Docker Engine
+  ansible.builtin.apt:
+    name:
+      - containerd
+      - docker-compose
+      - docker-compose-v2
+      - docker.io
+      - podman-docker
+      - runc
+    state: absent
+
+- name: Create the APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker's official repository signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+    force: true
+
+- name: Read Docker repository signing-key identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/gpg
+      - --batch
+      - --show-keys
+      - --with-colons
+      - /etc/apt/keyrings/docker.asc
+  register: platform_docker_apt_key
+  changed_when: false
+  check_mode: false
+
+- name: Verify the Docker repository signing-key fingerprint
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          platform_docker_apt_key.stdout_lines
+          | select("match", "^fpr:")
+          | first
+        ).split(":")[9] == platform_docker_apt_key_fingerprint
+    fail_msg: >-
+      Docker's repository signing key differs from the reviewed fingerprint.
+      Treat a key rotation as a separate supply-chain change.
+
+- name: Read the Debian package architecture
+  ansible.builtin.command: /usr/bin/dpkg --print-architecture
+  register: platform_docker_dpkg_architecture
+  changed_when: false
+
+- name: Configure Docker's official Ubuntu repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types:
+      - deb
+    uris:
+      - https://download.docker.com/linux/ubuntu
+    suites:
+      - "{{ ansible_distribution_release }}"
+    components:
+      - stable
+    architectures:
+      - "{{ platform_docker_dpkg_architecture.stdout }}"
+    signed_by: /etc/apt/keyrings/docker.asc
+    enabled: true
+    state: present
+  register: platform_docker_repository
+
+- name: Pin the reviewed Docker package versions
+  ansible.builtin.template:
+    src: dockerswarm-docker.pref.j2
+    dest: /etc/apt/preferences.d/99-dockerswarm-docker
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the reviewed Docker package versions
+  ansible.builtin.apt:
+    name: "{{ platform_docker_packages }}"
+    state: present
+    allow_downgrade: false
+    update_cache: "{{ platform_docker_repository.changed }}"
+
+- name: Read the installed Docker package versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/dpkg-query
+      - -W
+      - "-f=${Version}"
+      - "{{ item.split('=', 1)[0] }}"
+  loop: "{{ platform_docker_packages }}"
+  register: platform_installed_docker_packages
+  changed_when: false
+  check_mode: false
+
+- name: Verify every Docker package is exactly pinned
+  ansible.builtin.assert:
+    that:
+      - item.stdout == item.item.split('=', 1)[1]
+    fail_msg: >-
+      {{ item.item.split('=', 1)[0] }} is {{ item.stdout }}, expected
+      {{ item.item.split('=', 1)[1] }}.
+  loop: "{{ platform_installed_docker_packages.results }}"
+  loop_control:
+    label: "{{ item.item.split('=', 1)[0] }}"
+
+- name: Read the effective Docker systemd command
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - docker.service
+      - --property=ExecStart
+      - --value
+  register: platform_docker_exec_start
+  changed_when: false
+  check_mode: false
+
+- name: Reject daemon flags that conflict with daemon.json
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_docker_exec_start.stdout
+        is not regex("(^|\\s)--log-driver(?:=|\\s)")
+      - >-
+        platform_docker_exec_start.stdout
+        is not regex("(^|\\s)--userland-proxy(?:=|\\s)")
+    fail_msg: >-
+      docker.service sets a flag also owned by config/daemon.json. Reconcile
+      the systemd override explicitly before this role manages daemon.json.
+
+- name: Install the validated Docker daemon configuration
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../config/daemon.json"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: /usr/bin/dockerd --validate --config-file=%s
+  notify: Restart Docker
+
+- name: Install the validated iptables log rotation configuration
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../config/logrotate/iptables"
+    dest: /etc/logrotate.d/iptables
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Detect the conflicting persistent forwarding setting
+  ansible.builtin.stat:
+    path: /etc/sysctl.d/99-hardening.conf
+  register: platform_hardening_sysctl
+
+- name: Remove every Docker-incompatible forwarding override
+  ansible.builtin.replace:
+    path: /etc/sysctl.d/99-hardening.conf
+    regexp: '(?m)^[ \t]*net\.ipv4\.ip_forward[ \t]*=[ \t]*0[ \t]*$'
+    replace: "# Managed by /etc/sysctl.d/99-z-dockerswarm-network.conf."
+    backup: true
+  when: platform_hardening_sysctl.stat.exists
+  notify: Enable Docker IPv4 forwarding
+
+- name: Persist the forwarding required by Docker networking
+  ansible.builtin.copy:
+    src: 99-z-dockerswarm-network.conf
+    dest: /etc/sysctl.d/99-z-dockerswarm-network.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Enable Docker IPv4 forwarding
+
+- name: Allow the explicitly public edge ports in UFW
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - allow
+      - "{{ item }}/tcp"
+      - comment
+      - dockerswarm-edge
+  loop: "{{ platform_public_tcp_ports }}"
+  register: platform_ufw_edge_rules
+  changed_when: "'Rule added' in platform_ufw_edge_rules.stdout"
+
+- name: Verify UFW remains active
+  ansible.builtin.command: /usr/sbin/ufw status
+  register: platform_ufw_status
+  changed_when: false
+  check_mode: false
+  failed_when: "'Status: active' not in platform_ufw_status.stdout"
+
+- name: Install the Docker published-port policy
+  ansible.builtin.template:
+    src: dockerswarm-docker-firewall.sh.j2
+    dest: /usr/local/sbin/dockerswarm-docker-firewall
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Restart Docker ingress policy
+
+- name: Install the Docker published-port policy unit
+  ansible.builtin.copy:
+    src: dockerswarm-docker-firewall.service
+    dest: /etc/systemd/system/dockerswarm-docker-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Docker ingress policy
+
+- name: Create the Docker systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bind the ingress policy lifecycle to Docker
+  ansible.builtin.copy:
+    src: docker-firewall-systemd.conf
+    dest: /etc/systemd/system/docker.service.d/20-dockerswarm-firewall.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Docker ingress policy
+
+- name: Keep Docker enabled and active
+  ansible.builtin.systemd_service:
+    name: docker.service
+    enabled: true
+    state: started
+
+- name: Apply handlers before inspecting Swarm state
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the current Swarm state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - info
+      - --format
+      - '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'
+  register: platform_swarm_state
+  changed_when: false
+  check_mode: false
+
+- name: Cryptographically parse the configured public IPv4 address
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "import ipaddress, sys; ipaddress.IPv4Address(sys.argv[1])"
+      - "{{ platform_public_ipv4 }}"
+  changed_when: false
+  check_mode: false
+
+- name: Parse the configured Swarm address pool
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - >-
+        import ipaddress, sys;
+        network = ipaddress.IPv4Network(sys.argv[1], strict=True);
+        assert int(sys.argv[2]) > network.prefixlen
+      - "{{ platform_swarm_default_addr_pool | first }}"
+      - "{{ platform_swarm_default_addr_pool_mask_length | string }}"
+  changed_when: false
+  check_mode: false
+
+- name: Initialize a new Swarm without exposing join tokens
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - swarm
+      - init
+      - --advertise-addr
+      - "{{ platform_public_ipv4 }}"
+      - --data-path-addr
+      - "{{ platform_public_ipv4 }}"
+      - --data-path-port
+      - "{{ platform_swarm_data_path_port | string }}"
+      - --default-addr-pool
+      - "{{ platform_swarm_default_addr_pool | first }}"
+      - --default-addr-pool-mask-length
+      - "{{ platform_swarm_default_addr_pool_mask_length | string }}"
+  when: platform_swarm_state.stdout == "inactive"
+  changed_when: true
+  no_log: true
+
+- name: Read the local Swarm node
+  ansible.builtin.command: /usr/bin/docker node inspect self
+  register: platform_swarm_node
+  changed_when: false
+  check_mode: false
+
+- name: Read the Swarm cluster network contract
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - info
+      - --format
+      - "{% raw %}{{json .Swarm.Cluster}}{% endraw %}"
+  register: platform_swarm_cluster
+  changed_when: false
+  check_mode: false
+
+- name: Verify the manager address and health
+  ansible.builtin.assert:
+    that:
+      - (platform_swarm_node.stdout | from_json | first).Status.State == "ready"
+      - >-
+        (platform_swarm_node.stdout | from_json | first).Spec.Availability
+        == "active"
+      - >-
+        (platform_swarm_node.stdout | from_json | first).ManagerStatus.Leader
+        | bool
+      - >-
+        (platform_swarm_node.stdout | from_json | first).ManagerStatus.Addr
+        == platform_public_ipv4 ~ ':2377'
+      - >-
+        (platform_swarm_cluster.stdout | from_json).DefaultAddrPool
+        == platform_swarm_default_addr_pool
+      - >-
+        (platform_swarm_cluster.stdout | from_json).SubnetSize
+        == platform_swarm_default_addr_pool_mask_length
+      - >-
+        (platform_swarm_cluster.stdout | from_json).DataPathPort
+        == platform_swarm_data_path_port
+    fail_msg: >-
+      The existing Swarm does not match the reviewed production manager.
+
+- name: Label the manager for the edge workload
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - update
+      - --label-add
+      - platform.edge=true
+      - self
+  when: >-
+    (platform_swarm_node.stdout | from_json | first).Spec.Labels[
+      "platform.edge"]
+    | default("") != "true"
+  changed_when: true
+
+- name: Enable the Docker published-port policy
+  ansible.builtin.systemd_service:
+    name: dockerswarm-docker-firewall.service
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Verify runtime forwarding after reconciliation
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -n
+      - net.ipv4.ip_forward
+  register: platform_ip_forward
+  changed_when: false
+  check_mode: false
+  failed_when: platform_ip_forward.stdout != "1"

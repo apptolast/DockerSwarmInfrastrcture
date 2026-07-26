@@ -1,0 +1,33 @@
+---
+- name: Render platform templates without mutating a host
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../group_vars/all.yml
+
+  vars:
+    platform_render_dir: "{{ playbook_dir }}/../../.build/platform"
+    platform_template_dir: "{{ playbook_dir }}/../roles/platform/templates"
+
+  tasks:
+    - name: Create the disposable platform render directory
+      ansible.builtin.file:
+        path: "{{ platform_render_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Render the Docker ingress policy
+      ansible.builtin.template:
+        src: "{{ platform_template_dir }}/dockerswarm-docker-firewall.sh.j2"
+        dest: "{{ platform_render_dir }}/dockerswarm-docker-firewall"
+        mode: "0750"
+
+    - name: Render the Docker package pinning policy
+      ansible.builtin.template:
+        src: "{{ platform_template_dir }}/dockerswarm-docker.pref.j2"
+        dest: "{{ platform_render_dir }}/99-dockerswarm-docker"
+        mode: "0640"

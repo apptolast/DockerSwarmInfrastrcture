@@ -9,7 +9,7 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 readonly SOURCE_CONFIG="${PROJECT_DIR}/config/daemon.json"
 readonly TARGET_CONFIG="/etc/docker/daemon.json"
-readonly EXPECTED_SHA256="d526660c82329ffb132a48c2b1f4d3e303ccbfb667c9876fb1cb36997efe6873"
+readonly EXPECTED_SHA256="b2759d7fc799030511d1de541edcfc18549e40409921546d775132f7e9737baa"
 
 restart_daemon=true
 

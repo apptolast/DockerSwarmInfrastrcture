@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly CROWDSEC_CHAIN="CROWDSEC_CHAIN"
+readonly PLATFORM_CHAIN="DOCKERSWARM-INGRESS"
+
+order_family() {
+  local command_name="$1"
+
+  "${command_name}" -w -n -L DOCKER-USER >/dev/null
+  "${command_name}" -w -n -L "${CROWDSEC_CHAIN}" >/dev/null
+  "${command_name}" -w -n -L "${PLATFORM_CHAIN}" >/dev/null
+
+  while "${command_name}" -w -D DOCKER-USER \
+    -j "${CROWDSEC_CHAIN}" 2>/dev/null; do
+    :
+  done
+  while "${command_name}" -w -D DOCKER-USER \
+    -j "${PLATFORM_CHAIN}" 2>/dev/null; do
+    :
+  done
+
+  "${command_name}" -w -I DOCKER-USER 1 -j "${PLATFORM_CHAIN}"
+  "${command_name}" -w -I DOCKER-USER 1 -j "${CROWDSEC_CHAIN}"
+
+  local first_jump
+  local second_jump
+  first_jump="$(
+    "${command_name}" -w -S DOCKER-USER |
+      /usr/bin/awk '/^-A DOCKER-USER / { print; exit }'
+  )"
+  second_jump="$(
+    "${command_name}" -w -S DOCKER-USER |
+      /usr/bin/awk '/^-A DOCKER-USER / { count++; if (count == 2) { print; exit } }'
+  )"
+
+  [[ "${first_jump}" == "-A DOCKER-USER -j ${CROWDSEC_CHAIN}" ]]
+  [[ "${second_jump}" == "-A DOCKER-USER -j ${PLATFORM_CHAIN}" ]]
+}
+
+order_family /usr/sbin/iptables
+order_family /usr/sbin/ip6tables

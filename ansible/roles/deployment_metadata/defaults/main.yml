@@ -1,0 +1,8 @@
+---
+deployment_metadata_source_revision: ""
+deployment_metadata_contract_sha256: ""
+deployment_metadata_profile: production
+deployment_metadata_playbook: ""
+deployment_metadata_repository_slug: ""
+deployment_metadata_path: >-
+  {{ platform_install_root }}/DEPLOYED_VERSION.yml

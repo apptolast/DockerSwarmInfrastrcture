@@ -1,0 +1,21 @@
+manage_firewall = false
+
+# Obtain both identifiers from SCP; never infer them from the hostname.
+server_id  = 123456
+server_mac = "02:00:00:00:00:01"
+
+admin_cidrs = [
+  "198.51.100.10/32",
+  "2001:db8:1234::10/128",
+]
+
+# List every policy already assigned in SCP, including provider-managed policies.
+# Use [] only after verifying in SCP that the server has no current policies.
+preserved_policy_ids = []
+
+scp_ssh_public_keys = {
+  platform = {
+    name = "NetCupApptoLast"
+    key  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAEXAMPLE"
+  }
+}

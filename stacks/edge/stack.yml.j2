@@ -1,0 +1,115 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: "{{ edge_traefik_image }}"
+    user: "{{ edge_traefik_runtime_uid }}:{{ edge_traefik_runtime_gid }}"
+    command:
+      - --configFile=/etc/traefik.yml
+    environment:
+      CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare_dns_api_token
+    ports:
+      - target: 8000
+        published: {{ platform_public_tcp_ports | min }}
+        protocol: tcp
+        mode: host
+      - target: 8443
+        published: {{ platform_public_tcp_ports | max }}
+        protocol: tcp
+        mode: host
+    configs:
+      - source: traefik_static
+        target: /etc/traefik.yml
+        uid: "{{ edge_traefik_runtime_uid }}"
+        gid: "{{ edge_traefik_runtime_gid }}"
+        mode: 0444
+      - source: traefik_dynamic
+        target: /etc/traefik-dynamic.yml
+        uid: "{{ edge_traefik_runtime_uid }}"
+        gid: "{{ edge_traefik_runtime_gid }}"
+        mode: 0444
+    volumes:
+      - type: bind
+        source: "{{ edge_state_root }}/traefik"
+        target: /data
+    secrets:
+      - source: cloudflare_dns_api_token
+        target: cloudflare_dns_api_token
+        uid: "{{ edge_traefik_runtime_uid }}"
+        gid: "{{ edge_traefik_runtime_gid }}"
+        mode: 0400
+    networks:
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - traefik
+        - healthcheck
+        - --configFile=/etc/traefik.yml
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: local
+      options:
+        max-file: "5"
+        max-size: 20m
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+          - node.labels.platform.edge == true
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 60s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+        failure_action: rollback
+        monitor: 90s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        order: stop-first
+        failure_action: pause
+        monitor: 90s
+        max_failure_ratio: 0
+
+networks:
+  edge:
+    external: true
+    name: "{{ edge_network }}"
+
+secrets:
+  cloudflare_dns_api_token:
+    external: true
+    name: "{{ edge_traefik_cloudflare_secret_name }}"
+
+configs:
+  traefik_static:
+    external: true
+    name: "{{ edge_traefik_static_config_name }}"
+  traefik_dynamic:
+    external: true
+    name: "{{ edge_traefik_dynamic_config_name }}"

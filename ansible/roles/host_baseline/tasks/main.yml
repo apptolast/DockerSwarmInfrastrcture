@@ -1,0 +1,27 @@
+---
+- name: Run host-baseline safety preflight
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Enforce public-key-only OpenSSH
+  ansible.builtin.import_tasks: ssh.yml
+
+- name: Verify the existing UFW policy without resetting it
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Configure controlled unattended security updates
+  ansible.builtin.import_tasks: unattended-upgrades.yml
+
+- name: Verify the existing Chrony time source
+  ansible.builtin.import_tasks: time.yml
+
+- name: Bound persistent systemd journal storage
+  ansible.builtin.import_tasks: journald.yml
+
+- name: Apply Swarm-compatible kernel hardening
+  ansible.builtin.import_tasks: sysctl.yml
+
+- name: Verify existing host-security services
+  ansible.builtin.import_tasks: security.yml
+
+- name: Put CrowdSec before the Docker public-port allowlist
+  ansible.builtin.import_tasks: crowdsec-docker.yml

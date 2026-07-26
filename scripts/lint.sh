@@ -20,7 +20,31 @@ for command_name in bash docker dockerd git jq npx; do
   }
 done
 
-jq --exit-status '. == {"log-driver":"local"}' config/daemon.json >/dev/null
+if ! docker info >/dev/null 2>&1; then
+  if [[ "${LINT_DOCKER_REEXEC:-0}" != 1 ]] &&
+    getent group docker |
+      awk -F: -v user_name="$(id -un)" '
+        $1 == "docker" && ("," $4 ",") ~ ("," user_name ",") { found = 1 }
+        END { exit !found }
+      '; then
+    printf -v quoted_script '%q' "$0"
+    exec sg docker -c "LINT_DOCKER_REEXEC=1 ${quoted_script}"
+  fi
+  printf 'ERROR: the current identity cannot access the Docker daemon\n' >&2
+  exit 1
+fi
+
+jq --exit-status '
+  . == {
+    "log-driver": "local",
+    "log-opts": {
+      "max-file": "5",
+      "max-size": "20m"
+    },
+    "no-new-privileges": true,
+    "userland-proxy": false
+  }
+' config/daemon.json >/dev/null
 dockerd --validate --config-file=config/daemon.json
 
 mapfile -t shell_scripts < <(find scripts -maxdepth 1 -type f -name '*.sh' | sort)
@@ -40,7 +64,15 @@ docker run \
   --severity=style \
   "${container_script_paths[@]}"
 
-npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}" '**/*.md'
+mapfile -t markdown_files < <(
+  git ls-files --cached --others --exclude-standard -- '*.md' |
+    sort
+)
+if (( ${#markdown_files[@]} > 0 )); then
+  npx --yes \
+    "markdownlint-cli2@${MARKDOWNLINT_VERSION}" \
+    "${markdown_files[@]}"
+fi
 
 docker run \
   --rm \
@@ -48,6 +80,19 @@ docker run \
   "${GITLEAKS_IMAGE}" \
   dir \
   --exit-code=1 \
+  --no-banner \
+  --redact \
+  /repo
+
+docker run \
+  --rm \
+  --user "$(id -u):$(id -g)" \
+  --volume "${PROJECT_DIR}:/repo:ro" \
+  --workdir /repo \
+  "${GITLEAKS_IMAGE}" \
+  git \
+  --exit-code=1 \
+  --log-opts=--all \
   --no-banner \
   --redact \
   /repo

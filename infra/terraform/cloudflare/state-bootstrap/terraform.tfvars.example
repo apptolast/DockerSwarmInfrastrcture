@@ -1,0 +1,12 @@
+cloudflare_account_id = "00000000000000000000000000000000"
+
+state_buckets = {
+  cloudflare_dns = {
+    name     = "replace-with-dns-state-bucket"
+    location = "weur"
+  }
+  netcup_perimeter = {
+    name     = "replace-with-netcup-state-bucket"
+    location = "weur"
+  }
+}

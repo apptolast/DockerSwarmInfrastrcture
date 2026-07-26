@@ -1,0 +1,109 @@
+---
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Verify required security packages are installed
+  ansible.builtin.assert:
+    that:
+      - item in ansible_facts.packages
+    fail_msg: >-
+      Required security package {{ item }} is absent. This adoption role does
+      not invent third-party repositories or silently replace host controls.
+    quiet: true
+  loop: "{{ host_baseline_required_packages }}"
+
+- name: Verify required security services are active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ item }}"
+  loop: "{{ host_baseline_required_active_services }}"
+  register: host_baseline_security_services_active
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    host_baseline_security_services_active.stdout != "active"
+
+- name: Verify required security services are enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ host_baseline_required_active_services }}"
+  register: host_baseline_security_services_enabled
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    host_baseline_security_services_enabled.stdout != "enabled"
+
+- name: Read AppArmor state
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/aa-status
+      - --json
+  register: host_baseline_apparmor
+  changed_when: false
+  check_mode: false
+
+- name: Verify Docker's AppArmor profile is enforcing
+  ansible.builtin.assert:
+    that:
+      - >-
+        (host_baseline_apparmor.stdout | from_json).profiles[
+          "docker-default"] == "enforce"
+    fail_msg: "The docker-default AppArmor profile is not enforcing."
+    quiet: true
+
+- name: Validate the CrowdSec engine configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec
+      - -c
+      - /etc/crowdsec/config.yaml
+      - -t
+      - -error
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate the CrowdSec firewall-bouncer configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec-firewall-bouncer
+      - -c
+      - "{{ host_baseline_crowdsec_bouncer_config }}"
+      - -t
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify the Fail2ban daemon responds
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fail2ban-client
+      - ping
+  register: host_baseline_fail2ban_ping
+  changed_when: false
+  check_mode: false
+  failed_when: '"pong" not in host_baseline_fail2ban_ping.stdout | lower'
+
+- name: Verify the Fail2ban SSH jail is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fail2ban-client
+      - status
+      - sshd
+  changed_when: false
+  check_mode: false
+
+- name: Verify PSAD runtime status
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/psad
+      - --Status
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode

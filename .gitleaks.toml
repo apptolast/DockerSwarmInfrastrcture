@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Downloaded or generated local tooling is outside repository scope."
+paths = [
+  '''(?:^|/)\.ansible(?:/|$)''',
+  '''(?:^|/)\.build(?:/|$)''',
+  '''(?:^|/)\.terraform\.d(?:/|$)''',
+  '''(?:^|/)\.tools(?:/|$)''',
+  '''(?:^|/)\.venv(?:/|$)''',
+  '''(?:^|/)\.terraform(?:/|$)''',
+]

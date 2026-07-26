@@ -1,0 +1,10 @@
+---
+- name: Reset the Ansible SSH control connection
+  ansible.builtin.meta: reset_connection
+
+- name: Prove the managed SSH key can reconnect
+  ansible.builtin.wait_for_connection:
+    connect_timeout: 10
+    sleep: 1
+    timeout: 45
+  check_mode: false

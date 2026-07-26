@@ -1,0 +1,114 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: false
+  insecure: false
+
+entryPoints:
+  web:
+    address: ":8000"
+    http:
+      encodedCharacters:
+        allowEncodedBackSlash: false
+        allowEncodedHash: false
+        allowEncodedNullCharacter: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedSemicolon: false
+        allowEncodedSlash: false
+      underscoreHeadersStrategy: reject
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":8443"
+    http:
+      encodedCharacters:
+        allowEncodedBackSlash: false
+        allowEncodedHash: false
+        allowEncodedNullCharacter: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedSemicolon: false
+        allowEncodedSlash: false
+      underscoreHeadersStrategy: reject
+      tls:
+        certResolver: letsencrypt
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        writeTimeout: 60s
+        idleTimeout: 180s
+  traefik:
+    address: ":8080"
+    http:
+      encodedCharacters:
+        allowEncodedBackSlash: false
+        allowEncodedHash: false
+        allowEncodedNullCharacter: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedSemicolon: false
+        allowEncodedSlash: false
+      underscoreHeadersStrategy: reject
+  metrics:
+    address: ":8082"
+    http:
+      encodedCharacters:
+        allowEncodedBackSlash: false
+        allowEncodedHash: false
+        allowEncodedNullCharacter: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedSemicolon: false
+        allowEncodedSlash: false
+      underscoreHeadersStrategy: reject
+
+ping:
+  entryPoint: traefik
+  manualRouting: false
+
+providers:
+  file:
+    filename: /etc/traefik-dynamic.yml
+    watch: false
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "{{ edge_traefik_acme_email }}"
+      storage: "/data/{{ edge_traefik_acme_storage_filename }}"
+      caServer: "{{ edge_traefik_acme_ca_server }}"
+      dnsChallenge:
+        provider: cloudflare
+
+metrics:
+  addInternals: true
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  bufferingSize: 100
+  fields:
+    queryParameters:
+      defaultMode: drop
+    headers:
+      defaultMode: drop
+
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: 10s
+    responseHeaderTimeout: 60s
+    idleConnTimeout: 180s

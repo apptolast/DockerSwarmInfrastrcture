@@ -1,0 +1,47 @@
+---
+- name: Validate the complete OpenSSH configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -t
+  changed_when: false
+  check_mode: false
+  listen: Host baseline validate and reload OpenSSH
+
+- name: Reload OpenSSH after complete validation
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: reloaded
+  listen: Host baseline validate and reload OpenSSH
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald.service
+    state: restarted
+  listen: Host baseline restart systemd-journald
+
+- name: Apply persistent sysctl settings
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - --system
+  changed_when: true
+  listen: Host baseline apply sysctl
+
+- name: Reload systemd units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: Host baseline reload systemd
+
+- name: Restart CrowdSec firewall bouncer
+  ansible.builtin.systemd_service:
+    name: crowdsec-firewall-bouncer.service
+    state: restarted
+  listen: Host baseline restart CrowdSec firewall bouncer
+
+- name: Restart Docker ingress ordering
+  ansible.builtin.systemd_service:
+    name: "{{ host_baseline_docker_firewall_service }}"
+    enabled: true
+    state: restarted
+  listen: Host baseline restart Docker ingress ordering

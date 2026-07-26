@@ -1,0 +1,166 @@
+---
+- name: Inspect the Docker ingress-policy unit
+  ansible.builtin.stat:
+    path: >-
+      /etc/systemd/system/{{ host_baseline_docker_firewall_service }}
+  register: host_baseline_docker_firewall_unit
+
+- name: Inspect the Docker ingress-policy script
+  ansible.builtin.stat:
+    path: "{{ host_baseline_docker_firewall_script }}"
+  register: host_baseline_docker_firewall_script_state
+
+- name: Verify the platform firewall exists before integration
+  ansible.builtin.assert:
+    that:
+      - host_baseline_docker_firewall_unit.stat.exists
+      - host_baseline_docker_firewall_unit.stat.isreg
+      - host_baseline_docker_firewall_script_state.stat.exists
+      - host_baseline_docker_firewall_script_state.stat.isreg
+      - host_baseline_docker_firewall_script_state.stat.executable
+    fail_msg: >-
+      Apply the platform role before host_baseline. CrowdSec ordering cannot
+      be made persistent until the Docker ingress-policy unit exists.
+    quiet: true
+
+- name: Read the credential-bearing CrowdSec bouncer configuration
+  ansible.builtin.slurp:
+    path: "{{ host_baseline_crowdsec_bouncer_config }}"
+  register: host_baseline_crowdsec_bouncer_source
+  no_log: true
+
+- name: Build the CrowdSec DOCKER-USER candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_crowdsec_bouncer_candidate: >-
+      {{
+        (host_baseline_crowdsec_bouncer_source.content | b64decode)
+        if "  - DOCKER-USER" in
+          (host_baseline_crowdsec_bouncer_source.content | b64decode)
+        else
+          (host_baseline_crowdsec_bouncer_source.content | b64decode)
+          | regex_replace(
+              "(?m)^([ ]{2}- INPUT)$",
+              "\\1\n  - DOCKER-USER"
+            )
+      }}
+  no_log: true
+
+- name: Verify the in-memory bouncer candidate has one Docker hook
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_crowdsec_bouncer_candidate.splitlines()
+        | select("equalto", "  - DOCKER-USER")
+        | list | length == 1
+    fail_msg: "Unable to add exactly one DOCKER-USER bouncer hook."
+    quiet: true
+  no_log: true
+
+- name: Parse the credential-bearing bouncer candidate in memory
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec-firewall-bouncer
+      - -c
+      - /dev/stdin
+      - -t
+    stdin: "{{ host_baseline_crowdsec_bouncer_candidate }}"
+    stdin_add_newline: true
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Register DOCKER-USER with the CrowdSec firewall bouncer
+  ansible.builtin.lineinfile:
+    path: "{{ host_baseline_crowdsec_bouncer_config }}"
+    insertafter: "^[ ]{2}- INPUT$"
+    line: "  - DOCKER-USER"
+    state: present
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/bin/crowdsec-firewall-bouncer -c %s -t
+  no_log: true
+  notify:
+    - Host baseline restart CrowdSec firewall bouncer
+    - Host baseline restart Docker ingress ordering
+
+- name: Install the CrowdSec and Docker ordering helper
+  ansible.builtin.template:
+    src: crowdsec-docker-order.sh.j2
+    dest: "{{ host_baseline_crowdsec_order_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Host baseline restart Docker ingress ordering
+
+- name: Create the Docker ingress-policy override directory
+  ansible.builtin.file:
+    path: "{{ host_baseline_docker_firewall_override_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bind Docker ingress ordering to the CrowdSec bouncer
+  ansible.builtin.template:
+    src: docker-firewall-crowdsec.conf.j2
+    dest: >-
+      {{ host_baseline_docker_firewall_override_directory
+      }}/20-crowdsec-order.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Host baseline reload systemd
+    - Host baseline restart Docker ingress ordering
+  when: not ansible_check_mode
+
+- name: Apply CrowdSec and Docker ordering before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Read ordered IPv4 DOCKER-USER jumps
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+      - DOCKER-USER
+  register: host_baseline_docker_user_ipv4
+  changed_when: false
+  check_mode: false
+
+- name: Read ordered IPv6 DOCKER-USER jumps
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+      - DOCKER-USER
+  register: host_baseline_docker_user_ipv6
+  changed_when: false
+  check_mode: false
+
+- name: Verify CrowdSec precedes the Docker allowlist
+  ansible.builtin.assert:
+    that:
+      - >-
+        (host_baseline_docker_user_ipv4.stdout_lines
+        | select("match", "^-A DOCKER-USER ")
+        | list)[0] == "-A DOCKER-USER -j CROWDSEC_CHAIN"
+      - >-
+        (host_baseline_docker_user_ipv4.stdout_lines
+        | select("match", "^-A DOCKER-USER ")
+        | list)[1] == "-A DOCKER-USER -j DOCKERSWARM-INGRESS"
+      - >-
+        (host_baseline_docker_user_ipv6.stdout_lines
+        | select("match", "^-A DOCKER-USER ")
+        | list)[0] == "-A DOCKER-USER -j CROWDSEC_CHAIN"
+      - >-
+        (host_baseline_docker_user_ipv6.stdout_lines
+        | select("match", "^-A DOCKER-USER ")
+        | list)[1] == "-A DOCKER-USER -j DOCKERSWARM-INGRESS"
+    fail_msg: >-
+      CrowdSec must be the first DOCKER-USER jump and DOCKERSWARM-INGRESS the
+      second for both IPv4 and IPv6.
+    quiet: true
+  when: not ansible_check_mode

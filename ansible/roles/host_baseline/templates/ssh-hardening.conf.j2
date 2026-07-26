@@ -1,0 +1,31 @@
+# Managed by Ansible. The 00 prefix is intentional because OpenSSH uses the
+# first value obtained for most keywords.
+Port {{ host_baseline_ssh_port }}
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+PermitEmptyPasswords no
+UsePAM yes
+
+# The inherited full-list override excluded every hybrid post-quantum KEX.
+# Retain its reviewed classical fallbacks and put mutually supported hybrids
+# first. The client ultimately chooses the first mutual algorithm.
+KexAlgorithms {{ (host_baseline_ssh_pq_kex_algorithms + host_baseline_ssh_classical_kex_algorithms) | join(",") }}
+
+AllowGroups {{ host_baseline_ssh_group }}
+MaxAuthTries 2
+LoginGraceTime 30
+ClientAliveInterval 15
+ClientAliveCountMax 3
+
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+
+LogLevel VERBOSE

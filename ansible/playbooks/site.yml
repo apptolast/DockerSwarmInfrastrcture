@@ -1,0 +1,17 @@
+---
+- name: Reconcile the complete Docker Swarm platform
+  hosts: swarm_managers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../group_vars/all.yml
+
+  roles:
+    - role: platform
+    - role: host_baseline
+    - role: edge
+    - role: deployment_metadata

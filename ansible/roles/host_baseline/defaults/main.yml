@@ -1,0 +1,120 @@
+---
+host_baseline_admin_user: admin
+host_baseline_admin_home: /home/admin
+host_baseline_ssh_group: sshusers
+host_baseline_ssh_port: 22
+host_baseline_authorized_keys_path: >-
+  {{ host_baseline_admin_home }}/.ssh/authorized_keys
+host_baseline_ssh_pq_kex_algorithms:
+  - mlkem768x25519-sha256
+  - sntrup761x25519-sha512
+  - sntrup761x25519-sha512@openssh.com
+host_baseline_ssh_classical_kex_algorithms:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - ecdh-sha2-nistp521
+  - ecdh-sha2-nistp384
+  - ecdh-sha2-nistp256
+  - diffie-hellman-group-exchange-sha256
+
+host_baseline_public_interface: >-
+  {{ platform_public_interface | default('eth0') }}
+host_baseline_required_public_tcp_ports:
+  - 80
+  - 443
+host_baseline_required_host_egress:
+  - protocol: tcp
+    port: 25
+  - protocol: udp
+    port: 25
+  - protocol: tcp
+    port: 43
+  - protocol: tcp
+    port: 53
+  - protocol: udp
+    port: 53
+  - protocol: tcp
+    port: 80
+  - protocol: tcp
+    port: 123
+  - protocol: udp
+    port: 123
+  - protocol: tcp
+    port: 443
+  - protocol: udp
+    port: 443
+  - protocol: tcp
+    port: 587
+  - protocol: udp
+    port: 587
+
+host_baseline_unattended_legacy_files:
+  - /etc/apt/apt.conf.d/51myunattended-upgrades
+  - /etc/apt/apt.conf.d/52apptolast-unattended-upgrades
+host_baseline_unattended_remove_unused: true
+
+host_baseline_journal_max_use: 1G
+host_baseline_journal_keep_free: 5G
+host_baseline_journal_max_retention: 14day
+host_baseline_journal_rate_limit_interval: 30s
+host_baseline_journal_rate_limit_burst: 10000
+
+host_baseline_sysctl:
+  fs.protected_hardlinks: "1"
+  fs.protected_symlinks: "1"
+  fs.protected_fifos: "2"
+  fs.protected_regular: "2"
+  fs.suid_dumpable: "0"
+  kernel.dmesg_restrict: "1"
+  kernel.kptr_restrict: "2"
+  kernel.randomize_va_space: "2"
+  kernel.yama.ptrace_scope: "1"
+  net.ipv4.ip_forward: "1"
+  net.ipv4.conf.all.accept_redirects: "0"
+  net.ipv4.conf.default.accept_redirects: "0"
+  net.ipv4.conf.all.secure_redirects: "0"
+  net.ipv4.conf.default.secure_redirects: "0"
+  net.ipv4.conf.all.send_redirects: "0"
+  net.ipv4.conf.default.send_redirects: "0"
+  net.ipv4.conf.all.accept_source_route: "0"
+  net.ipv4.conf.default.accept_source_route: "0"
+  net.ipv4.conf.all.rp_filter: "2"
+  net.ipv4.conf.default.rp_filter: "2"
+  net.ipv4.tcp_syncookies: "1"
+  net.ipv6.conf.all.accept_redirects: "0"
+  net.ipv6.conf.default.accept_redirects: "0"
+  net.ipv6.conf.all.accept_source_route: "0"
+  net.ipv6.conf.default.accept_source_route: "0"
+
+host_baseline_required_packages:
+  - apparmor
+  - chrony
+  - crowdsec
+  - crowdsec-firewall-bouncer-iptables
+  - fail2ban
+  - openssh-server
+  - psad
+  - rsyslog
+  - ufw
+  - unattended-upgrades
+host_baseline_required_active_services:
+  - apparmor.service
+  - chrony.service
+  - crowdsec.service
+  - crowdsec-firewall-bouncer.service
+  - fail2ban.service
+  - psad.service
+  - rsyslog.service
+
+host_baseline_crowdsec_bouncer_config: >-
+  /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+host_baseline_docker_firewall_service: >-
+  dockerswarm-docker-firewall.service
+host_baseline_docker_firewall_override_directory: >-
+  /etc/systemd/system/dockerswarm-docker-firewall.service.d
+host_baseline_docker_firewall_script: >-
+  /usr/local/sbin/dockerswarm-docker-firewall
+host_baseline_crowdsec_order_script: >-
+  /usr/local/sbin/dockerswarm-crowdsec-order
+
+host_baseline_run_expensive_validations: true

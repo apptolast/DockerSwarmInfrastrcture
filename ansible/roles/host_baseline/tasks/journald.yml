@@ -1,0 +1,102 @@
+---
+- name: Create the persistent journal directory
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the bounded journald candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_journald_candidate: >-
+      {{ lookup("ansible.builtin.template", "journald.conf.j2") }}
+
+- name: Verify every journald candidate bound
+  ansible.builtin.assert:
+    that:
+      - >-
+        "Storage=persistent"
+        in host_baseline_journald_candidate.splitlines()
+      - '"Compress=yes" in host_baseline_journald_candidate.splitlines()'
+      - >-
+        "SystemMaxUse=" ~ host_baseline_journal_max_use
+        in host_baseline_journald_candidate.splitlines()
+      - >-
+        "SystemKeepFree=" ~ host_baseline_journal_keep_free
+        in host_baseline_journald_candidate.splitlines()
+      - >-
+        "MaxRetentionSec=" ~ host_baseline_journal_max_retention
+        in host_baseline_journald_candidate.splitlines()
+    fail_msg: "The rendered journald candidate lacks a required bound."
+    quiet: true
+
+- name: Install bounded persistent journal settings
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/60-dockerswarm.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Host baseline restart systemd-journald
+  when: not ansible_check_mode
+
+- name: Apply journald configuration before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the merged journald configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - cat-config
+      - systemd/journald.conf
+  register: host_baseline_journald_config
+  changed_when: false
+  check_mode: false
+
+- name: Verify effective persistent journal limits
+  ansible.builtin.assert:
+    that:
+      - '"Storage=persistent" in host_baseline_journald_config.stdout_lines'
+      - '"Compress=yes" in host_baseline_journald_config.stdout_lines'
+      - >-
+        "SystemMaxUse=" ~ host_baseline_journal_max_use
+        in host_baseline_journald_config.stdout_lines
+      - >-
+        "SystemKeepFree=" ~ host_baseline_journal_keep_free
+        in host_baseline_journald_config.stdout_lines
+      - >-
+        "MaxRetentionSec=" ~ host_baseline_journal_max_retention
+        in host_baseline_journald_config.stdout_lines
+    fail_msg: "The merged journald configuration lacks the managed limits."
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Verify persistent journal integrity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --verify
+      - --quiet
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - host_baseline_run_expensive_validations | bool
+
+- name: Report bounded journal disk use
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --disk-usage
+  register: host_baseline_journal_disk_usage
+  changed_when: false
+  check_mode: false

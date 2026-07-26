@@ -1,0 +1,3 @@
+# Replace this with an absolute path on encrypted storage outside the Git
+# checkout. Back up that state with age after every bootstrap-root change.
+path = "/REPLACE_WITH_ENCRYPTED_OFF_REPOSITORY_PATH/state-bootstrap.tfstate"

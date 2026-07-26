@@ -1,0 +1,34 @@
+http:
+  routers:
+    edge-health:
+      rule: "Host(`{{ edge_traefik_hostname }}`) && Path(`/ping`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+        - edge-rate-limit
+      service: ping@internal
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    edge-security:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        stsSeconds: 31536000
+        customResponseHeaders:
+          Server: ""
+    edge-rate-limit:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

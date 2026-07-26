@@ -1,0 +1,25 @@
+---
+
+deployment_metadata_repository_slug: apptolast/DockerSwarmInfrastrcture
+
+platform_docker_packages:
+  - docker-ce=5:29.6.2-1~ubuntu.26.04~resolute
+  - docker-ce-cli=5:29.6.2-1~ubuntu.26.04~resolute
+  - containerd.io=2.2.6-1~ubuntu.26.04~resolute
+  - docker-buildx-plugin=0.35.0-1~ubuntu.26.04~resolute
+  - docker-compose-plugin=5.3.1-1~ubuntu.26.04~resolute
+
+edge_install_root: "{{ platform_install_root }}"
+edge_state_root: "{{ platform_state_root }}"
+edge_network: "{{ platform_edge_network }}"
+
+edge_traefik_image: >-
+  traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8
+edge_traefik_version: 3.7.9
+edge_traefik_runtime_uid: 65532
+edge_traefik_runtime_gid: 65532
+edge_traefik_stack_name: edge
+edge_traefik_acme_email: acme@apptolast.com
+edge_traefik_cloudflare_secret_name: cloudflare_dns_api_token_v1
+edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
+edge_traefik_acme_storage_filename: acme.json

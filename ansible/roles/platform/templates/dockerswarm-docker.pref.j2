@@ -1,0 +1,6 @@
+{% for package in platform_docker_packages | sort %}
+Package: {{ package.split("=", 1)[0] }}
+Pin: version {{ package.split("=", 1)[1] }}
+Pin-Priority: 1001
+
+{% endfor %}

@@ -1,0 +1,9 @@
+# Sustituir o ampliar cuando exista un equipo platform formal en la organización.
+* @PabloHurtadoGonzalo86
+
+# Cambios con capacidad de alterar producción requieren la misma propiedad
+# explícita aunque GitHub aplique la regla global anterior.
+/ansible/ @PabloHurtadoGonzalo86
+/config/ @PabloHurtadoGonzalo86
+/infra/terraform/ @PabloHurtadoGonzalo86
+/stacks/ @PabloHurtadoGonzalo86

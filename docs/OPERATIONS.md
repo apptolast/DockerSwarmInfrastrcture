@@ -28,6 +28,11 @@ Los puertos publicados por Docker pueden eludir las reglas normales de UFW. Las
 restricciones de cargas publicadas deben diseñarse en `DOCKER-USER`, además de
 las reglas perimetrales del proveedor.
 
+CrowdSec debe ocupar el primer salto de `DOCKER-USER` y
+`DOCKERSWARM-INGRESS` el segundo. Así una decisión de bloqueo se evalúa antes de
+aceptar 80/443. El rol `host_baseline` y `validate-firewall.sh` comprueban el
+orden después de reinicios de Docker y del bouncer.
+
 ## Logging
 
 `config/daemon.json` establece `local` como driver predeterminado. No se deben
@@ -68,6 +73,46 @@ pruebas periódicas de restauración.
 
 No se crea una copia local automática porque no protege frente a la pérdida del
 servidor y no existe todavía un destino externo autorizado.
+
+También son estado irremplazable:
+
+- los states de Terraform, que se exportan cifrados con
+  `snapshot-terraform-state.sh`;
+- `/srv/dockerswarm/traefik/acme.json`, que contiene la cuenta y certificados
+  ACME;
+- el inventario de recursos importados y los manifests de aplicaciones;
+- la unlock key, únicamente si en el futuro se activa autolock.
+
+Cada copia debe llevar checksum, fecha UTC, commit de origen, cifrado antes de
+salir del host y una prueba de restauración en un entorno aislado. No se programa
+un timer hasta seleccionar destino off-host, retención y destinatario `age`.
+
+## Mantenimiento y cambios
+
+Todo cambio sigue esta secuencia:
+
+1. Actualizar versiones y digests en una rama.
+2. Ejecutar bootstrap, validación integrada, lint y escaneo de secretos.
+3. Crear planes desde un commit limpio con `plan-terraform.sh` y revisarlos
+   como datos sensibles.
+4. Tomar snapshots cifrados antes de aplicar.
+5. Aplicar Ansible con `deploy-ansible.sh`; el playbook mantiene `serial: 1` y
+   escribe la release, commit y hash contractual aplicados.
+6. Repetir Ansible y exigir `changed=0`.
+7. Validar firewall, edge, TLS, DNS, logs y unidades fallidas.
+8. Tomar snapshots posteriores y registrar el resultado.
+
+La estrategia de releases, repositorios, protecciones GitHub y cadencia
+periódica se define en [`REPOSITORIES.md`](REPOSITORIES.md).
+
+Dependabot propone actualizaciones semanales, pero nunca las aplica. Una
+actualización de Docker, Traefik, Terraform, provider o acción de CI exige
+repetir las pruebas y revisar las excepciones versionadas.
+
+Los Docker Configs de Traefik son inmutables. `gc-edge-configs.sh` opera en
+dry-run, protege referencias actuales y previas de todos los servicios y
+conserva las dos generaciones más recientes de cada tipo. `--apply` solo se usa
+después de revisar la lista; los objetos eliminados se reproducen desde Git.
 
 ## Autolock
 

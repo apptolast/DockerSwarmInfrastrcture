@@ -1,0 +1,20 @@
+[Unit]
+Description=Docker Swarm allowlist for published public ports
+Documentation=https://docs.docker.com/engine/network/packet-filtering-firewalls/
+Requires=docker.service
+After=docker.service network-online.target crowdsec-firewall-bouncer.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dockerswarm-docker-firewall
+RemainAfterExit=yes
+
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

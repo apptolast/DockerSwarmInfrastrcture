@@ -1,4 +1,4 @@
-# Diagnósticos conocidos de Docker 29.6.2
+# Diagnósticos conocidos de Docker 29.6.2 y Traefik 3.7.9
 
 La restauración de este Swarm sano genera dos registros de arranque reproducibles.
 No se ocultan ni se rebaja globalmente el nivel de logging. El validador solo los
@@ -42,3 +42,18 @@ Toda otra entrada de prioridad warning o superior, o con
 alguno de estos dos textos aparece más de una vez o si el manager no está sano.
 
 La aceptación es específica de la versión y debe revisarse al actualizar Docker.
+
+## Advertencia de caracteres codificados de Traefik
+
+Traefik 3.7.9 registra una advertencia antes de cargar la configuración para
+recordar que la política predeterminada de caracteres codificados cambió. Este
+repositorio configura explícitamente a `false` los siete caracteres en los
+cuatro entrypoints, pero la advertencia se emite antes de que esos valores sean
+leídos.
+
+El validador ejecuta la imagen exacta, exige una sola ocurrencia del texto
+conocido y rechaza cualquier otra entrada `warning`, `error`, `fatal` o `panic`.
+No se ocultan logs ni se rebaja su nivel para fabricar una salida vacía.
+
+- [Emisión anterior a la carga en Traefik 3.7.9](https://github.com/traefik/traefik/blob/v3.7.9/cmd/traefik/traefik.go#L100-L103)
+- [Migración de caracteres codificados](https://doc.traefik.io/traefik/v3.7/migrate/v3/)

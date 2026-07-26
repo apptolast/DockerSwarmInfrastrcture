@@ -1,0 +1,37 @@
+---
+- name: Verify immutable deployment provenance
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_release_version
+        is match("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\."
+        ~ "(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$")
+      - deployment_metadata_source_revision is match("^[a-f0-9]{40}$")
+      - deployment_metadata_contract_sha256 is match("^[a-f0-9]{64}$")
+      - deployment_metadata_profile in ["production", "acme-staging"]
+      - >-
+        deployment_metadata_playbook
+        in ["platform", "host-baseline", "edge", "site"]
+      - >-
+        deployment_metadata_repository_slug
+        is match("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    fail_msg: >-
+      Deploy through scripts/deploy-ansible.sh from a clean Git commit so the
+      installed platform retains a verifiable source identity.
+    quiet: true
+
+- name: Create the installed platform root
+  ansible.builtin.file:
+    path: "{{ platform_install_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Record the deployed release and source identity
+  ansible.builtin.template:
+    src: deployed-version.yml.j2
+    dest: "{{ deployment_metadata_path }}"
+    owner: root
+    group: root
+    mode: "0644"

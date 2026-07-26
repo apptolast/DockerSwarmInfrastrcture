@@ -1,0 +1,61 @@
+---
+- name: Render the edge stack without mutating a Swarm
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../group_vars/all.yml
+
+  vars:
+    edge_render_dir: "{{ playbook_dir }}/../../.build/edge"
+
+  tasks:
+    - name: Validate render-only inputs
+      ansible.builtin.assert:
+        that:
+          - edge_traefik_image is match("^traefik@sha256:[a-f0-9]{64}$")
+          - edge_traefik_hostname is match("^[a-z0-9.-]+$")
+          - edge_traefik_runtime_uid | int > 0
+          - edge_traefik_runtime_gid | int > 0
+
+    - name: Create the disposable render directory
+      ansible.builtin.file:
+        path: "{{ edge_render_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Render Traefik configuration for validation
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../stacks/edge/{{ item }}.yml.j2"
+        dest: "{{ edge_render_dir }}/{{ item }}.yml"
+        mode: "0644"
+      loop:
+        - static
+        - dynamic
+
+    - name: Hash render-only Traefik configuration
+      ansible.builtin.stat:
+        path: "{{ edge_render_dir }}/{{ item }}.yml"
+        checksum_algorithm: sha256
+      loop:
+        - static
+        - dynamic
+      register: render_only_configs
+
+    - name: Derive render-only immutable Docker Config names
+      ansible.builtin.set_fact:
+        edge_traefik_static_config_name: >-
+          {{ edge_traefik_stack_name }}-traefik-static-{{
+            render_only_configs.results[0].stat.checksum[:16] }}
+        edge_traefik_dynamic_config_name: >-
+          {{ edge_traefik_stack_name }}-traefik-dynamic-{{
+            render_only_configs.results[1].stat.checksum[:16] }}
+
+    - name: Render the stack for validation
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../stacks/edge/stack.yml.j2"
+        dest: "{{ edge_render_dir }}/stack.yml"
+        mode: "0644"

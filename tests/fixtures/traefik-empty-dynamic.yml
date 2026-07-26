@@ -1,0 +1,6 @@
+---
+http:
+  middlewares:
+    validation-security:
+      headers:
+        contentTypeNosniff: true

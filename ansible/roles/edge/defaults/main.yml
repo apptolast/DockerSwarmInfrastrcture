@@ -1,0 +1,14 @@
+---
+edge_install_root: /opt/dockerswarm
+edge_state_root: /srv/dockerswarm
+edge_network: apptolast-edge
+edge_traefik_image: ""
+edge_traefik_version: ""
+edge_traefik_runtime_uid: 65532
+edge_traefik_runtime_gid: 65532
+edge_traefik_stack_name: edge
+edge_traefik_hostname: ""
+edge_traefik_acme_email: ""
+edge_traefik_cloudflare_secret_name: ""
+edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
+edge_traefik_acme_storage_filename: acme.json

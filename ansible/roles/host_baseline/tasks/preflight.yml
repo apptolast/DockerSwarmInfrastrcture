@@ -1,0 +1,175 @@
+---
+- name: Verify the reviewed host-baseline target
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == "Ubuntu"
+      - ansible_facts.distribution_version is version("26.04", "==")
+      - host_baseline_admin_user == "admin"
+      - host_baseline_admin_home == "/home/admin"
+      - host_baseline_ssh_group == "sshusers"
+      - host_baseline_ssh_port | int == 22
+      - host_baseline_public_interface in ansible_facts.interfaces
+      - >-
+        ansible_facts.default_ipv4.interface
+        == host_baseline_public_interface
+      - host_baseline_required_public_tcp_ports | sort == [80, 443]
+      - host_baseline_sysctl["net.ipv4.ip_forward"] == "1"
+    fail_msg: >-
+      The host baseline is intentionally constrained to the reviewed Ubuntu
+      26.04 manager, the existing admin identity, SSH port 22, and edge ports
+      80/443.
+    quiet: true
+
+- name: Refuse a remote rollout through a different SSH identity
+  ansible.builtin.assert:
+    that:
+      - (ansible_user | default("")) == host_baseline_admin_user
+      - ansible_password is not defined
+      - ansible_ssh_pass is not defined
+    fail_msg: >-
+      Run the remote baseline as admin using an SSH key. The role will not
+      risk changing authentication while Ansible uses another identity or a
+      password.
+    quiet: true
+  when: ansible_connection in ["ssh", "paramiko"]
+
+- name: Read the existing administrator account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ host_baseline_admin_user }}"
+
+- name: Verify the existing administrator account is unchanged
+  ansible.builtin.assert:
+    that:
+      - host_baseline_admin_user in ansible_facts.getent_passwd
+      - >-
+        ansible_facts.getent_passwd[host_baseline_admin_user][4]
+        == host_baseline_admin_home
+      - >-
+        ansible_facts.getent_passwd[host_baseline_admin_user][5]
+        == "/bin/bash"
+    fail_msg: >-
+      The existing admin account does not match the reviewed home directory
+      and login shell. This role never creates or renames the SSH identity.
+    quiet: true
+
+- name: Read administrator group membership
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/id
+      - -nG
+      - "{{ host_baseline_admin_user }}"
+  register: host_baseline_admin_groups
+  changed_when: false
+  check_mode: false
+
+- name: Verify SSH and privilege groups before touching OpenSSH
+  ansible.builtin.assert:
+    that:
+      - host_baseline_ssh_group in host_baseline_admin_groups.stdout.split()
+      - '"sudo" in host_baseline_admin_groups.stdout.split()'
+    fail_msg: >-
+      admin must already belong to sshusers and sudo before SSH hardening is
+      rendered. The role will not add memberships implicitly.
+    quiet: true
+
+- name: Inspect the existing authorized-keys file
+  ansible.builtin.stat:
+    path: "{{ host_baseline_authorized_keys_path }}"
+  register: host_baseline_authorized_keys
+
+- name: Verify authorized-keys ownership and permissions
+  ansible.builtin.assert:
+    that:
+      - host_baseline_authorized_keys.stat.exists
+      - host_baseline_authorized_keys.stat.isreg
+      - host_baseline_authorized_keys.stat.pw_name == host_baseline_admin_user
+      - host_baseline_authorized_keys.stat.gr_name == host_baseline_admin_user
+      - host_baseline_authorized_keys.stat.mode == "0600"
+    fail_msg: >-
+      The existing admin authorized_keys file must be a 0600 regular file
+      owned by admin. The role deliberately never writes this file.
+    quiet: true
+
+- name: Cryptographically parse every existing administrator key
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh-keygen
+      - -l
+      - -f
+      - "{{ host_baseline_authorized_keys_path }}"
+  register: host_baseline_authorized_key_fingerprints
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify at least one administrator public key exists
+  ansible.builtin.assert:
+    that:
+      - host_baseline_authorized_key_fingerprints.stdout_lines | length > 0
+    fail_msg: "No parseable public key exists for the admin SSH identity."
+    quiet: true
+
+- name: Validate the complete OpenSSH configuration before adoption
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -t
+  changed_when: false
+  check_mode: false
+
+- name: Read OpenSSH key-exchange implementations
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh
+      - -Q
+      - KexAlgorithms
+  register: host_baseline_supported_kex
+  changed_when: false
+  check_mode: false
+
+- name: Verify every managed key exchange is implemented
+  ansible.builtin.assert:
+    that:
+      - >-
+        (host_baseline_ssh_pq_kex_algorithms
+        + host_baseline_ssh_classical_kex_algorithms)
+        | difference(host_baseline_supported_kex.stdout_lines)
+        | length == 0
+      - >-
+        host_baseline_ssh_pq_kex_algorithms[0]
+        == "mlkem768x25519-sha256"
+      - >-
+        (host_baseline_ssh_pq_kex_algorithms
+        + host_baseline_ssh_classical_kex_algorithms)
+        | select("search", "sha1")
+        | list | length == 0
+    fail_msg: >-
+      The installed OpenSSH build cannot implement every reviewed hybrid and
+      classical KEX fallback, or the list contains a SHA-1 algorithm.
+    quiet: true
+
+- name: Read the effective OpenSSH configuration before adoption
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -T
+  register: host_baseline_initial_sshd
+  changed_when: false
+  check_mode: false
+
+- name: Verify the current SSH endpoint matches the safe rollout
+  ansible.builtin.assert:
+    that:
+      - >-
+        "port " ~ (host_baseline_ssh_port | string)
+        in host_baseline_initial_sshd.stdout_lines
+      - >-
+        "allowgroups " ~ host_baseline_ssh_group
+        in host_baseline_initial_sshd.stdout_lines
+      - '"permitrootlogin no" in host_baseline_initial_sshd.stdout_lines'
+      - '"pubkeyauthentication yes" in host_baseline_initial_sshd.stdout_lines'
+    fail_msg: >-
+      The current SSH port, login group, root-login policy, or public-key
+      support differs from the reviewed host. Stop instead of risking lockout.
+    quiet: true
