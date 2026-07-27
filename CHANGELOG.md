@@ -138,6 +138,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   `ContainerSpec.ReadonlyRootfs`, clave que la API de Docker no expone para
   servicios Swarm; la real es `ContainerSpec.ReadOnly`. La condición abortaba
   con `object of type 'dict' has no attribute`.
+- El mismo assert comprobaba `EndpointSpec.Ports` en la raíz del documento de
+  `docker service inspect`, donde solo existe `Endpoint`; la especificación
+  declarada vive en `Spec.EndpointSpec`.
 - El stack declaraba `security_opt: no-new-privileges:true`, que
   `docker stack deploy` ignora en Swarm y por el que emite un warning en cada
   despliegue; el assert por servicio exigía después ese valor y nunca podía

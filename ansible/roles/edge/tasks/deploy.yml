@@ -431,7 +431,7 @@
         Spec.TaskTemplate.ContainerSpec.Mounts[0].Target == "/data"
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
-        EndpointSpec.Ports | length == 2
+        Spec.EndpointSpec.Ports | length == 2
     fail_msg: "The deployed Traefik service differs from the reviewed spec."
 
 - name: Verify the deployed immutable Docker Config references
