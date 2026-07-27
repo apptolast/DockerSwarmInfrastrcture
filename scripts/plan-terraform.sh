@@ -388,7 +388,8 @@ init_stderr="${attestation_dir}/terraform-init.stderr"
 "${PYTHON_BIN}" "${runtime_safety_bin}" attest-terraform-ui \
   --operation init \
   --events "${init_events}" \
-  --stderr "${init_stderr}" >/dev/null
+  --stderr "${init_stderr}" \
+  --root "${root_name}" >/dev/null
 
 workspace_stderr="${attestation_dir}/workspace.stderr"
 workspace="$(
@@ -496,7 +497,8 @@ plan_status=$?
 "${PYTHON_BIN}" "${runtime_safety_bin}" attest-terraform-ui \
   --operation plan \
   --events "${plan_events}" \
-  --stderr "${plan_stderr}" >"${plan_ui_attestation}"
+  --stderr "${plan_stderr}" \
+  --root "${root_name}" >"${plan_ui_attestation}"
 plan_ui_status=$?
 set -e
 if [[ -f "${output_plan}" ]]; then

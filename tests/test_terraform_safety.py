@@ -1574,6 +1574,129 @@ class TerraformSafetyTests(unittest.TestCase):
                     stderr,
                 )
 
+    def test_known_benign_r2_diagnostic_is_scoped_narrowly(self) -> None:
+        version = {
+            "@level": "info",
+            "@module": "terraform.ui",
+            "terraform": terraform_safety.TERRAFORM_VERSION,
+            "type": "version",
+            "ui": "1.3",
+        }
+        summary = {
+            "@level": "info",
+            "@module": "terraform.ui",
+            "changes": {
+                "action_invocation": 0,
+                "add": 1,
+                "change": 0,
+                "import": 0,
+                "operation": "plan",
+                "remove": 0,
+            },
+            "type": "change_summary",
+        }
+        clean = b"".join(
+            terraform_safety.canonical_json(event) for event in (version, summary)
+        )
+        # Captured verbatim from a real `terraform plan -json` run against
+        # the actual apptolast R2 account on 2026-07-27.
+        benign = {
+            "@level": "warn",
+            "@module": "terraform.ui",
+            "diagnostic": {
+                "severity": "warning",
+                "summary": "Resource Destruction Considerations",
+                "detail": (
+                    "This resource cannot be destroyed from Terraform. If "
+                    "you create this resource, it will be present in the "
+                    "API until manually deleted."
+                ),
+                "address": 'cloudflare_r2_managed_domain.terraform_state["cloudflare_dns"]',
+            },
+            "type": "diagnostic",
+        }
+        wrong_summary = {
+            **benign,
+            "diagnostic": {**benign["diagnostic"], "summary": "Something else"},
+        }
+        wrong_address = {
+            **benign,
+            "diagnostic": {
+                **benign["diagnostic"],
+                "address": "cloudflare_r2_bucket.terraform_state",
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            events = root / "events.ndjson"
+            stderr = root / "stderr"
+            stderr.write_bytes(b"")
+
+            # Allowed only for the exact root it was captured against, and
+            # only during plan.
+            events.write_bytes(
+                clean + terraform_safety.canonical_json(benign)
+            )
+            result = terraform_safety.attest_terraform_ui_stream(
+                "plan",
+                events,
+                stderr,
+                "cloudflare/state-bootstrap",
+            )
+            self.assertEqual(result["diagnostic_count"], 1)
+
+            # Every other root, no root at all, and every other operation
+            # still fail closed on the identical diagnostic.
+            for operation, root_name in (
+                ("plan", None),
+                ("plan", "cloudflare/apptolast-dns"),
+                ("apply", "cloudflare/state-bootstrap"),
+            ):
+                with self.subTest(operation=operation, root=root_name):
+                    with self.assertRaises(terraform_safety.TerraformSafetyError):
+                        terraform_safety.attest_terraform_ui_stream(
+                            operation,
+                            events,
+                            stderr,
+                            root_name,
+                        )
+
+            # A near-miss (wrong summary text, or wrong resource address)
+            # is never treated as benign, even for the matching root.
+            for near_miss in (wrong_summary, wrong_address):
+                with self.subTest(near_miss=near_miss["diagnostic"]):
+                    events.write_bytes(
+                        clean + terraform_safety.canonical_json(near_miss)
+                    )
+                    with self.assertRaises(terraform_safety.TerraformSafetyError):
+                        terraform_safety.attest_terraform_ui_stream(
+                            "plan",
+                            events,
+                            stderr,
+                            "cloudflare/state-bootstrap",
+                        )
+
+            # validate_plan_ui_attestation independently re-bounds
+            # diagnostic_count by root: a forged attestation claiming
+            # diagnostics for a root with no known-benign allowlist is
+            # rejected even if internally self-consistent.
+            events.write_bytes(
+                clean + terraform_safety.canonical_json(benign)
+            )
+            attestation = terraform_safety.attest_terraform_ui_stream(
+                "plan",
+                events,
+                stderr,
+                "cloudflare/state-bootstrap",
+            )
+            terraform_safety.validate_plan_ui_attestation(
+                attestation, "cloudflare/state-bootstrap"
+            )
+            with self.assertRaises(terraform_safety.TerraformSafetyError):
+                terraform_safety.validate_plan_ui_attestation(
+                    attestation, "cloudflare/apptolast-dns"
+                )
+
     @unittest.skipUnless(
         (PROJECT_ROOT / ".tools/terraform").is_file(),
         "pinned Terraform binary is not bootstrapped",

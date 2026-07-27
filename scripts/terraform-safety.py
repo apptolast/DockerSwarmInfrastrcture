@@ -26,6 +26,31 @@ LOCK_PROOF_MAX_SECONDS = 24 * 60 * 60
 PLAN_MAX_SECONDS = 60 * 60
 MAX_STATE_BYTES = 64 * 1024 * 1024
 MAX_TERRAFORM_UI_BYTES = 64 * 1024 * 1024
+# Cloudflare's provider attaches this exact, permanent, informational
+# warning to every plan touching a cloudflare_r2_managed_domain resource
+# ("this resource cannot be destroyed from Terraform, it stays in the API
+# until manually deleted") -- captured verbatim from a real `terraform plan
+# -json` run against the actual apptolast R2 account on 2026-07-27. It is
+# not a defect that a provider update will remove; R2's API genuinely has
+# no destroy call for this resource. Matched on severity, summary, detail,
+# and resource-address prefix together so nothing else can slip through,
+# and scoped to a single named root and to plan only, never apply.
+KNOWN_BENIGN_PLAN_DIAGNOSTICS: dict[str, frozenset[tuple[str, str, str]]] = {
+    "cloudflare/state-bootstrap": frozenset(
+        {
+            (
+                "warning",
+                "Resource Destruction Considerations",
+                "This resource cannot be destroyed from Terraform. If "
+                "you create this resource, it will be present in the "
+                "API until manually deleted.",
+            ),
+        }
+    ),
+}
+KNOWN_BENIGN_PLAN_DIAGNOSTIC_ADDRESS_PREFIXES: dict[str, tuple[str, ...]] = {
+    "cloudflare/state-bootstrap": ("cloudflare_r2_managed_domain.",),
+}
 LOCK_PROOF_SIGNER = "apptolast-terraform-lock-proof"
 LOCK_PROOF_NAMESPACE = "terraform-r2-lock-proof"
 LOCK_PROOF_ALLOWED_SIGNERS = Path("infra/terraform/lock-proof.allowed-signers")
@@ -300,9 +325,21 @@ def attest_terraform_ui_stream(
     operation: str,
     events_path: Path,
     stderr_path: Path,
+    root: str | None = None,
 ) -> dict[str, Any]:
     if operation not in {"init", "plan", "apply"}:
         raise TerraformSafetyError("unsupported Terraform UI operation")
+    benign_diagnostics = (
+        KNOWN_BENIGN_PLAN_DIAGNOSTICS.get(root, frozenset())
+        if operation == "plan" and root is not None
+        else frozenset()
+    )
+    benign_address_prefixes = (
+        KNOWN_BENIGN_PLAN_DIAGNOSTIC_ADDRESS_PREFIXES.get(root, ())
+        if benign_diagnostics
+        else ()
+    )
+    diagnostic_count = 0
     events = require_bounded_regular_file(
         events_path,
         f"Terraform {operation} UI stream",
@@ -333,16 +370,36 @@ def attest_terraform_ui_stream(
                 f"Terraform {operation} UI event {index} is not canonical"
             )
         level = document.get("@level")
-        if level != "info":
-            raise TerraformSafetyError(
-                f"Terraform {operation} emitted a non-info UI event; "
-                "diagnostic content withheld"
-            )
         diagnostic = document.get("diagnostic")
-        if document.get("type") == "diagnostic" or diagnostic is not None:
+        is_diagnostic_shaped = (
+            document.get("type") == "diagnostic" or diagnostic is not None
+        )
+        if level != "info" or is_diagnostic_shaped:
+            address = (
+                diagnostic.get("address") if isinstance(diagnostic, dict) else None
+            )
+            signature = (
+                (
+                    diagnostic.get("severity"),
+                    diagnostic.get("summary"),
+                    diagnostic.get("detail"),
+                )
+                if isinstance(diagnostic, dict)
+                else None
+            )
+            if (
+                level == "warn"
+                and document.get("type") == "diagnostic"
+                and isinstance(diagnostic, dict)
+                and signature in benign_diagnostics
+                and isinstance(address, str)
+                and address.startswith(benign_address_prefixes)
+            ):
+                diagnostic_count += 1
+                continue
             raise TerraformSafetyError(
-                f"Terraform {operation} emitted a diagnostic UI event; "
-                "diagnostic content withheld"
+                f"Terraform {operation} emitted a diagnostic or non-info UI "
+                "event; diagnostic content withheld"
             )
         documents.append(document)
     first = documents[0]
@@ -430,7 +487,7 @@ def attest_terraform_ui_stream(
         "terraform_version": TERRAFORM_VERSION,
         "ui_version": ui_version,
         "event_count": len(documents),
-        "diagnostic_count": 0,
+        "diagnostic_count": diagnostic_count,
         "events_sha256": sha256_bytes(events),
         "stderr_sha256": stderr_sha256,
         "change_summary": change_summary,
@@ -2418,7 +2475,10 @@ def validate_plan_document(
     }
 
 
-def validate_plan_ui_attestation(attestation: Any) -> dict[str, Any]:
+MAX_BENIGN_PLAN_DIAGNOSTICS = 20
+
+
+def validate_plan_ui_attestation(attestation: Any, root: str) -> dict[str, Any]:
     expected_fields = {
         "change_summary",
         "diagnostic_count",
@@ -2433,6 +2493,10 @@ def validate_plan_ui_attestation(attestation: Any) -> dict[str, Any]:
     if not isinstance(attestation, dict) or set(attestation) != expected_fields:
         raise TerraformSafetyError("Terraform plan UI attestation is malformed")
     ui_version = attestation.get("ui_version")
+    diagnostic_count = attestation.get("diagnostic_count")
+    max_allowed_diagnostics = (
+        MAX_BENIGN_PLAN_DIAGNOSTICS if root in KNOWN_BENIGN_PLAN_DIAGNOSTICS else 0
+    )
     if (
         attestation.get("schema") != CONTRACT_VERSION
         or attestation.get("operation") != "plan"
@@ -2442,7 +2506,10 @@ def validate_plan_ui_attestation(attestation: Any) -> dict[str, Any]:
         or not isinstance(attestation.get("event_count"), int)
         or isinstance(attestation.get("event_count"), bool)
         or attestation["event_count"] < 2
-        or attestation.get("diagnostic_count") != 0
+        or not isinstance(diagnostic_count, int)
+        or isinstance(diagnostic_count, bool)
+        or diagnostic_count < 0
+        or diagnostic_count > max_allowed_diagnostics
         or re.fullmatch(r"[a-f0-9]{64}", attestation.get("events_sha256", "")) is None
         or attestation.get("stderr_sha256") != sha256_bytes(b"")
     ):
@@ -2507,7 +2574,7 @@ def build_sidecar(
         raise TerraformSafetyError("variable file SHA-256 is invalid")
     plan = load_json_bytes(plan_bytes, "saved plan JSON")
     plan_contract = validate_plan_document(root, plan, operation_mode)
-    validated_plan_ui = validate_plan_ui_attestation(plan_ui_attestation)
+    validated_plan_ui = validate_plan_ui_attestation(plan_ui_attestation, root)
     timestamp = plan.get("timestamp")
     parse_utc(timestamp, "plan timestamp")
     return {
@@ -2803,6 +2870,7 @@ def parser() -> argparse.ArgumentParser:
     )
     terraform_ui.add_argument("--events", type=Path, required=True)
     terraform_ui.add_argument("--stderr", type=Path, required=True)
+    terraform_ui.add_argument("--root", default=None)
 
     terraform_validate = subparsers.add_parser("verify-terraform-validate")
     terraform_validate.add_argument("--document", type=Path, required=True)
@@ -3008,6 +3076,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.operation,
                 args.events,
                 args.stderr,
+                args.root,
             )
         elif args.command == "verify-terraform-validate":
             document = validate_terraform_validate_document(

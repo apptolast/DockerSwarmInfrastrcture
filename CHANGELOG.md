@@ -86,6 +86,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   armados.
 - `restore_databases.sh` ya no adopta una base de datos no vacía sin marker
   propio solo porque exista el marker de fase; exige evidencia verificada.
+- `terraform-safety.py` reconoce ahora, de forma estrecha y verificada
+  contra un `terraform plan -json` real, el warning permanente e
+  inevitable `Resource Destruction Considerations` de
+  `cloudflare_r2_managed_domain` — solo para `plan` en `cloudflare/state-bootstrap`,
+  nunca para `apply` ni para ningún otro root o diagnóstico.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.

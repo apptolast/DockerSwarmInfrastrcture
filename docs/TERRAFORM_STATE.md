@@ -436,12 +436,21 @@ un backend remoto con el mismo lease persistente o implementar antes una
 máquina de estados local duradera, firmada y ensayada; no se autoriza un
 override manual en estos wrappers.
 
-Además, el plan de producción de `cloudflare/state-bootstrap` permanece en
-STOP: Cloudflare provider `5.22.0` emite dos warnings reales
-`Resource Destruction Considerations` para los buckets R2 no destruibles. La
-política es cero warnings, sin allowlist ni silenciamiento. Este root no se
-planifica con Terraform directo; requiere un cambio versionado que aporte un
-flujo oficial sin warnings además de la cuarentena local persistente.
+El `plan` de `cloudflare/state-bootstrap` emitía dos warnings reales e
+inevitables del provider Cloudflare `5.22.0`,
+`Resource Destruction Considerations`, uno por cada
+`cloudflare_r2_managed_domain` declarado (los tres buckets R2 en sí no
+emiten el warning; sus dominios gestionados sí, porque esa API no tiene
+`delete`). La política del repo es cero warnings sin allowlist genérica ni
+silenciamiento por flag. `scripts/terraform-safety.py` reconoce ahora, de
+forma estrecha y verificada contra un `terraform plan -json` real capturado
+el 2026-07-27, exactamente esa combinación
+(`severity=warning`, el `summary`/`detail` exactos del provider, dirección
+con prefijo `cloudflare_r2_managed_domain.`) y solo para `plan` en este
+root exacto — cualquier otro diagnóstico, en cualquier otro root, o durante
+`apply`, sigue rechazándose sin excepción. El STOP de `apply`/`import`
+descrito arriba (falta de cuarentena persistente del backend local) sigue
+vigente sin cambios: un plan limpio no autoriza escribir state.
 
 STOP de cutover actual: todo create o cambio DNS hacia la IP de plataforma
 desde ausencia/legacy se rechaza, incluido `edge` durante initialize. El
