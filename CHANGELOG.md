@@ -129,6 +129,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- El reto DNS-01 no declaraba `resolvers`, así que la comprobación de
+  propagación usaba el resolver embebido de Docker (`127.0.0.11`), que devuelve
+  NXDOMAIN para `_acme-challenge.<host>` y agotaba el plazo pese a haberse
+  creado el TXT. Se fijan resolvers públicos, como indica la documentación de
+  Traefik para ese caso.
 - El assert de identidad del servicio Traefik leía
   `ContainerSpec.ReadonlyRootfs`, clave que la API de Docker no expone para
   servicios Swarm; la real es `ContainerSpec.ReadOnly`. La condición abortaba

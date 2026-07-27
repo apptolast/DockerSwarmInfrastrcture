@@ -84,6 +84,9 @@ certificatesResolvers:
       caServer: "{{ edge_traefik_acme_ca_server }}"
       dnsChallenge:
         provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "9.9.9.9:53"
 
 metrics:
   addInternals: true
