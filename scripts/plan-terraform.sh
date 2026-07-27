@@ -329,6 +329,7 @@ install --directory --mode=0700 "${runtime_project}"
 git -C "${PROJECT_DIR}" archive --format=tar "${revision}" \
   infra/terraform \
   scripts/r2-cross-credential-probe.py \
+  scripts/r2-operation-lease.py \
   scripts/terraform-safety.py \
   scripts/test-terraform-r2-locking.sh |
   tar --extract --directory="${runtime_project}"

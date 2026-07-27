@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -804,6 +805,45 @@ class TerraformSafetyTests(unittest.TestCase):
                                 dishonest_path,
                                 now,
                             )
+
+    def test_every_attest_backend_caller_archives_the_lease_helper(self) -> None:
+        # attest-backend -> validate_lock_proof -> locking_contract() hashes
+        # every path in LOCKING_CONTRACT_PATHS, including
+        # scripts/r2-operation-lease.py. Any wrapper that materializes a
+        # runtime copy via `git archive` and then calls the attest-backend
+        # subcommand must include that file in its archive list, or the
+        # runtime copy is missing a file terraform-safety.py will try to
+        # open (plan-terraform.sh did not, until this was found by actually
+        # running it against real infrastructure on 2026-07-27).
+        wrapper_scripts = sorted((PROJECT_ROOT / "scripts").glob("*.sh"))
+        checked = 0
+        for script_path in wrapper_scripts:
+            text = script_path.read_text(encoding="utf-8")
+            if "attest-backend" not in text or "git " not in text:
+                continue
+            archive_match = re.search(
+                r"archive --format=tar[^|]*\|", text, re.DOTALL
+            )
+            self.assertIsNotNone(
+                archive_match,
+                f"{script_path.name} calls attest-backend but has no git "
+                "archive block to check",
+            )
+            archived_block = archive_match.group(0)
+            self.assertIn(
+                "scripts/r2-operation-lease.py",
+                archived_block,
+                f"{script_path.name} calls attest-backend (which needs "
+                "locking_contract()) but its git archive list omits "
+                "scripts/r2-operation-lease.py",
+            )
+            checked += 1
+        self.assertGreaterEqual(
+            checked,
+            2,
+            "expected at least plan-terraform.sh and apply-terraform.sh to "
+            "be checked here",
+        )
 
     def test_saved_plan_policy_rejects_every_delete(self) -> None:
         terraform_safety.validate_plan_document(
