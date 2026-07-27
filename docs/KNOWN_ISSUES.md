@@ -1,4 +1,4 @@
-# Diagnósticos conocidos de Docker 29.6.2 y Traefik 3.7.9
+# Diagnósticos conocidos de Docker 29.6.2, Traefik 3.7.9 y sudo-rs
 
 La restauración de este Swarm sano genera dos registros de arranque reproducibles.
 No se ocultan ni se rebaja globalmente el nivel de logging. El validador solo los
@@ -57,3 +57,47 @@ No se ocultan logs ni se rebaja su nivel para fabricar una salida vacía.
 
 - [Emisión anterior a la carga en Traefik 3.7.9](https://github.com/traefik/traefik/blob/v3.7.9/cmd/traefik/traefik.go#L100-L103)
 - [Migración de caracteres codificados](https://doc.traefik.io/traefik/v3.7/migrate/v3/)
+
+## `Timeout waiting for privilege escalation prompt` con sudo-rs
+
+Ubuntu 26.04 instala `sudo-rs` como alternativa preferente (prioridad 50), de
+modo que `/usr/bin/sudo` apunta a `/usr/lib/cargo/bin/sudo`. `sudo-rs` no
+reproduce el indicador pedido con `-p`: lo envuelve en un formato propio.
+
+```text
+[sudo: [sudo via ansible, key=<id>] password:] Password:
+```
+
+El complemento `become` de Ansible construye el indicador exacto
+`[sudo via ansible, key=<id>] password:` y solo lo reconoce cuando alguna
+línea de la salida **empieza** por ese texto (`check_password_prompt`, en
+`ansible/plugins/become/__init__.py`). La línea de `sudo-rs` empieza por
+`[sudo: `, así que la coincidencia nunca ocurre y la escalada aborta sin
+haber enviado nunca la contraseña.
+
+```text
+Timeout (12s) waiting for privilege escalation prompt
+```
+
+El desajuste también rompe la detección de contraseña incorrecta: Ansible
+busca el texto `Sorry, try again.` mientras que `sudo-rs` responde con
+`sudo: Authentication failed, try again.`.
+
+`requiretty` no interviene en este fallo. `sudo-rs` no implementa ese ajuste
+y `visudo` rechaza `Defaults:admin !requiretty` con `unknown setting`, de modo
+que un fichero en `/etc/sudoers.d/` no cambia nada.
+
+El paquete `sudo` clásico sigue disponible en Ubuntu 26.04 e instala el
+binario setuid `/usr/bin/sudo.ws` (alternativa de prioridad 40), que respeta
+`-p` byte a byte. Por eso `ansible/ansible.cfg` fija:
+
+```ini
+become_exe = /usr/bin/sudo.ws
+```
+
+No se altera la alternativa del sistema, no se concede `NOPASSWD` y no se
+almacena ninguna contraseña: el cambio se limita a Ansible.
+`config/host-security.yml` bloquea la versión del paquete `sudo` para que
+cualquier reconstrucción disponga del binario.
+
+- [Alternativas de sudo en Ubuntu 26.04](https://manpages.ubuntu.com/manpages/resolute/en/man8/update-alternatives.8.html)

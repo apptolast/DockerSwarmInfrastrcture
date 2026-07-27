@@ -94,6 +94,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   inevitable `Resource Destruction Considerations` de
   `cloudflare_r2_managed_domain` — solo para `plan` en `cloudflare/state-bootstrap`,
   nunca para `apply` ni para ningún otro root o diagnóstico.
+- El `become` de Ansible fallaba con `Timeout waiting for privilege escalation
+  prompt` en Ubuntu 26.04: `sudo-rs` reescribe el indicador de `-p` como
+  `[sudo: <prompt>] Password:` y Ansible solo reconoce una línea que empiece
+  por su indicador exacto. `ansible/ansible.cfg` fija ahora
+  `become_exe = /usr/bin/sudo.ws` (sudo clásico setuid, alternativa de
+  prioridad 40) y `config/host-security.yml` bloquea `sudo=1.9.17p2-1ubuntu3`
+  para que la reconstrucción disponga del binario. No se altera la alternativa
+  del sistema, no se concede `NOPASSWD` y no se almacena ninguna contraseña.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.

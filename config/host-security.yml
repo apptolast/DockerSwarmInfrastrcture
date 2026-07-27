@@ -154,6 +154,7 @@ host_security_required_packages:
   - openssh-server
   - psad
   - rsyslog
+  - sudo
   - ufw
 host_security_package_lock:
   - apparmor=5.0.0~beta1-0ubuntu7
@@ -165,6 +166,7 @@ host_security_package_lock:
   - openssh-server=1:10.2p1-2ubuntu3.5
   - psad=2.4.6-3build1
   - rsyslog=8.2512.0-1ubuntu4.1
+  - sudo=1.9.17p2-1ubuntu3
   - ufw=0.36.2-9build1
 # These pre-existing tools remain outside the managed minimum until their
 # configurations, data and retention requirements receive a separate,
