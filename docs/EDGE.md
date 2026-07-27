@@ -47,6 +47,16 @@ Aunque ACME y Terraform requieran permisos DNS parecidos, sus tokens son
 distintos. Así se puede revocar o rotar el runtime sin interrumpir Terraform, y
 una credencial del CI no se instala en el host.
 
+**Excepción decidida por el propietario (2026-07-27):** para las credenciales
+R2, el propietario del servidor autorizó explícitamente usar un token R2 de
+cuenta con alcance sobre los tres buckets (`apptolast-tfstate-dns`,
+`apptolast-tfstate-netcup`, `apptolast-backups`) en lugar de tres credenciales
+`Object Read & Write` separadas y limitadas a un único bucket cada una. Es una
+decisión informada de simplicidad operativa frente a aislamiento de blast
+radius, tomada tras explicar la separación por defecto descrita arriba; no es
+un descuido. `infra/terraform/backend-identities.json` registra el hash
+SHA-256 del mismo Access Key ID en las tres identidades por ese motivo.
+
 El cliente ACME usado por Traefik admite variables terminadas en `_FILE`. Su
 documentación oficial para Cloudflare exige DNS Edit y Zone Read y permite
 separar ambos permisos:

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "roots": {
+    "cloudflare/apptolast-dns": {
+      "production": {
+        "backend_type": "s3",
+        "bucket": "apptolast-tfstate-dns",
+        "key": "cloudflare/apptolast-dns/terraform.tfstate",
+        "access_key_id_sha256": "4364051a6b5a3ae4b62a59cfd8d0f78cf223d6a35b523d44dba4d18ecb9f3d24"
+      },
+      "pending_destination": null
+    },
+    "cloudflare/state-bootstrap": {
+      "production": null,
+      "pending_destination": null
+    },
+    "netcup/perimeter": {
+      "production": {
+        "backend_type": "s3",
+        "bucket": "apptolast-tfstate-netcup",
+        "key": "netcup/perimeter/terraform.tfstate",
+        "access_key_id_sha256": "4364051a6b5a3ae4b62a59cfd8d0f78cf223d6a35b523d44dba4d18ecb9f3d24"
+      },
+      "pending_destination": null
+    }
+  }
+}
