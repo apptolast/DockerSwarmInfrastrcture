@@ -97,6 +97,7 @@ EXPECTED_DENIED = {
     "monitoring-dozzle": frozenset(),
     "openclaw-legacy": frozenset(),
     "mcp-fullstack": frozenset({"cyberlab/platform"}),
+    "uptime-kuma": frozenset({"kuma"}),
 }
 EXPECTED_OBSERVABILITY_COMPONENTS = frozenset(
     {

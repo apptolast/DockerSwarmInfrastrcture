@@ -46,6 +46,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   purgan ni se reescribe PAM de forma destructiva.
 - Backup queda codificado pero fail-closed hasta R2, restic, autolock y escrow
   externo probados.
+- El catálogo de servicios excluye explícitamente `uptime-kuma` (alias
+  `kuma`, hostname legacy `kuma.apptolast.com`), confirmado por el
+  propietario el 2026-07-27.
 
 ### Security
 

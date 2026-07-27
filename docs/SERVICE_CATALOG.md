@@ -92,11 +92,17 @@ Las agrupaciones abreviadas de la auditoría quedan representadas así:
 - `inern-seller`, alias `inemsellar`;
 - `menus-admin`, alias `menus-dev`;
 - `cattle`, alias `rancher`;
-- `mcp-fullstack`, alias compuesto `cyberlab/platform`.
+- `mcp-fullstack`, alias compuesto `cyberlab/platform`;
+- `uptime-kuma`, alias `kuma`.
 
 El alias compuesto no deniega globalmente componentes llamados `cyberlab` o
 `platform`. En particular, no colisiona con la clave `internal_platform` de
 este contrato.
+
+`uptime-kuma` no procede de la auditoría original de `MigracionNetCup`: es
+una exclusión añadida el 2026-07-27 tras confirmar con el propietario que
+`kuma.apptolast.com` (un Uptime Kuma legacy de monitorización) no se migra
+ni se recrea en la plataforma nueva.
 
 Las demás exclusiones canónicas son `greenhouse`, `hermes`,
 `invernaderos-api`, `whoop`, `vpn`, `cluster-ops`, `redisinsight`,

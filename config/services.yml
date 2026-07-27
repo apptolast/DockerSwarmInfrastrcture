@@ -318,6 +318,9 @@ denied_services:
   - id: mcp-fullstack
     aliases:
       - cyberlab/platform
+  - id: uptime-kuma
+    aliases:
+      - kuma
 
 datasets:
   - id: traefik-acme
