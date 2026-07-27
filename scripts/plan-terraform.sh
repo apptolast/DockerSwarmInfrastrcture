@@ -311,8 +311,9 @@ retain_plan=false
 cleanup() {
   [[ ! -d "${terraform_data_dir}" ]] ||
     find "${terraform_data_dir}" -depth -delete
-  [[ ! -d "${attestation_dir}" ]] ||
-    find "${attestation_dir}" -depth -delete
+  [[ -n "${DEBUG_KEEP_ATTESTATION:-}" ]] ||
+    { [[ ! -d "${attestation_dir}" ]] ||
+      find "${attestation_dir}" -depth -delete; }
   if [[ "${plan_created}" == true && "${retain_plan}" == false ]]; then
     [[ ! -f "${output_plan}" ]] ||
       find "${output_plan}" -maxdepth 0 -type f -delete
