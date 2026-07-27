@@ -1,54 +1,27 @@
 ---
-- name: Keep unattended security upgrades installed
-  ansible.builtin.apt:
-    name: unattended-upgrades
-    state: present
+- name: Verify the promoted-snapshot update policy
+  ansible.builtin.assert:
+    that:
+      - host_security_apt_update_policy == "promoted-snapshot-only"
+      - host_security_snapshot_max_age_days | int == 14
+      - host_security_ubuntu_snapshot is match("^[0-9]{8}T[0-9]{6}Z$")
+      - '"unattended-upgrades" not in host_security_required_packages'
+    fail_msg: >-
+      Host updates must come only from the reviewed, age-bounded Ubuntu
+      snapshot declared in Git.
+    quiet: true
 
-- name: Enable daily APT metadata and unattended upgrade runs
+- name: Disable periodic APT mutation
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/20auto-upgrades
     owner: root
     group: root
     mode: "0644"
     content: |
-      APT::Periodic::Update-Package-Lists "1";
-      APT::Periodic::Unattended-Upgrade "1";
-
-- name: Render and parse the unattended-upgrade candidate in memory
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/apt-config
-      - -c
-      - /dev/stdin
-      - dump
-    stdin: >-
-      {{ lookup("ansible.builtin.template", "unattended-upgrades.conf.j2") }}
-    stdin_add_newline: true
-  register: host_baseline_unattended_candidate
-  changed_when: false
-  check_mode: false
-
-- name: Verify the rendered candidate disables every automatic reboot
-  ansible.builtin.assert:
-    that:
-      - >-
-        host_baseline_unattended_candidate.stdout_lines
-        | select("match", "^Unattended-Upgrade::Allowed-Origins::")
-        | list | length == 0
-      - >-
-        host_baseline_unattended_candidate.stdout_lines
-        | select("match", "^Unattended-Upgrade::Origins-Pattern::")
-        | list | length == 3
-      - >-
-        'Unattended-Upgrade::Automatic-Reboot "false";'
-        in host_baseline_unattended_candidate.stdout_lines
-      - >-
-        'Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
-        in host_baseline_unattended_candidate.stdout_lines
-    fail_msg: >-
-      The rendered unattended-upgrade candidate has inherited origins or
-      permits an automatic reboot.
-    quiet: true
+      // Managed by Ansible. Packages move only with the promoted snapshot.
+      APT::Periodic::Enable "0";
+      APT::Periodic::Update-Package-Lists "0";
+      APT::Periodic::Unattended-Upgrade "0";
 
 - name: Create the immutable host-baseline backup directory
   ansible.builtin.file:
@@ -118,27 +91,22 @@
     state: absent
   loop: "{{ host_baseline_unattended_legacy_files }}"
 
-- name: Install the authoritative security-update policy
-  ansible.builtin.template:
-    src: unattended-upgrades.conf.j2
-    dest: /etc/apt/apt.conf.d/99-dockerswarm-unattended-upgrades
-    owner: root
-    group: root
-    mode: "0644"
+- name: Remove the obsolete automatic-upgrade policy
+  ansible.builtin.file:
+    path: /etc/apt/apt.conf.d/99-dockerswarm-unattended-upgrades
+    state: absent
 
-- name: Keep the APT refresh timer enabled
+- name: Mask automatic APT timers
   ansible.builtin.systemd_service:
-    name: apt-daily.timer
-    enabled: true
-    state: started
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
 
-- name: Keep the unattended-upgrade timer enabled
-  ansible.builtin.systemd_service:
-    name: apt-daily-upgrade.timer
-    enabled: true
-    state: started
-
-- name: Read the effective APT configuration
+- name: Read the effective promoted-snapshot APT configuration
   ansible.builtin.command:
     argv:
       - /usr/bin/apt-config
@@ -147,39 +115,23 @@
   changed_when: false
   check_mode: false
 
-- name: Verify the unattended-upgrade policy is authoritative
+- name: Verify APT cannot mutate outside a reviewed apply
   ansible.builtin.assert:
     that:
       - >-
-        host_baseline_apt_config.stdout_lines
-        | select("match", "^Unattended-Upgrade::Allowed-Origins::")
-        | list | length == 0
-      - >-
-        host_baseline_apt_config.stdout_lines
-        | select("match", "^Unattended-Upgrade::Origins-Pattern::")
-        | list | length == 3
-      - >-
-        'Unattended-Upgrade::Automatic-Reboot "false";'
+        ('APT::Snapshot "' ~ host_security_ubuntu_snapshot ~ '";')
         in host_baseline_apt_config.stdout_lines
       - >-
-        'Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
+        'APT::Periodic::Enable "0";'
+        in host_baseline_apt_config.stdout_lines
+      - >-
+        'APT::Periodic::Update-Package-Lists "0";'
+        in host_baseline_apt_config.stdout_lines
+      - >-
+        'APT::Periodic::Unattended-Upgrade "0";'
         in host_baseline_apt_config.stdout_lines
     fail_msg: >-
-      Effective unattended-upgrades settings are not limited to the three
-      reviewed security origins, or automatic reboot remains enabled.
+      Effective APT settings do not enforce the promoted snapshot or still
+      permit unattended package mutation.
     quiet: true
   when: not ansible_check_mode
-
-- name: Dry-run unattended security upgrades
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/unattended-upgrade
-      - --dry-run
-      - --debug
-  environment:
-    LC_ALL: C
-  changed_when: false
-  check_mode: false
-  when:
-    - not ansible_check_mode
-    - host_baseline_run_expensive_validations | bool

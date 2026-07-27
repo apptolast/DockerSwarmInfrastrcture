@@ -1,0 +1,12 @@
+[Unit]
+Description={{ item.description }}
+Documentation=https://github.com/apptolast/DockerSwarmInfrastrcture
+
+[Timer]
+OnCalendar={{ item.calendar }}
+RandomizedDelaySec={{ backup_timer_randomized_delay }}
+Persistent=true
+Unit={{ item.name }}.service
+
+[Install]
+WantedBy=timers.target

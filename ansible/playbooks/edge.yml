@@ -7,9 +7,17 @@
   any_errors_fatal: true
 
   vars_files:
+    - ../../config/capacity.yml
     - ../../config/platform.yml
+    - ../../config/services.yml
     - ../group_vars/all.yml
 
   roles:
+    - role: operation_lock_guard
+    - role: capacity_preflight
+      tags:
+        - capacity
+    - role: image_preflight
+    - role: workloads_runner_image
     - role: edge
     - role: deployment_metadata

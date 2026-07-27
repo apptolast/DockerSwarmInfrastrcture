@@ -10,13 +10,33 @@ readonly PROJECT_DIR
 readonly SOURCE_CONFIG="${PROJECT_DIR}/config/logrotate/iptables"
 readonly TARGET_CONFIG="/etc/logrotate.d/iptables"
 readonly BACKUP_DIR="/var/backups/dockerswarm"
+readonly HOST_LOCK_HELPER="${PROJECT_DIR}/scripts/host_global_operation_lock.py"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
+original_args=("$@")
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
+ensure_host_global_lock() {
+  local operation=$1
+  [[ -f "${HOST_LOCK_HELPER}" && ! -L "${HOST_LOCK_HELPER}" ]] ||
+    fail "host-global operation-lock helper is absent or unsafe"
+  if [[ -n "${DOCKERSWARM_IAC_LOCK_SCOPE:-}" ]]; then
+    /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+      prove --operation "${operation}" >/dev/null ||
+      fail "host-global operation-lock proof failed"
+    return
+  fi
+  exec /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+    run --operation "${operation}" -- \
+    "${SCRIPT_PATH}" "${original_args[@]}"
+}
+
 (( EUID == 0 )) || fail "run this script as root"
+(( $# == 0 )) || fail "this command does not accept arguments"
+ensure_host_global_lock logrotate-config-install
 
 for command_name in install logger logrotate systemctl; do
   command -v "${command_name}" >/dev/null ||

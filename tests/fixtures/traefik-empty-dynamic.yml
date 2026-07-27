@@ -1,5 +1,11 @@
 ---
 http:
+  routers:
+    validation-health:
+      rule: Path(`/ping`)
+      entryPoints:
+        - traefik
+      service: ping@internal
   middlewares:
     validation-security:
       headers:

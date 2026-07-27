@@ -1,0 +1,528 @@
+---
+schema_version: 1
+catalog_version: 1.0.0
+
+source_audit:
+  repository: MigracionNetCup
+  audited_at: "2026-07-23"
+  runtime_root: /srv/apptolast
+
+target:
+  state_root: /srv/dockerswarm
+  services_root: /srv/dockerswarm/services
+
+approved_services:
+  - id: kropia
+    classification: migration-scope
+    migration: redeploy
+    hostnames:
+      - kropia.apptolast.com
+    ports:
+      - name: http
+        target: 80
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/apptolast/kropia-web@sha256:\
+          d40cd6c2a7e5fe025840fc170a448648fec17505f9eb8e2bfda69dad490d2862"
+    datasets: []
+    source_artifacts:
+      - git-snapshot
+      - pinned-image
+
+  - id: traefik-edge
+    classification: migration-scope
+    migration: restore-state
+    hostnames:
+      - edge.apptolast.com
+    ports:
+      - name: http
+        target: 8000
+        source_target: 80
+        published: 80
+        protocol: tcp
+        exposure: public
+      - name: https
+        target: 8443
+        source_target: 443
+        published: 443
+        protocol: tcp
+        exposure: public
+      - name: admin
+        target: 8080
+        source_target: 8080
+        published: null
+        protocol: tcp
+        exposure: internal
+      - name: metrics
+        target: 8082
+        source_target: 8082
+        published: null
+        protocol: tcp
+        exposure: internal
+    images:
+      - component: proxy
+        reference: "traefik@sha256:\
+          652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8"
+        source_reference: "docker.io/library/traefik:v3.3.6@sha256:\
+          83f3c843133530e4aa45e6ddc415488583a8a01c88adc5022d415c6e97ceeaae"
+    datasets:
+      - traefik-acme
+    source_artifacts:
+      - acme-state
+      - pinned-image
+      - route-config
+
+  - id: minecraft-stats
+    classification: migration-scope
+    migration: redeploy
+    hostnames:
+      - minecraft-stats.apptolast.com
+    ports:
+      - name: http
+        target: 8080
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/ocholoko888/minecraft-stats-web@sha256:\
+          d442292036c7177502b0185c1a6cf9c35892e91629a9b80dc4786ce4cae4f6b5"
+    datasets:
+      - minecraft-worlds
+    source_artifacts:
+      - pinned-image
+
+  - id: minecraft
+    classification: migration-scope
+    migration: restore-state
+    hostnames: []
+    ports:
+      - name: game
+        target: 25565
+        published: 25565
+        protocol: tcp
+        exposure: public
+    images:
+      - component: server
+        reference: "docker.io/itzg/minecraft-server@sha256:\
+          f29173ca0edfee411bd9e08820aa1bfc508787d7fd02876cfa4c96a3a2a7a77c"
+    datasets:
+      - minecraft-mods
+      - minecraft-worlds
+    source_artifacts:
+      - filesystem-backup
+      - pinned-image
+
+  - id: n8n
+    classification: migration-scope
+    migration: restore-state
+    hostnames:
+      - n8n.apptolast.com
+    ports:
+      - name: http
+        target: 5678
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/n8nio/n8n:2.31.5@sha256:\
+          cda6bafc7bb4873533e7affb82d1bd47282a7614bdf83242c2293f8ff281261a"
+      - component: database
+        reference: "docker.io/pgvector/pgvector@sha256:\
+          7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff"
+        source_reference: "docker.io/pgvector/pgvector:0.8.2-pg16@sha256:\
+          7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff"
+      - component: runner
+        reference: "ghcr.io/apptolast/migracionnetcup-n8n-runners@sha256:\
+          4d8f879e9f70df8173c3b9b40406582fc9b460e4f8afcf5dcf51d3bce0e5e1b5"
+      - component: workflow-cache
+        reference: "docker.io/library/redis@sha256:\
+          1a34bdba051ecd8a58ec8a3cc460acef697a1605e918149cc53d920673c1a0a7"
+        source_reference: "docker.io/library/redis:7.2.11-alpine3.21@sha256:\
+          1a34bdba051ecd8a58ec8a3cc460acef697a1605e918149cc53d920673c1a0a7"
+      - component: browser
+        reference: "docker.io/selenium/standalone-chrome@sha256:\
+          b4d4e3f64280c4cd69198c8eb2c1daa74b3d206ff87a647728fc070affee94b0"
+    datasets:
+      - n8n-home
+      - n8n-postgres
+    source_artifacts:
+      - encryption-key-reference
+      - home-backup
+      - pinned-images
+      - postgres-dump
+
+  - id: openclaw-clean
+    classification: migration-scope
+    migration: clean-install
+    hostnames:
+      - openclaw.apptolast.com
+    ports:
+      - name: http
+        target: 18789
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "ghcr.io/openclaw/openclaw:2026.7.1@sha256:\
+          6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c"
+    datasets:
+      - openclaw-clean-home
+    source_artifacts:
+      - pinned-image
+
+  - id: passbolt
+    classification: migration-scope
+    migration: restore-state
+    hostnames:
+      - passbolt.apptolast.com
+    ports:
+      - name: http
+        target: 80
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/passbolt/passbolt@sha256:\
+          f5ac218f5155e9cb026edc1d8152af788ea420fac61b205d7d80262fd64359c1"
+      - component: database
+        reference: "docker.io/library/postgres@sha256:\
+          fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c"
+        source_reference: "docker.io/library/postgres:15.17-alpine3.23@sha256:\
+          fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c"
+    datasets:
+      - passbolt-gpg
+      - passbolt-jwt
+      - passbolt-postgres
+    source_artifacts:
+      - key-backup
+      - pinned-images
+      - postgres-dump
+
+  - id: personal-website-alberto
+    classification: migration-scope
+    migration: redeploy
+    hostnames:
+      - albertohidalgo.apptolast.com
+    ports:
+      - name: http
+        target: 3000
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/hgarciaalberto/personal-website@sha256:\
+          b0ce681920843501df35793def9fedd1011b44626c5e8b543ef76209f911e2c3"
+    datasets: []
+    source_artifacts:
+      - git-snapshot
+      - pinned-image
+
+  - id: personal-website-pablo
+    classification: migration-scope
+    migration: redeploy
+    hostnames:
+      - pablohurtadohg.apptolast.com
+    ports:
+      - name: http
+        target: 3000
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/ocholoko888/personal-website@sha256:\
+          41c4b0f97f6991f767cd1d1f0b0d4a938b8e37784cb9a014b56ecab3112aa1a3"
+    datasets: []
+    source_artifacts:
+      - git-snapshot
+      - pinned-image
+
+  - id: shlink
+    classification: migration-scope
+    migration: restore-state
+    hostnames:
+      - generadorcodigosqr.apptolast.com
+    ports:
+      - name: http
+        target: 8080
+        published: null
+        protocol: tcp
+        exposure: edge
+    images:
+      - component: app
+        reference: "docker.io/apptolast/shlink-apptolast@sha256:\
+          5655db8e5fe9ecd292c87412f3f9c15095501ea5a7aae85aa3198e08a51d0914"
+      - component: database
+        reference: "docker.io/library/postgres@sha256:\
+          66266770619a23ab310c7fa60043b6d1fa041038cb232ced59d2c509fecd297b"
+        source_reference: "docker.io/library/postgres:16.10-alpine3.22@sha256:\
+          66266770619a23ab310c7fa60043b6d1fa041038cb232ced59d2c509fecd297b"
+    datasets:
+      - shlink-postgres
+    source_artifacts:
+      - pinned-images
+      - postgres-dump
+
+denied_services:
+  - id: greenhouse
+    aliases: []
+  - id: hermes
+    aliases: []
+  - id: inern-seller
+    aliases:
+      - inemsellar
+  - id: invernaderos-api
+    aliases: []
+  - id: menus-admin
+    aliases:
+      - menus-dev
+  - id: whoop
+    aliases: []
+  - id: cattle
+    aliases:
+      - rancher
+  - id: vpn
+    aliases: []
+  - id: cluster-ops
+    aliases: []
+  - id: redisinsight
+    aliases: []
+  - id: ficsit-monitor
+    aliases: []
+  - id: gibbon
+    aliases: []
+  - id: health-dashboard
+    aliases: []
+  - id: keel
+    aliases: []
+  - id: kube-system
+    aliases: []
+  - id: langflow
+    aliases: []
+  - id: longhorn-system
+    aliases: []
+  - id: metal
+    aliases: []
+  - id: monitoring-dozzle
+    aliases: []
+  - id: openclaw-legacy
+    aliases: []
+  - id: mcp-fullstack
+    aliases:
+      - cyberlab/platform
+
+datasets:
+  - id: traefik-acme
+    owner: traefik-edge
+    consumers:
+      - traefik-edge
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/traefik
+    target_path: /srv/dockerswarm/traefik
+
+  - id: minecraft-worlds
+    owner: minecraft
+    consumers:
+      - minecraft
+      - minecraft-stats
+    read_only_consumers:
+      - minecraft-stats
+    migration: restore
+    source_path: /srv/apptolast/minecraft/data
+    target_path: /srv/dockerswarm/services/minecraft/data
+
+  - id: minecraft-mods
+    owner: minecraft
+    consumers:
+      - minecraft
+    read_only_consumers:
+      - minecraft
+    migration: restore
+    source_path: /srv/apptolast/minecraft/mods
+    target_path: /srv/dockerswarm/services/minecraft/mods
+
+  - id: n8n-home
+    owner: n8n
+    consumers:
+      - n8n
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/n8n/data
+    target_path: /srv/dockerswarm/services/n8n/home
+
+  - id: n8n-postgres
+    owner: n8n
+    consumers:
+      - n8n
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/n8n/postgres
+    target_path: /srv/dockerswarm/services/n8n/postgres
+
+  - id: openclaw-clean-home
+    owner: openclaw-clean
+    consumers:
+      - openclaw-clean
+    read_only_consumers: []
+    migration: initialize-empty
+    source_path: null
+    target_path: /srv/dockerswarm/services/openclaw-clean/home
+
+  - id: passbolt-gpg
+    owner: passbolt
+    consumers:
+      - passbolt
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/passbolt/gpg
+    target_path: /srv/dockerswarm/services/passbolt/gpg
+
+  - id: passbolt-jwt
+    owner: passbolt
+    consumers:
+      - passbolt
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/passbolt/jwt
+    target_path: /srv/dockerswarm/services/passbolt/jwt
+
+  - id: passbolt-postgres
+    owner: passbolt
+    consumers:
+      - passbolt
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/passbolt/postgres
+    target_path: /srv/dockerswarm/services/passbolt/postgres
+
+  - id: shlink-postgres
+    owner: shlink
+    consumers:
+      - shlink
+    read_only_consumers: []
+    migration: restore
+    source_path: /srv/apptolast/shlink/postgres
+    target_path: /srv/dockerswarm/services/shlink/postgres
+
+internal_platform:
+  observability:
+    classification: internal-platform
+    legacy_migration: false
+    hostnames: []
+    components:
+      - id: prometheus
+        image: "docker.io/prom/prometheus:v3.12.0@sha256:\
+          69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac"
+      - id: alertmanager
+        image: "docker.io/prom/alertmanager:v0.32.1@sha256:\
+          51a825c2a40acc3e338fdd00d622e01ec090f72be2b3ea46be0839cd47a4d286"
+      - id: blackbox-exporter
+        image: "docker.io/prom/blackbox-exporter:v0.28.0@sha256:\
+          e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc"
+      - id: loki
+        image: "docker.io/grafana/loki:3.7.2@sha256:\
+          191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86"
+      - id: alloy
+        image: "docker.io/grafana/alloy:v1.15.0@sha256:\
+          579582bce40049f2e27bd1e445000689c907a41f0495cb0d0c7f65609316ba7c"
+      - id: grafana
+        image: "docker.io/grafana/grafana:13.1.0@sha256:\
+          121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63"
+      - id: node-exporter
+        image: "docker.io/prom/node-exporter:v1.11.1@sha256:\
+          e9cff4fc67b1818f8c97adb115b9f12c9a54b533de86765d4a0effc01b357205"
+      - id: cadvisor
+        image: "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:\
+          3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"
+      - id: postgres-exporter
+        image: "docker.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:\
+          e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f"
+      - id: redis-exporter
+        image: "docker.io/oliver006/redis_exporter:v1.84.0@sha256:\
+          7ef8e9c26638158fa4e7ad60df8c7e53d1919986753d6c1d2d1876b6ec38d87b"
+    ports:
+      - component: prometheus
+        name: http
+        target: 9090
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: alertmanager
+        name: http
+        target: 9093
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: blackbox-exporter
+        name: metrics
+        target: 9115
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: loki
+        name: http
+        target: 3100
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: alloy
+        name: http
+        target: 12345
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: grafana
+        name: http
+        target: 3000
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: node-exporter
+        name: metrics
+        target: 9100
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: cadvisor
+        name: metrics
+        target: 8080
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: postgres-exporter
+        name: metrics
+        target: 9187
+        published: null
+        protocol: tcp
+        exposure: internal
+      - component: redis-exporter
+        name: metrics
+        target: 9121
+        published: null
+        protocol: tcp
+        exposure: internal
+    data_paths:
+      - component: prometheus
+        path: /srv/dockerswarm/observability/prometheus
+        initialization: empty
+      - component: alertmanager
+        path: /srv/dockerswarm/observability/alertmanager
+        initialization: empty
+      - component: loki
+        path: /srv/dockerswarm/observability/loki
+        initialization: empty
+      - component: alloy
+        path: /srv/dockerswarm/observability/alloy
+        initialization: empty
+      - component: grafana
+        path: /srv/dockerswarm/observability/grafana
+        initialization: empty

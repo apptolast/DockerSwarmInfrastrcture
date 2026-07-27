@@ -1,0 +1,17 @@
+---
+- name: Install and activate encrypted off-host backup and recovery
+  hosts: swarm_managers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../../config/services.yml
+    - ../group_vars/all.yml
+
+  roles:
+    - role: operation_lock_guard
+    - role: backup
+    - role: deployment_metadata

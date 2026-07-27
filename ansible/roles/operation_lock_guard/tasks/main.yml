@@ -1,0 +1,92 @@
+---
+- name: Verify the immutable production operation-lock contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          operation_lock_guard_scope == "ansible"
+          and operation_lock_guard_lock_path
+            == "/run/lock/dockerswarm-iac.lock"
+          and operation_lock_guard_marker_path
+            == "/run/lock/dockerswarm-ansible.marker"
+          and operation_lock_guard_owner_uid | int == 1001
+          and operation_lock_guard_owner_gid | int == 1001
+        )
+        or
+        (
+          operation_lock_guard_scope == "fresh-host-bootstrap"
+          and operation_lock_guard_lock_path
+            == "/run/lock/dockerswarm-iac.lock"
+          and operation_lock_guard_marker_path
+            == "/run/lock/dockerswarm-bootstrap.marker"
+          and operation_lock_guard_owner_uid | int == 0
+          and operation_lock_guard_owner_gid | int == 0
+        )
+      - >-
+        operation_lock_guard_scope
+        in ["ansible", "fresh-host-bootstrap"]
+      - operation_lock_guard_mode in ["check", "apply"]
+    fail_msg: "Production operation-lock paths or ownership were overridden."
+    quiet: true
+
+- name: Prove the host-global deployment lock before mutation
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          playbook_dir + "/../../scripts/ansible-operation-lock.py",
+          "prove",
+          "--lock-path",
+          operation_lock_guard_lock_path,
+          "--marker-path",
+          operation_lock_guard_marker_path,
+          "--owner-uid",
+          operation_lock_guard_owner_uid | string,
+          "--owner-gid",
+          operation_lock_guard_owner_gid | string,
+          "--operation-id",
+          operation_lock_guard_operation_id,
+          "--source-revision",
+          deployment_metadata_source_revision,
+          "--contract-sha256",
+          deployment_metadata_contract_sha256,
+          "--playbook",
+          deployment_metadata_playbook,
+          "--profile",
+          deployment_metadata_profile,
+          "--mode",
+          operation_lock_guard_mode,
+          "--controller",
+          operation_lock_guard_controller
+        ]
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Derive the strict nested operation-lock proof environment
+  ansible.builtin.set_fact:
+    operation_lock_guard_environment:
+      DOCKERSWARM_IAC_LOCK_SCOPE: >-
+        {{
+          "ansible"
+          if operation_lock_guard_scope == "ansible"
+          else "bootstrap"
+        }}
+      DOCKERSWARM_IAC_OPERATION_ID: >-
+        {{ operation_lock_guard_operation_id }}
+      DOCKERSWARM_IAC_SOURCE_REVISION: >-
+        {{ deployment_metadata_source_revision }}
+      DOCKERSWARM_IAC_CONTRACT_SHA256: >-
+        {{ deployment_metadata_contract_sha256 }}
+      DOCKERSWARM_IAC_PLAYBOOK: >-
+        {{ deployment_metadata_playbook }}
+      DOCKERSWARM_IAC_PROFILE: >-
+        {{ deployment_metadata_profile }}
+      DOCKERSWARM_IAC_MODE: >-
+        {{ operation_lock_guard_mode }}
+      DOCKERSWARM_IAC_CONTROLLER: >-
+        {{ operation_lock_guard_controller }}
+  no_log: true

@@ -1,0 +1,9 @@
+---
+image_preflight_expected_os: linux
+image_preflight_expected_architecture: amd64
+image_preflight_tag_digest_pattern: >-
+  :[^/@]+(@sha256:[a-f0-9]{64})$
+image_preflight_digest_replacement: "\\g<1>"
+image_preflight_excluded_catalog_images:
+  - service: n8n
+    component: runner

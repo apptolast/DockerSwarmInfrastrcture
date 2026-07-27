@@ -11,14 +11,35 @@
       - deployment_metadata_profile in ["production", "acme-staging"]
       - >-
         deployment_metadata_playbook
-        in ["platform", "host-baseline", "edge", "site"]
+        in [
+          "platform",
+          "host-baseline",
+          "preflight-images",
+          "edge",
+          "workloads",
+          "observability",
+          "backup",
+          "site"
+        ]
       - >-
         deployment_metadata_repository_slug
         is match("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+      - >-
+        deployment_metadata_playbook
+        in deployment_metadata_components_by_playbook
     fail_msg: >-
       Deploy through scripts/deploy-ansible.sh from a clean Git commit so the
       installed platform retains a verifiable source identity.
     quiet: true
+
+- name: Select components changed by this playbook
+  ansible.builtin.set_fact:
+    deployment_metadata_components: >-
+      {{
+        deployment_metadata_components_by_playbook[
+          deployment_metadata_playbook
+        ]
+      }}
 
 - name: Create the installed platform root
   ansible.builtin.file:
@@ -28,7 +49,26 @@
     group: root
     mode: "0755"
 
-- name: Record the deployed release and source identity
+- name: Create the component deployment metadata directory
+  ansible.builtin.file:
+    path: "{{ deployment_metadata_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Record source identity for each component changed by this playbook
+  ansible.builtin.template:
+    src: component-version.yml.j2
+    dest: "{{ deployment_metadata_directory }}/{{ item }}.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ deployment_metadata_components }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Record the explicitly scoped last deployment invocation
   ansible.builtin.template:
     src: deployed-version.yml.j2
     dest: "{{ deployment_metadata_path }}"

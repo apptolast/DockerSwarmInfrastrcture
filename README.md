@@ -1,82 +1,80 @@
-# Plataforma Docker Swarm de ApptoLast
+# Infraestructura Docker Swarm de ApptoLast
 
-Fuente de verdad reproducible para el VPS netcup, su Docker Swarm mononodo,
-el perímetro externo y el edge Traefik de `apptolast.com`.
+Este repositorio es la fuente de verdad única de toda la infraestructura del
+servidor `apptolast`: proveedor, DNS, host, seguridad, Docker Swarm, Traefik,
+stacks, migración, observabilidad, backup y recuperación.
 
-## Estado real
+La regla de oro es que un servidor perdido se reconstruye desde un commit
+revisado más los secretos y backups externos. Ninguna configuración manual del
+host se considera estado válido si no queda codificada o documentada aquí.
 
-A 26 de julio de 2026:
+## Estado observado
 
-- Docker Engine 29.6.2 y Compose 5.3.1 están instalados.
-- El Swarm ya está inicializado en `159.195.156.57`; el único nodo está
-  `Ready`, `Active` y es `Leader`.
-- El pool inmutable es `10.0.0.0/8`, con subredes `/24`, y el data path usa
-  `159.195.156.57:4789`.
-- El smoke test efímero de scheduler y logging pasa, pero no existen stacks ni
-  servicios persistentes y el nodo todavía no tiene la label `platform.edge`.
-- `/etc/docker/daemon.json` aún solo declara `log-driver: local`; la rotación
-  explícita, `no-new-privileges` y `userland-proxy: false` están declarados en
-  Git, pero pendientes de aplicar en una ventana que reiniciará Docker.
-- Todavía no se ha desplegado Traefik ni se ha creado
-  `edge.apptolast.com`.
-- La credencial mostrada anteriormente no era un token API de Cloudflare
-  válido y no se ha guardado ni reutilizado.
-- Los registros de aplicaciones siguen bajo el servidor anterior. Este
-  repositorio no los cambia antes de migrar y verificar servicios, datos y
-  rollback.
+Estado comprobado el 26 de julio de 2026:
 
-El código puede validarse sin credenciales. La validación privilegiada de
-firewall/journal/logrotate sigue pendiente de una sesión `sudo` del operador.
-La aplicación final permanece
-deliberadamente bloqueada hasta disponer de credenciales nuevas y limitadas,
-identificadores reales de los proveedores y destinos externos de backup.
+- Docker Swarm está activo en `159.195.156.57` con un único manager/worker,
+  `Ready`, `Active` y `Leader`.
+- El Swarm usa `10.0.0.0/8`, subredes `/24` y data path
+  `159.195.156.57:4789`; autolock sigue desactivado.
+- No hay stacks ni servicios persistentes desplegados. Solo existe la red
+  `ingress` y el nodo aún no tiene la label `platform.edge`.
+- Los datos de migración están materializados bajo `/srv/dockerswarm`, con
+  acceso root, pero ningún workload los está usando todavía.
+- Existe el Docker Secret `cloudflare_dns_api_token_v1`. Su valor no está en
+  Git y no puede recuperarse desde Docker. Como la credencial se expuso fuera
+  del gestor previsto, debe rotarse antes del edge de producción.
+- Los registros públicos continúan apuntando al servidor anterior
+  `138.199.157.58`; no se ha ejecutado el cutover.
+- n8n fue restaurado con sus workflows sin publicar. La verificación de
+  OAuth/negocio sigue siendo una compuerta funcional externa.
+- Minecraft conserva `online-mode=false`; por ello DNS, firewall y publicación
+  de `25565/TCP` permanecen bloqueados mediante
+  `platform_minecraft_public_enabled: false`.
 
-## Propiedad
+Todo lo anterior distingue código preparado de estado aplicado. Aún no se ha
+ejecutado el despliegue productivo de este árbol.
 
-| Capa | Propietario |
+## Cobertura IaC
+
+| Capa | Implementación |
 | --- | --- |
-| Contrato común, host, Docker, Swarm, UFW y `DOCKER-USER` | Este repositorio |
-| Traefik, certificados ACME, rutas públicas y red edge | Este repositorio |
-| DNS Cloudflare y perímetro netcup | Terraform de este repositorio |
-| Aplicaciones, volúmenes y migración de datos | `MigracionNetCup` |
-| Secretos y copias cifradas | Gestores externos; nunca Git |
+| R2 de state, DNS Cloudflare y perímetro Netcup | Terraform |
+| Bootstrap, identidad, SSH y seguridad del host | Ansible y Jinja |
+| Docker, Swarm, firewall y ciclo de desbloqueo | Ansible |
+| Traefik, rutas y redes | Stacks/Jinja desplegados por Ansible |
+| Servicios aprobados y restauración | Catálogo, stacks, scripts y Ansible |
+| Métricas, logs y alertas | Stack/Ansible de observabilidad |
+| Copias y ensayos de restore | restic, scripts, systemd y Ansible |
+| Pruebas, políticas y trazabilidad | CI, tests y metadatos de despliegue |
 
-No hace falta crear otro repositorio de infraestructura ahora. La estrategia se
-detalla en [`docs/REPOSITORIES.md`](docs/REPOSITORIES.md). Antes del corte se
-retirará de
-`MigracionNetCup` la infraestructura duplicada para evitar que dos
-automatizaciones gestionen Docker, firewall, sysctl, Traefik o recursos
-externos a la vez.
+`MigracionNetCup` es evidencia histórica de origen, no propietario activo de
+infraestructura. El código fuente de una aplicación puede seguir en su repo,
+pero toda definición que gobierna este servidor pertenece aquí.
 
 ## Organización
 
-- `config/platform.yml`: contrato compartido entre todas las capas.
-- `infra/terraform/`: bootstrap R2 y roots aislados para Cloudflare y Netcup.
-- `ansible/roles/host_baseline`: adopción segura del baseline del host.
-- `ansible/roles/platform`: Docker, Swarm, UFW y política `DOCKER-USER`.
-- `ansible/roles/edge`: red overlay cifrada y stack Traefik.
-- `ansible/roles/deployment_metadata`: release, commit y contrato aplicados.
-- `stacks/edge`: configuración y stack renderizados mediante Ansible.
-- `scripts/`: bootstrap, tests, secretos, validación y recuperación.
-- `docs/`: arquitectura, migración, estado remoto y runbooks.
+```text
+.
+├── ansible/               inventarios, playbooks, roles y templates
+├── backup/                controlador reproducible de backup/restore
+├── config/                contratos compartidos y allowlists
+├── docs/                  arquitectura, operación y recuperación
+├── images/                imágenes auxiliares reproducibles
+├── infra/terraform/       roots aislados de proveedor y backends
+├── migration/             restauración y evidencia de la migración
+├── scripts/               wrappers fail-closed y validadores
+├── stacks/                edge, workloads y observabilidad
+└── tests/                 pruebas de contrato y regresión
+```
 
-Traefik usa el provider de ficheros y no monta el socket Docker. Las rutas se
-versionan centralmente; el proceso edge no obtiene acceso root indirecto al
-host.
+Los datos, states, claves privadas, tokens, contraseñas y unlock keys nunca se
+guardan en Git. El repo solo contiene sus catálogos, identidades esperadas,
+checksums y procedimientos.
 
-## Herramientas bloqueadas
+## Validación
 
-- Terraform 1.15.8.
-- ansible-core 2.21.2 y ansible-lint 26.6.0.
-- `community.docker` 5.2.1.
-- Traefik 3.7.9 fijado por digest.
-- Provider Cloudflare 5.22.0.
-- Provider comunitario netcup 1.0.0, desactivado por defecto.
-
-El bootstrap descarga Terraform desde HashiCorp y valida su SHA-256. Python,
-colecciones Ansible, providers, acciones de CI e imágenes auxiliares están
-versionados o fijados. El binario Terraform instalado se vuelve a contrastar
-en cada bootstrap, no solo el archivo descargado.
+Las versiones de Terraform, providers, Ansible, colecciones, Python, acciones
+CI e imágenes se fijan y verifican. La validación completa es:
 
 ```bash
 ./scripts/bootstrap-tooling.sh
@@ -84,114 +82,106 @@ en cada bootstrap, no solo el archivo descargado.
 ./scripts/lint.sh
 ```
 
-La validación ejecuta tests Terraform con providers simulados, lint de
-producción Ansible, render del stack, análisis ShellCheck, contrato entre
-capas y un Traefik real sin privilegios, con filesystem de solo lectura.
+Incluye `terraform fmt/init/validate/test`, Ansible lint/syntax, render Jinja,
+validación real de Traefik y OpenSSH, ShellCheck, tests adversariales,
+markdownlint y escaneo de secretos.
 
-## Orden de implantación
+Los writers productivos exigen un commit limpio. Bootstrap y todos los
+playbooks Ansible comparten el mismo mutex host-global
+`/run/lock/dockerswarm-iac.lock`; una caída conserva un marker que requiere
+recuperación explícita. Los instaladores directos de secretos y controladores
+de backup no quedan cubiertos por ese mutex y solo se ejecutan en una ventana
+exclusiva sin Ansible activo.
 
-1. Aplicar el root `cloudflare/state-bootstrap` desde state local cifrado para
-   declarar dos buckets R2 privados.
-2. Crear credenciales independientes limitadas a cada bucket, inicializar los
-   backends, probar locking y tomar una primera copia cifrada de cada state.
-3. Importar antes de gestionar cualquier recurso preexistente.
-4. Aplicar `platform.yml` dos veces y exigir idempotencia.
-5. Aplicar `host-baseline.yml` con consola netcup y una segunda sesión SSH
-   abiertas; repetir y exigir idempotencia.
-6. Crear un token Cloudflare exclusivo para ACME y verificarlo con
-   `install-cloudflare-secret.sh`.
-7. Probar Traefik contra Let’s Encrypt staging usando
-   `acme-staging.json`.
-8. Desplegar de nuevo contra producción usando `acme.json`.
-9. Aplicar únicamente el registro DNS `edge.apptolast.com`.
-10. Ejecutar las validaciones de host, firewall, TLS, DNS y logs.
+## Orden productivo
 
-Los wrappers exigen un worktree limpio y registran el commit exacto:
+1. Validar, revisar, hacer commit y push del estado exacto.
+2. Aprovisionar fuera de Git identidades firmantes, recipients `age`,
+   buckets/credenciales R2 independientes y locking remoto probado.
+3. Importar recursos existentes antes de cualquier `terraform apply`.
+4. Aplicar y repetir `platform`, `host-baseline` y `preflight-images`.
+5. Rotar el token ACME expuesto e instalar su nueva versión como Docker
+   Secret, sin reutilizarlo para Terraform.
+6. Desplegar Traefik primero contra Let’s Encrypt staging y después
+   producción.
+7. Aplicar `workloads` y comprobar datos/funciones servicio a servicio.
+8. Aplicar `observability`; activar `backup` solo cuando R2, restic y la
+   custodia externa de autolock estén probados.
+9. Adoptar en Terraform los nueve A existentes sin cambiar su contenido.
+10. Crear el A nuevo de `edge`; cambiar solo los ocho A HTTP aprobados.
+    Minecraft queda en la IP legacy hasta abrir su gate específico.
+11. Verificar DNS, TLS, firewall, datos, métricas y rollback durante al menos
+    los TTL efectivos.
+
+Ejemplo Ansible:
 
 ```bash
 ./scripts/deploy-ansible.sh \
   --playbook platform \
   --check \
   --ask-become-pass
+
 ./scripts/deploy-ansible.sh \
   --playbook platform \
   --confirm-production \
   --ask-become-pass
-./scripts/deploy-ansible.sh \
-  --playbook host-baseline \
-  --confirm-production \
-  --ask-become-pass
-
-./scripts/install-cloudflare-secret.sh
-
-./scripts/deploy-ansible.sh \
-  --playbook edge \
-  --profile acme-staging \
-  --confirm-production \
-  --ask-become-pass
-./scripts/deploy-ansible.sh \
-  --playbook edge \
-  --confirm-production \
-  --ask-become-pass
-
-sudo ./scripts/validate.sh
 ```
 
-La primera ejecución privilegiada exige acceso sudo y una vía de recuperación
-fuera de banda. No se automatiza un cambio de SSH si no puede demostrarse una
-reconexión con clave pública.
+La ejecución remota es el modo normal. `--local` eleva el supervisor completo
+y Ansible; el usuario `admin` no se conserva en el grupo `docker`.
 
-## Entradas pendientes
+## Compuertas externas abiertas
 
-Se necesitan valores nuevos; no deben pegarse en el chat ni guardarse en el
-repositorio:
+La infraestructura permanece fail-closed hasta disponer de:
 
-- token Cloudflare ACME con `Zone Read` y `DNS Edit` limitado a
-  `apptolast.com`;
-- otro token Cloudflare para Terraform DNS;
-- account ID, dos nombres de bucket y dos pares R2 `Object Read & Write`;
-- token temporal Cloudflare capaz de declarar los buckets R2;
-- `server_id`, MAC, lista completa de policies actuales y refresh token SCP
-  de netcup;
-- CIDR o CIDR administrativos reales para SSH;
-- destinatario `age` y destino off-host para states, Swarm y `acme.json`;
-- inventario confirmado de las claves SSH actuales y de sus propietarios.
+- dos backends R2, credenciales separadas, prueba de locking live y snapshots
+  cifrados;
+- identidades/firmas reales de planes y pruebas de locking, fuera de Git;
+- token Cloudflare Terraform separado y credencial ACME rotada;
+- credenciales Netcup SCP/imports reales si se activa ese root;
+- destino y custodio externo de la unlock key antes de activar autolock;
+- aceptación OAuth/negocio de n8n;
+- decisión explícita sobre `online-mode=false` antes de publicar Minecraft.
+- prueba de que el snapshot staged es final o un refresh/promoción versionado
+  antes de arrancar workloads.
 
-Los tokens ACME, DNS, R2 y netcup son credenciales distintas. Docker Secrets
-no es un sustituto de un gestor externo ni permite recuperar el valor una vez
-creado.
+No se debe sustituir ninguna de estas entradas por valores inventados ni
+desactivar los gates para obtener una ejecución verde.
 
-## Límites conscientes
+A diferencia de las anteriores, el cutover DNS (paso 10 del orden productivo)
+no se desbloquea aportando ningún credential o evidencia: `terraform-safety.py`
+rechaza de forma incondicional cualquier create/cambio de un registro Cloudflare
+hacia la IP de plataforma hasta que exista un coordinador de "host-readiness"
+firmado — código que todavía no se ha escrito. Ver el STOP de cutover en
+[`docs/TERRAFORM_STATE.md`](docs/TERRAFORM_STATE.md).
 
-Un manager único no proporciona alta disponibilidad. Una caída o el
-mantenimiento del VPS interrumpe el plano de control y sus cargas. No se
-añadirán managers ni se abrirán `2377/TCP`, `7946/TCP+UDP` o `4789/UDP`
-hasta disponer de una red privada autenticada y un diseño de quorum.
+## Límites
 
-`live-restore` no conserva el plano de control de Swarm durante un reinicio de
-Docker, por lo que se omite. El puerto `25565` permanece cerrado hasta el corte
-documentado de Minecraft.
+Un manager único no ofrece alta disponibilidad. Un reinicio o pérdida del VPS
+interrumpe el plano de control y sus cargas. No se abren públicamente
+`2377/TCP`, `7946/TCP+UDP` ni `4789/UDP`; añadir nodos exige red privada,
+quorum impar y un nuevo diseño probado.
 
-## Documentación operativa
+## Documentación
 
-- [Arquitectura](docs/ARCHITECTURE.md)
-- [Migración desde el servidor anterior](docs/MIGRATION.md)
+- [Arquitectura y propiedad](docs/ARCHITECTURE.md)
+- [Catálogo exacto de servicios](docs/SERVICE_CATALOG.md)
+- [Migración y cutover](docs/MIGRATION.md)
+- [Reconstrucción completa](docs/REBUILD.md)
+- [Operación y bloqueo](docs/OPERATIONS.md)
 - [Edge, Cloudflare y ACME](docs/EDGE.md)
-- [Estado Terraform y recuperación](docs/TERRAFORM_STATE.md)
-- [Repositorios, versionado y mantenimiento](docs/REPOSITORIES.md)
-- [Reconstrucción completa y cobertura](docs/REBUILD.md)
+- [Estado Terraform](docs/TERRAFORM_STATE.md)
+- [Backup y recuperación](docs/BACKUP_RECOVERY.md)
+- [Observabilidad](docs/OBSERVABILITY.md)
+- [Repositorios y mantenimiento](docs/REPOSITORIES.md)
+- [Capacidad](docs/CAPACITY.md)
 - [Changelog](CHANGELOG.md)
-- [Baseline del host](ansible/roles/host_baseline/README.md)
-- [Operación de Swarm](docs/OPERATIONS.md)
-- [Diagnósticos conocidos](docs/KNOWN_ISSUES.md)
 
 ## Referencias oficiales
 
 - [Administrar un Swarm](https://docs.docker.com/engine/swarm/admin_guide/)
 - [Firewall de Docker](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
-- [Docker Configs](https://docs.docker.com/engine/swarm/configs/)
 - [Traefik en Swarm](https://doc.traefik.io/traefik/v3.7/reference/install-configuration/providers/swarm/)
 - [Traefik ACME](https://doc.traefik.io/traefik/v3.7/reference/install-configuration/tls/certificate-resolvers/acme/)
-- [Tokens Cloudflare](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
-- [Backend R2](https://developers.cloudflare.com/terraform/advanced-topics/remote-backend/)
+- [Backend R2 de Terraform](https://developers.cloudflare.com/terraform/advanced-topics/remote-backend/)
 - [Backend S3 de Terraform](https://developer.hashicorp.com/terraform/language/backend/s3)

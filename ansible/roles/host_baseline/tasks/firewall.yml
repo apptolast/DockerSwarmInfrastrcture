@@ -1,4 +1,44 @@
 ---
+- name: Enforce exact UFW user chains after platform convergence
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            playbook_dir + "/../../scripts/validate-ufw-contract.py",
+            "--ssh-port",
+            host_baseline_ssh_port | string,
+            "--public-interface",
+            host_baseline_public_interface,
+            "--public-ipv4",
+            host_baseline_public_ipv4,
+            "--require-public"
+          ]
+          + (
+            host_baseline_required_public_tcp_ports
+            | map("string")
+            | map("regex_replace", "^(.*)$", "--public-port=\\1")
+            | list
+          )
+          + (
+            host_baseline_required_host_egress
+            | map(attribute="protocol")
+            | zip(
+                host_baseline_required_host_egress
+                | map(attribute="port")
+              )
+            | map("join", ":")
+            | map("regex_replace", "^(.*)$", "--egress=\\1")
+            | list
+          )
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
 - name: Read the active UFW policy
   ansible.builtin.command:
     argv:
@@ -10,6 +50,7 @@
   register: host_baseline_ufw_status
   changed_when: false
   check_mode: false
+  when: not ansible_check_mode
 
 - name: Verify UFW keeps every default policy denied
   ansible.builtin.assert:
@@ -27,6 +68,7 @@
       UFW must already be active with deny incoming/outgoing/routed and the
       rate-limited SSH rule. This role never resets or weakens UFW.
     quiet: true
+  when: not ansible_check_mode
 
 - name: Read IPv4 firewall policies
   ansible.builtin.command:
@@ -37,6 +79,7 @@
   register: host_baseline_iptables
   changed_when: false
   check_mode: false
+  when: not ansible_check_mode
 
 - name: Read IPv6 firewall policies
   ansible.builtin.command:
@@ -47,6 +90,7 @@
   register: host_baseline_ip6tables
   changed_when: false
   check_mode: false
+  when: not ansible_check_mode
 
 - name: Verify kernel firewall policies remain fail-closed
   ansible.builtin.assert:
@@ -59,6 +103,7 @@
       - '"-P OUTPUT DROP" in host_baseline_ip6tables.stdout_lines'
     fail_msg: "IPv4 and IPv6 INPUT/FORWARD/OUTPUT policies must all be DROP."
     quiet: true
+  when: not ansible_check_mode
 
 - name: Verify required IPv4 host-egress exceptions
   ansible.builtin.command:
@@ -78,6 +123,7 @@
     label: "{{ item.protocol }}/{{ item.port }}"
   changed_when: false
   check_mode: false
+  when: not ansible_check_mode
 
 - name: Verify required IPv6 host-egress exceptions
   ansible.builtin.command:
@@ -97,37 +143,55 @@
     label: "{{ item.protocol }}/{{ item.port }}"
   changed_when: false
   check_mode: false
+  when: not ansible_check_mode
 
 - name: Verify required public IPv4 edge ports
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/iptables
-      - -w
-      - -C
-      - ufw-user-input
-      - -p
-      - tcp
-      - --dport
-      - "{{ item | string }}"
-      - -j
-      - ACCEPT
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_iptables.stdout_lines
+        | select("match", "^-A ufw-user-input ")
+        | select(
+          "search",
+          " -i " ~ host_baseline_public_interface ~ "( |$)"
+        )
+        | select(
+          "search",
+          " -d "
+          ~ (host_baseline_public_ipv4 | regex_escape)
+          ~ "/32( |$)"
+        )
+        | select(
+          "search",
+          " --dport " ~ (item | string) ~ "( |$)"
+        )
+        | select("search", " -j ACCEPT$")
+        | list
+        | length == 1
+    fail_msg: >-
+      The reviewed IPv4-only UFW rule is missing or duplicated for TCP
+      {{ item }}.
+    quiet: true
   loop: "{{ host_baseline_required_public_tcp_ports }}"
-  changed_when: false
-  check_mode: false
+  loop_control:
+    label: "tcp/{{ item }}"
+  when: not ansible_check_mode
 
-- name: Verify required public IPv6 edge ports
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/ip6tables
-      - -w
-      - -C
-      - ufw6-user-input
-      - -p
-      - tcp
-      - --dport
-      - "{{ item | string }}"
-      - -j
-      - ACCEPT
-  loop: "{{ host_baseline_required_public_tcp_ports }}"
-  changed_when: false
-  check_mode: false
+- name: Verify application TCP remains closed in the IPv6 host policy
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_ip6tables.stdout_lines
+        | select(
+          "match",
+          "^-A ufw6-user-input .*--dport (80|443|25565) .*"
+          ~ "-j ACCEPT$"
+        )
+        | list
+        | length == 0
+      - host_baseline_required_public_ipv6_tcp_ports | length == 0
+    fail_msg: >-
+      Public application TCP over IPv6 is outside the reviewed DNS and
+      provider-firewall contract.
+    quiet: true
+  when: not ansible_check_mode

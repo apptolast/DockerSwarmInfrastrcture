@@ -6,3 +6,40 @@ deployment_metadata_playbook: ""
 deployment_metadata_repository_slug: ""
 deployment_metadata_path: >-
   {{ platform_install_root }}/DEPLOYED_VERSION.yml
+deployment_metadata_directory: >-
+  {{ platform_install_root }}/deployments
+deployment_metadata_components_by_playbook:
+  platform:
+    - host-security
+    - platform
+  host-baseline:
+    - host-security
+    - host-baseline
+  preflight-images:
+    - image-preflight
+    - runner-image
+  edge:
+    - image-preflight
+    - runner-image
+    - edge
+  workloads:
+    - minecraft-preflight
+    - image-preflight
+    - runner-image
+    - workloads
+  observability:
+    - image-preflight
+    - runner-image
+    - observability
+  backup:
+    - backup
+  site:
+    - host-security
+    - platform
+    - host-baseline
+    - minecraft-preflight
+    - image-preflight
+    - runner-image
+    - edge
+    - workloads
+    - observability

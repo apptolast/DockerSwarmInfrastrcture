@@ -1,0 +1,764 @@
+---
+version: "3.8"
+
+x-service-defaults: &service-defaults
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: local
+    options:
+      max-file: "5"
+      max-size: 20m
+
+x-deploy-policy: &deploy-policy
+  placement:
+    constraints:
+      - node.labels.platform.observability == true
+  restart_policy:
+    condition: any
+    delay: 5s
+    window: 60s
+  update_config:
+    parallelism: 1
+    delay: 10s
+    order: stop-first
+    failure_action: rollback
+    monitor: 120s
+    max_failure_ratio: 0
+  rollback_config:
+    parallelism: 1
+    delay: 5s
+    order: stop-first
+    failure_action: pause
+    monitor: 120s
+    max_failure_ratio: 0
+
+x-health-defaults: &health-defaults
+  interval: 30s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+
+services:
+  prometheus:
+    <<: *service-defaults
+    image: "{{ observability_images.prometheus }}"
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=20GB
+      - --web.listen-address=0.0.0.0:9090
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+        uid: "65534"
+        gid: "65534"
+        mode: 0444
+      - source: prometheus_alerts
+        target: /etc/prometheus/rules/platform.yml
+        uid: "65534"
+        gid: "65534"
+        mode: 0444
+    volumes:
+      - type: bind
+        source: "{{ observability_paths.prometheus }}"
+        target: /prometheus
+    networks:
+      - monitoring
+      - edge-monitoring
+      - n8n-monitoring
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9090/-/ready
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: prometheus
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  alertmanager:
+    <<: *service-defaults
+    image: "{{ observability_images.alertmanager }}"
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --data.retention=120h
+      - --web.listen-address=0.0.0.0:9093
+    configs:
+      - source: alertmanager_config
+        target: /etc/alertmanager/alertmanager.yml
+        uid: "65534"
+        gid: "65534"
+        mode: 0444
+    volumes:
+      - type: bind
+        source: "{{ observability_paths.alertmanager }}"
+        target: /alertmanager
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9093/-/ready
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: alertmanager
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+
+  blackbox-exporter:
+    <<: *service-defaults
+    image: "{{ observability_images.blackbox_exporter }}"
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+      - --web.listen-address=0.0.0.0:9115
+    configs:
+      - source: blackbox_config
+        target: /etc/blackbox_exporter/config.yml
+        uid: "65534"
+        gid: "65534"
+        mode: 0444
+    networks:
+      - monitoring
+      - edge-monitoring
+      - minecraft-monitoring
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9115/-/healthy
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: blackbox-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+
+  loki:
+    <<: *service-defaults
+    init: false
+    image: "{{ observability_images.loki }}"
+    user: "10001:10001"
+    command:
+      - -config.file=/etc/loki/config.yml
+      - -target=all
+    configs:
+      - source: loki_config
+        target: /etc/loki/config.yml
+        uid: "10001"
+        gid: "10001"
+        mode: 0444
+    volumes:
+      - type: bind
+        source: "{{ observability_paths.loki }}"
+        target: /loki
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      interval: 1m
+      test:
+        - CMD
+        - /usr/bin/loki
+        - -config.file=/etc/loki/config.yml
+        - -verify-config=true
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: loki
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+  alloy:
+    <<: *service-defaults
+    init: false
+    image: "{{ observability_images.alloy }}"
+    user: "0:0"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    configs:
+      - source: alloy_config
+        target: /etc/alloy/config.alloy
+        mode: 0444
+    volumes:
+      - type: bind
+        source: "{{ observability_docker_proxy_socket }}"
+        target: /run/docker-readonly/docker.sock
+        read_only: true
+      - type: bind
+        source: "{{ observability_paths.alloy }}"
+        target: /var/lib/alloy/data
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      interval: 1m
+      test:
+        - CMD
+        - /usr/bin/bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/12345;
+          printf 'GET /-/ready HTTP/1.1\r\nHost: localhost\r\nConnection:
+          close\r\n\r\n' >&3;
+          IFS= read -r status <&3;
+          [[ "$${status}" == *" 200 "* ]]
+    deploy:
+      <<: *deploy-policy
+      mode: global
+      labels:
+        com.apptolast.component: alloy
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  grafana:
+    <<: *service-defaults
+    init: false
+    image: "{{ observability_images.grafana }}"
+    user: "472:472"
+    environment:
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: Europe/Berlin
+      GF_LOG_LEVEL: info
+      GF_LOG_MODE: console
+      GF_PATHS_DATA: /var/lib/grafana
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_COOKIE_SECURE: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_SECRET_KEY__FILE: /run/secrets/grafana_secret_key
+      GF_SERVER_ENABLE_GZIP: "true"
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    configs:
+      - source: grafana_datasources
+        target: /etc/grafana/provisioning/datasources/platform.yml
+        uid: "472"
+        gid: "472"
+        mode: 0444
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/platform.yml
+        uid: "472"
+        gid: "472"
+        mode: 0444
+      - source: grafana_dashboard_overview
+        target: /var/lib/grafana/dashboards/platform-overview.json
+        uid: "472"
+        gid: "472"
+        mode: 0444
+      - source: grafana_dashboard_logs
+        target: /var/lib/grafana/dashboards/platform-logs.json
+        uid: "472"
+        gid: "472"
+        mode: 0444
+    secrets:
+      - source: grafana_admin_password
+        target: grafana_admin_password
+        uid: "472"
+        gid: "472"
+        mode: 0400
+      - source: grafana_secret_key
+        target: grafana_secret_key
+        uid: "472"
+        gid: "472"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ observability_paths.grafana }}"
+        target: /var/lib/grafana
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      start_period: 1m
+      test:
+        - CMD
+        - /usr/bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:3000/api/health
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: grafana
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+        reservations:
+          cpus: "0.15"
+          memory: 192M
+
+  node-exporter:
+    <<: *service-defaults
+    image: "{{ observability_images.node_exporter }}"
+    user: "65534:65534"
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+      - --web.listen-address=0.0.0.0:9100
+    volumes:
+      - type: bind
+        source: /
+        target: /host
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /var/lib/node_exporter/textfile_collector
+        target: /textfile
+        read_only: true
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9100/metrics
+    deploy:
+      <<: *deploy-policy
+      mode: global
+      labels:
+        com.apptolast.component: node-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+
+  cadvisor:
+    <<: *service-defaults
+    init: false
+    image: "{{ observability_images.cadvisor }}"
+    command:
+      - "--disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,\
+        oom_event,perf_event,process,referenced_memory,resctrl,sched,tcp,udp"
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+    volumes:
+      - type: bind
+        source: /
+        target: /rootfs
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /sys
+        target: /sys
+        read_only: true
+      - type: bind
+        source: /var/lib/docker
+        target: /var/lib/docker
+        read_only: true
+    networks:
+      - monitoring
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /usr/bin/wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:8080/healthz
+    deploy:
+      <<: *deploy-policy
+      mode: global
+      labels:
+        com.apptolast.component: cadvisor
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  postgres-exporter-n8n:
+    <<: *service-defaults
+    image: "{{ observability_images.postgres_exporter }}"
+    user: "65534:65534"
+    environment:
+      DATA_SOURCE_PASS_FILE: >-
+        /run/secrets/postgres_exporter_n8n_password
+      DATA_SOURCE_URI: >-
+        workloads_n8n-db:5432/n8n?sslmode=disable
+      DATA_SOURCE_USER: apptolast_monitor
+      PG_EXPORTER_COLLECTION_TIMEOUT: 10s
+    secrets:
+      - source: postgres_exporter_n8n_password
+        target: postgres_exporter_n8n_password
+        uid: "65534"
+        gid: "65534"
+        mode: 0400
+    networks:
+      - monitoring
+      - workloads-n8n-backend
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9187/metrics
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: postgres-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 64M
+        reservations:
+          cpus: "0.03"
+          memory: 32M
+
+  postgres-exporter-passbolt:
+    <<: *service-defaults
+    image: "{{ observability_images.postgres_exporter }}"
+    user: "65534:65534"
+    environment:
+      DATA_SOURCE_PASS_FILE: >-
+        /run/secrets/postgres_exporter_passbolt_password
+      DATA_SOURCE_URI: >-
+        workloads_passbolt-db:5432/passbolt?sslmode=disable
+      DATA_SOURCE_USER: apptolast_monitor
+      PG_EXPORTER_COLLECTION_TIMEOUT: 10s
+    secrets:
+      - source: postgres_exporter_passbolt_password
+        target: postgres_exporter_passbolt_password
+        uid: "65534"
+        gid: "65534"
+        mode: 0400
+    networks:
+      - monitoring
+      - workloads-passbolt-backend
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9187/metrics
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: postgres-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 64M
+        reservations:
+          cpus: "0.03"
+          memory: 32M
+
+  postgres-exporter-shlink:
+    <<: *service-defaults
+    image: "{{ observability_images.postgres_exporter }}"
+    user: "65534:65534"
+    environment:
+      DATA_SOURCE_PASS_FILE: >-
+        /run/secrets/postgres_exporter_shlink_password
+      DATA_SOURCE_URI: >-
+        workloads_shlink-db:5432/shlink?sslmode=disable
+      DATA_SOURCE_USER: apptolast_monitor
+      PG_EXPORTER_COLLECTION_TIMEOUT: 10s
+    secrets:
+      - source: postgres_exporter_shlink_password
+        target: postgres_exporter_shlink_password
+        uid: "65534"
+        gid: "65534"
+        mode: 0400
+    networks:
+      - monitoring
+      - workloads-shlink-backend
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - /bin/wget
+        - --quiet
+        - --spider
+        - --timeout=3
+        - http://127.0.0.1:9187/metrics
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: postgres-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 64M
+        reservations:
+          cpus: "0.03"
+          memory: 32M
+
+  redis-exporter:
+    <<: *service-defaults
+    init: false
+    image: "{{ observability_images.redis_exporter }}"
+    user: "59000:59000"
+    environment:
+      REDIS_ADDR: redis://workloads_redis-coordinator:6379
+      REDIS_EXPORTER_LOG_FORMAT: json
+      REDIS_EXPORTER_LOG_LEVEL: info
+    networks:
+      - monitoring
+      - workloads-n8n-coordination
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      interval: 1m
+      test:
+        - CMD
+        - /redis_exporter
+        - --version
+    deploy:
+      <<: *deploy-policy
+      mode: replicated
+      replicas: 1
+      labels:
+        com.apptolast.component: redis-exporter
+        com.apptolast.managed-by: ansible
+        com.apptolast.platform-class: internal-platform
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 64M
+        reservations:
+          cpus: "0.03"
+          memory: 32M
+
+networks:
+  monitoring:
+    name: apptolast-observability
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  edge-monitoring:
+    external: true
+    name: "{{ platform_edge_monitoring_network }}"
+  n8n-monitoring:
+    external: true
+    name: apptolast-n8n-monitoring
+  workloads-n8n-backend:
+    external: true
+    name: workloads_n8n-backend
+  workloads-n8n-coordination:
+    external: true
+    name: workloads_n8n-coordination
+  workloads-passbolt-backend:
+    external: true
+    name: workloads_passbolt-backend
+  workloads-shlink-backend:
+    external: true
+    name: workloads_shlink-backend
+  minecraft-monitoring:
+    external: true
+    name: apptolast-minecraft-monitoring
+
+configs:
+  prometheus_config:
+    external: true
+    name: "{{ observability_config_names.prometheus_config }}"
+  prometheus_alerts:
+    external: true
+    name: "{{ observability_config_names.prometheus_alerts }}"
+  alertmanager_config:
+    external: true
+    name: "{{ observability_config_names.alertmanager_config }}"
+  blackbox_config:
+    external: true
+    name: "{{ observability_config_names.blackbox_config }}"
+  loki_config:
+    external: true
+    name: "{{ observability_config_names.loki_config }}"
+  alloy_config:
+    external: true
+    name: "{{ observability_config_names.alloy_config }}"
+  grafana_datasources:
+    external: true
+    name: "{{ observability_config_names.grafana_datasources }}"
+  grafana_dashboards:
+    external: true
+    name: "{{ observability_config_names.grafana_dashboards }}"
+  grafana_dashboard_overview:
+    external: true
+    name: "{{ observability_config_names.grafana_dashboard_overview }}"
+  grafana_dashboard_logs:
+    external: true
+    name: "{{ observability_config_names.grafana_dashboard_logs }}"
+
+secrets:
+  grafana_admin_password:
+    external: true
+    name: "{{ observability_secret_names.grafana_admin_password }}"
+  grafana_secret_key:
+    external: true
+    name: "{{ observability_secret_names.grafana_secret_key }}"
+  postgres_exporter_n8n_password:
+    external: true
+    name: "{{ observability_secret_names.postgres_exporter_n8n_password }}"
+  postgres_exporter_passbolt_password:
+    external: true
+    name: >-
+      {{ observability_secret_names.postgres_exporter_passbolt_password }}
+  postgres_exporter_shlink_password:
+    external: true
+    name: "{{ observability_secret_names.postgres_exporter_shlink_password }}"

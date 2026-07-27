@@ -1,17 +1,48 @@
 ---
 platform_environment: production
 platform_release_version: 0.1.0
+platform_node_id: netcup-manager-01
+platform_admin_uid: 1001
+platform_admin_gid: 1001
 platform_public_ipv4: 159.195.156.57
+platform_dns_legacy_ipv4: 138.199.157.58
+platform_dns_cutover:
+  edge: true
+  kropia: false
+  minecraft-stats: false
+  minecraft: false
+  n8n: false
+  openclaw: false
+  passbolt: false
+  generadorcodigosqr: false
+  pablohurtadohg: false
+  albertohidalgo: false
+platform_public_ipv6: "2a0a:4cc0:c2:866b:142e:fff:fef4:c4da"
+platform_public_ipv6_prefix: "2a0a:4cc0:c2:866b::/64"
 platform_public_interface: eth0
+platform_netcup_server_id: 900782
+platform_netcup_server_mac: "16:2e:0f:f4:c4:da"
 platform_swarm_data_path_port: 4789
 platform_swarm_default_addr_pool:
   - 10.0.0.0/8
 platform_swarm_default_addr_pool_mask_length: 24
 platform_install_root: /opt/dockerswarm
 platform_state_root: /srv/dockerswarm
-platform_edge_network: apptolast-edge
+platform_edge_monitoring_network: apptolast-edge-monitoring
+platform_edge_networks:
+  kropia: apptolast-edge-kropia
+  minecraft-stats: apptolast-edge-minecraft-stats
+  n8n: apptolast-edge-n8n
+  openclaw: apptolast-edge-openclaw
+  passbolt: apptolast-edge-passbolt
+  portfolio-alberto: apptolast-edge-portfolio-alberto
+  portfolio-pablo: apptolast-edge-portfolio-pablo
+  shlink: apptolast-edge-shlink
 platform_public_tcp_ports:
   - 80
   - 443
+  - 25565
+platform_minecraft_public_enabled: false
+platform_public_ipv6_tcp_ports: []
 edge_cloudflare_zone: apptolast.com
 edge_traefik_hostname: edge.apptolast.com

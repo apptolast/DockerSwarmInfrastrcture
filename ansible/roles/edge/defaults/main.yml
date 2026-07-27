@@ -1,7 +1,8 @@
 ---
 edge_install_root: /opt/dockerswarm
 edge_state_root: /srv/dockerswarm
-edge_network: apptolast-edge
+edge_monitoring_network: apptolast-edge-monitoring
+edge_networks: {}
 edge_traefik_image: ""
 edge_traefik_version: ""
 edge_traefik_runtime_uid: 65532
@@ -12,3 +13,9 @@ edge_traefik_acme_email: ""
 edge_traefik_cloudflare_secret_name: ""
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json
+edge_deployment_profile: >-
+  {{ deployment_metadata_profile | default("production") }}
+edge_letsencrypt_staging_ca_bundle: >-
+  {{ edge_install_root }}/edge/config/letsencrypt-staging-roots.pem
+edge_letsencrypt_staging_ca_bundle_sha256: >-
+  0b549d3d047d7ab477a78f4c27bb1b2a15f5766619898ee8f21b7939566339a4

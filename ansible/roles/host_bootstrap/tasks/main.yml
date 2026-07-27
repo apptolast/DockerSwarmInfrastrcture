@@ -1,0 +1,407 @@
+---
+- name: Verify the fresh-host bootstrap contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == "Ubuntu"
+      - ansible_facts.distribution_version is version("26.04", "==")
+      - ansible_user_id == "root"
+      - host_bootstrap_admin_user == "admin"
+      - host_bootstrap_admin_uid | int == 1001
+      - host_bootstrap_admin_gid | int == 1001
+      - host_bootstrap_admin_home == "/home/admin"
+      - host_bootstrap_ssh_group == "sshusers"
+      - host_bootstrap_source_revision is match("^[a-f0-9]{40}$")
+      - host_bootstrap_operation_id is match("^[a-f0-9]{64}$")
+      - >-
+        host_bootstrap_operation_controller
+        is match("^[A-Za-z0-9_.@:-]{1,128}$")
+      - >-
+        host_bootstrap_operation_contract_sha256
+        is match("^[a-f0-9]{64}$")
+      - host_bootstrap_authorized_keys_file | length > 0
+      - host_bootstrap_password_hash_file | length > 0
+    fail_msg: >-
+      Bootstrap requires a fresh Ubuntu 26.04 host, an initial root SSH
+      session, the reviewed admin identity, external key/password-hash files
+      and an exact clean Git revision.
+    quiet: true
+
+- name: Inspect reserved bootstrap account and group identities
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - "{{ item.database }}"
+      - "{{ item.key }}"
+  loop:
+    - database: passwd
+      key: "{{ host_bootstrap_admin_user }}"
+    - database: passwd
+      key: "{{ host_bootstrap_admin_uid | string }}"
+    - database: group
+      key: "{{ host_bootstrap_admin_user }}"
+    - database: group
+      key: "{{ host_bootstrap_admin_gid | string }}"
+    - database: group
+      key: "{{ host_bootstrap_ssh_group }}"
+  loop_control:
+    label: "{{ item.database }}/{{ item.key }}"
+  register: host_bootstrap_reserved_identities
+  changed_when: false
+  failed_when: host_bootstrap_reserved_identities.rc not in [0, 2]
+  check_mode: false
+
+- name: Inspect every path reserved by fresh-host bootstrap
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ host_bootstrap_fresh_absent_paths }}"
+  register: host_bootstrap_reserved_paths
+
+- name: Inventory packages before claiming a fresh host
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Classify a genuinely fresh host or an exact completed resume
+  ansible.builtin.set_fact:
+    host_bootstrap_is_fresh: >-
+      {{
+        host_bootstrap_reserved_identities.results
+        | selectattr("rc", "equalto", 0) | list | length == 0
+        and host_bootstrap_reserved_paths.results
+        | selectattr("stat.exists", "equalto", true) | list | length == 0
+        and host_bootstrap_forbidden_runtime_packages
+        | intersect(ansible_facts.packages.keys() | list) | length == 0
+      }}
+    host_bootstrap_is_possible_resume: >-
+      {{
+        host_bootstrap_reserved_identities.results
+        | selectattr("rc", "equalto", 0) | list | length == 5
+        and host_bootstrap_reserved_paths.results[0].stat.exists
+        and host_bootstrap_reserved_paths.results[1].stat.exists
+        and host_bootstrap_reserved_paths.results[2:]
+        | selectattr("stat.exists", "equalto", true) | list | length == 0
+        and host_bootstrap_forbidden_runtime_packages
+        | intersect(ansible_facts.packages.keys() | list) | length == 0
+      }}
+
+- name: Refuse bootstrap over an adopted or runtime-bearing host
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_bootstrap_is_fresh
+        or host_bootstrap_is_possible_resume
+    fail_msg: >-
+      Bootstrap is one-shot: admin/UID/GID/groups, every platform path,
+      Docker packages/data and the Ansible operation lock must all be absent.
+      Only an exact, already completed bootstrap may be validated as a resume.
+    quiet: true
+
+- name: Read external bootstrap inputs on the controller
+  ansible.builtin.set_fact:
+    host_bootstrap_authorized_keys: >-
+      {{ lookup("ansible.builtin.file", host_bootstrap_authorized_keys_file) }}
+    host_bootstrap_password_hash: >-
+      {{ lookup("ansible.builtin.file", host_bootstrap_password_hash_file)
+         | trim }}
+  no_log: true
+
+- name: Validate every external authorized key on the controller
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ playbook_dir }}/../../scripts/validate-authorized-keys.py"
+      - "{{ host_bootstrap_authorized_keys_file }}"
+      - --ssh-keygen
+      - /usr/bin/ssh-keygen
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate external bootstrap input formats
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_bootstrap_password_hash
+        is match("^\\$(y|6)\\$[^\\r\\n]{20,}$")
+      - >-
+        "\n" not in host_bootstrap_password_hash
+    fail_msg: >-
+      The external authorized-keys file or password hash is malformed.
+    quiet: true
+  no_log: true
+
+- name: Validate exact existing identity before a bootstrap resume
+  when: host_bootstrap_is_possible_resume
+  block:
+    - name: Read existing administrator supplementary groups
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/id
+          - -nG
+          - "{{ host_bootstrap_admin_user }}"
+      register: host_bootstrap_existing_groups
+      changed_when: false
+      check_mode: false
+
+    - name: Read existing administrator password verifier
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/getent
+          - shadow
+          - "{{ host_bootstrap_admin_user }}"
+      register: host_bootstrap_existing_shadow
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Inspect existing bootstrap provenance
+      ansible.builtin.stat:
+        path: "{{ host_bootstrap_metadata_path }}"
+        follow: false
+      register: host_bootstrap_existing_metadata
+
+    - name: Inspect every parent of the existing administrator key allowlist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /home
+        - "{{ host_bootstrap_admin_home }}"
+        - "{{ host_bootstrap_admin_home }}/.ssh"
+        - "{{ host_bootstrap_admin_home }}/.ssh/authorized_keys"
+        - /etc
+        - "{{ host_bootstrap_metadata_path | dirname }}"
+      register: host_bootstrap_existing_path_chain
+      no_log: true
+
+    - name: Prove safe path structure before reading resume files
+      ansible.builtin.assert:
+        that:
+          - host_bootstrap_existing_path_chain.results[0].stat.isdir
+          - not host_bootstrap_existing_path_chain.results[0].stat.islnk
+          - host_bootstrap_existing_path_chain.results[0].stat.pw_name == "root"
+          - host_bootstrap_existing_path_chain.results[0].stat.gr_name == "root"
+          - host_bootstrap_existing_path_chain.results[0].stat.mode == "0755"
+          - host_bootstrap_existing_path_chain.results[1].stat.isdir
+          - not host_bootstrap_existing_path_chain.results[1].stat.islnk
+          - >-
+            host_bootstrap_existing_path_chain.results[1].stat.uid | int
+            == host_bootstrap_admin_uid | int
+          - >-
+            host_bootstrap_existing_path_chain.results[1].stat.gid | int
+            == host_bootstrap_admin_gid | int
+          - host_bootstrap_existing_path_chain.results[1].stat.mode == "0750"
+          - host_bootstrap_existing_path_chain.results[2].stat.isdir
+          - not host_bootstrap_existing_path_chain.results[2].stat.islnk
+          - >-
+            host_bootstrap_existing_path_chain.results[2].stat.uid | int
+            == host_bootstrap_admin_uid | int
+          - >-
+            host_bootstrap_existing_path_chain.results[2].stat.gid | int
+            == host_bootstrap_admin_gid | int
+          - host_bootstrap_existing_path_chain.results[2].stat.mode == "0700"
+          - host_bootstrap_existing_path_chain.results[3].stat.isreg
+          - not host_bootstrap_existing_path_chain.results[3].stat.islnk
+          - >-
+            host_bootstrap_existing_path_chain.results[3].stat.uid | int
+            == host_bootstrap_admin_uid | int
+          - >-
+            host_bootstrap_existing_path_chain.results[3].stat.gid | int
+            == host_bootstrap_admin_gid | int
+          - host_bootstrap_existing_path_chain.results[3].stat.mode == "0600"
+          - >-
+            host_bootstrap_existing_path_chain.results[3].stat.nlink | int == 1
+          - host_bootstrap_existing_path_chain.results[4].stat.isdir
+          - not host_bootstrap_existing_path_chain.results[4].stat.islnk
+          - host_bootstrap_existing_path_chain.results[4].stat.pw_name == "root"
+          - host_bootstrap_existing_path_chain.results[4].stat.gr_name == "root"
+          - host_bootstrap_existing_path_chain.results[4].stat.mode == "0755"
+          - host_bootstrap_existing_path_chain.results[5].stat.isdir
+          - not host_bootstrap_existing_path_chain.results[5].stat.islnk
+          - host_bootstrap_existing_path_chain.results[5].stat.pw_name == "root"
+          - host_bootstrap_existing_path_chain.results[5].stat.gr_name == "root"
+          - host_bootstrap_existing_path_chain.results[5].stat.mode == "0755"
+          - host_bootstrap_existing_metadata.stat.isreg
+          - not host_bootstrap_existing_metadata.stat.islnk
+          - host_bootstrap_existing_metadata.stat.pw_name == "root"
+          - host_bootstrap_existing_metadata.stat.gr_name == "root"
+          - host_bootstrap_existing_metadata.stat.mode == "0644"
+          - host_bootstrap_existing_metadata.stat.nlink | int == 1
+        fail_msg: >-
+          Existing bootstrap paths are missing, linked or have unsafe
+          ownership/modes. No resume file was read and nothing was changed.
+        quiet: true
+      no_log: true
+
+    - name: Read structurally proven existing bootstrap provenance
+      ansible.builtin.slurp:
+        path: "{{ host_bootstrap_metadata_path }}"
+      register: host_bootstrap_existing_metadata_content
+
+    - name: Read structurally proven administrator key allowlist
+      ansible.builtin.slurp:
+        path: "{{ host_bootstrap_admin_home }}/.ssh/authorized_keys"
+      register: host_bootstrap_existing_authorized_keys_content
+      no_log: true
+
+    - name: Prove an exact completed bootstrap before resuming
+      ansible.builtin.assert:
+        that:
+          - >-
+            host_bootstrap_reserved_identities.results[0].stdout.split(":")[0]
+            == host_bootstrap_admin_user
+          - >-
+            host_bootstrap_reserved_identities.results[0].stdout.split(":")[2]
+            | int == host_bootstrap_admin_uid | int
+          - >-
+            host_bootstrap_reserved_identities.results[0].stdout.split(":")[3]
+            | int == host_bootstrap_admin_gid | int
+          - >-
+            host_bootstrap_reserved_identities.results[0].stdout.split(":")[5]
+            == host_bootstrap_admin_home
+          - >-
+            host_bootstrap_reserved_identities.results[0].stdout.split(":")[6]
+            == "/bin/bash"
+          - >-
+            host_bootstrap_existing_groups.stdout.split() | sort
+            == [
+              host_bootstrap_admin_user,
+              "sudo",
+              host_bootstrap_ssh_group
+            ] | sort
+          - >-
+            host_bootstrap_existing_shadow.stdout.split(":")[1]
+            == host_bootstrap_password_hash
+          - >-
+            (
+              host_bootstrap_existing_metadata_content.content
+              | b64decode | from_yaml
+            )
+            == {
+              "schema_version": 1,
+              "repository": "apptolast/DockerSwarmInfrastrcture",
+              "revision": host_bootstrap_source_revision,
+              "operating_system": "Ubuntu 26.04",
+              "admin_user": host_bootstrap_admin_user,
+              "admin_uid": host_bootstrap_admin_uid | int,
+              "admin_gid": host_bootstrap_admin_gid | int,
+              "authentication": "ssh-key-and-external-password-hash"
+            }
+          - host_bootstrap_existing_path_chain.results[3].stat.uid | int
+            == host_bootstrap_admin_uid | int
+          - host_bootstrap_existing_path_chain.results[3].stat.gid | int
+            == host_bootstrap_admin_gid | int
+          - host_bootstrap_existing_path_chain.results[3].stat.mode == "0600"
+          - >-
+            host_bootstrap_existing_authorized_keys_content.content
+            | b64decode
+            == host_bootstrap_authorized_keys | trim ~ "\n"
+        fail_msg: >-
+          Existing admin state does not cryptographically match this completed
+          bootstrap revision and its external inputs. Nothing was changed.
+        quiet: true
+      no_log: true
+
+- name: Create the reviewed administrator primary group
+  ansible.builtin.group:
+    name: "{{ host_bootstrap_admin_user }}"
+    gid: "{{ host_bootstrap_admin_gid }}"
+    state: present
+  when: host_bootstrap_is_fresh
+
+- name: Create the SSH login allowlist group
+  ansible.builtin.group:
+    name: "{{ host_bootstrap_ssh_group }}"
+    state: present
+  when: host_bootstrap_is_fresh
+
+- name: Create the reviewed administrator account
+  ansible.builtin.user:
+    name: "{{ host_bootstrap_admin_user }}"
+    uid: "{{ host_bootstrap_admin_uid }}"
+    group: "{{ host_bootstrap_admin_user }}"
+    groups:
+      - sudo
+      - "{{ host_bootstrap_ssh_group }}"
+    append: false
+    home: "{{ host_bootstrap_admin_home }}"
+    create_home: true
+    shell: /bin/bash
+    password: "{{ host_bootstrap_password_hash }}"
+    update_password: on_create
+    password_lock: false
+    state: present
+  no_log: true
+  when: host_bootstrap_is_fresh
+
+- name: Enforce the exact administrator home boundary
+  ansible.builtin.file:
+    path: "{{ host_bootstrap_admin_home }}"
+    state: directory
+    owner: "{{ host_bootstrap_admin_user }}"
+    group: "{{ host_bootstrap_admin_user }}"
+    mode: "0750"
+  when: host_bootstrap_is_fresh
+
+- name: Create the administrator SSH configuration directory
+  ansible.builtin.file:
+    path: "{{ host_bootstrap_admin_home }}/.ssh"
+    state: directory
+    owner: "{{ host_bootstrap_admin_user }}"
+    group: "{{ host_bootstrap_admin_user }}"
+    mode: "0700"
+  when: host_bootstrap_is_fresh
+
+- name: Install the exact administrator SSH key allowlist
+  ansible.builtin.copy:
+    content: "{{ host_bootstrap_authorized_keys | trim }}\n"
+    dest: "{{ host_bootstrap_admin_home }}/.ssh/authorized_keys"
+    owner: "{{ host_bootstrap_admin_user }}"
+    group: "{{ host_bootstrap_admin_user }}"
+    mode: "0600"
+    backup: false
+  no_log: true
+  when: host_bootstrap_is_fresh
+
+- name: Inspect the installed administrator authorized keys
+  ansible.builtin.stat:
+    path: "{{ host_bootstrap_admin_home }}/.ssh/authorized_keys"
+    follow: false
+  register: host_bootstrap_installed_authorized_keys
+  no_log: true
+
+- name: Verify the installed administrator identity
+  ansible.builtin.assert:
+    that:
+      - host_bootstrap_installed_authorized_keys.stat.isreg
+      - not host_bootstrap_installed_authorized_keys.stat.islnk
+      - >-
+        host_bootstrap_installed_authorized_keys.stat.uid | int
+        == host_bootstrap_admin_uid | int
+      - >-
+        host_bootstrap_installed_authorized_keys.stat.gid | int
+        == host_bootstrap_admin_gid | int
+      - host_bootstrap_installed_authorized_keys.stat.mode == "0600"
+    fail_msg: "The installed administrator SSH identity is unsafe."
+    quiet: true
+  no_log: true
+
+- name: Create the bootstrap provenance directory
+  ansible.builtin.file:
+    path: "{{ host_bootstrap_metadata_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: host_bootstrap_is_fresh
+
+- name: Record the fresh-host bootstrap provenance
+  ansible.builtin.template:
+    src: bootstrap-version.yml.j2
+    dest: "{{ host_bootstrap_metadata_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: host_bootstrap_is_fresh

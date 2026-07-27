@@ -1,0 +1,2 @@
+---
+minecraft_preflight_services_root: "{{ platform_state_root }}/services"

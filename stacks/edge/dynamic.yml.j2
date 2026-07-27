@@ -1,3 +1,11 @@
+{% set kropia = approved_services | selectattr("id", "equalto", "kropia") | first %}
+{% set minecraft_stats = approved_services | selectattr("id", "equalto", "minecraft-stats") | first %}
+{% set n8n = approved_services | selectattr("id", "equalto", "n8n") | first %}
+{% set openclaw = approved_services | selectattr("id", "equalto", "openclaw-clean") | first %}
+{% set passbolt = approved_services | selectattr("id", "equalto", "passbolt") | first %}
+{% set pablo = approved_services | selectattr("id", "equalto", "personal-website-pablo") | first %}
+{% set alberto = approved_services | selectattr("id", "equalto", "personal-website-alberto") | first %}
+{% set shlink = approved_services | selectattr("id", "equalto", "shlink") | first %}
 http:
   routers:
     edge-health:
@@ -8,6 +16,78 @@ http:
         - edge-security
         - edge-rate-limit
       service: ping@internal
+      tls:
+        certResolver: letsencrypt
+    kropia:
+      rule: "Host(`{{ kropia.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: kropia
+      tls:
+        certResolver: letsencrypt
+    minecraft-stats:
+      rule: "Host(`{{ minecraft_stats.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: minecraft-stats
+      tls:
+        certResolver: letsencrypt
+    n8n:
+      rule: "Host(`{{ n8n.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: n8n
+      tls:
+        certResolver: letsencrypt
+    openclaw:
+      rule: "Host(`{{ openclaw.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: openclaw
+      tls:
+        certResolver: letsencrypt
+    passbolt:
+      rule: "Host(`{{ passbolt.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - passbolt-security
+      service: passbolt
+      tls:
+        certResolver: letsencrypt
+    portfolio-pablo:
+      rule: "Host(`{{ pablo.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: portfolio-pablo
+      tls:
+        certResolver: letsencrypt
+    portfolio-alberto:
+      rule: "Host(`{{ alberto.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: portfolio-alberto
+      tls:
+        certResolver: letsencrypt
+    shlink:
+      rule: "Host(`{{ shlink.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: shlink
       tls:
         certResolver: letsencrypt
 
@@ -26,6 +106,90 @@ http:
         average: 20
         burst: 40
         period: 1s
+    edge-compress:
+      compress: {}
+    edge-default:
+      chain:
+        middlewares:
+          - edge-security
+          - edge-compress
+    passbolt-forwarded-proto:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+    passbolt-security:
+      chain:
+        middlewares:
+          - passbolt-forwarded-proto
+          - edge-security
+
+  services:
+    kropia:
+      loadBalancer:
+        servers:
+          - url: http://workloads_kropia:80
+        healthCheck:
+          path: /health
+          interval: 15s
+          timeout: 3s
+    minecraft-stats:
+      loadBalancer:
+        servers:
+          - url: http://workloads_minecraft-stats:8080
+        healthCheck:
+          path: /actuator/health
+          interval: 15s
+          timeout: 3s
+    n8n:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://workloads_n8n:5678
+        healthCheck:
+          path: /healthz
+          interval: 15s
+          timeout: 3s
+    openclaw:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://workloads_openclaw:18789
+        healthCheck:
+          path: /readyz
+          interval: 15s
+          timeout: 3s
+    passbolt:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://workloads_passbolt:80
+    portfolio-pablo:
+      loadBalancer:
+        servers:
+          - url: http://workloads_portfolio-pablo:3000
+        healthCheck:
+          path: /
+          interval: 15s
+          timeout: 3s
+    portfolio-alberto:
+      loadBalancer:
+        servers:
+          - url: http://workloads_portfolio-alberto:3000
+        healthCheck:
+          path: /
+          interval: 15s
+          timeout: 3s
+    shlink:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://workloads_shlink:8080
+        healthCheck:
+          path: /rest/health
+          interval: 15s
+          timeout: 3s
 
 tls:
   options:

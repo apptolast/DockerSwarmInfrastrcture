@@ -3,14 +3,13 @@
   ansible.builtin.package_facts:
     manager: auto
 
-- name: Verify Chrony is the only installed time daemon
+- name: Verify the managed Chrony time daemon is installed
   ansible.builtin.assert:
     that:
       - '"chrony" in ansible_facts.packages'
-      - '"systemd-timesyncd" not in ansible_facts.packages'
     fail_msg: >-
-      Chrony must be installed and systemd-timesyncd must remain absent. The
-      baseline does not replace the active time provider.
+      Chrony must be installed. An independently installed legacy time package
+      is preserved until its decommission is separately approved.
     quiet: true
 
 - name: Verify Chrony is active

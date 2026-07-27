@@ -1,0 +1,8 @@
+# Managed by Ansible. CrowdSec reads the host's canonical syslog streams.
+filenames:
+  - /var/log/messages
+  - /var/log/syslog
+  - /var/log/kern.log
+labels:
+  type: syslog
+source: file

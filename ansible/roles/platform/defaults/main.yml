@@ -1,17 +1,34 @@
 ---
 platform_environment: production
 platform_public_ipv4: ""
+platform_public_ipv6: ""
+platform_public_ipv6_prefix: ""
 platform_public_interface: eth0
+platform_netcup_server_id: 0
+platform_netcup_server_mac: ""
 platform_swarm_data_path_port: 4789
 platform_swarm_default_addr_pool:
   - 10.0.0.0/8
 platform_swarm_default_addr_pool_mask_length: 24
 platform_install_root: /opt/dockerswarm
 platform_state_root: /srv/dockerswarm
-platform_edge_network: apptolast-edge
+platform_edge_monitoring_network: apptolast-edge-monitoring
+platform_edge_networks: {}
 platform_public_tcp_ports:
   - 80
   - 443
+  - 25565
+platform_minecraft_public_enabled: false
+platform_public_ipv6_tcp_ports: []
+platform_effective_public_tcp_ports: >-
+  {{
+    platform_public_tcp_ports
+    if platform_minecraft_public_enabled | bool
+    else platform_public_tcp_ports | difference([25565])
+  }}
+platform_node_labels:
+  platform.edge: "true"
+  platform.workloads: "true"
 platform_docker_packages: []
 platform_docker_apt_key_fingerprint: >-
   9DC858229FC7DD38854AE2D88D81803C0EBFCD88

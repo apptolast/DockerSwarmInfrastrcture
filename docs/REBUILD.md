@@ -1,147 +1,143 @@
 # Reconstrucción completa y cobertura declarativa
 
-## Objetivo
+## Criterio
 
-La plataforma se considera reproducible cuando un VPS limpio y los backups
-offsite permiten reconstruir host, Swarm, edge y aplicaciones sin depender de
-una configuración manual desconocida.
+Una reconstrucción válida parte de un VPS Ubuntu 26.04 limpio, un commit
+revisado y material externo recuperable. Termina únicamente cuando host,
+servicios, datos, DNS, backups y rollback han sido verificados.
 
-“Está instalado ahora” no significa “se puede reconstruir”. Cada elemento debe
-estar en una de estas categorías:
+Cada elemento debe ser uno de:
 
-- configuración no sensible declarada en Terraform, Ansible o Git;
-- secreto referenciado por identidad y recuperable desde un gestor externo;
-- dato durable cubierto por backup y restore probado;
-- bootstrap de proveedor inevitable, documentado con entradas y responsable.
+- configuración no sensible declarada aquí;
+- secreto identificado y recuperable desde un gestor externo;
+- dato durable cubierto por backup/restore probado;
+- bootstrap inevitable del proveedor con entradas y responsable explícitos.
 
 ## Cobertura actual
 
-| Componente | Cobertura | Situación |
+<!-- markdownlint-disable MD013 -->
+
+| Componente | Código | Estado productivo |
 | --- | --- | --- |
-| Compra/reinstalación del VPS | Bootstrap externo | No soportado por provider |
-| Identidad del VPS y NIC | Terraform con gate | Faltan IDs reales/import |
-| Buckets R2 de state | Terraform | Declarados, aún no aplicados |
-| DNS Cloudflare | Terraform | Solo `edge`; falta import/credencial |
-| Firewall y claves SCP | Terraform con gate | Falta inventario/import |
-| Paquetes Docker y repositorio APT | Ansible | Declarados y fijados |
-| Daemon, forwarding, Swarm y edge | Ansible | Declarados, pendientes de apply |
-| SSH, sysctl, journald y updates | Adopción Ansible | Tienen preflight |
-| Usuario admin y claves autorizadas | Bootstrap externo | Solo se validan |
-| UFW completo y egress | Adopción Ansible | Falta reconstrucción |
-| Seguridad host y tiempo | Adopción Ansible | Falta configuración completa |
-| State Terraform | R2 y snapshot `age` | Faltan buckets/destino/restore |
-| Raft Swarm y ACME | Runbook | Falta destino offsite y restore |
-| Aplicaciones y datos | Repo de workloads | Falta inventario y migración |
-| Monitorización y alertas externas | Sin propietario | Diseño pendiente |
+| Compra/reinstalación del VPS | Runbook externo | SCP no tiene provider de compra |
+| Identidad/NIC y perímetro Netcup | Terraform con import/gates | No aplicado; credencial real ausente |
+| Buckets R2 de state | Terraform | No aplicados; credenciales ausentes |
+| DNS Cloudflare | Terraform, 10 A exactos | No importado ni cortado |
+| Bootstrap `admin`/SSH | Ansible + wrapper atómico | Código probado; no usado en este host |
+| Seguridad, UFW, tiempo y logging | Ansible/Jinja | Código probado; apply pendiente |
+| Docker, Swarm y firewall Docker | Ansible | Swarm existe; reconciliación pendiente |
+| Traefik y certificados | Stack/Ansible | Secret existe; stack no desplegado |
+| Ocho servicios HTTP | Stacks/Ansible | Datos preparados; stacks no desplegados |
+| Minecraft | Stack/Ansible + gate triple | Datos preparados; publicación bloqueada |
+| Observabilidad | Stack/Ansible | No desplegada |
+| Backup/restore | restic, systemd, Ansible | Código probado; activación bloqueada |
+| State Terraform | R2 + snapshots `age` | Destinos/identidades reales ausentes |
 
-El provider comunitario Netcup `1.0.0` no crea ni compra servidores. Expone
-inventario de servidores y recursos de firewall, claves, reverse DNS,
-snapshots y failover. La instalación de imagen desde SCP sigue siendo un
-bootstrap externo:
-[recursos del provider fijado](https://github.com/hornc-greedy/terraform-provider-netcup/tree/v1.0.0/docs/resources).
+<!-- markdownlint-enable MD013 -->
 
-## Por qué el baseline aún adopta
+“Código probado” no significa “recuperación demostrada”. Hoy siguen sin existir
+backends R2 live, escrow externo de autolock ni un ensayo completo en otro VPS.
 
-El servidor contiene controles de seguridad ya activos. Reemplazar su
-configuración sin inventario privilegiado podría:
+## Bootstrap fresco
 
-- bloquear SSH o egress necesario;
-- perder credenciales del bouncer CrowdSec;
-- desactivar jails o reglas que no aparecen en este checkout;
-- cambiar la fuente de tiempo;
-- romper el orden entre CrowdSec, UFW y Docker.
+`scripts/bootstrap-host.sh`:
 
-Por eso el rol actual administra solo las partes observadas y verificables, y
-falla si los controles heredados no cumplen. Esa decisión protege el servidor
-actual, pero no cierra todavía una reconstrucción desde cero.
+- exige Ubuntu 26.04, root inicial, commit limpio y entradas externas `0600`;
+- rechaza identidades reservadas, rutas/plataforma o paquetes Docker/containerd
+  preexistentes;
+- crea únicamente `admin` UID/GID 1001, `sshusers` y las claves aprobadas;
+- conserva el hash de contraseña externo sin reescribirlo en un resume;
+- liga todo el flujo a un nonce/commit/contrato y al mutex host-global;
+- instala primero una política SSH staged;
+- arma rollback automático antes de deshabilitar root;
+- solo libera el lock tras una reconexión independiente de `admin`.
 
-## Trabajo necesario para cerrar la reconstrucción
+Un crash conserva marker. No existe timeout que lo borre: la recuperación exige
+inspección, confirmación ligada al contenido y evidencia archivada.
 
-### 1. Inventario privilegiado y saneado
+El rol `host_security` fija el snapshot Ubuntu promovido, repositorios/firma de
+CrowdSec, paquetes, Hub, UFW fail-closed, Chrony, rsyslog, Fail2ban, PSAD y SSH.
+Herramientas de seguridad legacy quedan inventariadas pero no se purgan ni
+reescriben sin una migración explícita.
 
-El operador ejecutará una auditoría con `sudo` y guardará el resultado cifrado
-fuera de Git. Debe incluir:
+## Servicios y datos
 
-- versión de imagen, particiones, mounts y opciones de filesystem;
-- usuarios, grupos y fingerprints de claves, nunca claves privadas;
-- repositorios APT, fingerprints y versiones de paquetes;
-- reglas UFW, iptables/ip6tables, CrowdSec, Fail2ban y PSAD;
-- Chrony, rsyslog, journald, logrotate, sysctl y unidades/timers;
-- referencias de secretos y custodios, sin volcar sus valores;
-- puertos, procesos, cron y automatizaciones fuera de Git.
+El catálogo aprobado incluye:
 
-Los ficheros con tokens o claves se inventarían por checksum, owner, mode,
-origen y procedimiento de recuperación; su contenido no se copia a este repo.
+- Kropia;
+- Traefik;
+- Minecraft Stats;
+- Minecraft;
+- n8n;
+- OpenClaw limpio;
+- Passbolt;
+- webs personales de Alberto y Pablo;
+- Shlink.
 
-### 2. Rol de bootstrap de host
+La denylist se valida en tests y no aparece en stacks. Las definiciones de
+workloads, secretos por identidad, restore markers, bases, healthchecks,
+redes, rutas y preflight de imágenes pertenecen a este repositorio.
 
-Después del inventario y en un VPS de ensayo se añadirá un rol separado que:
+Los datos restaurados bajo `/srv/dockerswarm` no se activan hasta que:
 
-- crea la identidad administrativa y el grupo SSH;
-- instala exclusivamente claves públicas aprobadas desde un vault o gestor;
-- configura repositorios y paquetes con fingerprints revisados;
-- establece UFW fail-closed, SSH restringido y egress completo;
-- demuestra reconexión antes de cerrar el acceso anterior;
-- no inicializa Swarm hasta superar el baseline.
+- el marker de migración coincide con catálogo, manifests y checksums;
+- todos los secrets esperados existen con la identidad versionada;
+- las imágenes exactas están disponibles por digest;
+- no hay writers anteriores concurrentes;
+- los smoke tests específicos pasan.
 
-No se prueba por primera vez en este manager mononodo.
+OpenClaw se inicializa limpio y rechaza evidencia de import legacy. n8n conserva
+workflows no publicados hasta completar la aceptación funcional/OAuth.
 
-### 3. Roles de controles de seguridad
+## Backup
 
-CrowdSec, bouncer, Fail2ban, PSAD, Chrony y rsyslog se trasladarán de
-“verificados” a “gestionados” uno por uno. Cada rol necesita:
+La capa de backup ya está codificada. Cubre dumps PostgreSQL, datasets, fuentes
+de secretos, observabilidad, ACME, Minecraft y una copia fría de Raft. Falla
+antes de mutar si faltan:
 
-- template no sensible y validación nativa previa;
-- entrada secreta externa si aplica;
-- backup del original y rollback;
-- prueba de servicio, integración con firewall y segunda ejecución idempotente.
+- bucket/account R2 de backup;
+- credenciales R2 limitadas;
+- contraseña restic con custodia externa;
+- autolock ya activo y unlock key custodiada/probada;
+- `backup_activation_enabled: true`.
 
-### 4. Backup automatizado
+No se activa autolock con un comando manual que pueda perder la clave entre su
+emisión y el escrow. Hasta integrar un destino y custodio externo aprobado, el
+runbook marca `STOP`.
 
-Solo después de elegir proveedor offsite, recipients `age`, retención y RPO/RTO
-se instalarán mediante Ansible unidades/timers de backup. La automatización
-debe:
+## Orden de reconstrucción
 
-- detener Docker para el backup coherente de Raft;
-- preservar owner/mode de ACME;
-- congelar o dumpear cada aplicación según su tecnología;
-- cifrar antes de transmitir;
-- emitir métricas/alertas y no borrar la última copia válida;
-- ejecutar restauraciones periódicas en otro host.
-
-Un snapshot Netcup puede complementar, pero nunca sustituir, una copia cifrada
-fuera de la cuenta y una restauración probada.
-
-### 5. Workloads y observabilidad
-
-El repositorio de workloads declarará stacks, rutas, healthchecks, migraciones,
-dependencias y restore por aplicación. La monitorización externa necesita un
-propietario, canal de alerta y prueba desde fuera del VPS.
-
-## Orden de una futura reconstrucción
-
-1. Crear o reinstalar VPS desde la imagen aprobada en SCP.
-2. Verificar identidad, consola, discos, NIC, IP y host keys.
-3. Ejecutar el rol de bootstrap con claves públicas desde el gestor.
-4. Aplicar y repetir baseline/controles del host.
-5. Importar/aplicar perímetro sin abrir puertos de aplicaciones.
-6. Restaurar o inicializar Swarm conforme a la causa del incidente.
+1. Crear/reinstalar el VPS desde la imagen aprobada y verificar consola, NIC,
+   discos, IP y host keys.
+2. Preparar fuera de Git claves públicas y hash de contraseña del administrador.
+3. Ejecutar el bootstrap fresco desde un commit limpio.
+4. Importar/aplicar proveedor sin abrir todavía puertos de aplicaciones.
+5. Aplicar dos veces plataforma y baseline; la segunda debe ser idempotente.
+6. Restaurar o inicializar Swarm según la causa del incidente.
 7. Restaurar ACME o emitir de nuevo tras validar DNS-01 staging.
-8. Desplegar edge y validar TLS desde fuera.
-9. Restaurar datos y desplegar una aplicación cada vez.
-10. Cambiar DNS únicamente tras pruebas y conservar rollback.
+8. Aplicar preflight, edge y workloads sin cambiar aún DNS.
+9. Probar cada servicio con resolución forzada hacia la IP nueva.
+10. Aplicar observabilidad y comprobar alertas/blackbox.
+11. Adoptar DNS existente; cortar los ocho A HTTP y crear `edge`.
+12. Mantener Minecraft legacy hasta aprobar seguridad/publicación.
+13. Con R2 y custodia externa ya probados, aplicar el target separado `backup`.
+14. Ejecutar restore de aplicación y recuperación Raft en un host aislado.
 
-## Entradas que debe preparar el propietario
+`site` termina en observabilidad. Backup es deliberadamente un target separado:
+omitirlo tras preparar sus entradas deja la reconstrucción incompleta.
 
-No deben pegarse en chat ni commit:
+## Entradas externas pendientes
 
-- catálogo de claves SSH públicas, fingerprints, propietarios y expiración;
-- CIDR administrativos y mecanismo alternativo de acceso;
-- export privilegiado saneado de UFW y controles de seguridad;
-- proveedor/destino offsite, recipients `age`, retención, RPO y RTO;
-- inventario del repositorio anterior, datos y pruebas de cada aplicación;
-- canal y responsable de alertas, incidentes y rollback;
-- decisión sobre `apptolast-workloads` y custodios GitHub.
+Nunca deben pegarse en chat ni commit:
 
-Hasta disponer de esas entradas, la cobertura parcial se mantiene explícita y
-ningún documento afirma que una máquina vacía sea todavía reconstruible.
+- claves SSH públicas aprobadas y hash de contraseña inicial;
+- credenciales/identidades separadas para Cloudflare, R2 y Netcup;
+- recipients `age` e identidades firmantes reales;
+- contraseña restic y unlock key en un gestor externo;
+- canal/responsable de alertas, incidentes y rollback;
+- aceptación OAuth de n8n y decisión de exposición de Minecraft.
+- evidencia de snapshot final o tooling revisado de refresh/promoción.
+
+La máquina todavía no puede declararse reconstruible al 100 % mientras falten
+esas entradas y un ensayo off-host. Los gates convierten esa ausencia en un
+fallo explícito, no en configuración implícita.

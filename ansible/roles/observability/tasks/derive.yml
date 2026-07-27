@@ -1,0 +1,179 @@
+---
+- name: Validate top-level observability inputs
+  ansible.builtin.assert:
+    that:
+      - schema_version | int == 1
+      - catalog_version is match("^[0-9]+\\.[0-9]+\\.[0-9]+$")
+      - internal_platform.observability.classification == "internal-platform"
+      - not internal_platform.observability.legacy_migration | bool
+      - internal_platform.observability.hostnames | length == 0
+      - observability_stack_name is match("^[a-z][a-z0-9-]*$")
+      - observability_secret_catalog_version | int == 1
+      - observability_secret_version is match("^v[1-9][0-9]*$")
+      - >-
+        internal_platform.observability.components
+        | map(attribute="id") | list | sort
+        == observability_expected_components | sort
+      - >-
+        internal_platform.observability.ports
+        | selectattr("published", "ne", none) | list | length == 0
+      - >-
+        internal_platform.observability.ports
+        | rejectattr("exposure", "equalto", "internal")
+        | list | length == 0
+      - >-
+        denied_services | map(attribute="id") | list
+        | intersect(observability_expected_components) | length == 0
+    fail_msg: >-
+      Observability is outside the reviewed internal-platform, image, port or
+      migration contract.
+
+- name: Index observability components
+  ansible.builtin.set_fact:
+    observability_components_by_id: >-
+      {{
+        observability_components_by_id | default({})
+        | combine({item.id: item})
+      }}
+  loop: "{{ internal_platform.observability.components }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Index observability state paths
+  ansible.builtin.set_fact:
+    observability_paths: >-
+      {{
+        observability_paths | default({})
+        | combine({item.component: item.path})
+      }}
+  loop: "{{ internal_platform.observability.data_paths }}"
+  loop_control:
+    label: "{{ item.component }}"
+
+- name: Index versioned observability Docker Secrets
+  ansible.builtin.set_fact:
+    observability_secret_names: >-
+      {{
+        observability_secret_names | default({})
+        | combine({item.key: item.external_name})
+      }}
+  loop: "{{ observability_secrets }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Derive immutable images only from the service catalog
+  ansible.builtin.set_fact:
+    observability_images:
+      prometheus: >-
+        {{ observability_components_by_id.prometheus.image }}
+      alertmanager: >-
+        {{ observability_components_by_id.alertmanager.image }}
+      blackbox_exporter: >-
+        {{ observability_components_by_id["blackbox-exporter"].image }}
+      loki: >-
+        {{ observability_components_by_id.loki.image }}
+      alloy: >-
+        {{ observability_components_by_id.alloy.image }}
+      grafana: >-
+        {{ observability_components_by_id.grafana.image }}
+      node_exporter: >-
+        {{ observability_components_by_id["node-exporter"].image }}
+      cadvisor: >-
+        {{ observability_components_by_id.cadvisor.image }}
+      postgres_exporter: >-
+        {{ observability_components_by_id["postgres-exporter"].image }}
+      redis_exporter: >-
+        {{ observability_components_by_id["redis-exporter"].image }}
+
+- name: Initialize the public HTTPS probe target list
+  ansible.builtin.set_fact:
+    observability_public_probe_targets: []
+
+- name: Derive public HTTPS probe targets from approved services
+  ansible.builtin.set_fact:
+    observability_public_probe_targets: >-
+      {{
+        observability_public_probe_targets
+        + [
+          "https://" + item.1
+          + observability_http_probe_paths[item.0.id]
+        ]
+      }}
+  loop: "{{ approved_services | subelements('hostnames') }}"
+  loop_control:
+    label: "{{ item.0.id }}"
+  when: item.0.id != "traefik-edge"
+
+- name: Validate derived images, paths, secrets and probes
+  ansible.builtin.assert:
+    that:
+      - observability_images | length == 10
+      - observability_images.values() | list | unique | length == 10
+      - >-
+        observability_images.values() | list
+        | select("match", "^.+@sha256:[a-f0-9]{64}$")
+        | list | length == 10
+      - observability_paths | length == 5
+      - >-
+        observability_paths.values() | list
+        | select("match", "^/srv/dockerswarm/observability/.+")
+        | list | length == 5
+      - observability_secrets | length == 5
+      - >-
+        observability_secrets | map(attribute="key")
+        | list | unique | length == 5
+      - >-
+        observability_secrets | map(attribute="external_name")
+        | list | unique | length == 5
+      - >-
+        observability_secrets | map(attribute="source_file")
+        | list | unique | length == 5
+      - observability_secret_names | length == 5
+      - >-
+        observability_http_probe_paths.keys() | list | sort
+        == [
+          "kropia",
+          "minecraft-stats",
+          "n8n",
+          "openclaw-clean",
+          "passbolt",
+          "personal-website-alberto",
+          "personal-website-pablo",
+          "shlink"
+        ]
+      - >-
+        observability_secrets | map(attribute="external_name") | list
+        | select(
+          "match",
+          "^[a-z0-9-]+-" + observability_secret_version + "$"
+        )
+        | list | length == 5
+      - observability_public_probe_targets | length == 8
+      - >-
+        observability_public_probe_targets | unique | length == 8
+      - >-
+        observability_public_probe_targets
+        | select("match", "^https://[^/]+/.+")
+        | list | length == 8
+    fail_msg: >-
+      Derived observability images, state paths, secrets or public probes are
+      ambiguous or outside the reviewed contract.
+
+- name: Derive the expected image for every Swarm service
+  ansible.builtin.set_fact:
+    observability_expected_images:
+      prometheus: "{{ observability_images.prometheus }}"
+      alertmanager: "{{ observability_images.alertmanager }}"
+      blackbox-exporter: "{{ observability_images.blackbox_exporter }}"
+      loki: "{{ observability_images.loki }}"
+      alloy: "{{ observability_images.alloy }}"
+      grafana: "{{ observability_images.grafana }}"
+      node-exporter: "{{ observability_images.node_exporter }}"
+      cadvisor: "{{ observability_images.cadvisor }}"
+      postgres-exporter-n8n: >-
+        {{ observability_images.postgres_exporter }}
+      postgres-exporter-passbolt: >-
+        {{ observability_images.postgres_exporter }}
+      postgres-exporter-shlink: >-
+        {{ observability_images.postgres_exporter }}
+      redis-exporter: "{{ observability_images.redis_exporter }}"

@@ -1,0 +1,137 @@
+---
+- name: Verify the immutable Minecraft contract
+  ansible.builtin.assert:
+    that:
+      - minecraft_contract.schema_version == 1
+      - minecraft_contract.game_version is match("^[0-9]+(?:\\.[0-9]+){1,2}$")
+      - >-
+        minecraft_contract.fabric_loader_version
+        is match("^[0-9]+(?:\\.[0-9]+){1,2}$")
+      - >-
+        minecraft_contract.fabric_launcher_version
+        is match("^[0-9]+(?:\\.[0-9]+){1,2}$")
+      - minecraft_contract.online_mode is boolean
+      - minecraft_contract.runtime_uid == 1000
+      - minecraft_contract.runtime_gid == 1000
+      - minecraft_contract.artifacts | length == 5
+      - >-
+        minecraft_contract.online_mode
+        or not (platform_minecraft_public_enabled | bool)
+    fail_msg: >-
+      The Minecraft version/artifact contract is malformed, or an
+      offline-mode server would be exposed publicly.
+    quiet: true
+
+- name: Inspect every immutable Minecraft runtime artifact
+  ansible.builtin.stat:
+    path: "{{ minecraft_preflight_services_root }}/{{ item.path }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop: "{{ minecraft_contract.artifacts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: minecraft_preflight_artifacts
+  changed_when: false
+  check_mode: false
+
+- name: Verify every immutable Minecraft runtime artifact
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.size == item.item.size
+      - item.stat.checksum == item.item.sha256
+      - item.stat.uid == minecraft_contract.runtime_uid
+      - item.stat.gid == minecraft_contract.runtime_gid
+      - item.stat.mode is match("^0?[456][0-7][0-7]$")
+    fail_msg: "Minecraft artifact drift detected: {{ item.item.path }}"
+    quiet: true
+  loop: "{{ minecraft_preflight_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Inventory the active immutable Minecraft mods
+  ansible.builtin.find:
+    paths: "{{ minecraft_preflight_services_root }}/minecraft/mods"
+    file_type: file
+    patterns: "*.jar"
+    recurse: false
+    follow: false
+  register: minecraft_preflight_mods
+  changed_when: false
+  check_mode: false
+
+- name: Enforce the exact Minecraft mod allowlist
+  ansible.builtin.assert:
+    that:
+      - >-
+        minecraft_preflight_mods.files
+        | map(attribute="path")
+        | map("basename")
+        | sort
+        ==
+        minecraft_contract.artifacts
+        | map(attribute="path")
+        | select("match", "^minecraft/mods/")
+        | map("basename")
+        | sort
+    fail_msg: "The active Minecraft mod directory differs from its lock."
+    quiet: true
+
+- name: Read the restored Fabric manifest
+  ansible.builtin.slurp:
+    src: >-
+      {{ minecraft_preflight_services_root
+         }}/minecraft/data/.fabric-manifest.json
+  register: minecraft_preflight_fabric_manifest_raw
+  changed_when: false
+  check_mode: false
+
+- name: Decode the restored Fabric manifest
+  ansible.builtin.set_fact:
+    minecraft_preflight_fabric_manifest: >-
+      {{
+        minecraft_preflight_fabric_manifest_raw.content
+        | b64decode
+        | from_json
+      }}
+
+- name: Enforce the restored Fabric launcher identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        minecraft_preflight_fabric_manifest.origin.game
+        == minecraft_contract.game_version
+      - >-
+        minecraft_preflight_fabric_manifest.origin.loader
+        == minecraft_contract.fabric_loader_version
+      - >-
+        minecraft_preflight_fabric_manifest.origin.installer
+        == minecraft_contract.fabric_launcher_version
+      - minecraft_preflight_fabric_manifest.files | length == 1
+      - >-
+        minecraft_preflight_fabric_manifest.launcherPath
+        ==
+        "./fabric-server-mc."
+        ~ minecraft_contract.game_version
+        ~ "-loader."
+        ~ minecraft_contract.fabric_loader_version
+        ~ "-launcher."
+        ~ minecraft_contract.fabric_launcher_version
+        ~ ".jar"
+    fail_msg: "The restored Fabric manifest differs from its immutable lock."
+    quiet: true
+
+- name: Verify restored Minecraft authentication mode
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/grep
+      - --fixed-strings
+      - --line-regexp
+      - "online-mode={{ minecraft_contract.online_mode | lower }}"
+      - >-
+        {{ minecraft_preflight_services_root
+           }}/minecraft/data/server.properties
+  changed_when: false
+  check_mode: false

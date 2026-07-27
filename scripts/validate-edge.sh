@@ -8,6 +8,8 @@ readonly SCRIPT_DIR
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 readonly PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
+# v3.7.9 emits this unconditionally before it evaluates effective config:
+# https://github.com/traefik/traefik/blob/d0bd2ec198533d760c1abfc74b98033d6d92d039/cmd/traefik/traefik.go#L100-L103
 readonly KNOWN_WARNING="Traefik can reject some encoded characters in the request path"
 
 fail() {
@@ -37,6 +39,7 @@ done
 
 mapfile -t edge_contract < <(
   "${PYTHON_BIN}" - "${PROJECT_DIR}" <<'PY'
+import json
 import pathlib
 import sys
 import yaml
@@ -46,23 +49,53 @@ contract = yaml.safe_load((root / "config/platform.yml").read_text())
 group_vars = yaml.safe_load((root / "ansible/group_vars/all.yml").read_text())
 print(contract["platform_public_ipv4"])
 print(contract["edge_traefik_hostname"])
-print(contract["platform_edge_network"])
+print(contract["platform_edge_monitoring_network"])
+print(json.dumps(contract["platform_edge_networks"], sort_keys=True))
 print(group_vars["edge_traefik_image"])
 print(group_vars["edge_traefik_cloudflare_secret_name"])
 PY
 )
-(( ${#edge_contract[@]} == 5 )) ||
+(( ${#edge_contract[@]} == 6 )) ||
   fail "cannot read the edge contract"
 public_ipv4="${edge_contract[0]}"
 hostname="${edge_contract[1]}"
-network_name="${edge_contract[2]}"
-traefik_image="${edge_contract[3]}"
-secret_name="${edge_contract[4]}"
+monitoring_network_name="${edge_contract[2]}"
+edge_network_map_json="${edge_contract[3]}"
+traefik_image="${edge_contract[4]}"
+secret_name="${edge_contract[5]}"
+
+mapfile -t expected_network_names < <(
+  jq --raw-output 'to_entries | sort_by(.key) | .[].value' \
+    <<<"${edge_network_map_json}"
+)
+expected_network_names+=("${monitoring_network_name}")
+(( ${#expected_network_names[@]} == 9 )) ||
+  fail "the isolated edge network allowlist is incomplete"
+
+network_ids=()
+for network_name in "${expected_network_names[@]}"; do
+  network_json="$(docker network inspect "${network_name}")"
+  jq --exit-status '
+    length == 1 and
+    .[0].Driver == "overlay" and
+    .[0].Scope == "swarm" and
+    .[0].Attachable == false and
+    .[0].Internal == false and
+    .[0].Options.encrypted == ""
+  ' <<<"${network_json}" >/dev/null ||
+    fail "edge network ${network_name} differs from the isolation contract"
+  network_ids+=("$(jq --raw-output '.[0].Id' <<<"${network_json}")")
+done
+expected_network_ids_json="$(
+  printf '%s\n' "${network_ids[@]}" |
+    jq --raw-input --slurp 'split("\n") | map(select(length > 0)) | sort'
+)"
 
 service_json="$(docker service inspect edge_traefik)"
 jq --exit-status \
   --arg image "${traefik_image}" \
   --arg secret "${secret_name}" \
+  --argjson network_ids "${expected_network_ids_json}" \
   '
     length == 1 and
     .[0].Spec.TaskTemplate.ContainerSpec.Image == $image and
@@ -76,6 +109,20 @@ jq --exit-status \
     (
       .[0].Spec.TaskTemplate.ContainerSpec.Secrets |
       length == 1 and .[0].SecretName == $secret
+    ) and
+    (
+      .[0].Spec.TaskTemplate.ContainerSpec.Configs |
+      length == 2
+    ) and
+    (
+      .[0].Spec.TaskTemplate.Networks |
+      map(.Target) | sort == $network_ids
+    ) and
+    (
+      .[0].Spec.TaskTemplate.ContainerSpec.Mounts |
+      length == 1 and
+      .[0].Type == "bind" and
+      .[0].Target == "/data"
     ) and
     (
       .[0].Endpoint.Spec.Ports |
@@ -96,16 +143,6 @@ jq --exit-status \
     )
   ' <<<"${service_json}" >/dev/null ||
   fail "edge_traefik differs from the reviewed service contract"
-
-network_json="$(docker network inspect "${network_name}")"
-jq --exit-status '
-  length == 1 and
-  .[0].Driver == "overlay" and
-  .[0].Scope == "swarm" and
-  .[0].Attachable == false and
-  .[0].Options.encrypted == ""
-' <<<"${network_json}" >/dev/null ||
-  fail "the shared edge network differs from the encrypted overlay contract"
 
 mapfile -t task_containers < <(
   docker ps \
@@ -134,7 +171,7 @@ unknown_logs="$(
   fail "Traefik emitted an unexpected warning-or-higher entry"
 }
 [[ "$(grep -Fc "${KNOWN_WARNING}" <<<"${problem_logs}" || true)" -eq 1 ]] ||
-  fail "the documented upstream Traefik warning did not occur exactly once"
+  fail "the unconditional pinned Traefik warning did not occur exactly once"
 
 resolved_addresses="$(
   getent ahostsv4 "${hostname}" |
@@ -157,7 +194,7 @@ curl \
   --show-error \
   --connect-timeout 5 \
   --max-time 20 \
-  --resolve "${hostname}:443:127.0.0.1" \
+  --resolve "${hostname}:443:${public_ipv4}" \
   --dump-header "${validation_tmp}/https-headers" \
   --output "${validation_tmp}/https-body" \
   "https://${hostname}/ping"
@@ -178,7 +215,7 @@ http_status="$(
     --show-error \
     --connect-timeout 5 \
     --max-time 20 \
-    --resolve "${hostname}:80:127.0.0.1" \
+    --resolve "${hostname}:80:${public_ipv4}" \
     --output /dev/null \
     --write-out '%{http_code}' \
     "http://${hostname}/ping"

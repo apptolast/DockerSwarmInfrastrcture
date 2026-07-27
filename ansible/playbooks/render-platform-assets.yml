@@ -12,6 +12,12 @@
   vars:
     platform_render_dir: "{{ playbook_dir }}/../../.build/platform"
     platform_template_dir: "{{ playbook_dir }}/../roles/platform/templates"
+    platform_effective_public_tcp_ports: >-
+      {{
+        platform_public_tcp_ports
+        if platform_minecraft_public_enabled | bool
+        else platform_public_tcp_ports | difference([25565])
+      }}
 
   tasks:
     - name: Create the disposable platform render directory

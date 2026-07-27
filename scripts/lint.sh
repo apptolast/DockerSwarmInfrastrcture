@@ -10,6 +10,15 @@ readonly PROJECT_DIR
 readonly SHELLCHECK_IMAGE="koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
 readonly GITLEAKS_IMAGE="ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 readonly MARKDOWNLINT_VERSION="0.23.1"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
+
+# shellcheck source=scripts/host-global-docker-validation-lock.sh
+source "${SCRIPT_DIR}/host-global-docker-validation-lock.sh"
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
 
 cd "${PROJECT_DIR}"
 
@@ -34,6 +43,8 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+ensure_docker_validation_lock repository-lint-docker "${SCRIPT_PATH}" "$@"
+
 jq --exit-status '
   . == {
     "log-driver": "local",
@@ -47,7 +58,10 @@ jq --exit-status '
 ' config/daemon.json >/dev/null
 dockerd --validate --config-file=config/daemon.json
 
-mapfile -t shell_scripts < <(find scripts -maxdepth 1 -type f -name '*.sh' | sort)
+mapfile -t shell_scripts < <(
+  find scripts migration/scripts -maxdepth 1 -type f -name '*.sh' |
+    sort
+)
 for script_file in "${shell_scripts[@]}"; do
   bash -n "${script_file}"
 done
@@ -60,8 +74,10 @@ done
 docker run \
   --rm \
   --volume "${PROJECT_DIR}:/workspace:ro" \
+  --workdir /workspace \
   "${SHELLCHECK_IMAGE}" \
   --severity=style \
+  --external-sources \
   "${container_script_paths[@]}"
 
 mapfile -t markdown_files < <(

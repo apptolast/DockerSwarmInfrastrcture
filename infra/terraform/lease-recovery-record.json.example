@@ -1,0 +1,13 @@
+{
+  "action": "release-quarantined-controller",
+  "approved_at": "2026-01-01T00:00:00Z",
+  "controller_stopped_or_revoked": true,
+  "generation": 1,
+  "held_document_sha256": "REPLACE_WITH_CURRENT_CANONICAL_DOCUMENT_SHA256",
+  "operation_id": "REPLACE_WITH_CURRENT_OPERATION_ID",
+  "reason": "REPLACE_WITH_INCIDENT_REFERENCE_AND_CONTROLLER_REVOCATION_EVIDENCE",
+  "repository_contract": "DockerSwarmInfrastructure/terraform-operation-lease/v1",
+  "root": "cloudflare/apptolast-dns",
+  "schema": 1,
+  "signer_identity": "apptolast-terraform-lease-recovery"
+}

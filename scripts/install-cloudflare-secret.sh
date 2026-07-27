@@ -10,6 +10,8 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 readonly PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
 readonly API_BASE="https://api.cloudflare.com/client/v4"
+readonly HOST_LOCK_HELPER="${PROJECT_DIR}/scripts/host_global_operation_lock.py"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 
 token_file=""
 secret_name=""
@@ -34,6 +36,21 @@ EOF
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+ensure_host_global_lock() {
+  local operation=$1
+  [[ -f "${HOST_LOCK_HELPER}" && ! -L "${HOST_LOCK_HELPER}" ]] ||
+    fail "host-global operation-lock helper is absent or unsafe"
+  if [[ -n "${DOCKERSWARM_IAC_LOCK_SCOPE:-}" ]]; then
+    /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+      prove --operation "${operation}" >/dev/null ||
+      fail "host-global operation-lock proof failed"
+    return
+  fi
+  exec /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+    run --operation "${operation}" -- \
+    "${SCRIPT_PATH}" "${original_args[@]}"
 }
 
 cloudflare_request() {
@@ -110,6 +127,8 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+
+ensure_host_global_lock cloudflare-secret-install
 
 for command_name in curl docker jq stat; do
   command -v "${command_name}" >/dev/null ||

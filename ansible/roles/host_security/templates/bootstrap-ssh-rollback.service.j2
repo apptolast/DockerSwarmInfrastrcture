@@ -1,0 +1,16 @@
+[Unit]
+Description=Rollback an unconfirmed DockerSwarm SSH bootstrap
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/dockerswarm-bootstrap-ssh-rollback
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/ssh /etc/systemd/system /run/dockerswarm-bootstrap-ssh
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native

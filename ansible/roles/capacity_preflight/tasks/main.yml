@@ -1,0 +1,181 @@
+---
+- name: Require the versioned capacity contract
+  ansible.builtin.assert:
+    that:
+      - capacity_contract is defined
+      - capacity_contract is mapping
+      - capacity_contract.schema_version | int == 1
+      - capacity_contract.topology.model == "single-node"
+      - capacity_contract.topology.eligible_nodes | int == 1
+      - capacity_contract.policy.require_explicit_resources | bool
+      - >-
+        capacity_contract.policy.aggregate_memory_limit_overcommit_ratio
+        == "1.00"
+      - >-
+        capacity_contract.policy.aggregate_cpu_limit_overcommit_ratio
+        == "2.50"
+      - >-
+        capacity_contract.policy.service_memory_limit_to_reservation_ratio
+        == "2.50"
+      - capacity_contract.system_reserve.cpu_millicores | int >= 1000
+      - capacity_contract.system_reserve.memory_mib | int >= 3072
+      - capacity_contract.operational_headroom.memory_mib | int >= 512
+      - >-
+        capacity_contract.application_guards.minecraft
+          .minimum_non_heap_memory_mib | int
+        >= 1024
+      - >-
+        capacity_contract.application_guards.n8n
+          .maximum_decompressed_to_limit_ratio
+        == "0.25"
+      - >-
+        capacity_contract.application_guards.redis.reviewed_maxmemory_mib
+          | int
+        == 32
+      - >-
+        capacity_contract.application_guards.redis
+          .minimum_process_overhead_mib | int
+        >= 32
+      - >-
+        capacity_contract.application_guards.redis.required_maxmemory_policy
+        == "allkeys-lru"
+      - >-
+        capacity_contract.application_guards.redis
+          .require_persistence_disabled | bool
+      - >-
+        capacity_contract.application_guards.selenium
+          .minimum_non_shm_memory_mib | int
+        >= 512
+      - >-
+        capacity_contract.application_guards.selenium
+          .require_tracing_disabled | bool
+      - >-
+        capacity_contract.application_guards.selenium
+          .require_vnc_disabled | bool
+    fail_msg: >-
+      The loaded capacity contract is absent, incomplete or outside the
+      reviewed single-node schema.
+
+- name: Gather hardware facts required by the capacity gate
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - hardware
+    filter:
+      - ansible_memtotal_mb
+      - ansible_processor_vcpus
+      - ansible_swaptotal_mb
+  register: capacity_preflight_hardware_facts
+
+- name: Derive reviewed capacity budgets
+  ansible.builtin.set_fact:
+    capacity_preflight_actual_cpu_millicores: >-
+      {{
+        capacity_preflight_hardware_facts.ansible_facts
+          .ansible_processor_vcpus | int * 1000
+      }}
+    capacity_preflight_allocatable_cpu_millicores: >-
+      {{
+        capacity_contract.host.minimum_cpu_millicores | int
+        - capacity_contract.system_reserve.cpu_millicores | int
+      }}
+    capacity_preflight_allocatable_memory_mib: >-
+      {{
+        capacity_contract.host.minimum_memory_mib | int
+        - capacity_contract.system_reserve.memory_mib | int
+        - capacity_contract.operational_headroom.memory_mib | int
+      }}
+    capacity_preflight_reviewed_stack_cpu_limit_millicores: >-
+      {{
+        capacity_contract.reviewed_totals.edge.limits.cpu_millicores | int
+        + capacity_contract.reviewed_totals.workloads.limits.cpu_millicores
+          | int
+        + capacity_contract.reviewed_totals.observability.limits.cpu_millicores
+          | int
+      }}
+    capacity_preflight_reviewed_stack_cpu_reservation_millicores: >-
+      {{
+        capacity_contract.reviewed_totals.edge.reservations.cpu_millicores
+          | int
+        + capacity_contract.reviewed_totals.workloads.reservations
+          .cpu_millicores | int
+        + capacity_contract.reviewed_totals.observability.reservations
+          .cpu_millicores | int
+      }}
+    capacity_preflight_reviewed_stack_memory_limit_mib: >-
+      {{
+        capacity_contract.reviewed_totals.edge.limits.memory_mib | int
+        + capacity_contract.reviewed_totals.workloads.limits.memory_mib | int
+        + capacity_contract.reviewed_totals.observability.limits.memory_mib
+          | int
+      }}
+    capacity_preflight_reviewed_stack_memory_reservation_mib: >-
+      {{
+        capacity_contract.reviewed_totals.edge.reservations.memory_mib | int
+        + capacity_contract.reviewed_totals.workloads.reservations.memory_mib
+          | int
+        + capacity_contract.reviewed_totals.observability.reservations
+          .memory_mib | int
+      }}
+
+- name: Enforce host and aggregate resource capacity before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        capacity_contract.host.minimum_cpu_millicores | int
+        == capacity_contract.observed_source.docker_nano_cpus | int
+          // 1000000
+      - >-
+        capacity_contract.host.minimum_memory_mib | int
+        == capacity_contract.observed_source.docker_memory_bytes | int
+          // 1048576
+      - capacity_contract.host.required_swap_mib | int == 0
+      - capacity_contract.observed_source.swap_bytes | int == 0
+      - >-
+        capacity_preflight_actual_cpu_millicores | int
+        >= capacity_contract.host.minimum_cpu_millicores | int
+      - >-
+        capacity_preflight_hardware_facts.ansible_facts.ansible_memtotal_mb
+          | int
+        >= capacity_contract.host.minimum_memory_mib | int
+      - >-
+        capacity_preflight_hardware_facts.ansible_facts.ansible_swaptotal_mb
+          | int
+        == capacity_contract.host.required_swap_mib | int
+      - >-
+        capacity_preflight_reviewed_stack_cpu_reservation_millicores | int
+        == capacity_contract.reviewed_totals.aggregate.reservations
+          .cpu_millicores | int
+      - >-
+        capacity_preflight_reviewed_stack_cpu_limit_millicores | int
+        == capacity_contract.reviewed_totals.aggregate.limits.cpu_millicores
+          | int
+      - >-
+        capacity_preflight_reviewed_stack_memory_reservation_mib | int
+        == capacity_contract.reviewed_totals.aggregate.reservations.memory_mib
+          | int
+      - >-
+        capacity_preflight_reviewed_stack_memory_limit_mib | int
+        == capacity_contract.reviewed_totals.aggregate.limits.memory_mib | int
+      - >-
+        capacity_preflight_reviewed_stack_cpu_reservation_millicores | int
+        <= capacity_preflight_allocatable_cpu_millicores | int
+      - >-
+        capacity_preflight_reviewed_stack_memory_reservation_mib | int
+        <= capacity_preflight_allocatable_memory_mib | int
+      - >-
+        capacity_preflight_reviewed_stack_cpu_limit_millicores | int
+        <= (
+          capacity_preflight_allocatable_cpu_millicores | int
+          * capacity_contract.policy.aggregate_cpu_limit_overcommit_ratio
+            | float
+        ) | int
+      - >-
+        capacity_preflight_reviewed_stack_memory_limit_mib | int
+        <= capacity_preflight_allocatable_memory_mib | int
+    fail_msg: >-
+      Host facts or aggregate stack resources violate config/capacity.yml.
+      No infrastructure mutation is allowed.
+    success_msg: >-
+      Full-platform capacity fits the reviewed swapless single-node budget.

@@ -9,7 +9,13 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 readonly PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
 readonly ANSIBLE_PLAYBOOK="${PROJECT_DIR}/.venv/bin/ansible-playbook"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
+# v3.7.9 emits this unconditionally before it evaluates effective config:
+# https://github.com/traefik/traefik/blob/d0bd2ec198533d760c1abfc74b98033d6d92d039/cmd/traefik/traefik.go#L100-L103
 readonly KNOWN_WARNING="Traefik can reject some encoded characters in the request path"
+
+# shellcheck source=scripts/host-global-docker-validation-lock.sh
+source "${SCRIPT_DIR}/host-global-docker-validation-lock.sh"
 
 cd "${PROJECT_DIR}"
 
@@ -30,6 +36,11 @@ if ! docker info >/dev/null 2>&1; then
   fi
   fail "the current identity cannot access the Docker daemon"
 fi
+
+ensure_docker_validation_lock \
+  traefik-docker-validation \
+  "${SCRIPT_PATH}" \
+  "$@"
 
 [[ -x "${PYTHON_BIN}" ]] || fail "run scripts/bootstrap-tooling.sh first"
 [[ -x "${ANSIBLE_PLAYBOOK}" ]] || fail "run scripts/bootstrap-tooling.sh first"
@@ -120,17 +131,16 @@ if [[ -n "${unknown_logs}" ]]; then
   printf '%s\n' "${unknown_logs}" >&2
   fail "Traefik emitted an unexpected warning-or-higher entry"
 fi
-
 known_warning_count="$(
   grep -Fc "${KNOWN_WARNING}" <<<"${problem_logs}" ||
     true
 )"
 [[ "${known_warning_count}" -eq 1 ]] ||
-  fail "the exact upstream Traefik warning did not occur once"
+  fail "the unconditional pinned Traefik warning did not occur exactly once"
 
 cleanup
 trap - EXIT
 
 printf '%s\n' \
   "Traefik config, healthcheck and hardening validation passed." \
-  "Exactly one unconditional Traefik 3.7.9 upstream warning was allowlisted."
+  "No warning-or-higher entries beyond the one unconditional v3.7.9 notice."

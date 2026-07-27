@@ -1,0 +1,9 @@
+---
+schema_version: 1
+repository: apptolast/DockerSwarmInfrastrcture
+revision: "{{ host_bootstrap_source_revision }}"
+operating_system: Ubuntu 26.04
+admin_user: "{{ host_bootstrap_admin_user }}"
+admin_uid: {{ host_bootstrap_admin_uid | int }}
+admin_gid: {{ host_bootstrap_admin_gid | int }}
+authentication: ssh-key-and-external-password-hash

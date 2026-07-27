@@ -1,0 +1,5 @@
+*
+!.dockerignore
+!Dockerfile
+!package.json
+!package-lock.json

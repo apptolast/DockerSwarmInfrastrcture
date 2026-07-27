@@ -1,0 +1,29 @@
+---
+- name: Finalize root-disabled SSH with an automatic rollback timer
+  hosts: all
+  remote_user: root
+  become: false
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/host-security.yml
+
+  tasks:
+    - name: Prove the atomic fresh-host bootstrap intent
+      ansible.builtin.include_role:
+        name: operation_lock_guard
+      vars:
+        operation_lock_guard_scope: fresh-host-bootstrap
+        operation_lock_guard_lock_path: /run/lock/dockerswarm-iac.lock
+        operation_lock_guard_marker_path: /run/lock/dockerswarm-bootstrap.marker
+        operation_lock_guard_owner_uid: 0
+        operation_lock_guard_owner_gid: 0
+
+    - name: Apply only the final SSH phase
+      ansible.builtin.include_role:
+        name: host_security
+        tasks_from: ssh
+      vars:
+        host_security_ssh_phase: final

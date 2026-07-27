@@ -1,14 +1,10 @@
 locals {
   firewall_policy_name = "apptolast-${var.environment}-ingress"
   public_tcp_rules = flatten([
-    for port in sort(tolist(local.public_tcp_ports)) : [
+    for port in sort(tolist(local.effective_public_tcp_ports)) : [
       {
         port   = port
         source = "0.0.0.0/0"
-      },
-      {
-        port   = port
-        source = "::/0"
       }
     ]
   ])
@@ -16,6 +12,8 @@ locals {
 
 resource "netcup_firewall_policy" "host_ingress" {
   count = var.manage_firewall ? 1 : 0
+
+  depends_on = [terraform_data.root_identity]
 
   name        = local.firewall_policy_name
   description = "Managed by Terraform: restricted SSH and explicit web ports"
@@ -73,27 +71,25 @@ resource "netcup_firewall_policy" "host_ingress" {
 resource "netcup_server_firewall" "host" {
   count = var.manage_firewall ? 1 : 0
 
-  server_id = coalesce(var.server_id, 0)
-  mac       = coalesce(var.server_mac, "")
-  policy_ids = concat(
-    local.preserved_policy_ids,
-    [netcup_firewall_policy.host_ingress[0].id]
-  )
-  active = true
+  depends_on = [terraform_data.root_identity]
+
+  server_id  = local.netcup_server_id
+  mac        = local.netcup_server_mac
+  policy_ids = [netcup_firewall_policy.host_ingress[0].id]
+  active     = true
 
   lifecycle {
     prevent_destroy = true
 
     precondition {
-      condition     = var.server_id != null && var.server_mac != null
-      error_message = "server_id and server_mac are required before assignment."
-    }
-
-    precondition {
-      condition     = var.preserved_policy_ids != null
+      condition = (
+        var.firewall_policy_inventory_confirmed &&
+        length(var.preserved_policy_ids) == 0
+      )
       error_message = <<-EOT
-        preserved_policy_ids must explicitly list every currently assigned
-        Netcup policy. Use [] only after confirming that none exist.
+        Inventory every assigned Netcup policy first. The reviewed assignment
+        replaces it with the single fully modeled policy and never retains
+        an opaque policy ID.
       EOT
     }
   }
@@ -101,6 +97,8 @@ resource "netcup_server_firewall" "host" {
 
 resource "netcup_ssh_key" "image_installation" {
   for_each = var.scp_ssh_public_keys
+
+  depends_on = [terraform_data.root_identity]
 
   name = each.value.name
   key  = trimspace(each.value.key)

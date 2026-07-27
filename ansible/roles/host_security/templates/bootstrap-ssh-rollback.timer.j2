@@ -1,0 +1,12 @@
+[Unit]
+Description=Rollback DockerSwarm SSH hardening unless admin confirms it
+
+[Timer]
+OnActiveSec=180s
+OnBootSec=180s
+AccuracySec=1s
+Persistent=false
+Unit=dockerswarm-bootstrap-ssh-rollback.service
+
+[Install]
+WantedBy=timers.target

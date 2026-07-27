@@ -1,0 +1,15 @@
+---
+apiVersion: 1
+
+providers:
+  - name: apptolast-platform
+    orgId: 1
+    folder: AppToLast Platform
+    folderUid: apptolast-platform
+    type: file
+    disableDeletion: false
+    editable: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

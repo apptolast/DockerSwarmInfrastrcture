@@ -3,15 +3,35 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly HOST_LOCK_HELPER="${SCRIPT_DIR}/host_global_operation_lock.py"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 readonly IMAGE="alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"
 readonly SERVICE_NAME="swarm-smoke-$RANDOM-$$"
 readonly EXPECTED_OUTPUT="swarm-smoke-ok"
 
 service_created=false
+original_args=("$@")
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+ensure_host_global_lock() {
+  local operation=$1
+  [[ -f "${HOST_LOCK_HELPER}" && ! -L "${HOST_LOCK_HELPER}" ]] ||
+    fail "host-global operation-lock helper is absent or unsafe"
+  if [[ -n "${DOCKERSWARM_IAC_LOCK_SCOPE:-}" ]]; then
+    /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+      prove --operation "${operation}" >/dev/null ||
+      fail "host-global operation-lock proof failed"
+    return
+  fi
+  exec /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+    run --operation "${operation}" -- \
+    "${SCRIPT_PATH}" "${original_args[@]}"
 }
 
 cleanup() {
@@ -50,6 +70,9 @@ on_exit() {
   exit "${exit_status}"
 }
 trap on_exit EXIT
+
+(( $# == 0 )) || fail "this command does not accept arguments"
+ensure_host_global_lock swarm-smoke-test
 
 [[ "$(docker info --format '{{.Swarm.LocalNodeState}}')" == "active" ]] ||
   fail "Swarm is not active"

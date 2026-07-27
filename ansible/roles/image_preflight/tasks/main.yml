@@ -1,0 +1,140 @@
+---
+- name: Verify the image catalog is available
+  ansible.builtin.assert:
+    that:
+      - approved_services is sequence
+      - approved_services is not string
+      - internal_platform.observability.components is sequence
+      - image_preflight_expected_os == "linux"
+      - image_preflight_expected_architecture == "amd64"
+    fail_msg: "The immutable image catalog is missing or unsupported."
+    quiet: true
+
+- name: Start the immutable runtime image inventory
+  ansible.builtin.set_fact:
+    image_preflight_catalog_references: []
+
+- name: Collect approved remote runtime images
+  ansible.builtin.set_fact:
+    image_preflight_catalog_references: >-
+      {{
+        image_preflight_catalog_references
+        + [item.1.reference]
+      }}
+  loop: "{{ approved_services | subelements('images') }}"
+  loop_control:
+    label: "{{ item.0.id }}/{{ item.1.component }}"
+  when:
+    - >-
+      {
+        "service": item.0.id,
+        "component": item.1.component
+      } not in image_preflight_excluded_catalog_images
+
+- name: Collect internal observability runtime images
+  ansible.builtin.set_fact:
+    image_preflight_catalog_references: >-
+      {{
+        image_preflight_catalog_references
+        + [item.image]
+      }}
+  loop: "{{ internal_platform.observability.components }}"
+  loop_control:
+    label: "observability/{{ item.id }}"
+
+- name: Normalize references to immutable repository digests
+  ansible.builtin.set_fact:
+    image_preflight_references: >-
+      {{
+        image_preflight_catalog_references
+        | map(
+          "regex_replace",
+          image_preflight_tag_digest_pattern,
+          image_preflight_digest_replacement
+        )
+        | unique
+        | sort
+      }}
+
+- name: Verify every preflight reference is immutable
+  ansible.builtin.assert:
+    that:
+      - item is match(
+          "^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$"
+        )
+      - item !=
+        "ghcr.io/apptolast/migracionnetcup-n8n-runners@sha256:" ~
+        "4d8f879e9f70df8173c3b9b40406582fc9b460e4f8afcf5dcf51d3bce0e5e1b5"
+    fail_msg: "A mutable or private source image reached the remote preflight."
+    quiet: true
+  loop: "{{ image_preflight_references }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Inspect the immutable runtime image cache
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - "{{ item }}"
+  loop: "{{ image_preflight_references }}"
+  loop_control:
+    label: "{{ item }}"
+  register: image_preflight_initial_inspect
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Pull every missing image before any stack mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - pull
+      - --platform
+      - >-
+        {{ image_preflight_expected_os
+           }}/{{ image_preflight_expected_architecture }}
+      - "{{ item.item }}"
+  loop: "{{ image_preflight_initial_inspect.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not ansible_check_mode
+    - item.rc != 0
+  changed_when: true
+
+- name: Read the complete immutable runtime image cache
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - "{{ item }}"
+  loop: "{{ image_preflight_references }}"
+  loop_control:
+    label: "{{ item }}"
+  register: image_preflight_final_inspect
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Enforce runtime image platform and immutable identity
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Os
+        == image_preflight_expected_os
+      - (item.stdout | from_json | first).Architecture
+        == image_preflight_expected_architecture
+      - >-
+        (item.stdout | from_json | first).Id
+        is match("^sha256:[a-f0-9]{64}$")
+    fail_msg: >-
+      The cached image {{ item.item }} does not match the reviewed
+      linux/amd64 contract.
+    quiet: true
+  loop: "{{ image_preflight_final_inspect.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode

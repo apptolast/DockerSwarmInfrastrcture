@@ -10,11 +10,11 @@ services:
       CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare_dns_api_token
     ports:
       - target: 8000
-        published: {{ platform_public_tcp_ports | min }}
+        published: 80
         protocol: tcp
         mode: host
       - target: 8443
-        published: {{ platform_public_tcp_ports | max }}
+        published: 443
         protocol: tcp
         mode: host
     configs:
@@ -39,7 +39,10 @@ services:
         gid: "{{ edge_traefik_runtime_gid }}"
         mode: 0400
     networks:
-      - edge
+{% for network_key in edge_networks %}
+      - edge-{{ network_key }}
+{% endfor %}
+      - edge-monitoring
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
@@ -73,7 +76,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 128M
         reservations:
           cpus: "0.10"
           memory: 64M
@@ -97,9 +100,14 @@ services:
         max_failure_ratio: 0
 
 networks:
-  edge:
+{% for network_key, network_name in edge_networks.items() %}
+  edge-{{ network_key }}:
     external: true
-    name: "{{ edge_network }}"
+    name: "{{ network_name }}"
+{% endfor %}
+  edge-monitoring:
+    external: true
+    name: "{{ edge_monitoring_network }}"
 
 secrets:
   cloudflare_dns_api_token:

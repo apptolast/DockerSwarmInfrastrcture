@@ -1,0 +1,595 @@
+---
+- name: Derive the exact isolated edge network set
+  ansible.builtin.set_fact:
+    edge_required_networks: >-
+      {{
+        [edge_monitoring_network]
+        + edge_networks.values() | list
+      }}
+
+- name: Read the isolated edge networks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ item }}"
+  loop: "{{ edge_required_networks }}"
+  loop_control:
+    label: "{{ item }}"
+  register: edge_network_inspections
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Create missing isolated overlay edge networks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - create
+      - --driver
+      - overlay
+      - --opt
+      - encrypted
+      - "{{ item.item }}"
+  loop: "{{ edge_network_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc != 0
+  changed_when: true
+
+- name: Re-read the isolated edge networks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ item }}"
+  loop: "{{ edge_required_networks }}"
+  loop_control:
+    label: "{{ item }}"
+  register: edge_networks_verified
+  changed_when: false
+  check_mode: false
+
+- name: Verify every isolated edge network contract
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Driver == "overlay"
+      - (item.stdout | from_json | first).Scope == "swarm"
+      - not (item.stdout | from_json | first).Attachable
+      - not (item.stdout | from_json | first).Internal
+      - >-
+        (item.stdout | from_json | first).Options.encrypted
+        | default(None) == ""
+    fail_msg: >-
+      Edge network {{ item.item }} does not match the encrypted,
+      non-attachable Swarm contract.
+  loop: "{{ edge_networks_verified.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the installed edge configuration directory
+  ansible.builtin.file:
+    path: "{{ edge_install_root }}/edge/config"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the isolated Let's Encrypt staging trust bundle
+  ansible.builtin.copy:
+    src: letsencrypt-staging-roots.pem
+    dest: "{{ edge_letsencrypt_staging_ca_bundle }}"
+    owner: root
+    group: root
+    mode: "0444"
+
+- name: Verify the isolated staging trust-bundle checksum
+  ansible.builtin.stat:
+    path: "{{ edge_letsencrypt_staging_ca_bundle }}"
+    checksum_algorithm: sha256
+  register: edge_letsencrypt_staging_ca_bundle_installed
+
+- name: Verify the pinned staging trust bundle
+  ansible.builtin.assert:
+    that:
+      - >-
+        edge_letsencrypt_staging_ca_bundle_installed.stat.checksum
+        == edge_letsencrypt_staging_ca_bundle_sha256
+    fail_msg: >-
+      The isolated Let's Encrypt staging trust bundle differs from the
+      reviewed official roots.
+
+- name: Inspect the Traefik persistent-state directory without following links
+  ansible.builtin.stat:
+    path: "{{ edge_state_root }}/traefik"
+    follow: false
+  register: edge_traefik_state_directory
+
+- name: Reject an unsafe Traefik persistent-state path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not edge_traefik_state_directory.stat.exists
+        or (
+          edge_traefik_state_directory.stat.isdir
+          and not edge_traefik_state_directory.stat.islnk
+        )
+    fail_msg: >-
+      Refusing to reconcile Traefik state through a symlink or non-directory
+      path.
+
+- name: Create Traefik persistent state
+  ansible.builtin.file:
+    path: "{{ edge_state_root }}/traefik"
+    state: directory
+    owner: root
+    group: "{{ edge_traefik_runtime_gid }}"
+    mode: "0750"
+
+- name: Inspect ACME storage without following links
+  ansible.builtin.stat:
+    path: >-
+      {{ edge_state_root }}/traefik/{{
+        edge_traefik_acme_storage_filename }}
+    follow: false
+  register: edge_traefik_acme_storage
+
+- name: Reject unsafe or drifted existing ACME storage
+  ansible.builtin.assert:
+    that:
+      - >-
+        not edge_traefik_acme_storage.stat.exists
+        or (
+          edge_traefik_acme_storage.stat.isreg
+          and not edge_traefik_acme_storage.stat.islnk
+          and edge_traefik_acme_storage.stat.nlink | int == 1
+          and edge_traefik_acme_storage.stat.uid
+            | int == edge_traefik_runtime_uid | int
+          and edge_traefik_acme_storage.stat.gid
+            | int == edge_traefik_runtime_gid | int
+          and edge_traefik_acme_storage.stat.mode == "0600"
+        )
+    fail_msg: >-
+      Refusing to follow, replace, chmod or chown existing ACME storage.
+      It must already be one regular, non-symlink file with the exact reviewed
+      identity and mode.
+
+- name: Create the ACME storage file
+  ansible.builtin.file:
+    path: >-
+      {{ edge_state_root }}/traefik/{{
+        edge_traefik_acme_storage_filename }}
+    state: touch
+    owner: "{{ edge_traefik_runtime_uid }}"
+    group: "{{ edge_traefik_runtime_gid }}"
+    mode: "0600"
+    follow: false
+    access_time: preserve
+    modification_time: preserve
+  when: not edge_traefik_acme_storage.stat.exists
+
+- name: Verify ACME storage after creation
+  ansible.builtin.stat:
+    path: >-
+      {{ edge_state_root }}/traefik/{{
+        edge_traefik_acme_storage_filename }}
+    follow: false
+  register: edge_traefik_acme_storage_verified
+
+- name: Verify the final ACME storage identity
+  ansible.builtin.assert:
+    that:
+      - edge_traefik_acme_storage_verified.stat.isreg
+      - not edge_traefik_acme_storage_verified.stat.islnk
+      - edge_traefik_acme_storage_verified.stat.nlink | int == 1
+      - >-
+        edge_traefik_acme_storage_verified.stat.uid
+        | int == edge_traefik_runtime_uid | int
+      - >-
+        edge_traefik_acme_storage_verified.stat.gid
+        | int == edge_traefik_runtime_gid | int
+      - edge_traefik_acme_storage_verified.stat.mode == "0600"
+    fail_msg: "The ACME storage file does not match the reviewed identity."
+
+- name: Render the Traefik static configuration
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../stacks/edge/static.yml.j2"
+    dest: "{{ edge_install_root }}/edge/config/static.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render the Traefik dynamic configuration
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../stacks/edge/dynamic.yml.j2"
+    dest: "{{ edge_install_root }}/edge/config/dynamic.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Hash the rendered Traefik configurations
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ edge_install_root }}/edge/config/static.yml"
+    - "{{ edge_install_root }}/edge/config/dynamic.yml"
+  register: edge_rendered_traefik_configs
+
+- name: Derive immutable Docker Config names
+  ansible.builtin.set_fact:
+    edge_traefik_static_config_sha256: >-
+      {{ edge_rendered_traefik_configs.results[0].stat.checksum }}
+    edge_traefik_dynamic_config_sha256: >-
+      {{ edge_rendered_traefik_configs.results[1].stat.checksum }}
+    edge_traefik_static_config_name: >-
+      {{ edge_traefik_stack_name }}-traefik-static-{{
+        edge_rendered_traefik_configs.results[0].stat.checksum[:16] }}
+    edge_traefik_dynamic_config_name: >-
+      {{ edge_traefik_stack_name }}-traefik-dynamic-{{
+        edge_rendered_traefik_configs.results[1].stat.checksum[:16] }}
+
+- name: Inspect immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ item.name }}"
+  loop:
+    - name: "{{ edge_traefik_static_config_name }}"
+      path: "{{ edge_install_root }}/edge/config/static.yml"
+      sha256: "{{ edge_traefik_static_config_sha256 }}"
+      kind: static
+    - name: "{{ edge_traefik_dynamic_config_name }}"
+      path: "{{ edge_install_root }}/edge/config/dynamic.yml"
+      sha256: "{{ edge_traefik_dynamic_config_sha256 }}"
+      kind: dynamic
+  loop_control:
+    label: "{{ item.name }}"
+  register: edge_existing_traefik_configs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Create missing immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - create
+      - --label
+      - com.apptolast.managed-by=ansible
+      - --label
+      - "com.apptolast.stack={{ edge_traefik_stack_name }}"
+      - --label
+      - "com.apptolast.sha256={{ item.item.sha256 }}"
+      - --label
+      - "com.apptolast.kind={{ item.item.kind }}"
+      - "{{ item.item.name }}"
+      - "{{ item.item.path }}"
+  loop: "{{ edge_existing_traefik_configs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.rc != 0
+  changed_when: true
+
+- name: Re-read immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ item.name }}"
+  loop:
+    - name: "{{ edge_traefik_static_config_name }}"
+      sha256: "{{ edge_traefik_static_config_sha256 }}"
+      kind: static
+    - name: "{{ edge_traefik_dynamic_config_name }}"
+      sha256: "{{ edge_traefik_dynamic_config_sha256 }}"
+      kind: dynamic
+  loop_control:
+    label: "{{ item.name }}"
+  register: edge_verified_traefik_configs
+  changed_when: false
+  check_mode: false
+
+- name: Verify immutable Docker Config identity and content
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Spec.Name == item.item.name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.managed-by"] == "ansible"
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.stack"] == edge_traefik_stack_name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.sha256"] == item.item.sha256
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.kind"] == item.item.kind
+      - >-
+        ((item.stdout | from_json | first).Spec.Data | b64decode
+          | hash("sha256")) == item.item.sha256
+    fail_msg: "Docker Config {{ item.item.name }} has unexpected content."
+  loop: "{{ edge_verified_traefik_configs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Render the edge stack
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../stacks/edge/stack.yml.j2"
+    dest: "{{ edge_install_root }}/edge/stack.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Validate the rendered edge stack
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - config
+      - --compose-file
+      - "{{ edge_install_root }}/edge/stack.yml"
+  changed_when: false
+  check_mode: false
+
+- name: Deploy the edge stack
+  community.docker.docker_stack:
+    name: "{{ edge_traefik_stack_name }}"
+    state: present
+    compose:
+      - "{{ edge_install_root }}/edge/stack.yml"
+    detach: false
+    prune: true
+    resolve_image: never
+
+- name: Wait for the exact edge service inventory to converge
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - "{{ edge_traefik_stack_name }}"
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: edge_traefik_replicas
+  changed_when: false
+  check_mode: false
+  until:
+    - >-
+      edge_traefik_replicas.stdout_lines
+      == [edge_traefik_stack_name ~ "_traefik=1/1"]
+  retries: 18
+  delay: 5
+
+- name: Read the converged Traefik service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ edge_traefik_stack_name }}_traefik"
+  register: edge_deployed_traefik_service
+  changed_when: false
+  check_mode: false
+
+- name: Verify the deployed Traefik service identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image == edge_traefik_image
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.Mode.Replicated.Replicas == 1
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.UpdateConfig.Order == "stop-first"
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.RollbackConfig.Order == "stop-first"
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.User
+        == (edge_traefik_runtime_uid | string)
+        ~ ":" ~ (edge_traefik_runtime_gid | string)
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.ReadonlyRootfs
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Privileges.NoNewPrivileges
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Configs | length == 2
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Secrets | length == 1
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Secrets[0].SecretName
+        == edge_traefik_cloudflare_secret_name
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.Networks | length == edge_required_networks | length
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Mounts | length == 1
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Mounts[0].Type == "bind"
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Mounts[0].Source
+        == edge_state_root ~ "/traefik"
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Mounts[0].Target == "/data"
+      - >-
+        (edge_deployed_traefik_service.stdout | from_json | first).
+        EndpointSpec.Ports | length == 2
+    fail_msg: "The deployed Traefik service differs from the reviewed spec."
+
+- name: Verify the deployed immutable Docker Config references
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (edge_deployed_traefik_service.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Configs
+          | selectattr("ConfigName", "equalto", item.item.name)
+          | selectattr(
+              "ConfigID",
+              "equalto",
+              (item.stdout | from_json | first).ID
+            )
+          | list
+          | length
+        ) == 1
+    fail_msg: >-
+      Traefik does not reference the exact verified Docker Config
+      {{ item.item.name }}.
+  loop: "{{ edge_verified_traefik_configs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Verify the deployed isolated network references
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (edge_deployed_traefik_service.stdout | from_json | first).
+          Spec.TaskTemplate.Networks
+          | selectattr(
+              "Target",
+              "equalto",
+              (item.stdout | from_json | first).Id
+            )
+          | list
+          | length
+        ) == 1
+    fail_msg: >-
+      Traefik does not reference the exact isolated network {{ item.item }}.
+  loop: "{{ edge_networks_verified.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Prove Traefik runtime health before declaring edge deployed
+  block:
+    - name: Wait for exactly one running Traefik task container
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - ps
+          - --filter
+          - "label=com.docker.swarm.service.name=edge_traefik"
+          - --filter
+          - status=running
+          - --format
+          - "{% raw %}{{.ID}}{% endraw %}"
+      register: edge_traefik_task_containers
+      changed_when: false
+      check_mode: false
+      until: edge_traefik_task_containers.stdout_lines | length == 1
+      retries: 36
+      delay: 5
+
+    - name: Wait for the Traefik task healthcheck
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - inspect
+          - --format
+          - "{% raw %}{{.State.Health.Status}}{% endraw %}"
+          - "{{ edge_traefik_task_containers.stdout_lines[0] }}"
+      register: edge_traefik_task_health
+      changed_when: false
+      check_mode: false
+      until: edge_traefik_task_health.stdout == "healthy"
+      retries: 36
+      delay: 5
+
+    - name: Derive the profile-aware HTTPS health command
+      ansible.builtin.set_fact:
+        edge_traefik_https_probe_argv: >-
+          {{
+            [
+              "/usr/bin/curl",
+              "--fail",
+              "--silent",
+              "--show-error",
+              "--connect-timeout",
+              "5",
+              "--max-time",
+              "20"
+            ]
+            + (
+              [
+                "--cacert",
+                edge_letsencrypt_staging_ca_bundle
+              ]
+              if edge_deployment_profile == "acme-staging"
+              else []
+            )
+            + [
+              "--resolve",
+              edge_traefik_hostname ~ ":443:" ~ platform_public_ipv4,
+              "https://" ~ edge_traefik_hostname ~ "/ping"
+            ]
+          }}
+
+    - name: Prove the forced local HTTPS health route
+      ansible.builtin.command:
+        argv: "{{ edge_traefik_https_probe_argv }}"
+      register: edge_traefik_local_https
+      changed_when: false
+      check_mode: false
+      until: edge_traefik_local_https.stdout == "OK"
+      retries: 36
+      delay: 5
+
+  rescue:
+    - name: Capture full Traefik task diagnostics
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - service
+          - ps
+          - --no-trunc
+          - edge_traefik
+      register: edge_traefik_task_diagnostics
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Capture recent Traefik service logs
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - service
+          - logs
+          - --raw
+          - --tail
+          - "200"
+          - edge_traefik
+      register: edge_traefik_log_diagnostics
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Report the failed edge runtime gate
+      ansible.builtin.fail:
+        msg: >-
+          Traefik did not pass container health and forced local HTTPS.
+          Tasks: {{ edge_traefik_task_diagnostics.stdout
+          | default("unavailable") }}
+          Logs: {{ edge_traefik_log_diagnostics.stdout
+          | default(edge_traefik_log_diagnostics.stderr)
+          | default("unavailable") }}

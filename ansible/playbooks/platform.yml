@@ -7,9 +7,12 @@
   any_errors_fatal: true
 
   vars_files:
+    - ../../config/host-security.yml
     - ../../config/platform.yml
     - ../group_vars/all.yml
 
   roles:
+    - role: operation_lock_guard
+    - role: host_security
     - role: platform
     - role: deployment_metadata

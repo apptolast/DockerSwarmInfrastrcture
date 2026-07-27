@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "roots": {
+    "cloudflare/apptolast-dns": {
+      "production": null,
+      "pending_destination": null
+    },
+    "cloudflare/state-bootstrap": {
+      "production": {
+        "backend_type": "local",
+        "path": "/REPLACE/WITH/APPROVED/ENCRYPTED/STATE/terraform.tfstate"
+      },
+      "pending_destination": null
+    },
+    "netcup/perimeter": {
+      "production": null,
+      "pending_destination": null
+    }
+  }
+}

@@ -10,6 +10,10 @@ readonly PROJECT_DIR
 readonly VENV_DIR="${PROJECT_DIR}/.venv"
 readonly TERRAFORM_BIN="${PROJECT_DIR}/.tools/terraform"
 readonly SHELLCHECK_IMAGE="koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
+
+# shellcheck source=scripts/host-global-docker-validation-lock.sh
+source "${SCRIPT_DIR}/host-global-docker-validation-lock.sh"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -35,6 +39,8 @@ if ! docker info >/dev/null 2>&1; then
   fi
   fail "the current identity cannot access the Docker daemon"
 fi
+
+ensure_docker_validation_lock iac-docker-validation "${SCRIPT_PATH}" "$@"
 
 export ANSIBLE_CONFIG="${PROJECT_DIR}/ansible/ansible.cfg"
 export PATH="${VENV_DIR}/bin:${PATH}"
@@ -111,7 +117,17 @@ jq --exit-status '
 ' config/daemon.json >/dev/null
 dockerd --validate --config-file=config/daemon.json
 
-yamllint .github ansible config/platform.yml stacks tests/fixtures
+yamllint \
+  .github \
+  ansible \
+  config/capacity.yml \
+  config/host-security.yml \
+  config/minecraft.yml \
+  config/platform.yml \
+  config/services.yml \
+  migration/compose \
+  stacks \
+  tests/fixtures
 ansible-lint ansible
 
 mapfile -t playbooks < <(
@@ -138,12 +154,37 @@ docker run \
   --severity=style \
   /workspace/dockerswarm-docker-firewall
 "${VENV_DIR}/bin/python" scripts/validate-contract.py
+"${VENV_DIR}/bin/python" scripts/validate-host-security.py
+"${VENV_DIR}/bin/python" scripts/validate-ssh-policy.py
+"${VENV_DIR}/bin/python" scripts/validate-services.py --self-test
 
 mapfile -t python_scripts < <(
-  find scripts -maxdepth 1 -type f -name '*.py' | sort
+  find scripts migration/scripts -maxdepth 1 -type f -name '*.py' |
+    sort
 )
+python_scripts+=("backup/backupctl.py")
 PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
   "${VENV_DIR}/bin/python" -m py_compile "${python_scripts[@]}"
+scripts/validate-workloads.sh
+scripts/validate-observability.sh
+scripts/validate-capacity.sh --reuse-rendered
+scripts/backup-self-test.sh
+PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
+  "${VENV_DIR}/bin/python" -m unittest discover \
+  -s tests \
+  -v
+PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
+  "${VENV_DIR}/bin/python" -m unittest discover \
+  -s migration/tests \
+  -v
+
+docker compose --profile maintenance \
+  -f migration/compose/restore.yml \
+  config --quiet
+docker compose --profile maintenance \
+  -f migration/compose/restore.yml \
+  -f migration/compose/restore-vectors-081.yml \
+  config --quiet
 
 terraform_tmp_dirs=()
 cleanup() {
@@ -158,7 +199,8 @@ trap cleanup EXIT
 for terraform_root in \
   infra/terraform/cloudflare/state-bootstrap \
   infra/terraform/cloudflare/apptolast-dns \
-  infra/terraform/netcup/perimeter; do
+  infra/terraform/netcup/perimeter \
+  infra/terraform/testing/r2-lock; do
   terraform_tmp_dir="$(mktemp -d)"
   terraform_tmp_dirs+=("${terraform_tmp_dir}")
 
@@ -174,7 +216,8 @@ for terraform_root in \
 done
 
 mapfile -t shell_scripts < <(
-  find scripts -maxdepth 1 -type f -name '*.sh' | sort
+  find scripts migration/scripts -maxdepth 1 -type f -name '*.sh' |
+    sort
 )
 for shell_script in "${shell_scripts[@]}"; do
   bash -n "${shell_script}"

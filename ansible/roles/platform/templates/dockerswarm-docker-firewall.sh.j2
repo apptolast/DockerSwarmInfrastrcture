@@ -4,6 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly POLICY_CHAIN="DOCKERSWARM-INGRESS"
+readonly STAGING_CHAIN_PREFIX="DOCKERSWARM-STAGE-"
 
 default_interface() {
   local family="$1"
@@ -15,17 +16,51 @@ default_interface() {
 configure_family() {
   local command_name="$1"
   local public_interface="$2"
+  local policy_mode="$3"
+  shift 3
+  local -a allowed_tcp_ports=("$@")
   local crowdsec_position
   local insert_position
+  local managed_chain
+  local -a managed_chains=()
+  local staging_chain="${STAGING_CHAIN_PREFIX}${BASHPID}"
+  local port
 
   [[ -n "${public_interface}" ]] || return 0
 
-  "${command_name}" -w -n -L DOCKER-USER >/dev/null
-  "${command_name}" -w -N "${POLICY_CHAIN}" 2>/dev/null || true
-  "${command_name}" -w -F "${POLICY_CHAIN}"
-  while "${command_name}" -w -D DOCKER-USER -j "${POLICY_CHAIN}" 2>/dev/null; do
-    :
+  if ! "${command_name}" -w -n -L DOCKER-USER >/dev/null; then
+    [[ "${policy_mode}" == "closed" ]] && return 0
+    return 1
+  fi
+  "${command_name}" -w -N "${staging_chain}"
+
+  if [[ "${policy_mode}" == "closed" ]]; then
+    "${command_name}" -w -A "${staging_chain}" \
+      -i "${public_interface}" -j DROP
+  else
+    "${command_name}" -w -A "${staging_chain}" \
+      -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  fi
+
+  for port in "${allowed_tcp_ports[@]}"; do
+    if ! [[ "${port}" =~ ^[1-9][0-9]{0,4}$ ]] ||
+      (( port > 65535 )); then
+      printf 'ERROR: invalid public TCP port %q\n' "${port}" >&2
+      exit 1
+    fi
+    "${command_name}" -w -A "${staging_chain}" \
+      -i "${public_interface}" \
+      -p tcp \
+      -m conntrack --ctdir ORIGINAL \
+      --ctorigdstport "${port}" \
+      -j ACCEPT
   done
+
+  "${command_name}" -w -A "${staging_chain}" \
+    -i "${public_interface}" \
+    -m conntrack --ctstate NEW \
+    -j DROP
+  "${command_name}" -w -A "${staging_chain}" -j RETURN
 
   crowdsec_position="$(
     "${command_name}" -w -S DOCKER-USER |
@@ -45,40 +80,119 @@ configure_family() {
   if [[ "${crowdsec_position}" =~ ^[1-9][0-9]*$ ]]; then
     insert_position=$((crowdsec_position + 1))
   fi
-  "${command_name}" -w -I DOCKER-USER "${insert_position}" -j "${POLICY_CHAIN}"
+  "${command_name}" -w -I DOCKER-USER "${insert_position}" -j "${staging_chain}"
 
-  "${command_name}" -w -A "${POLICY_CHAIN}" \
-    -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  mapfile -t managed_chains < <(
+    "${command_name}" -w -S DOCKER-USER |
+      /usr/bin/awk \
+        -v policy="${POLICY_CHAIN}" \
+        -v prefix="${STAGING_CHAIN_PREFIX}" \
+        -v active="${staging_chain}" '
+          $1 == "-A" && $2 == "DOCKER-USER" {
+            for (field = 3; field <= NF; field += 1) {
+              if ($field == "-j") {
+                target = $(field + 1)
+                if (target != active && \
+                    (target == policy || index(target, prefix) == 1)) {
+                  print target
+                }
+              }
+            }
+          }
+        ' |
+      /usr/bin/sort -u
+  )
+  for managed_chain in "${managed_chains[@]}"; do
+    while "${command_name}" -w -D DOCKER-USER \
+      -j "${managed_chain}" 2>/dev/null; do
+      :
+    done
+  done
 
-{% for port in platform_public_tcp_ports | map("int") | sort %}
-  "${command_name}" -w -A "${POLICY_CHAIN}" \
-    -i "${public_interface}" \
-    -p tcp \
-    -m conntrack --ctdir ORIGINAL \
-    --ctorigdstport {{ port }} \
-    -j ACCEPT
-{% endfor %}
-
-  "${command_name}" -w -A "${POLICY_CHAIN}" \
-    -i "${public_interface}" \
-    -m conntrack --ctstate NEW \
-    -j DROP
-  "${command_name}" -w -A "${POLICY_CHAIN}" -j RETURN
+  mapfile -t managed_chains < <(
+    "${command_name}" -w -S |
+      /usr/bin/awk \
+        -v policy="${POLICY_CHAIN}" \
+        -v prefix="${STAGING_CHAIN_PREFIX}" \
+        -v active="${staging_chain}" '
+          $1 == "-N" && $2 != active && \
+          ($2 == policy || index($2, prefix) == 1) {
+            print $2
+          }
+        ' |
+      /usr/bin/sort -u
+  )
+  for managed_chain in "${managed_chains[@]}"; do
+    "${command_name}" -w -F "${managed_chain}"
+    "${command_name}" -w -X "${managed_chain}"
+  done
+  "${command_name}" -w -E "${staging_chain}" "${POLICY_CHAIN}"
 }
 
 readonly PUBLIC_INTERFACE="{{ platform_public_interface }}"
+POLICY_MODE="open"
+case "${1:-}" in
+  "")
+    ;;
+  --close)
+    POLICY_MODE="closed"
+    ;;
+  *)
+    printf 'ERROR: usage: %s [--close]\n' "${0##*/}" >&2
+    exit 2
+    ;;
+esac
+readonly POLICY_MODE
 DEFAULT_IPV4_INTERFACE="$(default_interface 4)"
 readonly DEFAULT_IPV4_INTERFACE
+DEFAULT_IPV6_INTERFACE="$(default_interface 6)"
+readonly DEFAULT_IPV6_INTERFACE
+readonly -a IPV4_ALLOWED_TCP_PORTS=(
+{% for port in platform_effective_public_tcp_ports | map('int') | sort %}
+  "{{ port }}"
+{% endfor %}
+)
+readonly -a IPV6_ALLOWED_TCP_PORTS=(
+{% for port in platform_public_ipv6_tcp_ports | map('int') | sort %}
+  "{{ port }}"
+{% endfor %}
+)
+ACTIVE_IPV4_ALLOWED_TCP_PORTS=()
+ACTIVE_IPV6_ALLOWED_TCP_PORTS=()
+if [[ "${POLICY_MODE}" == "open" ]]; then
+  ACTIVE_IPV4_ALLOWED_TCP_PORTS=("${IPV4_ALLOWED_TCP_PORTS[@]}")
+  ACTIVE_IPV6_ALLOWED_TCP_PORTS=("${IPV6_ALLOWED_TCP_PORTS[@]}")
+fi
+readonly -a ACTIVE_IPV4_ALLOWED_TCP_PORTS
+readonly -a ACTIVE_IPV6_ALLOWED_TCP_PORTS
 
-[[ "${DEFAULT_IPV4_INTERFACE}" == "${PUBLIC_INTERFACE}" ]] || {
+[[ "${POLICY_MODE}" == "closed" ||
+  "${DEFAULT_IPV4_INTERFACE}" == "${PUBLIC_INTERFACE}" ]] || {
   printf 'ERROR: expected default interface %s, found %s\n' \
     "${PUBLIC_INTERFACE}" "${DEFAULT_IPV4_INTERFACE}" >&2
   exit 1
 }
+[[ "${POLICY_MODE}" == "closed" ||
+  "${DEFAULT_IPV6_INTERFACE}" == "${PUBLIC_INTERFACE}" ]] || {
+  printf 'ERROR: expected IPv6 default interface %s, found %s\n' \
+    "${PUBLIC_INTERFACE}" "${DEFAULT_IPV6_INTERFACE}" >&2
+  exit 1
+}
 
-configure_family /usr/sbin/iptables "${PUBLIC_INTERFACE}"
+configure_family \
+  /usr/sbin/iptables \
+  "${PUBLIC_INTERFACE}" \
+  "${POLICY_MODE}" \
+  "${ACTIVE_IPV4_ALLOWED_TCP_PORTS[@]}"
 
-if /usr/sbin/ip6tables -w -n -L DOCKER-USER >/dev/null 2>&1 &&
-  [[ "$(default_interface 6)" == "${PUBLIC_INTERFACE}" ]]; then
-  configure_family /usr/sbin/ip6tables "${PUBLIC_INTERFACE}"
+if /usr/sbin/ip6tables -w -n -L DOCKER-USER >/dev/null 2>&1; then
+  configure_family \
+    /usr/sbin/ip6tables \
+    "${PUBLIC_INTERFACE}" \
+    "${POLICY_MODE}" \
+    "${ACTIVE_IPV6_ALLOWED_TCP_PORTS[@]}"
+elif [[ "${POLICY_MODE}" != "closed" ]]; then
+  printf \
+    'WARNING: ip6tables DOCKER-USER chain is absent; skipping IPv6 firewall (IPv4-only)\n' \
+    >&2
 fi

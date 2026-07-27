@@ -113,6 +113,7 @@ if [[ "${allow_edge_absent}" == true ]]; then
 fi
 python3 \
   "${PROJECT_DIR}/scripts/validate-deployment-metadata.py" \
+  --required-scope site \
   "${metadata_args[@]}"
 
 if docker service inspect edge_traefik >/dev/null 2>&1; then

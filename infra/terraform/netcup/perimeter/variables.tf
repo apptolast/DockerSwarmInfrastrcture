@@ -15,30 +15,6 @@ variable "manage_firewall" {
   default     = false
 }
 
-variable "server_id" {
-  description = "Numeric SCP identifier of the existing server."
-  type        = number
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.server_id == null || var.server_id > 0
-    error_message = "server_id must be positive when supplied."
-  }
-}
-
-variable "server_mac" {
-  description = "MAC address of the existing public server interface."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.server_mac == null || can(regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", var.server_mac))
-    error_message = "server_mac must use the form aa:bb:cc:dd:ee:ff."
-  }
-}
-
 variable "admin_cidrs" {
   description = "Reviewed IPv4/IPv6 source CIDRs allowed to reach SSH."
   type        = set(string)
@@ -65,18 +41,20 @@ variable "ssh_port" {
 }
 
 variable "preserved_policy_ids" {
-  description = "Complete set of existing Netcup policy IDs retained on assignment."
-  type        = set(number)
-  default     = null
-  nullable    = true
+  description = "Must remain empty: unmanaged policies are never preserved blindly."
+  type        = list(number)
+  default     = []
 
   validation {
-    condition = (
-      var.preserved_policy_ids == null ||
-      alltrue([for id in var.preserved_policy_ids : id > 0])
-    )
-    error_message = "Every preserved Netcup firewall policy ID must be positive."
+    condition     = length(var.preserved_policy_ids) == 0
+    error_message = "Existing Netcup policies must be modeled and reviewed, never retained only by ID."
   }
+}
+
+variable "firewall_policy_inventory_confirmed" {
+  description = "Explicit gate proving that every currently assigned policy was inventoried and can be replaced."
+  type        = bool
+  default     = false
 }
 
 variable "scp_ssh_public_keys" {

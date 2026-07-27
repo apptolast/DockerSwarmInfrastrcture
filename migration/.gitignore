@@ -1,0 +1,13 @@
+# Migration artifacts and decrypted runtime material must never enter Git.
+artifacts/
+staging/
+runtime/
+*.gpg
+*.part-*.bin
+*.RECOVERY-KEY.txt
+ORIGINAL_SHA256SUMS
+PARTS_SHA256SUMS
+RELEASE-MANIFEST.json
+README-RELEASE.txt
+__pycache__/
+*.pyc

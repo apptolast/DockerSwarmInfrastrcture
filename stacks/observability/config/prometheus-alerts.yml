@@ -1,0 +1,177 @@
+---
+groups:
+  - name: platform-targets
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus target is unavailable"
+          description: >-
+            Target {{ $labels.instance }} in job {{ $labels.job }} has been
+            unavailable for more than five minutes.
+
+      - alert: PublicEndpointDown
+        expr: probe_success{job="blackbox-http-public"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Public HTTPS endpoint is unavailable"
+          description: >-
+            The externally resolved endpoint {{ $labels.instance }} failed its
+            DNS, TLS or HTTP probe for more than three minutes.
+
+      - alert: MinecraftEndpointDown
+        expr: probe_success{job="blackbox-minecraft-tcp"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Minecraft TCP endpoint is unavailable"
+          description: >-
+            The internal Minecraft task endpoint failed its TCP probe for more
+            than three minutes.
+
+  - name: host-capacity
+    rules:
+      - alert: HostMemoryPressure
+        expr: >-
+          node_memory_MemAvailable_bytes
+          / node_memory_MemTotal_bytes < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host available memory is below 10%"
+          description: >-
+            Available memory on {{ $labels.instance }} has remained below 10%
+            for fifteen minutes.
+
+      - alert: HostFilesystemSpaceLow
+        expr: >-
+          node_filesystem_avail_bytes{
+            fstype!~"tmpfs|overlay|squashfs",
+            mountpoint="/"
+          }
+          / node_filesystem_size_bytes{
+            fstype!~"tmpfs|overlay|squashfs",
+            mountpoint="/"
+          } < 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root filesystem free space is below 15%"
+          description: >-
+            Root filesystem free space on {{ $labels.instance }} has remained
+            below 15% for fifteen minutes.
+
+      - alert: HostFilesystemWillFillIn24Hours
+        expr: >-
+          predict_linear(
+            node_filesystem_avail_bytes{
+              fstype!~"tmpfs|overlay|squashfs",
+              mountpoint="/"
+            }[6h],
+            24 * 60 * 60
+          ) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root filesystem is projected to fill within 24 hours"
+          description: >-
+            The six-hour trend for {{ $labels.instance }} projects exhaustion
+            of the root filesystem within one day.
+
+      - alert: ContainerAggregateMemoryPressure
+        expr: >-
+          sum(
+            container_memory_working_set_bytes{
+              id=~"/system.slice/docker-[0-9a-f]{64}\\.scope"
+            }
+          )
+          / scalar(max(node_memory_MemTotal_bytes)) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Docker cgroups consume over 80% of host memory"
+          description: >-
+            Aggregate working-set memory for raw Docker cgroups has remained
+            above 80% of host memory for ten minutes.
+
+  - name: backup-safety
+    rules:
+      - alert: BackupMetricsMissing
+        expr: absent(dockerswarm_backup_last_run_success{kind="application"})
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Application backup metrics are absent"
+          description: >-
+            The node-exporter textfile collector has not exposed application
+            backup status.
+
+      - alert: BackupLastRunFailed
+        expr: dockerswarm_backup_last_run_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A backup or recovery control failed"
+          description: >-
+            The latest {{ $labels.kind }} operation reported failure.
+
+      - alert: ApplicationBackupStale
+        expr: >-
+          time()
+          - dockerswarm_backup_last_finished_timestamp_seconds{
+              kind="application"
+            } > 36 * 60 * 60
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Application backup is stale"
+          description: >-
+            No successful application backup completion has been recorded
+            within the last 36 hours.
+
+  - name: monitoring-self
+    rules:
+      - alert: ExternalAlertDeliveryDisabled
+        expr: vector(1)
+        labels:
+          severity: info
+        annotations:
+          summary: "External alert delivery is intentionally disabled"
+          description: >-
+            Alertmanager has no external receiver until an owned destination,
+            versioned secret and controlled delivery test are codified.
+
+      - alert: PrometheusRuleEvaluationFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus rule evaluation is failing"
+          description: >-
+            Prometheus reported one or more rule evaluation failures during
+            the last ten minutes.
+
+      - alert: LokiDiscardingLogs
+        expr: increase(loki_discarded_samples_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is discarding log entries"
+          description: >-
+            Loki discarded one or more log entries during the last ten
+            minutes.

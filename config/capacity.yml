@@ -1,0 +1,118 @@
+---
+capacity_contract:
+  schema_version: 1
+  reviewed_at: "2026-07-26"
+
+  topology:
+    model: single-node
+    eligible_nodes: 1
+
+  host:
+    minimum_cpu_millicores: 8000
+    minimum_memory_mib: 15981
+    required_swap_mib: 0
+
+  observed_source:
+    docker_memory_bytes: 16757469184
+    docker_nano_cpus: 8000000000
+    swap_bytes: 0
+
+  system_reserve:
+    cpu_millicores: 1000
+    memory_mib: 3072
+
+  operational_headroom:
+    memory_mib: 512
+
+  policy:
+    aggregate_memory_limit_overcommit_ratio: "1.00"
+    aggregate_cpu_limit_overcommit_ratio: "2.50"
+    service_memory_limit_to_reservation_ratio: "2.50"
+    require_explicit_resources: true
+
+  application_guards:
+    minecraft:
+      minimum_non_heap_memory_mib: 1024
+    n8n:
+      maximum_decompressed_to_limit_ratio: "0.25"
+    redis:
+      reviewed_maxmemory_mib: 32
+      minimum_process_overhead_mib: 32
+      required_maxmemory_policy: allkeys-lru
+      require_persistence_disabled: true
+    selenium:
+      minimum_non_shm_memory_mib: 512
+      require_tracing_disabled: true
+      require_vnc_disabled: true
+
+  stacks:
+    edge:
+      expected_services:
+        - traefik
+      global_services: []
+    workloads:
+      expected_services:
+        - kropia
+        - minecraft
+        - minecraft-stats
+        - n8n-db
+        - n8n
+        - n8n-runners
+        - redis-coordinator
+        - selenium
+        - passbolt-db
+        - passbolt
+        - shlink-db
+        - shlink
+        - portfolio-pablo
+        - portfolio-alberto
+        - openclaw
+      global_services: []
+    observability:
+      expected_services:
+        - prometheus
+        - alertmanager
+        - blackbox-exporter
+        - loki
+        - alloy
+        - grafana
+        - node-exporter
+        - cadvisor
+        - postgres-exporter-n8n
+        - postgres-exporter-passbolt
+        - postgres-exporter-shlink
+        - redis-exporter
+      global_services:
+        - alloy
+        - node-exporter
+        - cadvisor
+
+  reviewed_totals:
+    edge:
+      reservations:
+        cpu_millicores: 100
+        memory_mib: 64
+      limits:
+        cpu_millicores: 500
+        memory_mib: 128
+    workloads:
+      reservations:
+        cpu_millicores: 2300
+        memory_mib: 5760
+      limits:
+        cpu_millicores: 11600
+        memory_mib: 9728
+    observability:
+      reservations:
+        cpu_millicores: 1070
+        memory_mib: 1248
+      limits:
+        cpu_millicores: 5100
+        memory_mib: 2496
+    aggregate:
+      reservations:
+        cpu_millicores: 3470
+        memory_mib: 7072
+      limits:
+        cpu_millicores: 17200
+        memory_mib: 12352

@@ -1,8 +1,13 @@
 ---
-schema_version: 1
+schema_version: 2
+semantics: components-updated-by-last-invocation
 repository: "{{ deployment_metadata_repository_slug }}"
 release: "{{ platform_release_version }}"
 revision: "{{ deployment_metadata_source_revision }}"
 profile: "{{ deployment_metadata_profile }}"
 playbook: "{{ deployment_metadata_playbook }}"
 contract_sha256: "{{ deployment_metadata_contract_sha256 }}"
+components:
+{% for component in deployment_metadata_components %}
+  - "{{ component }}"
+{% endfor %}

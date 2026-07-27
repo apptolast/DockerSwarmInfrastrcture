@@ -1,0 +1,237 @@
+---
+- name: Select the observability render destination
+  ansible.builtin.set_fact:
+    observability_effective_install_root: >-
+      {{
+        observability_render_root
+        if observability_render_only | bool
+        else observability_install_root
+      }}
+
+- name: Create observability render directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0750"
+  loop:
+    - "{{ observability_effective_install_root }}"
+    - "{{ observability_effective_install_root }}/bin"
+    - "{{ observability_effective_install_root }}/config"
+    - "{{ observability_effective_install_root }}/config/dashboards"
+    - "{{ observability_effective_install_root }}/host"
+
+- name: Install the generic Swarm deployment validator
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/validate-swarm-deployment.py"
+    dest: >-
+      {{ observability_effective_install_root
+         }}/bin/validate-swarm-deployment.py
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0755"
+
+- name: Render host integration assets for review
+  ansible.builtin.template:
+    src: "{{ item.source }}"
+    dest: >-
+      {{ observability_effective_install_root }}/host/{{ item.destination }}
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - source: docker-readonly-proxy.service.j2
+      destination: dockerswarm-docker-readonly-proxy.service
+      mode: "0644"
+    - source: observability-forward.sudoers.j2
+      destination: observability-forward.sudoers
+      mode: "0440"
+  loop_control:
+    label: "{{ item.destination }}"
+
+- name: Render templated observability configuration sources
+  ansible.builtin.template:
+    src: >-
+      {{ playbook_dir }}/../../stacks/observability/config/{{ item.source }}
+    dest: >-
+      {{ observability_effective_install_root }}/config/{{
+        item.destination }}
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0644"
+  loop: >-
+    {{
+      observability_config_specs
+      | selectattr("template", "equalto", true)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Copy static observability configuration sources
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../stacks/observability/{{
+        item.source_directory | default("config") }}/{{ item.source }}
+    dest: >-
+      {{ observability_effective_install_root }}/config/{{
+        item.destination }}
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0644"
+  loop: >-
+    {{
+      observability_config_specs
+      | rejectattr("template", "equalto", true)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Install the value-free observability secret catalog
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../stacks/observability/secrets.yml"
+    dest: "{{ observability_effective_install_root }}/secrets.yml"
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0644"
+
+- name: Hash rendered observability configuration sources
+  ansible.builtin.stat:
+    path: >-
+      {{ observability_effective_install_root }}/config/{{
+        item.destination }}
+    checksum_algorithm: sha256
+  loop: "{{ observability_config_specs }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: observability_rendered_config_stats
+
+- name: Derive immutable Docker Config names
+  ansible.builtin.set_fact:
+    observability_config_names: >-
+      {{
+        observability_config_names | default({})
+        | combine({
+          item.item.key:
+            observability_stack_name
+            + "-" + (item.item.key | replace("_", "-"))
+            + "-" + item.stat.checksum[:16]
+        })
+      }}
+  loop: "{{ observability_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Inspect immutable observability Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ observability_config_names[item.item.key] }}"
+  loop: "{{ observability_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ observability_config_names[item.item.key] }}"
+  register: observability_existing_configs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not observability_render_only | bool
+    - not ansible_check_mode
+
+- name: Create missing immutable observability Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - create
+      - --label
+      - com.apptolast.managed-by=ansible
+      - --label
+      - "com.apptolast.stack={{ observability_stack_name }}"
+      - --label
+      - "com.apptolast.sha256={{ item.item.stat.checksum }}"
+      - --label
+      - "com.apptolast.kind={{ item.item.item.kind }}"
+      - "{{ observability_config_names[item.item.item.key] }}"
+      - >-
+        {{ observability_effective_install_root
+           }}/config/{{ item.item.item.destination }}
+  loop: "{{ observability_existing_configs.results | default([]) }}"
+  loop_control:
+    label: "{{ observability_config_names[item.item.item.key] }}"
+  when:
+    - not observability_render_only | bool
+    - not ansible_check_mode
+    - item.rc != 0
+  changed_when: true
+
+- name: Re-read immutable observability Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ observability_config_names[item.item.key] }}"
+  loop: "{{ observability_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ observability_config_names[item.item.key] }}"
+  register: observability_verified_configs
+  changed_when: false
+  check_mode: false
+  when:
+    - not observability_render_only | bool
+    - not ansible_check_mode
+
+- name: Verify immutable Docker Config identity and content
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).Spec.Name
+        == observability_config_names[item.item.item.key]
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.managed-by"] == "ansible"
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.stack"] == observability_stack_name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.sha256"] == item.item.stat.checksum
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.kind"] == item.item.item.kind
+      - >-
+        ((item.stdout | from_json | first).Spec.Data | b64decode
+        | hash("sha256")) == item.item.stat.checksum
+    fail_msg: >-
+      Docker Config {{ observability_config_names[item.item.item.key] }}
+      has unexpected content or labels.
+  loop: "{{ observability_verified_configs.results | default([]) }}"
+  loop_control:
+    label: "{{ observability_config_names[item.item.item.key] }}"
+  when:
+    - not observability_render_only | bool
+    - not ansible_check_mode
+
+- name: Render the observability stack
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../stacks/observability/stack.yml.j2"
+    dest: "{{ observability_effective_install_root }}/stack.yml"
+    owner: "{{ omit if observability_render_only | bool else 'root' }}"
+    group: "{{ omit if observability_render_only | bool else 'root' }}"
+    mode: "0640"
+
+- name: Validate the rendered observability stack with Docker
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - config
+      - --compose-file
+      - "{{ observability_effective_install_root }}/stack.yml"
+  changed_when: false
+  check_mode: false

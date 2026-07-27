@@ -1,0 +1,1074 @@
+---
+- name: Verify the host-security input contract
+  ansible.builtin.assert:
+    that:
+      - host_security_contract_version | int == 1
+      - ansible_facts.distribution == "Ubuntu"
+      - ansible_facts.distribution_version is version("26.04", "==")
+      - host_security_admin_user == "admin"
+      - host_security_admin_home == "/home/admin"
+      - host_security_admin_uid | int == 1001
+      - host_security_admin_gid | int == 1001
+      - host_security_ssh_group == "sshusers"
+      - host_security_ssh_port | int == 22
+      - host_security_ssh_phase in ["none", "staged", "final"]
+      - >-
+        host_security_crowdsec_repository_key_fingerprint
+        is match("^[A-F0-9]{40}$")
+      - host_security_ubuntu_snapshot is match("^[0-9]{8}T[0-9]{6}Z$")
+      - host_security_required_packages | unique | length
+        == host_security_required_packages | length
+      - >-
+        host_security_package_lock
+        | map("regex_replace", "=.*$", "") | sort
+        == host_security_required_packages | sort
+      - >-
+        host_security_crowdsec_collection_lock
+        | map(attribute="name") | unique | list | length
+        == host_security_crowdsec_collection_lock | length
+      - >-
+        host_security_crowdsec_collection_lock
+        | selectattr("sha256", "match", "^[a-f0-9]{64}$")
+        | list | length
+        == host_security_crowdsec_collection_lock | length
+      - >-
+        host_security_crowdsec_hub_dependency_lock
+        | map(attribute="name") | unique | list | length
+        == host_security_crowdsec_hub_dependency_lock | length
+      - >-
+        host_security_crowdsec_hub_dependency_lock
+        | selectattr(
+            "type",
+            "in",
+            ["parsers", "scenarios", "contexts", "postoverflows"]
+          )
+        | list | length
+        == host_security_crowdsec_hub_dependency_lock | length
+      - >-
+        host_security_crowdsec_hub_dependency_lock
+        | selectattr("sha256", "match", "^[a-f0-9]{64}$")
+        | list | length
+        == host_security_crowdsec_hub_dependency_lock | length
+      - host_security_required_active_services | unique | length
+        == host_security_required_active_services | length
+      - host_security_legacy_tool_policy == "preserve-unmanaged"
+      - host_security_preserved_legacy_packages | unique | length
+        == host_security_preserved_legacy_packages | length
+      - >-
+        host_security_preserved_legacy_packages
+        | intersect(host_security_required_packages) | length == 0
+      - host_security_required_host_egress | selectattr("port", "eq", 4460)
+        | selectattr("protocol", "eq", "tcp") | list | length == 1
+    fail_msg: >-
+      Host security is constrained to the reviewed Ubuntu 26.04 identity,
+      authenticated CrowdSec repository and exact egress contract.
+    quiet: true
+
+- name: Read the administrator identity
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ host_security_admin_user }}"
+
+- name: Verify the administrator identity before security changes
+  ansible.builtin.assert:
+    that:
+      - host_security_admin_user in ansible_facts.getent_passwd
+      - >-
+        ansible_facts.getent_passwd[host_security_admin_user][1] | int
+        == host_security_admin_uid | int
+      - >-
+        ansible_facts.getent_passwd[host_security_admin_user][2] | int
+        == host_security_admin_gid | int
+      - >-
+        ansible_facts.getent_passwd[host_security_admin_user][4]
+        == host_security_admin_home
+      - >-
+        ansible_facts.getent_passwd[host_security_admin_user][5]
+        == "/bin/bash"
+    fail_msg: "The reviewed administrator identity is absent or has drifted."
+    quiet: true
+
+- name: Read administrator group membership
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/id
+      - -nG
+      - "{{ host_security_admin_user }}"
+  register: host_security_admin_groups
+  changed_when: false
+  check_mode: false
+
+- name: Verify SSH and privilege memberships
+  ansible.builtin.assert:
+    that:
+      - host_security_ssh_group in host_security_admin_groups.stdout.split()
+      - '"sudo" in host_security_admin_groups.stdout.split()'
+    fail_msg: "admin must belong to sshusers and sudo before hardening."
+    quiet: true
+
+- name: Reconcile the exact administrator supplementary groups
+  ansible.builtin.user:
+    name: "{{ host_security_admin_user }}"
+    groups:
+      - sudo
+      - "{{ host_security_ssh_group }}"
+    append: false
+  register: host_security_admin_group_reconciliation
+
+- name: Read reconciled administrator group membership
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/id
+      - -nG
+      - "{{ host_security_admin_user }}"
+  register: host_security_reconciled_admin_groups
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Reject every unreviewed administrator group
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_reconciled_admin_groups.stdout.split() | sort
+        == [host_security_admin_user, "sudo", host_security_ssh_group] | sort
+    fail_msg: >-
+      admin retains an unreviewed supplementary group, including a
+      root-equivalent Docker membership.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Inspect administrator authorized keys
+  ansible.builtin.stat:
+    path: "{{ host_security_authorized_keys_path }}"
+    follow: false
+  register: host_security_authorized_keys
+
+- name: Verify administrator authorized-key ownership
+  ansible.builtin.assert:
+    that:
+      - host_security_authorized_keys.stat.exists
+      - host_security_authorized_keys.stat.isreg
+      - not host_security_authorized_keys.stat.islnk
+      - host_security_authorized_keys.stat.uid | int
+        == host_security_admin_uid | int
+      - host_security_authorized_keys.stat.gid | int
+        == host_security_admin_gid | int
+      - host_security_authorized_keys.stat.mode == "0600"
+    fail_msg: "The administrator authorized-key allowlist is unsafe."
+    quiet: true
+
+- name: Install the exact authorized-key validator
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/validate-authorized-keys.py"
+    dest: "{{ host_security_authorized_keys_validator }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Strictly validate every administrator key
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          playbook_dir + "/../../scripts/validate-authorized-keys.py",
+          host_security_authorized_keys_path,
+          "--ssh-keygen",
+          "/usr/bin/ssh-keygen",
+          "--json"
+        ]
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: host_security_authorized_key_validation
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify at least one administrator key exists
+  ansible.builtin.assert:
+    that:
+      - >-
+        (host_security_authorized_key_validation.stdout | from_json).count
+        | int > 0
+    fail_msg: "No parseable key exists for the administrator."
+    quiet: true
+
+- name: Route the declared GitHub SSH remote over reviewed HTTPS egress
+  ansible.builtin.template:
+    src: github-over-https.conf.j2
+    dest: "{{ host_security_github_ssh_client_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Resolve the system GitHub SSH client policy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh
+      - -G
+      - -F
+      - /dev/stdin
+      - github.com
+    stdin: >-
+      {{
+        lookup(
+          "ansible.builtin.template",
+          role_path + "/templates/github-over-https.conf.j2"
+        )
+      }}
+    stdin_add_newline: true
+  register: host_security_github_ssh_policy
+  changed_when: false
+  check_mode: false
+
+- name: Enforce GitHub SSH maintenance over TCP 443
+  ansible.builtin.assert:
+    that:
+      - >-
+        "hostname ssh.github.com"
+        in host_security_github_ssh_policy.stdout_lines
+      - '"port 443" in host_security_github_ssh_policy.stdout_lines'
+      - '"user git" in host_security_github_ssh_policy.stdout_lines'
+    fail_msg: "The GitHub SSH client path does not use ssh.github.com:443."
+    quiet: true
+
+- name: Pin the reviewed Ubuntu archive snapshot
+  ansible.builtin.copy:
+    content: |
+      // Managed by Ansible. Update only after validating a newer snapshot.
+      APT::Snapshot "{{ host_security_ubuntu_snapshot }}";
+    dest: /etc/apt/apt.conf.d/50dockerswarm-snapshot
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install repository bootstrap dependencies
+  ansible.builtin.apt:
+    name: "{{ host_security_repository_bootstrap_package_lock }}"
+    state: present
+    allow_downgrade: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the administrator APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Authenticate and install the CrowdSec repository key
+  when: not ansible_check_mode
+  block:
+    - name: Allocate private CrowdSec key staging
+      ansible.builtin.tempfile:
+        state: directory
+        path: /etc/apt/keyrings
+        prefix: .crowdsec-key.
+      register: host_security_crowdsec_key_staging
+
+    - name: Download the official CrowdSec repository key
+      ansible.builtin.get_url:
+        url: "{{ host_security_crowdsec_repository_key_url }}"
+        dest: "{{ host_security_crowdsec_key_staging.path }}/key.asc"
+        owner: root
+        group: root
+        mode: "0600"
+        force: true
+
+    - name: Read the staged CrowdSec key identity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/gpg
+          - --batch
+          - --show-keys
+          - --with-colons
+          - "{{ host_security_crowdsec_key_staging.path }}/key.asc"
+      register: host_security_crowdsec_key_identity
+      changed_when: false
+
+    - name: Authenticate the staged CrowdSec key
+      ansible.builtin.assert:
+        that:
+          - >-
+            host_security_crowdsec_key_identity.stdout_lines
+            | select("match", "^pub:")
+            | list | length == 1
+          - >-
+            (
+              host_security_crowdsec_key_identity.stdout_lines
+              | select("match", "^fpr:")
+              | first
+            ).split(":")[9]
+            == host_security_crowdsec_repository_key_fingerprint
+        fail_msg: >-
+          The downloaded CrowdSec key differs from the reviewed fingerprint.
+          The installed keyring was not modified.
+        quiet: true
+
+    - name: Dearmor the authenticated CrowdSec key
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/gpg
+          - --batch
+          - --yes
+          - --dearmor
+          - --output
+          - "{{ host_security_crowdsec_key_staging.path }}/key.gpg"
+          - "{{ host_security_crowdsec_key_staging.path }}/key.asc"
+      changed_when: false
+
+    - name: Atomically install the authenticated CrowdSec key
+      ansible.builtin.copy:
+        src: "{{ host_security_crowdsec_key_staging.path }}/key.gpg"
+        dest: "{{ host_security_crowdsec_keyring }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+        unsafe_writes: false
+
+  always:
+    - name: Remove private CrowdSec key staging
+      ansible.builtin.file:
+        path: "{{ host_security_crowdsec_key_staging.path | default('') }}"
+        state: absent
+      when:
+        - host_security_crowdsec_key_staging.path | default("") | length > 0
+
+- name: Configure the official CrowdSec repository
+  ansible.builtin.deb822_repository:
+    name: crowdsec
+    types:
+      - deb
+    uris:
+      - "{{ host_security_crowdsec_repository_url }}"
+    suites:
+      - any
+    components:
+      - main
+    signed_by: "{{ host_security_crowdsec_keyring }}"
+    enabled: true
+    state: present
+  register: host_security_crowdsec_repository
+  when: not ansible_check_mode
+
+- name: Install the reviewed host-security packages
+  ansible.builtin.apt:
+    name: "{{ host_security_package_lock }}"
+    state: present
+    allow_downgrade: false
+    update_cache: >-
+      {{ host_security_crowdsec_repository.changed | default(false) }}
+  when: not ansible_check_mode
+
+- name: Read exact installed host-security package versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/dpkg-query
+      - -W
+      - "-f=${Version}"
+      - "{{ item.split('=', 1)[0] }}"
+  loop: >-
+    {{
+      host_security_repository_bootstrap_package_lock
+      + host_security_package_lock
+    }}
+  register: host_security_installed_package_versions
+  changed_when: false
+  check_mode: false
+
+- name: Enforce every locked host-security package version
+  ansible.builtin.assert:
+    that:
+      - item.stdout == item.item.split("=", 1)[1]
+    fail_msg: >-
+      {{ item.item.split("=", 1)[0] }} differs from the reviewed package lock.
+    quiet: true
+  loop: "{{ host_security_installed_package_versions.results }}"
+  loop_control:
+    label: "{{ item.item.split('=', 1)[0] }}"
+
+- name: Inventory the preserved OpenSSH PAM policy
+  ansible.builtin.stat:
+    path: /etc/pam.d/sshd
+    checksum_algorithm: sha256
+  register: host_security_pam_sshd
+
+- name: Preserve the existing OpenSSH PAM integration
+  ansible.builtin.assert:
+    that:
+      - host_security_pam_sshd.stat.exists
+      - host_security_pam_sshd.stat.isreg
+      - not host_security_pam_sshd.stat.islnk
+      - host_security_pam_sshd.stat.pw_name == "root"
+      - host_security_pam_sshd.stat.gr_name == "root"
+      - host_security_pam_sshd.stat.mode == "0644"
+    fail_msg: >-
+      The existing OpenSSH PAM file is structurally unsafe. Its content is
+      deliberately preserved until legacy MFA receives a separate decision.
+    quiet: true
+
+- name: Inventory preserved legacy host-security packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Record preserved legacy host-security package presence
+  ansible.builtin.set_fact:
+    host_security_observed_legacy_packages: >-
+      {{
+        host_security_preserved_legacy_packages
+        | intersect(ansible_facts.packages.keys() | list)
+        | sort
+      }}
+
+- name: Disable autonomous CrowdSec Hub updates
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+    daemon_reload: true
+  loop:
+    - crowdsec-hubupdate.timer
+    - crowdsec-hubupdate.service
+
+- name: Read the CrowdSec Hub update unit states
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - "{{ item }}"
+      - --property=ActiveState
+      - --property=UnitFileState
+  loop:
+    - crowdsec-hubupdate.timer
+    - crowdsec-hubupdate.service
+  register: host_security_crowdsec_hubupdate_states
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Enforce versioned-only CrowdSec Hub promotion
+  ansible.builtin.assert:
+    that:
+      - '"ActiveState=inactive" in item.stdout_lines'
+      - '"UnitFileState=masked" in item.stdout_lines'
+    fail_msg: "{{ item.item }} can still mutate the locked CrowdSec Hub."
+    quiet: true
+  loop: "{{ host_security_crowdsec_hubupdate_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode
+
+- name: Verify CrowdSec resolves from its official repository
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/apt-cache
+      - policy
+      - crowdsec
+  register: host_security_crowdsec_policy
+  changed_when: false
+  check_mode: false
+
+- name: Enforce the CrowdSec package origin
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_repository_url
+        in host_security_crowdsec_policy.stdout
+    fail_msg: "CrowdSec is not sourced from the authenticated official repo."
+    quiet: true
+
+- name: Inspect locked CrowdSec Hub candidates before installation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cscli
+      - "{{ item.type }}"
+      - inspect
+      - "{{ item.name }}"
+      - --output
+      - json
+  loop: >-
+    {{
+      (
+        host_security_crowdsec_collection_lock
+        | map("combine", {"type": "collections"})
+        | list
+      )
+      + host_security_crowdsec_hub_dependency_lock
+    }}
+  loop_control:
+    label: "{{ item.type }}/{{ item.name }}"
+  register: host_security_crowdsec_hub_candidates
+  changed_when: false
+  check_mode: false
+
+- name: Reject unreviewed CrowdSec Hub candidates before mutation
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json).name == item.item.name
+      - (item.stdout | from_json).version == item.item.version
+      - >-
+        (item.stdout | from_json).versions[item.item.version].digest
+        == item.item.sha256
+    fail_msg: >-
+      CrowdSec {{ item.item.type }}/{{ item.item.name }} is not the reviewed
+      Hub artifact. No collection was installed.
+    quiet: true
+  loop: "{{ host_security_crowdsec_hub_candidates.results }}"
+  loop_control:
+    label: "{{ item.item.type }}/{{ item.item.name }}"
+
+- name: Install the reviewed CrowdSec collections
+  when: not ansible_check_mode
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/cscli", "collections", "install"]
+        + (
+          host_security_crowdsec_collection_lock
+          | map(attribute="name") | list
+        )
+        + ["--error", "--color", "no"]
+      }}
+  register: host_security_crowdsec_collection_install
+  changed_when: >-
+    "Nothing to install or remove."
+    not in host_security_crowdsec_collection_install.stdout
+  check_mode: false
+
+- name: Inspect every available locked CrowdSec Hub item
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cscli
+      - "{{ item.type }}"
+      - inspect
+      - "{{ item.name }}"
+      - --output
+      - json
+  loop: >-
+    {{
+      (
+        host_security_crowdsec_collection_lock
+        | map("combine", {"type": "collections"})
+        | list
+      )
+      + host_security_crowdsec_hub_dependency_lock
+    }}
+  loop_control:
+    label: "{{ item.type }}/{{ item.name }}"
+  register: host_security_crowdsec_hub_inspections
+  changed_when: false
+  check_mode: false
+
+- name: Enforce installed CrowdSec Hub versions and content digests
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json).name == item.item.name
+      - (item.stdout | from_json).version == item.item.version
+      - >-
+        (item.stdout | from_json).versions[item.item.version].digest
+        == item.item.sha256
+      - (item.stdout | from_json).installed | bool
+      - (item.stdout | from_json).local_version == item.item.version
+      - (item.stdout | from_json).local_hash == item.item.sha256
+      - not ((item.stdout | from_json).tainted | bool)
+    fail_msg: >-
+      CrowdSec {{ item.item.type }}/{{ item.item.name }} differs from its
+      reviewed version or content digest. Review the new artifact first.
+    quiet: true
+  loop: "{{ host_security_crowdsec_hub_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.type }}/{{ item.item.name }}"
+
+- name: Read the complete installed CrowdSec Hub inventory
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cscli
+      - hub
+      - list
+      - --output
+      - json
+      - --error
+      - --color
+      - "no"
+  register: host_security_crowdsec_hub_inventory_raw
+  changed_when: false
+  check_mode: false
+
+- name: Decode the installed CrowdSec Hub inventory
+  ansible.builtin.set_fact:
+    host_security_crowdsec_hub_inventory: >-
+      {{ host_security_crowdsec_hub_inventory_raw.stdout | from_json }}
+
+- name: Reject every unreviewed installed CrowdSec Hub item
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_hub_inventory.keys() | sort
+        == [
+          "appsec-configs",
+          "appsec-rules",
+          "collections",
+          "contexts",
+          "parsers",
+          "postoverflows",
+          "scenarios"
+        ]
+      - >-
+        host_security_crowdsec_hub_inventory["appsec-configs"] | length == 0
+      - host_security_crowdsec_hub_inventory["appsec-rules"] | length == 0
+      - >-
+        host_security_crowdsec_hub_inventory.collections
+        | map(attribute="name") | sort
+        == host_security_crowdsec_collection_lock
+        | map(attribute="name") | sort
+      - >-
+        host_security_crowdsec_hub_inventory.contexts
+        | map(attribute="name") | sort
+        == host_security_crowdsec_hub_dependency_lock
+        | selectattr("type", "equalto", "contexts")
+        | map(attribute="name") | sort
+      - >-
+        host_security_crowdsec_hub_inventory.parsers
+        | map(attribute="name") | sort
+        == host_security_crowdsec_hub_dependency_lock
+        | selectattr("type", "equalto", "parsers")
+        | map(attribute="name") | sort
+      - >-
+        host_security_crowdsec_hub_inventory.postoverflows
+        | map(attribute="name") | sort
+        == host_security_crowdsec_hub_dependency_lock
+        | selectattr("type", "equalto", "postoverflows")
+        | map(attribute="name") | sort
+      - >-
+        host_security_crowdsec_hub_inventory.scenarios
+        | map(attribute="name") | sort
+        == host_security_crowdsec_hub_dependency_lock
+        | selectattr("type", "equalto", "scenarios")
+        | map(attribute="name") | sort
+    fail_msg: >-
+      Installed CrowdSec Hub content contains an unreviewed or missing item.
+      Review drift before removing or enabling security content.
+    quiet: true
+
+- name: Create the CrowdSec acquisition directory
+  ansible.builtin.file:
+    path: /etc/crowdsec/acquis.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install exact CrowdSec acquisition sources
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/crowdsec/acquis.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0640"
+  loop: "{{ host_security_managed_acquisition_files }}"
+  notify: Restart CrowdSec
+
+- name: Remove known generated duplicate acquisitions
+  ansible.builtin.file:
+    path: "/etc/crowdsec/acquis.d/{{ item }}"
+    state: absent
+  loop:
+    - setup.linux.yaml
+    - setup.sshd.yaml
+  notify: Restart CrowdSec
+
+- name: Remove the legacy monolithic CrowdSec acquisition file
+  ansible.builtin.file:
+    path: /etc/crowdsec/acquis.yaml
+    state: absent
+  notify: Restart CrowdSec
+
+- name: Enumerate CrowdSec acquisition files
+  ansible.builtin.find:
+    paths: /etc/crowdsec/acquis.d
+    file_type: file
+    recurse: false
+  register: host_security_crowdsec_acquisitions
+
+- name: Enforce the exact CrowdSec acquisition set
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_acquisitions.files
+        | map(attribute="path") | map("basename") | sort
+        == host_security_managed_acquisition_files | sort
+    fail_msg: >-
+      An unmanaged CrowdSec acquisition source would duplicate or expand the
+      reviewed log scope.
+    quiet: true
+
+- name: Install the exact Fail2ban SSH jail
+  ansible.builtin.template:
+    src: fail2ban-sshd.local.j2
+    dest: "{{ host_security_fail2ban_jail }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Fail2ban
+
+- name: Install the exact Fail2ban global policy
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Fail2ban
+
+- name: Remove the superseded unmanaged Fail2ban SSH override
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d/ssh.local
+    state: absent
+  notify: Restart Fail2ban
+
+- name: Validate the complete Fail2ban configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fail2ban-client
+      - --test
+  changed_when: false
+  check_mode: false
+
+- name: Configure the reviewed PSAD settings
+  ansible.builtin.lineinfile:
+    path: /etc/psad/psad.conf
+    regexp: "^{{ item.key }}[ \t]+"
+    line: "{{ item.key }}                    {{ item.value }};"
+    state: present
+  loop:
+    - key: EMAIL_ADDRESSES
+      value: root@localhost
+    - key: HOSTNAME
+      value: "{{ ansible_facts.fqdn }}"
+    - key: IPT_WRITE_FWDATA
+      value: "Y"
+    - key: IPT_SYSLOG_FILE
+      value: "{{ host_security_psad_log_path }}"
+    - key: ENABLE_AUTO_IDS
+      value: "Y"
+    - key: AUTO_IDS_DANGER_LEVEL
+      value: "{{ host_security_psad_auto_ids_danger_level }}"
+    - key: ENABLE_AUTO_IDS_EMAILS
+      value: "N"
+  loop_control:
+    label: "{{ item.key }}"
+  notify: Restart PSAD
+
+- name: Remove unmarked legacy PSAD UFW lines
+  ansible.builtin.lineinfile:
+    path: "{{ item.0 }}"
+    regexp: "{{ item.1 }}"
+    state: absent
+  loop:
+    - - /etc/ufw/before.rules
+      - "^# log all traffic so psad can analyze$"
+    - - /etc/ufw/before.rules
+      - >-
+        ^-A INPUT -j LOG --log-tcp-options
+        --log-prefix "\[IPTABLES\] "$
+    - - /etc/ufw/before.rules
+      - >-
+        ^-A FORWARD -j LOG --log-tcp-options
+        --log-prefix "\[IPTABLES\] "$
+    - - /etc/ufw/before6.rules
+      - "^# log all traffic so psad can analyze$"
+    - - /etc/ufw/before6.rules
+      - >-
+        ^-A INPUT -j LOG --log-tcp-options
+        --log-prefix "\[IPTABLES\] "$
+    - - /etc/ufw/before6.rules
+      - >-
+        ^-A FORWARD -j LOG --log-tcp-options
+        --log-prefix "\[IPTABLES\] "$
+  loop_control:
+    label: "{{ item.0 }} PSAD legacy rule"
+  notify: Reload UFW
+
+- name: Install managed PSAD logging in UFW
+  ansible.builtin.blockinfile:
+    path: "{{ item.path }}"
+    insertbefore: "^COMMIT$"
+    marker: "# {mark} DOCKERSWARM PSAD"
+    block: |
+      # Log otherwise unmatched traffic for PSAD analysis.
+      -A INPUT -j LOG --log-tcp-options --log-prefix "[IPTABLES] "
+      -A FORWARD -j LOG --log-tcp-options --log-prefix "[IPTABLES] "
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "{{ item.validator }} --test %s"
+  loop:
+    - path: /etc/ufw/before.rules
+      validator: /usr/sbin/iptables-restore
+    - path: /etc/ufw/before6.rules
+      validator: /usr/sbin/ip6tables-restore
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Reload UFW
+
+- name: Route PSAD firewall events to their bounded log
+  ansible.builtin.template:
+    src: rsyslog-iptables.conf.j2
+    dest: "{{ host_security_rsyslog_iptables_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rsyslog
+
+- name: Install the PSAD log rotation policy
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../config/logrotate/iptables"
+    dest: /etc/logrotate.d/iptables
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Validate the complete rsyslog configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/rsyslogd
+      - -N1
+  changed_when: false
+  check_mode: false
+
+- name: Keep IPv6 under the same UFW policy
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: "^IPV6="
+    line: IPV6=yes
+    state: present
+  notify: Reload UFW
+
+- name: Set fail-closed UFW defaults
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - --force
+      - default
+      - deny
+      - "{{ item }}"
+  loop:
+    - incoming
+    - outgoing
+    - routed
+  register: host_security_ufw_defaults
+  changed_when: >-
+    "Default " + item + " policy changed" in
+    (host_security_ufw_defaults.stdout | default(""))
+
+- name: Rate-limit the sole administrative ingress
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - limit
+      - in
+      - "{{ host_security_ssh_port }}/tcp"
+      - comment
+      - allow SSH connections in
+  environment:
+    LC_ALL: C
+  register: host_security_ufw_ssh
+  changed_when: "'Rule added' in host_security_ufw_ssh.stdout"
+
+- name: Allow only reviewed host egress classes
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - allow
+      - out
+      - proto
+      - "{{ item.protocol }}"
+      - to
+      - any
+      - port
+      - "{{ item.port | string }}"
+      - comment
+      - dockerswarm-host-egress
+  environment:
+    LC_ALL: C
+  loop: "{{ host_security_required_host_egress }}"
+  loop_control:
+    label: "{{ item.protocol }}/{{ item.port }}"
+  register: host_security_ufw_egress
+  changed_when: "'Rule added' in host_security_ufw_egress.stdout"
+
+- name: Enable bounded UFW logging
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - logging
+      - low
+  register: host_security_ufw_logging
+  changed_when: >-
+    "Logging enabled" in host_security_ufw_logging.stdout
+    or "Logging changed" in host_security_ufw_logging.stdout
+
+- name: Enable the fail-closed firewall
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - --force
+      - enable
+  register: host_security_ufw_enable
+  changed_when: >-
+    "Firewall is active and enabled on system startup"
+    not in host_security_ufw_enable.stdout
+
+- name: Apply service and firewall handlers before validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start required host-security services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ host_security_required_active_services }}"
+
+- name: Install the exact UFW contract validator
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/validate-ufw-contract.py"
+    dest: "{{ host_security_ufw_validator }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reject every unreviewed UFW user-chain rule
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            playbook_dir + "/../../scripts/validate-ufw-contract.py",
+            "--ssh-port",
+            host_security_ssh_port | string,
+            "--public-interface",
+            platform_public_interface,
+            "--public-ipv4",
+            platform_public_ipv4
+          ]
+          + (
+            platform_public_tcp_ports
+            | map("string")
+            | map("regex_replace", "^(.*)$", "--public-port=\\1")
+            | list
+          )
+          + (
+            host_security_required_host_egress
+            | map(attribute="protocol")
+            | zip(
+                host_security_required_host_egress
+                | map(attribute="port")
+              )
+            | map("join", ":")
+            | map("regex_replace", "^(.*)$", "--egress=\\1")
+            | list
+          )
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Read the active UFW policy
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - status
+      - verbose
+  environment:
+    LC_ALL: C
+  register: host_security_ufw_status
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Verify the fail-closed UFW base
+  ansible.builtin.assert:
+    that:
+      - '"Status: active" in host_security_ufw_status.stdout'
+      - >-
+        host_security_ufw_status.stdout is search(
+          "Default:[ ]+deny \\(incoming\\),[ ]+deny \\(outgoing\\),"
+          ~ "[ ]+deny \\(routed\\)"
+        )
+      - >-
+        host_security_ufw_status.stdout
+        is search((host_security_ssh_port | string) ~ "/tcp[ ]+LIMIT IN")
+    fail_msg: "The UFW base is not active and fail-closed."
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Validate the CrowdSec engine
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec
+      - -c
+      - /etc/crowdsec/config.yaml
+      - -t
+      - -error
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Validate the credential-bearing CrowdSec bouncer
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec-firewall-bouncer
+      - -c
+      - "{{ host_security_crowdsec_bouncer_config }}"
+      - -t
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Verify Fail2ban and its SSH jail
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fail2ban-client
+      - status
+      - sshd
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Verify PSAD runtime
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/psad
+      - --Status
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Wait for Chrony synchronization
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timedatectl
+      - show
+      - --property=NTPSynchronized
+      - --value
+  register: host_security_time_synchronized
+  changed_when: false
+  check_mode: false
+  until: host_security_time_synchronized.stdout in ["yes", "true"]
+  retries: 18
+  delay: 10
+  when: not ansible_check_mode
+
+- name: Apply the requested lockout-safe SSH bootstrap phase
+  ansible.builtin.import_tasks: ssh.yml
+  when: host_security_ssh_phase != "none"

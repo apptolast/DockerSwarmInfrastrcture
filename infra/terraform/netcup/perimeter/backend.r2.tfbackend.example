@@ -1,9 +1,12 @@
 bucket = "REPLACE_WITH_NETCUP_STATE_BUCKET"
+# The real bucket/key and SHA-256 of its Access Key ID must also be approved in
+# the tracked backend-identities.json. This ignored file cannot authorize a
+# backend by itself.
 key    = "netcup/perimeter/terraform.tfstate"
 region = "auto"
 
 endpoints = {
-  s3 = "https://CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
+  s3 = "https://becc1c00820a0f6779e9b278ab150abf.r2.cloudflarestorage.com"
 }
 
 skip_credentials_validation = true
@@ -11,5 +14,8 @@ skip_metadata_api_check     = true
 skip_region_validation      = true
 skip_requesting_account_id  = true
 skip_s3_checksum            = true
+# The production wrappers require true plus a current two-client proof bound to
+# this bucket, endpoint, and pinned Terraform version. Never set false to bypass
+# a failed or expired proof.
 use_lockfile                = true
 use_path_style              = true

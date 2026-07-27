@@ -1,0 +1,27 @@
+[Unit]
+Description=Unlock the local Docker Swarm manager from root-only escrow
+Documentation=https://docs.docker.com/engine/swarm/swarm_manager_locking/
+After=docker.service
+PartOf=docker.service
+ConditionPathExists=/etc/dockerswarm/backup/swarm-unlock-key
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/dockerswarm-swarm-unlock
+RemainAfterExit=yes
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/dockerswarm/backup/swarm-unlock-key
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

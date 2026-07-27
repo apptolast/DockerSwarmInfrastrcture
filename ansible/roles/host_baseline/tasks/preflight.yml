@@ -6,18 +6,29 @@
       - ansible_facts.distribution_version is version("26.04", "==")
       - host_baseline_admin_user == "admin"
       - host_baseline_admin_home == "/home/admin"
+      - host_baseline_admin_uid | int == 1001
+      - host_baseline_admin_gid | int == 1001
       - host_baseline_ssh_group == "sshusers"
       - host_baseline_ssh_port | int == 22
       - host_baseline_public_interface in ansible_facts.interfaces
       - >-
         ansible_facts.default_ipv4.interface
         == host_baseline_public_interface
-      - host_baseline_required_public_tcp_ports | sort == [80, 443]
+      - >-
+        host_baseline_required_public_tcp_ports
+        | sort
+        ==
+        (
+          [80, 443, 25565]
+          if platform_minecraft_public_enabled | bool
+          else [80, 443]
+        )
+      - host_baseline_required_public_ipv6_tcp_ports | length == 0
       - host_baseline_sysctl["net.ipv4.ip_forward"] == "1"
     fail_msg: >-
       The host baseline is intentionally constrained to the reviewed Ubuntu
-      26.04 manager, the existing admin identity, SSH port 22, and edge ports
-      80/443.
+      26.04 manager, the existing admin identity, SSH port 22, IPv4
+      application ports 80/443/25565, and no public application TCP over IPv6.
     quiet: true
 
 - name: Refuse a remote rollout through a different SSH identity
@@ -43,14 +54,21 @@
     that:
       - host_baseline_admin_user in ansible_facts.getent_passwd
       - >-
+        (ansible_facts.getent_passwd[host_baseline_admin_user][1] | int)
+        == (host_baseline_admin_uid | int)
+      - >-
+        (ansible_facts.getent_passwd[host_baseline_admin_user][2] | int)
+        == (host_baseline_admin_gid | int)
+      - >-
         ansible_facts.getent_passwd[host_baseline_admin_user][4]
         == host_baseline_admin_home
       - >-
         ansible_facts.getent_passwd[host_baseline_admin_user][5]
         == "/bin/bash"
     fail_msg: >-
-      The existing admin account does not match the reviewed home directory
-      and login shell. This role never creates or renames the SSH identity.
+      The existing admin account does not match the reviewed UID, GID, home
+      directory and login shell. This role never creates or renames the SSH
+      identity.
     quiet: true
 
 - name: Read administrator group membership
@@ -91,14 +109,21 @@
       owned by admin. The role deliberately never writes this file.
     quiet: true
 
-- name: Cryptographically parse every existing administrator key
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/ssh-keygen
-      - -l
-      - -f
-      - "{{ host_baseline_authorized_keys_path }}"
-  register: host_baseline_authorized_key_fingerprints
+- name: Strictly validate every existing administrator key
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          playbook_dir + "/../../scripts/validate-authorized-keys.py",
+          host_baseline_authorized_keys_path,
+          "--ssh-keygen",
+          "/usr/bin/ssh-keygen",
+          "--json"
+        ]
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: host_baseline_authorized_key_validation
   changed_when: false
   check_mode: false
   no_log: true
@@ -106,7 +131,9 @@
 - name: Verify at least one administrator public key exists
   ansible.builtin.assert:
     that:
-      - host_baseline_authorized_key_fingerprints.stdout_lines | length > 0
+      - >-
+        (host_baseline_authorized_key_validation.stdout | from_json).count
+        | int > 0
     fail_msg: "No parseable public key exists for the admin SSH identity."
     quiet: true
 
@@ -149,6 +176,39 @@
       classical KEX fallback, or the list contains a SHA-1 algorithm.
     quiet: true
 
+- name: Read supported OpenSSH algorithm classes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh
+      - -Q
+      - "{{ item.query }}"
+  loop:
+    - query: cipher
+      expected: "{{ host_baseline_ssh_ciphers }}"
+    - query: mac
+      expected: "{{ host_baseline_ssh_macs }}"
+    - query: HostKeyAlgorithms
+      expected: "{{ host_baseline_ssh_host_key_algorithms }}"
+    - query: PubkeyAcceptedAlgorithms
+      expected: "{{ host_baseline_ssh_pubkey_algorithms }}"
+  loop_control:
+    label: "{{ item.query }}"
+  register: host_baseline_supported_algorithm_classes
+  changed_when: false
+  check_mode: false
+
+- name: Verify every deterministic SSH algorithm is implemented
+  ansible.builtin.assert:
+    that:
+      - item.item.expected | difference(item.stdout_lines) | length == 0
+    fail_msg: >-
+      OpenSSH does not implement the complete reviewed
+      {{ item.item.query }} policy.
+    quiet: true
+  loop: "{{ host_baseline_supported_algorithm_classes.results }}"
+  loop_control:
+    label: "{{ item.item.query }}"
+
 - name: Read the effective OpenSSH configuration before adoption
   ansible.builtin.command:
     argv:
@@ -165,11 +225,17 @@
         "port " ~ (host_baseline_ssh_port | string)
         in host_baseline_initial_sshd.stdout_lines
       - >-
-        "allowgroups " ~ host_baseline_ssh_group
-        in host_baseline_initial_sshd.stdout_lines
+        (
+          "allowusers " ~ host_baseline_admin_user
+          in host_baseline_initial_sshd.stdout_lines
+        )
+        or (
+          "allowgroups " ~ host_baseline_ssh_group
+          in host_baseline_initial_sshd.stdout_lines
+        )
       - '"permitrootlogin no" in host_baseline_initial_sshd.stdout_lines'
       - '"pubkeyauthentication yes" in host_baseline_initial_sshd.stdout_lines'
     fail_msg: >-
-      The current SSH port, login group, root-login policy, or public-key
+      The current SSH port, login allowlist, root-login policy, or public-key
       support differs from the reviewed host. Stop instead of risking lockout.
     quiet: true

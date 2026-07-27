@@ -1,0 +1,1096 @@
+---
+version: "3.8"
+
+x-service-defaults: &service-defaults
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: local
+    options:
+      max-file: "5"
+      max-size: 20m
+
+x-deploy-defaults: &deploy-defaults
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.labels.platform.workloads == true
+  restart_policy:
+    condition: any
+    delay: 5s
+    window: 60s
+  update_config:
+    parallelism: 1
+    delay: 10s
+    order: stop-first
+    failure_action: rollback
+    monitor: 120s
+    max_failure_ratio: 0
+  rollback_config:
+    parallelism: 1
+    delay: 5s
+    order: stop-first
+    failure_action: pause
+    monitor: 120s
+    max_failure_ratio: 0
+
+x-health-defaults: &health-defaults
+  interval: 30s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
+
+services:
+  kropia:
+    <<: *service-defaults
+    image: "{{ workloads_images.kropia }}"
+    cap_drop:
+      - ALL
+    networks:
+      - edge-kropia
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://127.0.0.1/health || exit 1
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: kropia
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+
+  minecraft:
+    <<: *service-defaults
+    image: "{{ workloads_images.minecraft }}"
+    stop_grace_period: 2m
+{% if platform_minecraft_public_enabled | bool %}
+    ports:
+      - target: 25565
+        published: 25565
+        protocol: tcp
+        mode: host
+{% endif %}
+    environment:
+      ALLOW_NETHER: "true"
+      DIFFICULTY: hard
+      ENABLE_COMMAND_BLOCK: "true"
+      ENABLE_ROLLING_LOGS: "true"
+      ENTITY_BROADCAST_RANGE_PERCENTAGE: "75"
+      EULA: "TRUE"
+      FABRIC_LAUNCHER_VERSION: "1.1.1"
+      FABRIC_LOADER_VERSION: "0.19.3"
+      GAMEMODE: survival
+      INIT_MEMORY: 3G
+      LEVEL: server_chavalda
+      MAX_MEMORY: 3G
+      MAX_PLAYERS: "10"
+      MAX_WORLD_SIZE: "500000"
+      MEMORY: 3G
+      NETWORK_COMPRESSION_THRESHOLD: "64"
+      ONLINE_MODE: "false"
+      PVP: "true"
+      SERVER_NAME: Server De la Chavalada
+      SIMULATION_DISTANCE: "6"
+      SPAWN_PROTECTION: "16"
+      TYPE: FABRIC
+      TZ: Europe/Madrid
+      USE_AIKAR_FLAGS: "true"
+      VERSION: "1.21.10"
+      VIEW_DISTANCE: "6"
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.minecraft_worlds }}"
+        target: /data
+      - type: bind
+        source: "{{ workloads_paths.minecraft_mods }}"
+        target: /mods
+        read_only: true
+    networks:
+      - minecraft-egress
+      - minecraft-monitoring
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - mc-health
+      start_period: 2m
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: minecraft
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "2.50"
+          memory: 4096M
+        reservations:
+          cpus: "0.50"
+          memory: 3072M
+
+  minecraft-stats:
+    <<: *service-defaults
+    image: "{{ workloads_images.minecraft_stats }}"
+    cap_drop:
+      - ALL
+    environment:
+      MINECRAFT_SERVER_NAME: Server De la Chavalada
+      MINECRAFT_STATS_PATH: /minecraft-data/server_chavalda/stats
+      MINECRAFT_USER_CACHE_PATH: /minecraft-data/usercache.json
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.minecraft_worlds }}"
+        target: /minecraft-data
+        read_only: true
+    networks:
+      - edge-minecraft-stats
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q --spider
+          http://127.0.0.1:8080/actuator/health || exit 1
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: minecraft-stats
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+        reservations:
+          cpus: "0.10"
+          memory: 96M
+
+  n8n-db:
+    <<: *service-defaults
+    image: "{{ workloads_images.n8n_database }}"
+    stop_grace_period: 1m
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: n8n
+      POSTGRES_INITDB_ARGS: >-
+        --auth-local=trust --auth-host=scram-sha-256 --locale=C
+      POSTGRES_PASSWORD_FILE: /run/secrets/n8n_db_password
+      POSTGRES_USER: n8n
+    secrets:
+      - source: n8n_db_password
+        target: n8n_db_password
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.n8n_postgres }}"
+        target: /var/lib/postgresql/data
+    networks:
+      - n8n-backend
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - pg_isready -U n8n -d n8n
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: n8n
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+  n8n:
+    <<: *service-defaults
+    init: false
+    image: "{{ workloads_images.n8n_app }}"
+    entrypoint:
+      - /bin/sh
+      - /run/configs/n8n-entrypoint.sh
+    environment:
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_USER: n8n
+      DB_TYPE: postgresdb
+      GENERIC_TIMEZONE: Europe/Madrid
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES: "268435456"
+      N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES: "5000"
+      N8N_EDITOR_BASE_URL: https://n8n.apptolast.com/
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: "true"
+      N8N_HOST: n8n.apptolast.com
+      N8N_LOG_LEVEL: info
+      N8N_LOG_OUTPUT: console
+      N8N_METRICS: "true"
+      N8N_MIGRATE_FS_STORAGE_PATH: "true"
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: https
+      N8N_PROXY_HOPS: "1"
+      N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_RUNNERS_MODE: external
+      N8N_RUNNERS_TASK_TIMEOUT: "300"
+      N8N_SECURE_COOKIE: "true"
+      N8N_UNVERIFIED_PACKAGES_ENABLED: "false"
+      N8N_WEBHOOK_URL: https://n8n.apptolast.com/
+      TZ: Europe/Madrid
+    configs:
+      - source: n8n_entrypoint
+        target: /run/configs/n8n-entrypoint.sh
+        uid: "1000"
+        gid: "1000"
+        mode: 0555
+    secrets:
+      - source: n8n_db_password
+        target: n8n_db_password
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_encryption_key
+        target: n8n_encryption_key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_runners_auth_token
+        target: n8n_runners_auth_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_email_mode
+        target: n8n_email_mode
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_host
+        target: n8n_smtp_host
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_port
+        target: n8n_smtp_port
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_user
+        target: n8n_smtp_user
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_pass
+        target: n8n_smtp_pass
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_sender
+        target: n8n_smtp_sender
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_ssl
+        target: n8n_smtp_ssl
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: n8n_smtp_starttls
+        target: n8n_smtp_starttls
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.n8n_home }}"
+        target: /home/node/.n8n
+    networks:
+      - edge-n8n
+      - n8n-backend
+      - n8n-browser
+      - n8n-coordination
+      - n8n-monitoring
+      - n8n-runner-broker
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:5678/healthz')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+      start_period: 45s
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: n8n
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+        reservations:
+          cpus: "0.20"
+          memory: 512M
+
+  n8n-runners:
+    <<: *service-defaults
+    init: false
+    image: "{{ workloads_images.n8n_runner }}"
+    entrypoint:
+      - /bin/sh
+      - /run/configs/n8n-runners-entrypoint.sh
+    environment:
+      GENERIC_TIMEZONE: Europe/Madrid
+      N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT: "15"
+      N8N_RUNNERS_MAX_CONCURRENCY: "4"
+      N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
+      N8N_RUNNERS_TASK_TIMEOUT: "300"
+    configs:
+      - source: n8n_runners_entrypoint
+        target: /run/configs/n8n-runners-entrypoint.sh
+        uid: "1000"
+        gid: "1000"
+        mode: 0555
+      - source: n8n_task_runners
+        target: /etc/n8n-task-runners.json
+        uid: "1000"
+        gid: "1000"
+        mode: 0444
+    secrets:
+      - source: n8n_runners_auth_token
+        target: n8n_runners_auth_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    networks:
+      - n8n-runner-broker
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:5680/healthz')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: n8n
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+        reservations:
+          cpus: "0.20"
+          memory: 128M
+
+  redis-coordinator:
+    <<: *service-defaults
+    image: "{{ workloads_images.n8n_redis }}"
+    user: redis:redis
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+    configs:
+      - source: redis_config
+        target: /usr/local/etc/redis/redis.conf
+        mode: 0444
+    networks:
+      - n8n-coordination
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - redis-cli
+        - ping
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: n8n
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+
+  selenium:
+    <<: *service-defaults
+    image: "{{ workloads_images.n8n_browser }}"
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
+      SE_ENABLE_TRACING: "false"
+      SE_SESSION_REQUEST_TIMEOUT: "300"
+      SE_SESSION_RETRY_INTERVAL: "5"
+      SE_START_VNC: "false"
+    tmpfs:
+      - /dev/shm:size=1g,mode=1777
+    networks:
+      - n8n-browser
+      - selenium-egress
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://127.0.0.1:4444/status |
+          grep -q '"ready": true'
+      start_period: 45s
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: n8n
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1536M
+        reservations:
+          cpus: "0.20"
+          memory: 640M
+
+  passbolt-db:
+    <<: *service-defaults
+    image: "{{ workloads_images.passbolt_database }}"
+    stop_grace_period: 1m
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: passbolt
+      POSTGRES_INITDB_ARGS: >-
+        --auth-local=trust --auth-host=scram-sha-256 --locale=C
+      POSTGRES_PASSWORD_FILE: /run/secrets/passbolt_db_password
+      POSTGRES_USER: passbolt
+    secrets:
+      - source: passbolt_db_password
+        target: passbolt_db_password
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.passbolt_postgres }}"
+        target: /var/lib/postgresql/data
+    networks:
+      - passbolt-backend
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - pg_isready -U passbolt -d passbolt
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: passbolt
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  passbolt:
+    <<: *service-defaults
+    image: "{{ workloads_images.passbolt_app }}"
+    entrypoint:
+      - /bin/bash
+      - /run/configs/passbolt-entrypoint.sh
+    environment:
+      APP_FULL_BASE_URL: https://passbolt.apptolast.com
+      DATASOURCES_DEFAULT_DATABASE: passbolt
+      DATASOURCES_DEFAULT_DRIVER: >-
+        Cake\Database\Driver\Postgres
+      DATASOURCES_DEFAULT_ENCODING: utf8
+      DATASOURCES_DEFAULT_HOST: passbolt-db
+      DATASOURCES_DEFAULT_PORT: "5432"
+      DATASOURCES_DEFAULT_USERNAME: passbolt
+      GNUPGHOME: /var/lib/passbolt/.gnupg
+      PASSBOLT_REGISTRATION_PUBLIC: "false"
+      PASSBOLT_SSL_FORCE: "false"
+    configs:
+      - source: passbolt_entrypoint
+        target: /run/configs/passbolt-entrypoint.sh
+        mode: 0555
+    secrets:
+      - source: passbolt_db_password
+        target: passbolt_db_password
+        mode: 0400
+      - source: passbolt_security_salt
+        target: passbolt_security_salt
+        mode: 0400
+      - source: passbolt_email_host
+        target: passbolt_email_host
+        mode: 0400
+      - source: passbolt_email_port
+        target: passbolt_email_port
+        mode: 0400
+      - source: passbolt_email_username
+        target: passbolt_email_username
+        mode: 0400
+      - source: passbolt_email_password
+        target: passbolt_email_password
+        mode: 0400
+      - source: passbolt_email_tls
+        target: passbolt_email_tls
+        mode: 0400
+      - source: passbolt_email_from
+        target: passbolt_email_from
+        mode: 0400
+      - source: passbolt_email_from_name
+        target: passbolt_email_from_name
+        mode: 0400
+      - source: passbolt_key_email
+        target: passbolt_key_email
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.passbolt_gpg }}"
+        target: /etc/passbolt/gpg
+      - type: bind
+        source: "{{ workloads_paths.passbolt_jwt }}"
+        target: /etc/passbolt/jwt
+    networks:
+      - edge-passbolt
+      - passbolt-backend
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - >-
+          curl -kfsS https://127.0.0.1/healthcheck/status.json |
+          grep -q database
+      start_period: 1m
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: passbolt
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+        reservations:
+          cpus: "0.15"
+          memory: 192M
+
+  shlink-db:
+    <<: *service-defaults
+    image: "{{ workloads_images.shlink_database }}"
+    stop_grace_period: 1m
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: shlink
+      POSTGRES_INITDB_ARGS: >-
+        --auth-local=trust --auth-host=scram-sha-256 --locale=C
+      POSTGRES_PASSWORD_FILE: /run/secrets/shlink_db_password
+      POSTGRES_USER: shlink
+    secrets:
+      - source: shlink_db_password
+        target: shlink_db_password
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.shlink_postgres }}"
+        target: /var/lib/postgresql/data
+    networks:
+      - shlink-backend
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - pg_isready -U shlink -d shlink
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: shlink
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  shlink:
+    <<: *service-defaults
+    image: "{{ workloads_images.shlink_app }}"
+    entrypoint:
+      - /bin/sh
+      - /run/configs/shlink-entrypoint.sh
+    environment:
+      DB_DRIVER: postgres
+      DB_HOST: shlink-db
+      DB_NAME: shlink
+      DB_PORT: "5432"
+      DB_USER: shlink
+      DEFAULT_DOMAIN: generadorcodigosqr.apptolast.com
+      IS_HTTPS_ENABLED: "true"
+      TIMEZONE: Europe/Madrid
+    configs:
+      - source: shlink_entrypoint
+        target: /run/configs/shlink-entrypoint.sh
+        uid: "1001"
+        gid: "0"
+        mode: 0555
+    secrets:
+      - source: shlink_db_password
+        target: shlink_db_password
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_geolite_license_key
+        target: shlink_geolite_license_key
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_mercure_public_hub_url
+        target: shlink_mercure_public_hub_url
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_mercure_internal_hub_url
+        target: shlink_mercure_internal_hub_url
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_mercure_jwt_secret
+        target: shlink_mercure_jwt_secret
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_matomo_site_id
+        target: shlink_matomo_site_id
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+      - source: shlink_matomo_url
+        target: shlink_matomo_url
+        uid: "1001"
+        gid: "0"
+        mode: 0400
+    networks:
+      - edge-shlink
+      - shlink-backend
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q --spider
+          http://127.0.0.1:8080/rest/health || exit 1
+      start_period: 45s
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: shlink
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  portfolio-pablo:
+    <<: *service-defaults
+    image: "{{ workloads_images.portfolio_pablo }}"
+    entrypoint:
+      - /bin/sh
+      - /run/configs/portfolio-pablo-entrypoint.sh
+    environment:
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
+      PORT: "3000"
+    configs:
+      - source: portfolio_pablo_entrypoint
+        target: /run/configs/portfolio-pablo-entrypoint.sh
+        uid: "1000"
+        gid: "1000"
+        mode: 0555
+    secrets:
+      - source: pablo_next_public_emailjs_service_id
+        target: pablo_next_public_emailjs_service_id
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: pablo_next_public_emailjs_template_id
+        target: pablo_next_public_emailjs_template_id
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: pablo_next_public_emailjs_public_key
+        target: pablo_next_public_emailjs_public_key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: pablo_emailjs_service_id
+        target: pablo_emailjs_service_id
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: pablo_emailjs_template_id
+        target: pablo_emailjs_template_id
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: pablo_emailjs_public_key
+        target: pablo_emailjs_public_key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    networks:
+      - edge-portfolio-pablo
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: personal-website-pablo
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+        reservations:
+          cpus: "0.10"
+          memory: 96M
+
+  portfolio-alberto:
+    <<: *service-defaults
+    image: "{{ workloads_images.portfolio_alberto }}"
+    environment:
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
+      PORT: "3000"
+    networks:
+      - edge-portfolio-alberto
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: personal-website-alberto
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "0.35"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+
+  openclaw:
+    <<: *service-defaults
+    init: false
+    image: "{{ workloads_images.openclaw }}"
+    entrypoint:
+      - /bin/sh
+      - /run/configs/openclaw-entrypoint.sh
+    environment:
+      HOME: /home/node
+      NODE_ENV: production
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      TZ: Europe/Madrid
+    configs:
+      - source: openclaw_entrypoint
+        target: /run/configs/openclaw-entrypoint.sh
+        uid: "1000"
+        gid: "1000"
+        mode: 0555
+    secrets:
+      - source: openclaw_gateway_token
+        target: openclaw_gateway_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: "{{ workloads_paths.openclaw_home }}"
+        target: /home/node/.openclaw
+    networks:
+      - edge-openclaw
+    cap_drop:
+      - ALL
+    healthcheck:
+      <<: *health-defaults
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:18789/healthz')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+      start_period: 45s
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        com.apptolast.catalog-service: openclaw-clean
+        com.apptolast.managed-by: ansible
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+networks:
+  edge-kropia:
+    external: true
+    name: "{{ workloads_edge_networks.kropia }}"
+  edge-minecraft-stats:
+    external: true
+    name: "{{ workloads_edge_networks['minecraft-stats'] }}"
+  edge-n8n:
+    external: true
+    name: "{{ workloads_edge_networks.n8n }}"
+  edge-openclaw:
+    external: true
+    name: "{{ workloads_edge_networks.openclaw }}"
+  edge-passbolt:
+    external: true
+    name: "{{ workloads_edge_networks.passbolt }}"
+  edge-portfolio-alberto:
+    external: true
+    name: "{{ workloads_edge_networks['portfolio-alberto'] }}"
+  edge-portfolio-pablo:
+    external: true
+    name: "{{ workloads_edge_networks['portfolio-pablo'] }}"
+  edge-shlink:
+    external: true
+    name: "{{ workloads_edge_networks.shlink }}"
+  minecraft-egress:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+  minecraft-monitoring:
+    name: apptolast-minecraft-monitoring
+    driver: overlay
+    internal: true
+    driver_opts:
+      encrypted: ""
+  n8n-backend:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  n8n-browser:
+    name: workloads_n8n-browser
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  n8n-coordination:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  n8n-monitoring:
+    name: apptolast-n8n-monitoring
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  n8n-runner-broker:
+    name: workloads_n8n-runner-broker
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  selenium-egress:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+  passbolt-backend:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+  shlink-backend:
+    driver: overlay
+    driver_opts:
+      encrypted: ""
+    internal: true
+
+configs:
+  n8n_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.n8n_entrypoint }}"
+  n8n_runners_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.n8n_runners_entrypoint }}"
+  n8n_task_runners:
+    external: true
+    name: "{{ workloads_config_names.n8n_task_runners }}"
+  openclaw_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.openclaw_entrypoint }}"
+  passbolt_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.passbolt_entrypoint }}"
+  portfolio_pablo_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.portfolio_pablo_entrypoint }}"
+  redis_config:
+    external: true
+    name: "{{ workloads_config_names.redis_config }}"
+  shlink_entrypoint:
+    external: true
+    name: "{{ workloads_config_names.shlink_entrypoint }}"
+
+secrets:
+  n8n_db_password:
+    external: true
+    name: "{{ workloads_secret_names.n8n_db_password }}"
+  n8n_email_mode:
+    external: true
+    name: "{{ workloads_secret_names.n8n_email_mode }}"
+  n8n_encryption_key:
+    external: true
+    name: "{{ workloads_secret_names.n8n_encryption_key }}"
+  n8n_runners_auth_token:
+    external: true
+    name: "{{ workloads_secret_names.n8n_runners_auth_token }}"
+  n8n_smtp_host:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_host }}"
+  n8n_smtp_pass:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_pass }}"
+  n8n_smtp_port:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_port }}"
+  n8n_smtp_sender:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_sender }}"
+  n8n_smtp_ssl:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_ssl }}"
+  n8n_smtp_starttls:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_starttls }}"
+  n8n_smtp_user:
+    external: true
+    name: "{{ workloads_secret_names.n8n_smtp_user }}"
+  openclaw_gateway_token:
+    external: true
+    name: "{{ workloads_secret_names.openclaw_gateway_token }}"
+  pablo_emailjs_public_key:
+    external: true
+    name: "{{ workloads_secret_names.pablo_emailjs_public_key }}"
+  pablo_emailjs_service_id:
+    external: true
+    name: "{{ workloads_secret_names.pablo_emailjs_service_id }}"
+  pablo_emailjs_template_id:
+    external: true
+    name: "{{ workloads_secret_names.pablo_emailjs_template_id }}"
+  pablo_next_public_emailjs_public_key:
+    external: true
+    name: "{{ workloads_secret_names.pablo_next_public_emailjs_public_key }}"
+  pablo_next_public_emailjs_service_id:
+    external: true
+    name: "{{ workloads_secret_names.pablo_next_public_emailjs_service_id }}"
+  pablo_next_public_emailjs_template_id:
+    external: true
+    name: "{{ workloads_secret_names.pablo_next_public_emailjs_template_id }}"
+  passbolt_db_password:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_db_password }}"
+  passbolt_email_from:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_from }}"
+  passbolt_email_from_name:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_from_name }}"
+  passbolt_email_host:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_host }}"
+  passbolt_email_password:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_password }}"
+  passbolt_email_port:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_port }}"
+  passbolt_email_tls:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_tls }}"
+  passbolt_email_username:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_email_username }}"
+  passbolt_key_email:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_key_email }}"
+  passbolt_security_salt:
+    external: true
+    name: "{{ workloads_secret_names.passbolt_security_salt }}"
+  shlink_db_password:
+    external: true
+    name: "{{ workloads_secret_names.shlink_db_password }}"
+  shlink_geolite_license_key:
+    external: true
+    name: "{{ workloads_secret_names.shlink_geolite_license_key }}"
+  shlink_matomo_site_id:
+    external: true
+    name: "{{ workloads_secret_names.shlink_matomo_site_id }}"
+  shlink_matomo_url:
+    external: true
+    name: "{{ workloads_secret_names.shlink_matomo_url }}"
+  shlink_mercure_internal_hub_url:
+    external: true
+    name: "{{ workloads_secret_names.shlink_mercure_internal_hub_url }}"
+  shlink_mercure_jwt_secret:
+    external: true
+    name: "{{ workloads_secret_names.shlink_mercure_jwt_secret }}"
+  shlink_mercure_public_hub_url:
+    external: true
+    name: "{{ workloads_secret_names.shlink_mercure_public_hub_url }}"

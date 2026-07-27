@@ -1,0 +1,14 @@
+---
+- name: Derive the observability contract
+  ansible.builtin.import_tasks: derive.yml
+
+- name: Render and validate observability assets
+  ansible.builtin.import_tasks: render.yml
+  when:
+    - observability_render_only | bool or not ansible_check_mode
+
+- name: Reconcile the observability platform
+  ansible.builtin.import_tasks: deploy.yml
+  when:
+    - not observability_render_only | bool
+    - not ansible_check_mode

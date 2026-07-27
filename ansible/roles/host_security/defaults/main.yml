@@ -1,0 +1,27 @@
+---
+host_security_ssh_phase: none
+host_security_ssh_confirmation_nonce: ""
+host_security_sshd_config: /etc/ssh/sshd_config
+host_security_ssh_staged_config: >-
+  /etc/dockerswarm/bootstrap-ssh-staged.conf
+host_security_ssh_confirmation_directory: >-
+  /run/dockerswarm-bootstrap-ssh
+host_security_ssh_rollback_helper: >-
+  /usr/local/libexec/dockerswarm-bootstrap-ssh-rollback
+host_security_github_ssh_client_config: >-
+  /etc/ssh/ssh_config.d/10-dockerswarm-github.conf
+host_security_authorized_keys_validator: >-
+  /usr/local/libexec/dockerswarm-validate-authorized-keys
+host_security_crowdsec_keyring: >-
+  /etc/apt/keyrings/crowdsec_crowdsec-archive-keyring.gpg
+host_security_crowdsec_bouncer_config: >-
+  /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+host_security_managed_acquisition_files:
+  - 00-dockerswarm-linux.yaml
+  - 01-dockerswarm-sshd.yaml
+host_security_fail2ban_jail: >-
+  /etc/fail2ban/jail.d/99-dockerswarm-sshd.local
+host_security_rsyslog_iptables_config: >-
+  /etc/rsyslog.d/10-dockerswarm-iptables.conf
+host_security_ufw_validator: >-
+  /usr/local/libexec/dockerswarm-validate-ufw-contract

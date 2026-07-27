@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "terraform_version": "1.15.8",
+  "root": "cloudflare/apptolast-dns",
+  "backend_registry_role": "production",
+  "cross_root": "netcup/perimeter",
+  "locking_scope_sha256": "REPLACE_WITH_CANONICAL_LOCKING_SCOPE_SHA256",
+  "locking_contract_sha256": "REPLACE_WITH_HARNESS_CONTRACT_SHA256",
+  "primary_access_key_id_sha256": "REPLACE_WITH_PRIMARY_ACCESS_KEY_ID_SHA256",
+  "cross_access_key_id_sha256": "REPLACE_WITH_CROSS_ACCESS_KEY_ID_SHA256",
+  "cross_credential_positive_scope_sha256": "REPLACE_WITH_OTHER_ROOT_LOCKING_SCOPE_SHA256",
+  "source_commit": "REPLACE_WITH_40_CHARACTER_GIT_COMMIT",
+  "signer_identity": "apptolast-terraform-lock-proof",
+  "tested_at": "2026-01-01T00:00:00Z",
+  "valid_until": "2026-01-02T00:00:00Z",
+  "operator": "REPLACE_WITH_ACCOUNTABLE_OPERATOR",
+  "results": {
+    "exclusive_create": true,
+    "second_client_blocked": true,
+    "normal_release": true,
+    "interrupted_client_recovered": true,
+    "distributed_operation_lease": true,
+    "terraform_backend_access_denied": true,
+    "cross_credential_own_bucket_list_succeeded": true,
+    "cross_credential_own_bucket_read_succeeded": true,
+    "cross_credential_own_bucket_write_succeeded": true,
+    "cross_credential_own_bucket_delete_succeeded": true,
+    "cross_credential_list_denied": true,
+    "cross_credential_read_denied": true,
+    "cross_credential_write_denied": true,
+    "cross_credential_delete_denied": true
+  }
+}

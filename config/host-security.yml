@@ -1,0 +1,228 @@
+---
+host_security_contract_version: 1
+
+host_security_admin_user: admin
+host_security_admin_home: /home/admin
+host_security_admin_uid: 1001
+host_security_admin_gid: 1001
+host_security_ssh_group: sshusers
+host_security_ssh_port: 22
+host_security_authorized_keys_path: /home/admin/.ssh/authorized_keys
+
+host_security_ssh_pq_kex_algorithms:
+  - mlkem768x25519-sha256
+  - sntrup761x25519-sha512
+  - sntrup761x25519-sha512@openssh.com
+host_security_ssh_classical_kex_algorithms:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - ecdh-sha2-nistp521
+  - ecdh-sha2-nistp384
+  - ecdh-sha2-nistp256
+  - diffie-hellman-group-exchange-sha256
+host_security_ssh_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes192-ctr
+  - aes128-ctr
+host_security_ssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+host_security_ssh_host_key_algorithms:
+  - ssh-ed25519
+  - rsa-sha2-512
+  - rsa-sha2-256
+host_security_ssh_pubkey_algorithms:
+  - ssh-ed25519
+  - sk-ssh-ed25519@openssh.com
+  - ecdsa-sha2-nistp521
+  - ecdsa-sha2-nistp384
+  - ecdsa-sha2-nistp256
+  - sk-ecdsa-sha2-nistp256@openssh.com
+  - rsa-sha2-512
+  - rsa-sha2-256
+
+host_security_crowdsec_repository_key_url: >-
+  https://packagecloud.io/crowdsec/crowdsec/gpgkey
+host_security_crowdsec_repository_key_fingerprint: >-
+  6A89E3C2303A901A889971D3376ED5326E93CD0C
+host_security_crowdsec_repository_url: >-
+  https://packagecloud.io/crowdsec/crowdsec/any
+host_security_crowdsec_collection_lock:
+  - name: crowdsecurity/linux
+    version: "0.4"
+    sha256: 09277e36069d7a6d19469a55be1a5139cd1eb2e6804680fca6f6cf1be66e4cf5
+  - name: crowdsecurity/sshd
+    version: "0.9"
+    sha256: 58b871f74a370e07e950eefb3d2be9336d9ff7604b1b77f4c3fcc9c0089a69af
+  - name: crowdsecurity/whitelist-good-actors
+    version: "0.4"
+    sha256: 32227e45ca3c0fbf0de28e484b843c3089ded362927f552967c0fc0167294d2f
+host_security_crowdsec_hub_dependency_lock:
+  - type: parsers
+    name: crowdsecurity/syslog-logs
+    version: "1.0"
+    sha256: 66ab30693dfb6c55ca9c1d28132c6bd69bcb1f9f7accf01f2d0bc1361b3d55d9
+  - type: parsers
+    name: crowdsecurity/geoip-enrich
+    version: "0.5"
+    sha256: 56ec28d85c75e55af349b8165f2d494534e2f4144f27a985ece316e8ac5303ae
+  - type: parsers
+    name: crowdsecurity/dateparse-enrich
+    version: "0.2"
+    sha256: 3f51a6c389bbf1c38f49d8824b6bffd9a265d0fa78a98af71628256019847951
+  - type: parsers
+    name: crowdsecurity/sshd-logs
+    version: "3.1"
+    sha256: 045ff4c7895888becf161a8666ec173c45b58e52f2a72583a03f22b40203390d
+  - type: parsers
+    name: crowdsecurity/sshd-success-logs
+    version: "0.1"
+    sha256: 978219d419633422469bdeb10500a58f05260d34039243d47306db038910f141
+  - type: parsers
+    name: crowdsecurity/public-dns-allowlist
+    version: "0.1"
+    sha256: b563435e1b9bb0568f1716320ddb061d2fa9f38cb1cbabe9e4c6372fd6f6ce0e
+  - type: parsers
+    name: crowdsecurity/whitelists
+    version: "0.3"
+    sha256: 940322deea257698388981529bbd59a62dc963e4dd489db44fccbfd127903a5d
+  - type: scenarios
+    name: crowdsecurity/ssh-bf
+    version: "0.3"
+    sha256: 242f36684d66bbae3044e576b7cfffef62d5323465f3f74f87923167c6d93356
+  - type: scenarios
+    name: crowdsecurity/ssh-slow-bf
+    version: "0.4"
+    sha256: 892f9a153c4dafb5392ba40d70616e88896571be8f4cc00996e7f5e8277c869e
+  - type: scenarios
+    name: crowdsecurity/ssh-time-based-bf
+    version: "0.3"
+    sha256: fb88c62f3b5f169bcadbfb524e839dc79e97f48cce912d190997013535e990da
+  - type: scenarios
+    name: crowdsecurity/ssh-cve-2024-6387
+    version: "0.2"
+    sha256: 7888f1f31ea75d55f7b4bdf56b6f0840ca4ecbd937af0655cdf263062a11e85a
+  - type: scenarios
+    name: crowdsecurity/ssh-refused-conn
+    version: "0.1"
+    sha256: 807d77f85f08443df8d709eb5e7f4ca8b33d5be664804214af53a1edbe481fd6
+  - type: scenarios
+    name: crowdsecurity/ssh-generic-test
+    version: "0.2"
+    sha256: eeb36b8d7ecd18a286e3e3fda9e3dd313b41476cd2fda342a2e8f49c7915f067
+  - type: contexts
+    name: crowdsecurity/bf_base
+    version: "0.1"
+    sha256: 5b5d0f412ea7da0712fd8e298e9a03642051591adee3817ae529fafa6b66995c
+  - type: postoverflows
+    name: crowdsecurity/seo-bots-whitelist
+    version: "0.5"
+    sha256: 504c16dd87df828742e360a304f3e945c2e03537d7a7610e869f315d721c395a
+  - type: postoverflows
+    name: crowdsecurity/cdn-whitelist
+    version: "0.5"
+    sha256: aba70b0cf3280496fd146650b84887a66949b8d665744969f24255b85f39b487
+  - type: postoverflows
+    name: crowdsecurity/rdns
+    version: "0.4"
+    sha256: 55d1a47f7157884087b61b1b647055da68f7c09caf6c5ec7f427af614fd89577
+  - type: postoverflows
+    name: crowdsecurity/google-special-crawlers-whitelist
+    version: "0.1"
+    sha256: c8d3fdf1c02a60ff58b9a49592f09f67ac50321af98d620c529e3dc35773d6e4
+
+# The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
+host_security_ubuntu_snapshot: 20260726T000000Z
+host_security_apt_update_policy: promoted-snapshot-only
+host_security_snapshot_max_age_days: 14
+host_security_repository_bootstrap_package_lock:
+  - ca-certificates=20260601~26.04.1
+  - curl=8.18.0-1ubuntu2.3
+  - gpg=2.4.8-4ubuntu3
+  - python3-debian=1.0.1ubuntu2
+host_security_required_packages:
+  - apparmor
+  - chrony
+  - crowdsec
+  - crowdsec-firewall-bouncer-iptables
+  - fail2ban
+  - logrotate
+  - openssh-server
+  - psad
+  - rsyslog
+  - ufw
+host_security_package_lock:
+  - apparmor=5.0.0~beta1-0ubuntu7
+  - chrony=4.8-2ubuntu1
+  - crowdsec=1.7.8
+  - crowdsec-firewall-bouncer-iptables=0.0.34
+  - fail2ban=1.1.0-9
+  - logrotate=3.22.0-1build1
+  - openssh-server=1:10.2p1-2ubuntu3.5
+  - psad=2.4.6-3build1
+  - rsyslog=8.2512.0-1ubuntu4.1
+  - ufw=0.36.2-9build1
+# These pre-existing tools remain outside the managed minimum until their
+# configurations, data and retention requirements receive a separate,
+# owner-approved decommission/adoption plan. The host-security role records
+# their presence but never installs, removes, purges or rewrites them.
+host_security_legacy_tool_policy: preserve-unmanaged
+host_security_preserved_legacy_packages:
+  - aide
+  - aide-common
+  - chkrootkit
+  - clamav
+  - clamav-base
+  - clamav-daemon
+  - clamav-freshclam
+  - libpam-google-authenticator
+  - logwatch
+  - lynis
+  - needrestart
+  - rkhunter
+host_security_required_active_services:
+  - apparmor.service
+  - chrony.service
+  - crowdsec.service
+  - crowdsec-firewall-bouncer.service
+  - fail2ban.service
+  - psad.service
+  - rsyslog.service
+
+# Ubuntu 26.04 uses Chrony with NTS by default. NTS key exchange needs
+# 4460/tcp in addition to traditional NTP on 123/udp.
+host_security_required_host_egress:
+  - protocol: tcp
+    port: 25
+  - protocol: udp
+    port: 25
+  - protocol: tcp
+    port: 43
+  - protocol: tcp
+    port: 53
+  - protocol: udp
+    port: 53
+  - protocol: tcp
+    port: 80
+  - protocol: tcp
+    port: 123
+  - protocol: udp
+    port: 123
+  - protocol: tcp
+    port: 443
+  - protocol: udp
+    port: 443
+  - protocol: tcp
+    port: 587
+  - protocol: udp
+    port: 587
+  - protocol: tcp
+    port: 4460
+
+host_security_fail2ban_maxretry: 5
+host_security_psad_log_path: /var/log/iptables.log
+host_security_psad_auto_ids_danger_level: 5

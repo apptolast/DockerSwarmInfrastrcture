@@ -1,0 +1,45 @@
+---
+host_bootstrap_admin_user: admin
+host_bootstrap_admin_uid: "{{ platform_admin_uid }}"
+host_bootstrap_admin_gid: "{{ platform_admin_gid }}"
+host_bootstrap_admin_home: /home/admin
+host_bootstrap_ssh_group: sshusers
+host_bootstrap_authorized_keys_file: ""
+host_bootstrap_password_hash_file: ""
+host_bootstrap_source_revision: ""
+host_bootstrap_operation_id: ""
+host_bootstrap_operation_controller: ""
+host_bootstrap_operation_contract_sha256: ""
+host_bootstrap_metadata_path: /etc/dockerswarm/BOOTSTRAP_VERSION.yml
+host_bootstrap_forbidden_runtime_packages:
+  - containerd
+  - containerd.io
+  - docker-buildx
+  - docker-buildx-plugin
+  - docker-ce
+  - docker-ce-cli
+  - docker-ce-rootless-extras
+  - docker-compose
+  - docker-compose-plugin
+  - docker-compose-v2
+  - docker.io
+  - moby-buildx
+  - moby-cli
+  - moby-compose
+  - moby-containerd
+  - moby-engine
+  - podman-docker
+host_bootstrap_fresh_absent_paths:
+  - "{{ host_bootstrap_admin_home }}"
+  - /etc/dockerswarm
+  - /etc/containerd
+  - /etc/docker
+  - /opt/dockerswarm
+  - /srv/dockerswarm
+  - /var/lib/containerd
+  - /var/lib/docker
+  - /var/lib/dockerswarm-backup
+  - /run/containerd
+  - /run/docker.sock
+  - /run/lock/dockerswarm-ansible.lock
+  - /run/lock/dockerswarm-ansible.marker

@@ -1,0 +1,3 @@
+# Generate a dedicated offline recovery key and replace the placeholder.
+# Keep the private key outside this repository.
+apptolast-terraform-lease-recovery ssh-ed25519 REPLACE_WITH_APPROVED_PUBLIC_KEY

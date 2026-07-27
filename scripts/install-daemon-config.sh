@@ -10,8 +10,11 @@ readonly PROJECT_DIR
 readonly SOURCE_CONFIG="${PROJECT_DIR}/config/daemon.json"
 readonly TARGET_CONFIG="/etc/docker/daemon.json"
 readonly EXPECTED_SHA256="b2759d7fc799030511d1de541edcfc18549e40409921546d775132f7e9737baa"
+readonly HOST_LOCK_HELPER="${PROJECT_DIR}/scripts/host_global_operation_lock.py"
+readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 
 restart_daemon=true
+original_args=("$@")
 
 usage() {
   printf 'Usage: %s [--no-restart]\n' "${0##*/}"
@@ -20,6 +23,21 @@ usage() {
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+ensure_host_global_lock() {
+  local operation=$1
+  [[ -f "${HOST_LOCK_HELPER}" && ! -L "${HOST_LOCK_HELPER}" ]] ||
+    fail "host-global operation-lock helper is absent or unsafe"
+  if [[ -n "${DOCKERSWARM_IAC_LOCK_SCOPE:-}" ]]; then
+    /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+      prove --operation "${operation}" >/dev/null ||
+      fail "host-global operation-lock proof failed"
+    return
+  fi
+  exec /usr/bin/python3 "${HOST_LOCK_HELPER}" \
+    run --operation "${operation}" -- \
+    "${SCRIPT_PATH}" "${original_args[@]}"
 }
 
 case "${1:-}" in
@@ -39,6 +57,7 @@ case "${1:-}" in
 esac
 
 (( EUID == 0 )) || fail "run this script as root"
+ensure_host_global_lock docker-daemon-config-install
 
 for command_name in dockerd install sha256sum systemctl; do
   command -v "${command_name}" >/dev/null ||

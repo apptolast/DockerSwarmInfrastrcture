@@ -1,0 +1,150 @@
+---
+- name: Derive the audited n8n runner source reference
+  ansible.builtin.set_fact:
+    workloads_runner_image_source_reference: >-
+      {{
+        (
+          approved_services
+          | selectattr("id", "equalto", "n8n")
+          | first
+        ).images
+        | selectattr("component", "equalto", "runner")
+        | map(attribute="reference")
+        | first
+      }}
+
+- name: Describe the repository-native n8n runner image
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/../../scripts/manage-n8n-runner-image.py"
+      - describe
+      - --context
+      - "{{ workloads_runner_image_context_source }}"
+      - --source-reference
+      - "{{ workloads_runner_image_source_reference }}"
+  delegate_to: localhost
+  become: false
+  register: workloads_runner_image_description_raw
+  changed_when: false
+  check_mode: false
+
+- name: Record and validate the n8n runner source identity
+  ansible.builtin.set_fact:
+    workloads_runner_image_metadata: >-
+      {{ workloads_runner_image_description_raw.stdout | from_json }}
+
+- name: Enforce the n8n runner source identity
+  ansible.builtin.assert:
+    that:
+      - workloads_runner_image_metadata.schema_version | int == 1
+      - >-
+        workloads_runner_image_metadata.context_sha256
+        is match("^[a-f0-9]{64}$")
+      - >-
+        workloads_runner_image_metadata.image_reference
+        is match("^apptolast/n8n-runners:src-[a-f0-9]{64}$")
+      - >-
+        workloads_runner_image_metadata.source_reference
+        == workloads_runner_image_source_reference
+    fail_msg: "The repository-native n8n runner source contract is invalid."
+    quiet: true
+
+- name: Explain check-mode n8n runner behavior
+  ansible.builtin.debug:
+    msg: >-
+      Check mode validated the n8n runner context and immutable identity
+      without installing files, building an image or changing Docker state.
+  when: ansible_check_mode
+
+- name: Reconcile the local n8n runner image before stack mutation
+  when: not ansible_check_mode
+  block:
+    - name: Create the private n8n runner preflight directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop:
+        - "{{ workloads_runner_image_install_root }}"
+        - "{{ workloads_runner_image_install_root }}/bin"
+        - "{{ workloads_runner_image_install_root }}/contexts"
+        - >-
+          {{ workloads_runner_image_install_root
+             }}/contexts/{{ workloads_runner_image_metadata.context_sha256 }}
+
+    - name: Install the n8n runner image manager and lock components
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+        dest: >-
+          {{ workloads_runner_image_install_root
+             }}/bin/{{ item }}
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - ansible-operation-lock.py
+        - host_global_operation_lock.py
+        - manage-n8n-runner-image.py
+        - run-locked-command.py
+
+    - name: Install the exact n8n runner build context
+      ansible.builtin.copy:
+        src: "{{ workloads_runner_image_context_source }}/{{ item }}"
+        dest: >-
+          {{
+            workloads_runner_image_install_root
+            + "/contexts/"
+            + workloads_runner_image_metadata.context_sha256
+            + "/" + item
+          }}
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ workloads_runner_image_context_files }}"
+
+    - name: Reconcile and verify the repository-native n8n runner image
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - >-
+            {{ workloads_runner_image_install_root
+               }}/bin/manage-n8n-runner-image.py
+          - reconcile
+          - --context
+          - >-
+            {{ workloads_runner_image_install_root
+               }}/contexts/{{ workloads_runner_image_metadata.context_sha256 }}
+          - --source-reference
+          - "{{ workloads_runner_image_source_reference }}"
+          - --expected-context-sha256
+          - "{{ workloads_runner_image_metadata.context_sha256 }}"
+      register: workloads_runner_image_reconcile_raw
+      changed_when: >-
+        workloads_runner_image_reconcile_raw.rc == 0
+        and
+        (workloads_runner_image_reconcile_raw.stdout | from_json).changed | bool
+      environment: "{{ operation_lock_guard_environment }}"
+
+    - name: Record the verified n8n runner runtime identity
+      ansible.builtin.set_fact:
+        workloads_runner_image_runtime: >-
+          {{ workloads_runner_image_reconcile_raw.stdout | from_json }}
+
+    - name: Enforce the verified n8n runner runtime identity
+      ansible.builtin.assert:
+        that:
+          - >-
+            workloads_runner_image_runtime.image_reference
+            == workloads_runner_image_metadata.image_reference
+          - >-
+            workloads_runner_image_runtime.context_sha256
+            == workloads_runner_image_metadata.context_sha256
+          - >-
+            workloads_runner_image_runtime.image_id
+            is match("^sha256:[a-f0-9]{64}$")
+        fail_msg: >-
+          The local n8n runner failed source, platform or module verification.
+        quiet: true

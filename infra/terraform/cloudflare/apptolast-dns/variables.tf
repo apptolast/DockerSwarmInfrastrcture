@@ -1,10 +1,10 @@
-variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID for apptolast.com."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = can(regex("^[a-f0-9]{32}$", var.cloudflare_zone_id))
-    error_message = "cloudflare_zone_id must be a 32-character hexadecimal zone ID."
-  }
+variable "adoption_only" {
+  description = <<-EOT
+    Keep every pre-existing application record on the legacy IPv4 while the
+    declarative import blocks and root identity are adopted. Edge is new and
+    still points to the platform IPv4. Set explicitly to true only for the
+    initial adoption plan. The permanent default converges to reviewed gates.
+  EOT
+  type        = bool
+  default     = false
 }

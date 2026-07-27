@@ -1,0 +1,62 @@
+# Complete deterministic OpenSSH policy for the lockout-safe bootstrap phase.
+Port {{ host_security_ssh_port }}
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+PidFile /run/sshd.pid
+
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKeyAlgorithms {{ host_security_ssh_host_key_algorithms | join(",") }}
+PubkeyAcceptedAlgorithms {{ host_security_ssh_pubkey_algorithms | join(",") }}
+RequiredRSASize 2048
+KexAlgorithms {{ (host_security_ssh_pq_kex_algorithms + host_security_ssh_classical_kex_algorithms) | join(",") }}
+Ciphers {{ host_security_ssh_ciphers | join(",") }}
+MACs {{ host_security_ssh_macs | join(",") }}
+RekeyLimit 1G 1h
+
+# Root-key access remains available only until an independent admin session
+# has passed under this cryptographic/authentication policy.
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+PermitEmptyPasswords no
+HostbasedAuthentication no
+IgnoreRhosts yes
+StrictModes yes
+UsePAM yes
+GSSAPIAuthentication no
+KerberosAuthentication no
+AuthorizedKeysFile .ssh/authorized_keys
+AuthorizedKeysCommand none
+AuthorizedPrincipalsFile none
+
+AllowUsers root {{ host_security_admin_user }}
+MaxAuthTries 2
+MaxSessions 10
+MaxStartups 10:30:60
+LoginGraceTime 30
+ClientAliveInterval 15
+ClientAliveCountMax 3
+TCPKeepAlive no
+Compression no
+UseDNS no
+
+DisableForwarding yes
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+PermitUserRC no
+
+SyslogFacility AUTH
+LogLevel VERBOSE
+PrintMotd no
+PrintLastLog yes
+Banner none
+Subsystem sftp internal-sftp

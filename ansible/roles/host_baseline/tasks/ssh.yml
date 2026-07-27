@@ -7,7 +7,12 @@
       - -f
       - /dev/stdin
     stdin: >-
-      {{ lookup("ansible.builtin.template", "ssh-hardening.conf.j2") }}
+      {{
+        lookup(
+          "ansible.builtin.template",
+          playbook_dir + "/../templates/ssh-hardening.conf.j2"
+        )
+      }}
     stdin_add_newline: true
   register: host_baseline_ssh_candidate
   changed_when: false
@@ -25,21 +30,53 @@
         ==
         (host_baseline_ssh_pq_kex_algorithms
         + host_baseline_ssh_classical_kex_algorithms)
+      - >-
+        (
+          host_baseline_ssh_candidate.stdout_lines
+          | select("match", "^ciphers ")
+          | first
+        ).split(" ", 1)[1].split(",") == host_baseline_ssh_ciphers
+      - >-
+        (
+          host_baseline_ssh_candidate.stdout_lines
+          | select("match", "^macs ")
+          | first
+        ).split(" ", 1)[1].split(",") == host_baseline_ssh_macs
+      - >-
+        (
+          host_baseline_ssh_candidate.stdout_lines
+          | select("match", "^hostkeyalgorithms ")
+          | first
+        ).split(" ", 1)[1].split(",")
+        == host_baseline_ssh_host_key_algorithms
+      - >-
+        (
+          host_baseline_ssh_candidate.stdout_lines
+          | select("match", "^pubkeyacceptedalgorithms ")
+          | first
+        ).split(" ", 1)[1].split(",")
+        == host_baseline_ssh_pubkey_algorithms
     fail_msg: >-
       The rendered OpenSSH candidate did not preserve the reviewed classical
       fallbacks after placing hybrid post-quantum KEX algorithms first.
     quiet: true
 
-- name: Render the public-key-only OpenSSH drop-in
-  ansible.builtin.template:
-    src: ssh-hardening.conf.j2
-    dest: /etc/ssh/sshd_config.d/00-dockerswarm-hardening.conf
+- name: Render the complete public-key-only OpenSSH policy
+  ansible.builtin.copy:
+    content: >-
+      {{
+        lookup(
+          "ansible.builtin.template",
+          playbook_dir + "/../templates/ssh-hardening.conf.j2"
+        )
+      }}
+    dest: /etc/ssh/sshd_config
     owner: root
     group: root
     mode: "0600"
     backup: true
     validate: /usr/sbin/sshd -t -f %s
-  register: host_baseline_ssh_dropin
+  register: host_baseline_ssh_config
   notify: Host baseline validate and reload OpenSSH
 
 - name: Validate the complete OpenSSH configuration with the drop-in
@@ -52,25 +89,17 @@
       changed_when: false
       check_mode: false
   rescue:
-    - name: Restore the previous managed OpenSSH drop-in
+    - name: Restore the previous complete OpenSSH policy
       ansible.builtin.copy:
-        src: "{{ host_baseline_ssh_dropin.backup_file }}"
-        dest: /etc/ssh/sshd_config.d/00-dockerswarm-hardening.conf
+        src: "{{ host_baseline_ssh_config.backup_file }}"
+        dest: /etc/ssh/sshd_config
         owner: root
         group: root
         mode: "0600"
         remote_src: true
       when:
-        - host_baseline_ssh_dropin.changed
-        - host_baseline_ssh_dropin.backup_file is defined
-
-    - name: Remove a new invalid OpenSSH drop-in
-      ansible.builtin.file:
-        path: /etc/ssh/sshd_config.d/00-dockerswarm-hardening.conf
-        state: absent
-      when:
-        - host_baseline_ssh_dropin.changed
-        - host_baseline_ssh_dropin.backup_file is not defined
+        - host_baseline_ssh_config.changed
+        - host_baseline_ssh_config.backup_file is defined
 
     - name: Verify the restored OpenSSH configuration
       ansible.builtin.command:
@@ -115,7 +144,7 @@
         "authenticationmethods publickey"
         in host_baseline_effective_sshd.stdout_lines
       - >-
-        "allowgroups " ~ host_baseline_ssh_group
+        "allowusers " ~ host_baseline_admin_user
         in host_baseline_effective_sshd.stdout_lines
       - '"allowtcpforwarding no" in host_baseline_effective_sshd.stdout_lines'
       - >-
@@ -132,6 +161,37 @@
         ==
         (host_baseline_ssh_pq_kex_algorithms
         + host_baseline_ssh_classical_kex_algorithms)
+      - >-
+        (
+          host_baseline_effective_sshd.stdout_lines
+          | select("match", "^ciphers ")
+          | first
+        ).split(" ", 1)[1].split(",") == host_baseline_ssh_ciphers
+      - >-
+        (
+          host_baseline_effective_sshd.stdout_lines
+          | select("match", "^macs ")
+          | first
+        ).split(" ", 1)[1].split(",") == host_baseline_ssh_macs
+      - >-
+        (
+          host_baseline_effective_sshd.stdout_lines
+          | select("match", "^hostkeyalgorithms ")
+          | first
+        ).split(" ", 1)[1].split(",")
+        == host_baseline_ssh_host_key_algorithms
+      - >-
+        (
+          host_baseline_effective_sshd.stdout_lines
+          | select("match", "^pubkeyacceptedalgorithms ")
+          | first
+        ).split(" ", 1)[1].split(",")
+        == host_baseline_ssh_pubkey_algorithms
+      - '"disableforwarding yes" in host_baseline_effective_sshd.stdout_lines'
+      - '"usedns no" in host_baseline_effective_sshd.stdout_lines'
+      - '"compression no" in host_baseline_effective_sshd.stdout_lines'
+      - '"tcpkeepalive no" in host_baseline_effective_sshd.stdout_lines'
+      - '"permituserrc no" in host_baseline_effective_sshd.stdout_lines'
     fail_msg: "The effective OpenSSH configuration is not public-key-only."
     quiet: true
   when: not ansible_check_mode

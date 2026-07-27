@@ -1,0 +1,9 @@
+[Unit]
+Description=Confirm DockerSwarm SSH hardening as soon as admin reconnects
+
+[Path]
+PathExists=/run/dockerswarm-bootstrap-ssh/confirmed
+Unit=dockerswarm-bootstrap-ssh-rollback.service
+
+[Install]
+WantedBy=multi-user.target

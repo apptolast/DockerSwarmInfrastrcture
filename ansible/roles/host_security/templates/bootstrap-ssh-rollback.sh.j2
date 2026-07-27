@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly FINAL_CONFIG="/etc/ssh/sshd_config"
+readonly STAGED_CONFIG="/etc/dockerswarm/bootstrap-ssh-staged.conf"
+readonly EXPECTED_STAGED_SHA256="{{ host_security_expected_staged_ssh_sha256 }}"
+readonly CONFIRMATION="/run/dockerswarm-bootstrap-ssh/confirmed"
+readonly EXPECTED_CONFIRMATION="{{ host_security_ssh_confirmation_nonce }}"
+readonly TIMER_UNIT="dockerswarm-bootstrap-ssh-rollback.timer"
+readonly PATH_UNIT="dockerswarm-bootstrap-ssh-rollback.path"
+readonly SERVICE_UNIT="dockerswarm-bootstrap-ssh-rollback.service"
+
+confirmed=false
+if [[ -f "${CONFIRMATION}" && ! -L "${CONFIRMATION}" ]]; then
+  confirmation_state="$(stat --format='%u:%a:%F' -- "${CONFIRMATION}")"
+  confirmation_value="$(<"${CONFIRMATION}")"
+  if [[ "${confirmation_state}" == "1001:600:regular file" &&
+        "${confirmation_value}" == "${EXPECTED_CONFIRMATION}" ]]; then
+    confirmed=true
+  fi
+fi
+
+if [[ "${confirmed}" != true ]]; then
+  staged_state="$(stat --format='%u:%g:%a:%F:%h' -- "${STAGED_CONFIG}")"
+  [[ "${staged_state}" == "0:0:600:regular file:1" ]]
+  staged_sha256="$(sha256sum -- "${STAGED_CONFIG}" | awk '{print $1}')"
+  [[ "${staged_sha256}" == "${EXPECTED_STAGED_SHA256}" ]]
+  /usr/sbin/sshd -t -f "${STAGED_CONFIG}"
+
+  rollback_candidate="$(
+    mktemp --tmpdir=/etc/ssh .dockerswarm-sshd-rollback.XXXXXXXX
+  )"
+  cleanup_candidate() {
+    if [[ -n "${rollback_candidate:-}" ]]; then
+      /usr/bin/rm -f -- "${rollback_candidate}"
+    fi
+  }
+  trap cleanup_candidate EXIT
+  /usr/bin/install \
+    --owner=root \
+    --group=root \
+    --mode=0600 \
+    "${STAGED_CONFIG}" \
+    "${rollback_candidate}"
+  candidate_sha256="$(sha256sum -- "${rollback_candidate}" | awk '{print $1}')"
+  [[ "${candidate_sha256}" == "${EXPECTED_STAGED_SHA256}" ]]
+  /usr/sbin/sshd -t -f "${rollback_candidate}"
+  /usr/bin/mv --force --no-target-directory \
+    "${rollback_candidate}" \
+    "${FINAL_CONFIG}"
+  rollback_candidate=""
+  /usr/bin/sync -f "$(dirname -- "${FINAL_CONFIG}")"
+  /usr/sbin/sshd -t -f "${FINAL_CONFIG}"
+  /usr/bin/systemctl reload ssh.service
+  trap - EXIT
+fi
+
+/usr/bin/systemctl stop "${TIMER_UNIT}" >/dev/null 2>&1 || true
+/usr/bin/systemctl stop "${PATH_UNIT}" >/dev/null 2>&1 || true
+/usr/bin/systemctl disable "${TIMER_UNIT}" >/dev/null 2>&1 || true
+/usr/bin/systemctl disable "${PATH_UNIT}" >/dev/null 2>&1 || true
+/usr/bin/rm -f \
+  "/etc/systemd/system/${TIMER_UNIT}" \
+  "/etc/systemd/system/${PATH_UNIT}" \
+  "/etc/systemd/system/${SERVICE_UNIT}"
+/usr/bin/rm -f "${CONFIRMATION}"
+/usr/bin/rmdir "$(dirname -- "${CONFIRMATION}")" >/dev/null 2>&1 || true
+/usr/bin/systemctl daemon-reload

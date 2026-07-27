@@ -1,0 +1,79 @@
+---
+workloads_stack_name: workloads
+workloads_install_root: "{{ platform_install_root }}/workloads"
+workloads_state_root: "{{ platform_state_root }}/services"
+workloads_edge_networks: "{{ platform_edge_networks }}"
+workloads_render_only: false
+workloads_render_root: "{{ playbook_dir }}/../../.build/workloads"
+workloads_secret_source_dir: "{{ workloads_state_root }}/secrets/files"
+workloads_secret_identity_key_path: >-
+  {{ workloads_secret_source_dir }}/workloads_secret_identity_hmac_key
+workloads_restore_marker_path: >-
+  {{ workloads_state_root }}/restore-state/workloads-ready-v2.json
+workloads_runtime_manifest_path: >-
+  {{ workloads_state_root }}/runtime-manifest.json
+workloads_recovery_manifest_path: >-
+  {{ workloads_state_root }}/recovery/SHA256SUMS
+workloads_catalog_source_path: >-
+  {{ playbook_dir }}/../../config/services.yml
+workloads_runner_context_source: >-
+  {{ playbook_dir }}/../../images/n8n-runners
+workloads_runner_context_files:
+  - .dockerignore
+  - Dockerfile
+  - package.json
+  - package-lock.json
+
+workloads_runtime_service_ids:
+  - kropia
+  - minecraft
+  - minecraft-stats
+  - n8n
+  - openclaw-clean
+  - passbolt
+  - personal-website-alberto
+  - personal-website-pablo
+  - shlink
+
+workloads_expected_stack_services:
+  - kropia
+  - minecraft
+  - minecraft-stats
+  - n8n
+  - n8n-db
+  - n8n-runners
+  - openclaw
+  - passbolt
+  - passbolt-db
+  - portfolio-alberto
+  - portfolio-pablo
+  - redis-coordinator
+  - selenium
+  - shlink
+  - shlink-db
+
+workloads_config_specs:
+  - key: n8n_entrypoint
+    source: n8n-entrypoint.sh
+    kind: entrypoint
+  - key: n8n_runners_entrypoint
+    source: n8n-runners-entrypoint.sh
+    kind: entrypoint
+  - key: n8n_task_runners
+    source: n8n-task-runners.json
+    kind: application-config
+  - key: openclaw_entrypoint
+    source: openclaw-entrypoint.sh
+    kind: entrypoint
+  - key: passbolt_entrypoint
+    source: passbolt-entrypoint.sh
+    kind: entrypoint
+  - key: portfolio_pablo_entrypoint
+    source: portfolio-pablo-entrypoint.sh
+    kind: entrypoint
+  - key: redis_config
+    source: redis.conf
+    kind: application-config
+  - key: shlink_entrypoint
+    source: shlink-entrypoint.sh
+    kind: entrypoint

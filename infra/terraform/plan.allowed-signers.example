@@ -1,0 +1,7 @@
+# Do not use this example as a trust registry.
+#
+# After the owner explicitly approves a dedicated saved-plan signing public
+# key, create the tracked file `plan.allowed-signers` with one OpenSSH
+# allowed-signers entry in this form:
+#
+# apptolast-terraform-plan namespaces="terraform-saved-plan" ssh-ed25519 AAAA... approved-terraform-plan-key

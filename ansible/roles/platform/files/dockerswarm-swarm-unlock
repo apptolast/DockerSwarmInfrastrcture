@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly UNLOCK_KEY_FILE="/etc/dockerswarm/backup/swarm-unlock-key"
+
+[[ -f "${UNLOCK_KEY_FILE}" && ! -L "${UNLOCK_KEY_FILE}" ]] || {
+  printf 'ERROR: Swarm unlock-key escrow is absent or unsafe\n' >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat --format='%u:%g:%a:%F' "${UNLOCK_KEY_FILE}")" == \
+  "0:0:600:regular file" ]] || {
+  printf 'ERROR: Swarm unlock-key escrow must be root:root 0600\n' >&2
+  exit 1
+}
+
+IFS= read -r unlock_key <"${UNLOCK_KEY_FILE}"
+[[ "${unlock_key}" =~ ^SWMKEY-1-[A-Za-z0-9/+=_-]{32,}$ ]] || {
+  printf 'ERROR: Swarm unlock-key escrow is malformed\n' >&2
+  exit 1
+}
+
+manager_state="$(
+  /usr/bin/docker info --format \
+    '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'
+)"
+case "${manager_state}" in
+  "active true")
+    exit 0
+    ;;
+  "locked false")
+    printf '%s\n' "${unlock_key}" |
+      /usr/bin/docker swarm unlock >/dev/null
+    ;;
+  *)
+    printf 'ERROR: refusing to unlock unexpected Swarm state %q\n' \
+      "${manager_state}" >&2
+    exit 1
+    ;;
+esac
+unset unlock_key
+
+for _attempt in $(/usr/bin/seq 1 60); do
+  manager_state="$(
+    /usr/bin/docker info --format \
+      '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'
+  )"
+  [[ "${manager_state}" != "active true" ]] || exit 0
+  /usr/bin/sleep 1
+done
+
+printf 'ERROR: Swarm did not become an active manager after unlock\n' >&2
+exit 1

@@ -1,0 +1,6 @@
+[sshd]
+enabled = true
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+banaction = ufw
+maxretry = {{ host_security_fail2ban_maxretry }}

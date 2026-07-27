@@ -1,0 +1,208 @@
+---
+backup_activation_enabled: false
+backup_initialize_repository: false
+
+backup_install_root: /opt/dockerswarm
+backup_state_root: /srv/dockerswarm
+backup_services_root: "{{ backup_state_root }}/services"
+backup_hostname: "{{ platform_node_id }}"
+
+backup_r2_account_id: ""
+backup_r2_bucket: ""
+backup_r2_prefix: dockerswarm/restic
+
+backup_config_directory: /etc/dockerswarm/backup
+backup_config_file: "{{ backup_config_directory }}/config.json"
+backup_password_file: "{{ backup_config_directory }}/restic-password"
+backup_r2_access_key_id_file: "{{ backup_config_directory }}/r2-access-key-id"
+backup_r2_secret_access_key_file: >-
+  {{ backup_config_directory }}/r2-secret-access-key
+backup_swarm_unlock_key_file: "{{ backup_config_directory }}/swarm-unlock-key"
+
+backup_runtime_root: /var/lib/dockerswarm-backup
+backup_staging_directory: "{{ backup_runtime_root }}/staging"
+backup_cache_directory: "{{ backup_runtime_root }}/cache"
+backup_status_directory: "{{ backup_runtime_root }}/status"
+backup_metrics_directory: /var/lib/node_exporter/textfile_collector
+backup_lock_file: /run/lock/dockerswarm-backup.lock
+
+backup_restic_version: 0.19.1
+backup_restic_binary: /usr/local/bin/restic
+backup_controller_binary: /usr/local/libexec/dockerswarm-backupctl
+backup_restic_locks:
+  x86_64:
+    archive_architecture: amd64
+    archive_sha256: >-
+      f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+    binary_sha256: >-
+      20d4142678d0d95ec11a4759def1b73fd9190abc9ca19e4b62d067c0b387e639
+  aarch64:
+    archive_architecture: arm64
+    archive_sha256: >-
+      a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+    binary_sha256: >-
+      2fb45ac6f9071b6f20eb883953a188f9e7c7cb6bbe43c67a2e47ada4e85ee7f0
+
+backup_minecraft_service: workloads_minecraft
+
+backup_databases:
+  - id: n8n-postgres
+    service: workloads_n8n-db
+    database: n8n
+    username: n8n
+    rehearsal_image: >-
+      docker.io/pgvector/pgvector@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
+    extensions: {}
+  - id: n8n-vectors
+    service: workloads_n8n-db
+    database: vectors
+    username: n8n
+    rehearsal_image: >-
+      docker.io/pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
+    extensions:
+      vector: 0.8.1
+  - id: n8n-rag
+    service: workloads_n8n-db
+    database: rag
+    username: n8n
+    rehearsal_image: >-
+      docker.io/pgvector/pgvector@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
+    extensions:
+      vector: 0.8.2
+  - id: passbolt-postgres
+    service: workloads_passbolt-db
+    database: passbolt
+    username: passbolt
+    rehearsal_image: >-
+      docker.io/library/postgres@sha256:fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c
+    extensions: {}
+  - id: shlink-postgres
+    service: workloads_shlink-db
+    database: shlink
+    username: shlink
+    rehearsal_image: >-
+      docker.io/library/postgres@sha256:66266770619a23ab310c7fa60043b6d1fa041038cb232ced59d2c509fecd297b
+    extensions: {}
+
+backup_datasets:
+  - id: n8n-home
+    source: "{{ backup_services_root }}/n8n/home"
+    consistency: quiesced
+  - id: passbolt-gpg
+    source: "{{ backup_services_root }}/passbolt/gpg"
+    consistency: quiesced
+  - id: passbolt-jwt
+    source: "{{ backup_services_root }}/passbolt/jwt"
+    consistency: quiesced
+  - id: minecraft-data
+    source: "{{ backup_services_root }}/minecraft/data"
+    consistency: minecraft-save
+  - id: minecraft-mods
+    source: "{{ backup_services_root }}/minecraft/mods"
+    consistency: minecraft-save
+  - id: openclaw-clean-home
+    source: "{{ backup_services_root }}/openclaw-clean/home"
+    consistency: quiesced
+  - id: traefik-acme
+    source: "{{ backup_state_root }}/traefik/acme.json"
+    consistency: quiesced
+  - id: runtime-secret-source
+    source: "{{ backup_services_root }}/secrets/files"
+    consistency: immutable
+  - id: observability-secret-source
+    source: "{{ backup_state_root }}/observability/secrets/files"
+    consistency: immutable
+  - id: observability-prometheus
+    source: "{{ backup_state_root }}/observability/prometheus"
+    consistency: quiesced
+  - id: observability-alertmanager
+    source: "{{ backup_state_root }}/observability/alertmanager"
+    consistency: quiesced
+  - id: observability-loki
+    source: "{{ backup_state_root }}/observability/loki"
+    consistency: quiesced
+  - id: observability-grafana
+    source: "{{ backup_state_root }}/observability/grafana"
+    consistency: quiesced
+
+backup_consistency_groups:
+  - id: n8n
+    services:
+      - workloads_n8n
+      - workloads_n8n-runners
+    databases:
+      - n8n-postgres
+      - n8n-vectors
+      - n8n-rag
+    datasets:
+      - n8n-home
+  - id: passbolt
+    services:
+      - workloads_passbolt
+    databases:
+      - passbolt-postgres
+    datasets:
+      - passbolt-gpg
+      - passbolt-jwt
+  - id: shlink
+    services:
+      - workloads_shlink
+    databases:
+      - shlink-postgres
+    datasets: []
+  - id: openclaw
+    services:
+      - workloads_openclaw
+    databases: []
+    datasets:
+      - openclaw-clean-home
+  - id: traefik
+    services:
+      - edge_traefik
+    databases: []
+    datasets:
+      - traefik-acme
+  - id: observability-prometheus
+    services:
+      - observability_prometheus
+    databases: []
+    datasets:
+      - observability-prometheus
+  - id: observability-alertmanager
+    services:
+      - observability_alertmanager
+    databases: []
+    datasets:
+      - observability-alertmanager
+  - id: observability-loki
+    services:
+      - observability_loki
+    databases: []
+    datasets:
+      - observability-loki
+  - id: observability-grafana
+    services:
+      - observability_grafana
+    databases: []
+    datasets:
+      - observability-grafana
+  - id: immutable-secrets
+    services: []
+    databases: []
+    datasets:
+      - runtime-secret-source
+      - observability-secret-source
+
+backup_retention:
+  hourly: 24
+  daily: 14
+  weekly: 8
+  monthly: 12
+  yearly: 5
+
+backup_application_calendar: "*-*-* 02:15:00"
+backup_swarm_state_calendar: "Sun *-*-* 04:15:00"
+backup_verify_calendar: "Sat *-*-* 03:15:00"
+backup_rehearsal_calendar: "*-*-01 05:15:00"
+backup_timer_randomized_delay: 15m
+backup_rehearsal_tmpfs_size: 8G

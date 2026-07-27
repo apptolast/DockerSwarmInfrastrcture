@@ -7,10 +7,25 @@ inventario reproducible, backups restaurables y la asignación de un único
 propietario a cada recurso.
 
 Este runbook se redactó comparando este repositorio con `MigracionNetCup` en el
-commit `79e9c79e5c9ca9f71a7f9011cde9a1bb3a1f8e42`. No se dispone aquí de
-credenciales de producción, state remoto, contenido de secretos ni evidencia de
-qué commit está desplegado. Por tanto, todos los pasos son compuertas pendientes;
-ninguno se considera ejecutado por estar documentado.
+commit `79e9c79e5c9ca9f71a7f9011cde9a1bb3a1f8e42`. Esa comparación sigue siendo
+evidencia histórica; la propiedad IaC completa ya está transferida a este repo.
+
+## Estado de la migración
+
+A 26 de julio de 2026:
+
+- catálogo, stacks, routers, imágenes, redes, restore markers y tooling están
+  codificados para toda la allowlist;
+- los datos aprobados están materializados bajo `/srv/dockerswarm`;
+- n8n contiene 46 workflows y 35 credenciales restaurados; los workflows
+  permanecen sin publicar hasta la aceptación funcional/OAuth;
+- OpenClaw se prepara limpio y no importa el legado;
+- no existen stacks ni servicios productivos desplegados;
+- DNS sigue apuntando a `138.199.157.58`;
+- backends R2, backup offsite y states remotos aún no están disponibles.
+
+Por tanto, la preparación/restauración no equivale a cutover. Las fases de
+despliegue, aceptación, DNS y backup externo siguen abiertas.
 
 ## Prohibiciones durante la transición
 
@@ -20,8 +35,9 @@ Hasta completar las compuertas correspondientes:
    mismos recursos.
 2. No volver a aplicar `host_baseline` del repositorio antiguo después de que
    este repositorio asuma Docker, daemon, `sysctl`, UFW o `DOCKER-USER`.
-3. No arrancar dos Traefik que intenten publicar `80/443`.
-4. No crear la overlay `apptolast-edge` mientras exista el bridge homónimo.
+3. No retirar Traefik legacy antes de aceptar DNS y rollback; puede coexistir
+   con el nuevo porque están en hosts/IP distintos.
+4. No conectar el edge nuevo a redes legacy ni retirar un bridge con endpoints.
 5. No modificar registros A/AAAA/CNAME/SRV de aplicaciones antes de migrar y
    verificar sus datos.
 6. No publicar ni autorizar `25565/TCP` antes de migrar y verificar Minecraft.
@@ -53,8 +69,8 @@ Antes de tocar producción se registra:
 - mecanismo de comunicación con usuarios.
 
 La migración queda bloqueada mientras cualquiera de esos elementos no tenga
-dueño. En particular, este repositorio no contiene todavía stacks Swarm ni
-routers para las aplicaciones: solo contiene el edge y `/ping`.
+dueño. Las definiciones ya existen, pero no autorizan desplegar sin ventana,
+backup/rollback y compuertas externas.
 
 ## Fase 1: inventario inmutable
 
@@ -156,12 +172,19 @@ objeto preexistente es:
 
 Los recursos Netcup que se solapan son la firewall policy, su asignación al VPS
 y las claves públicas SCP. `manage_firewall` permanece `false` hasta inventariar
-e importar todas las policies existentes y confirmar `server_id`, MAC,
-`admin_cidrs` y `preserved_policy_ids`.
+policies, reglas y prioridad, además de confirmar `server_id`, MAC y
+`admin_cidrs`. `preserved_policy_ids` permanece exactamente `[]`: una policy
+necesaria se modela e importa con todas sus reglas; conservar solo su ID podría
+anteponer una regla `ACCEPT ANY` o `DROP` opaca a la policy revisada.
+`firewall_policy_inventory_confirmed` solo pasa a `true` al confirmar que la
+asignación completa puede sustituirse por los recursos modelados.
 
-El root DNS nuevo empieza únicamente con `edge.apptolast.com`. Los registros de
-aplicaciones permanecen bajo su propietario actual hasta que cada carga supere
-la Fase 5. Un plan Terraform se considera sensible y se revisa con la
+El root DNS nuevo tiene una allowlist cerrada de diez A:
+`edge.apptolast.com` más nueve registros de aplicaciones. Los nueve objetos
+existentes se adoptan primero sin cambiar contenido. En el cutover actual se
+crea `edge` y se mueven los ocho HTTP; Minecraft sigue legacy por su gate.
+Ningún otro registro se importa o gestiona. Un plan Terraform se considera
+sensible y se revisa con la
 [semántica oficial de `terraform plan`](https://developer.hashicorp.com/terraform/cli/commands/plan).
 
 La versión fijada publica los formatos `<policy_id>` para una policy,
@@ -191,37 +214,67 @@ Antes de la ventana:
 - capturar respuestas esperadas para comparar durante el corte;
 - ensayar el rollback completo y medirlo.
 
-No se puede completar esta fase con el contenido actual de este repositorio:
-faltan las definiciones/rutas de aplicaciones, credenciales, inventario vivo y
-datasets. Esas ausencias son bloqueos explícitos.
+El contenido declarativo de aplicaciones y los datasets de destino ya existen.
+La fase sigue bloqueada por credenciales externas, states/backends live, ensayo
+offsite y aceptación funcional, no por ausencia de stacks o routers.
 
-## Fase 5: corte en el mismo host
+## Fase 5: corte entre servidores
 
-El bridge antiguo y la overlay nueva comparten nombre, y ambos Traefik compiten
-por `80/443`. Por eso el cambio requiere una ventana coordinada:
+El servidor legacy usa `138.199.157.58` y el destino `159.195.156.57`. Sus
+Traefik no compiten por sockets ni comparten redes Docker. El legacy se mantiene
+disponible como rollback hasta terminar la ventana.
 
-1. Anunciar mantenimiento y bloquear despliegues/automatizaciones.
-2. Tomar snapshot DNS y comprobar acceso alternativo al VPS.
-3. Congelar escrituras y ejecutar la sincronización final de cada dataset.
-4. Crear un último backup consistente, cifrarlo offsite y verificarlo.
-5. Detener el proyecto Compose antiguo. No usar `-v`; confirmar que no quedan
-   procesos escritores ni puertos de aplicación publicados.
-6. Confirmar que el Traefik antiguo ya no ocupa `80/443`.
-7. Retirar el bridge `apptolast-edge` únicamente cuando no tenga endpoints.
-8. Ejecutar el workflow revisado de los playbooks `platform` y `edge`.
-9. Verificar que `apptolast-edge` es overlay, Swarm, cifrada y no attachable.
-10. Verificar nodo `Ready/Active/Leader`, servicio Traefik `1/1`, healthcheck,
-    logs, certificado y respuesta HTTPS de `edge.apptolast.com/ping`.
-11. Migrar/arrancar una aplicación cada vez y probarla localmente con resolución
-    forzada hacia la IP nueva, sin cambiar aún su A/AAAA/CNAME/SRV.
-12. Verificar datos, login, lectura, escritura controlada, jobs y observabilidad.
-13. Solo tras la aceptación de esa aplicación, cambiar/importar sus registros
-    mediante su único root propietario.
-14. Observar al menos sus TTL efectivos y métricas antes de continuar.
+1. Anunciar mantenimiento y bloquear despliegues/automatizaciones en ambos
+   servidores.
+2. Tomar snapshot DNS y comprobar acceso fuera de banda a ambos VPS.
+3. Aplicar `platform`, preflight de imágenes y `edge` en el destino, sin
+   desplegar todavía workloads ni modificar DNS.
+4. Verificar overlays, nodo, Traefik, `/ping`, logs y certificado.
+5. Probar previamente los datos ya staged en un entorno aislado; esa copia no
+   se declara final mientras el legacy siga escribiendo.
+6. Entrar en mantenimiento y detener todos los writers legacy incluidos.
+7. Crear el backup/dump final de cada grupo, cifrarlo offsite y verificarlo.
+8. Aplicar la compuerta de refresh final descrita abajo. No aplicar un “delta”
+   genérico ni sobrescribir los árboles pre-staged.
+9. Demostrar que ningún writer nuevo o antiguo está activo durante el restore.
+10. Instalar/verificar secrets y desplegar `workloads`; mantener los writers
+    legacy detenidos.
+11. Ejecutar login, lectura, escritura controlada, jobs y dependencias de todos
+    los servicios. Después desplegar/verificar `observability`.
+12. Adoptar en state los nueve A existentes sin cambiar contenido, si no se
+    hizo antes; no mezclar adopción y cutover.
+13. Revisar/aplicar el plan que crea `edge` y cambia solo los ocho A HTTP a la
+    IP nueva. Minecraft queda en la IP legacy.
+14. Verificar DNS autoritativo, resolvers externos, TLS y funciones.
+15. Observar al menos los TTL efectivos y métricas, conservando intacto el
+    runtime legacy para rollback.
 
-El registro inicial `edge.apptolast.com` se mantiene DNS-only
-(`proxied = false`). Su validación no autoriza cambios en registros de
-aplicaciones.
+### STOP: refresh del snapshot pre-staged
+
+El runtime actual se preparó desde el backup
+`apptolast-data-20260723T225340Z`. `prepare_runtime.py` exige un destino vacío.
+La operación que aparta el árbol canónico, restaura otra generación y la
+promueve atómicamente conservando rollback ya existe:
+`migration/scripts/promote_runtime_generation.py`, documentada en
+[`RUNTIME_GENERATION_PROMOTION.md`](../migration/RUNTIME_GENERATION_PROMOTION.md).
+Su propio STOP explica exactamente qué falta hoy (writers legacy detenidos,
+backup final posterior, allowed-signers revisado y attestation firmada) — no
+código pendiente de escribir.
+
+Antes del paso 8 debe cumplirse una de estas dos condiciones:
+
+1. demostrar con evidencia que el servidor legacy no ha escrito desde ese
+   backup y que el marker actual representa el punto final; o
+2. ejecutar `promote_runtime_generation.py` con un gate externo firmado
+   vigente, que restaura a staging nuevo, valida todo el manifest, pone la
+   generación anterior en cuarentena y promueve sin borrar ni mezclar
+   árboles.
+
+Mientras ninguna se cumpla, el cutover queda en `STOP`. No se improvisan
+`rsync`, copias sobre el destino ni movimientos manuales durante la ventana.
+
+Los diez registros se mantienen DNS-only (`proxied = false`). Su validación no
+autoriza cambios en ningún otro registro de la zona.
 
 ### Compuerta especial de Minecraft
 
@@ -232,8 +285,8 @@ Minecraft sigue cerrado aunque el edge esté sano. Antes de abrir `25565/TCP`:
    servidor;
 3. demostrar que no hay dos servidores escribiendo el mismo mundo;
 4. probar conexión en un canal restringido;
-5. aprobar un cambio de contrato que añada `25565/TCP` de forma coherente en
-   Netcup, host y publicación Docker;
+5. resolver explícitamente el riesgo de `online-mode=false` y aprobar el cambio
+   de `platform_minecraft_public_enabled` a `true`;
 6. aplicar y verificar las tres capas;
 7. solo después cambiar registros A/AAAA/SRV relacionados, si realmente existen
    y el inventario confirma que deben cambiar.
@@ -246,7 +299,7 @@ para abrirlo en la plataforma nueva.
 El corte solo se declara correcto si existe evidencia de:
 
 - un único listener autorizado para cada puerto público;
-- un único Traefik y una única red `apptolast-edge` con el driver correcto;
+- un único Traefik y el conjunto exacto de overlays aisladas;
 - ninguna automatización antigua capaz de reescribir host o perímetro;
 - nodo y servicios convergidos, sin tasks fallando o reiniciándose;
 - certificados de producción válidos y renovación no bloqueada;
@@ -296,14 +349,16 @@ Se vuelve atrás si ocurre cualquiera de los siguientes:
 
 ### Rollback global del edge
 
-Para volver al Compose antiguo en el mismo host:
+El servidor legacy permanece separado y no se detiene por conflicto de
+puertos. Para volver:
 
-1. detener el stack edge nuevo para liberar `80/443`;
-2. detener todas las cargas conectadas a la overlay;
-3. retirar la overlay solo cuando no tenga endpoints;
-4. recrear el bridge mediante el Compose antiguo y arrancar su Traefik;
-5. verificar certificados, routes y aplicaciones antiguas;
-6. no copiar automáticamente `acme.json` entre ambas implementaciones.
+1. congelar escritores nuevos;
+2. restaurar los ocho A al snapshot legacy mediante el único writer DNS;
+3. esperar/verificar TTL y tráfico antes de reactivar escritores antiguos;
+4. detener edge/workloads nuevos cuando ya no reciban tráfico;
+5. verificar Traefik y aplicaciones legacy desde fuera;
+6. reconciliar datos conforme al runbook de cada servicio;
+7. no copiar `acme.json` entre servidores.
 
 No se improvisa este procedimiento durante el incidente: debe haberse ensayado
 con las versiones y artefactos exactos preservados antes del corte.

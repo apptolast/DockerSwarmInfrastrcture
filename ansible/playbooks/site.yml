@@ -7,11 +7,27 @@
   any_errors_fatal: true
 
   vars_files:
+    - ../../config/capacity.yml
+    - ../../config/host-security.yml
     - ../../config/platform.yml
+    - ../../config/services.yml
+    - ../../config/minecraft.yml
+    - ../../stacks/workloads/secrets.yml
+    - ../../stacks/observability/secrets.yml
     - ../group_vars/all.yml
 
   roles:
+    - role: operation_lock_guard
+    - role: capacity_preflight
+      tags:
+        - capacity
+    - role: host_security
+    - role: minecraft_preflight
     - role: platform
     - role: host_baseline
+    - role: image_preflight
+    - role: workloads_runner_image
     - role: edge
+    - role: workloads
+    - role: observability
     - role: deployment_metadata

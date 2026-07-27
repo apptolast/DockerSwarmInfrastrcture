@@ -1,0 +1,240 @@
+---
+- name: Select the render destination
+  ansible.builtin.set_fact:
+    workloads_effective_install_root: >-
+      {{
+        workloads_render_root
+        if workloads_render_only | bool
+        else workloads_install_root
+      }}
+
+- name: Create the workloads render directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0750"
+  loop:
+    - "{{ workloads_effective_install_root }}"
+    - "{{ workloads_effective_install_root }}/bin"
+    - "{{ workloads_effective_install_root }}/config"
+  when: not ansible_check_mode
+
+- name: Install workload validation helpers
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+    dest: "{{ workloads_effective_install_root }}/bin/{{ item }}"
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0755"
+  loop:
+    - ansible-operation-lock.py
+    - host_global_operation_lock.py
+    - install-workload-secrets.py
+    - run-locked-command.py
+    - validate-workloads-container-gate.py
+    - validate-swarm-deployment.py
+    - validate-workloads-restore-marker.py
+  when: not ansible_check_mode
+
+- name: Install the exact service catalog used by workloads
+  ansible.builtin.copy:
+    src: "{{ workloads_catalog_source_path }}"
+    dest: "{{ workloads_effective_install_root }}/services.yml"
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0644"
+  when: not ansible_check_mode
+
+- name: Install the exact workload secret catalog
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../stacks/workloads/secrets.yml"
+    dest: "{{ workloads_effective_install_root }}/secrets.yml"
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0644"
+  when: not ansible_check_mode
+
+- name: Install reviewed workload configuration sources
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../stacks/workloads/config/{{ item.source }}
+    dest: >-
+      {{ workloads_effective_install_root }}/config/{{ item.source }}
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0644"
+  loop: "{{ workloads_config_specs }}"
+  loop_control:
+    label: "{{ item.source }}"
+  when: not ansible_check_mode
+
+- name: Hash reviewed workload configuration sources
+  ansible.builtin.stat:
+    path: >-
+      {{ playbook_dir
+         }}/../../stacks/workloads/config/{{ item.source }}
+    checksum_algorithm: sha256
+  loop: "{{ workloads_config_specs }}"
+  loop_control:
+    label: "{{ item.source }}"
+  register: workloads_rendered_config_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+- name: Derive immutable Docker Config names
+  ansible.builtin.set_fact:
+    workloads_config_names: >-
+      {{
+        workloads_config_names | default({})
+        | combine({
+          item.item.key:
+            workloads_stack_name
+            + "-" + (item.item.key | replace("_", "-"))
+            + "-" + item.stat.checksum[:16]
+        })
+      }}
+  loop: "{{ workloads_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Inspect immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ workloads_config_names[item.item.key] }}"
+  loop: "{{ workloads_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ workloads_config_names[item.item.key] }}"
+  register: workloads_existing_configs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not workloads_render_only | bool
+    - not ansible_check_mode
+
+- name: Create missing immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - create
+      - --label
+      - com.apptolast.managed-by=ansible
+      - --label
+      - "com.apptolast.stack={{ workloads_stack_name }}"
+      - --label
+      - "com.apptolast.sha256={{ item.item.stat.checksum }}"
+      - --label
+      - "com.apptolast.kind={{ item.item.item.kind }}"
+      - "{{ workloads_config_names[item.item.item.key] }}"
+      - >-
+        {{ workloads_effective_install_root
+           }}/config/{{ item.item.item.source }}
+  loop: "{{ workloads_existing_configs.results | default([]) }}"
+  loop_control:
+    label: "{{ workloads_config_names[item.item.item.key] }}"
+  when:
+    - not workloads_render_only | bool
+    - not ansible_check_mode
+    - item.rc != 0
+  changed_when: true
+
+- name: Re-read immutable Docker Configs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - config
+      - inspect
+      - "{{ workloads_config_names[item.item.key] }}"
+  loop: "{{ workloads_rendered_config_stats.results }}"
+  loop_control:
+    label: "{{ workloads_config_names[item.item.key] }}"
+  register: workloads_verified_configs
+  changed_when: false
+  check_mode: false
+  when:
+    - not workloads_render_only | bool
+    - not ansible_check_mode
+
+- name: Verify immutable Docker Config identity and content
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Spec.Name
+        == workloads_config_names[item.item.item.key]
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.managed-by"] == "ansible"
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.stack"] == workloads_stack_name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.sha256"] == item.item.stat.checksum
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.kind"] == item.item.item.kind
+      - >-
+        ((item.stdout | from_json | first).Spec.Data | b64decode
+        | hash("sha256")) == item.item.stat.checksum
+    fail_msg: >-
+      Docker Config {{ workloads_config_names[item.item.item.key] }}
+      has unexpected content or labels.
+  loop: "{{ workloads_verified_configs.results | default([]) }}"
+  loop_control:
+    label: "{{ workloads_config_names[item.item.item.key] }}"
+  when:
+    - not workloads_render_only | bool
+    - not ansible_check_mode
+
+- name: Render the workloads stack
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../stacks/workloads/stack.yml.j2"
+    dest: "{{ workloads_effective_install_root }}/stack.yml"
+    owner: "{{ omit if workloads_render_only | bool else 'root' }}"
+    group: "{{ omit if workloads_render_only | bool else 'root' }}"
+    mode: "0640"
+  when: not ansible_check_mode
+
+- name: Validate the rendered workloads stack with Docker
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - config
+      - --compose-file
+      - "{{ workloads_effective_install_root }}/stack.yml"
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Render the workloads stack in memory during check mode
+  ansible.builtin.set_fact:
+    workloads_check_mode_stack: >-
+      {{
+        lookup(
+          "ansible.builtin.template",
+          playbook_dir + "/../../stacks/workloads/stack.yml.j2"
+        )
+      }}
+  when: ansible_check_mode
+
+- name: Validate the in-memory check-mode workloads stack with Docker
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - config
+      - --compose-file
+      - "-"
+    stdin: "{{ workloads_check_mode_stack }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  when: ansible_check_mode

@@ -8,7 +8,7 @@
 - name: Verify the existing UFW policy without resetting it
   ansible.builtin.import_tasks: firewall.yml
 
-- name: Configure controlled unattended security updates
+- name: Enforce the promoted-snapshot package update policy
   ansible.builtin.import_tasks: unattended-upgrades.yml
 
 - name: Verify the existing Chrony time source

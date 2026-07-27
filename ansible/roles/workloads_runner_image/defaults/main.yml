@@ -1,0 +1,10 @@
+---
+workloads_runner_image_install_root: >-
+  {{ platform_install_root }}/image-preflight/n8n-runner
+workloads_runner_image_context_source: >-
+  {{ playbook_dir }}/../../images/n8n-runners
+workloads_runner_image_context_files:
+  - .dockerignore
+  - Dockerfile
+  - package.json
+  - package-lock.json

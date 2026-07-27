@@ -1,141 +1,180 @@
 # Operación y seguridad
 
-## Arquitectura actual
+## Topología
 
-El clúster tiene un único servidor con una única interfaz pública. El nodo es
-manager y worker. Esta arquitectura permite usar servicios, stacks, secrets,
-configs y redes overlay, pero no tolera el fallo del nodo.
+El clúster tiene un único manager/worker y una interfaz pública. Permite
+stacks, secrets, configs y overlays, pero tolera cero fallos del manager.
 
-Para tolerar la pérdida de un manager se necesitan al menos tres managers,
-preferiblemente un número impar, distribuidos entre dominios de fallo.
-
-## Puertos internos
-
-Swarm utiliza los siguientes puertos entre nodos:
+Los puertos internos de Swarm son:
 
 | Tráfico | Uso |
 | --- | --- |
-| `2377/TCP` | Plano de control |
-| `7946/TCP+UDP` | Descubrimiento entre nodos |
-| `4789/UDP` | VXLAN de redes overlay |
+| `2377/TCP` | plano de control |
+| `7946/TCP+UDP` | descubrimiento |
+| `4789/UDP` | VXLAN |
 
-No se autoriza ninguno desde `Anywhere`. Con un solo nodo no es necesario abrirlos.
-Antes de añadir nodos debe existir una red privada o un túnel autenticado y las
-reglas deben limitarse a las direcciones de esos nodos. Docker advierte que VXLAN
-no autentica por sí mismo el tráfico recibido en `4789/UDP`.
+No se autorizan desde Internet. Un segundo nodo exige red privada/túnel,
+direcciones estables y quorum revisado.
 
-Los puertos publicados por Docker pueden eludir las reglas normales de UFW. Las
-restricciones de cargas publicadas deben diseñarse en `DOCKER-USER`, además de
-las reglas perimetrales del proveedor.
+Docker puede saltarse el procesamiento normal de UFW. La política combina
+Netcup, UFW y `DOCKER-USER`; CrowdSec ocupa el primer salto y
+`DOCKERSWARM-INGRESS` el segundo.
 
-CrowdSec debe ocupar el primer salto de `DOCKER-USER` y
-`DOCKERSWARM-INGRESS` el segundo. Así una decisión de bloqueo se evalúa antes de
-aceptar 80/443. El rol `host_baseline` y `validate-firewall.sh` comprueban el
-orden después de reinicios de Docker y del bouncer.
+## Modelo de acceso
 
-## Logging
+El grupo `docker` equivale a root. El contrato final elimina a todos los
+usuarios humanos, incluido `admin`, de ese grupo.
 
-`config/daemon.json` establece `local` como driver predeterminado. No se deben
-leer ni modificar directamente sus archivos internos; se accede a ellos con
-`docker logs`.
+- validación de repo/CI: usuario sin privilegios;
+- Ansible remoto: `admin` con `--ask-become-pass`;
+- Ansible local: `--local`, que eleva supervisor y Ansible juntos;
+- diagnóstico Docker en el host: `sudo -- docker ...`;
+- helpers productivos que administran Docker: `sudo -- ./scripts/...`.
 
-`docker service logs` solo funciona con `json-file` o `journald`. Si un servicio
-necesita agregación mediante ese comando, debe sobrescribir el driver en su
-definición. `json-file` debe configurarse con rotación para evitar agotar disco.
+No se guardan contraseñas sudo en inventario, variables, shell history ni Git.
 
-`config/logrotate/iptables` utiliza el helper del paquete rsyslog para enviar un
-HUP después de rotar `/var/log/iptables.log`. El antiguo `invoke-rc.d rsyslog`
-no es válido en este host porque Ubuntu 26.04 ya no instala ese script SysV.
+## Bloqueo de cambios Ansible
+
+El bootstrap fresco y todos los targets de `deploy-ansible.sh` usan el mismo
+inode:
+
+```text
+/run/lock/dockerswarm-iac.lock
+```
+
+El inode es `1001:1001 0600`. Bootstrap lo crea como root y lo transfiere al UID
+revisado. Cada scope usa un marker distinto:
+
+```text
+/run/lock/dockerswarm-bootstrap.marker
+/run/lock/dockerswarm-ansible.marker
+```
+
+El marker liga nonce de 256 bits, commit, contrato, perfil, modo, controlador y
+PID holder. Un crash, EOF, pérdida del holder, fallo Ansible, cambio de `HEAD`
+o worktree sucio deja el marker fail-closed. No se borra por edad ni al volver
+a ejecutar.
+
+El supervisor:
+
+- conserva una PTY real para prompts;
+- comprueba continuamente el holder;
+- termina el grupo completo al perderlo;
+- actúa como subreaper y rechaza descendientes que intenten escapar con
+  `setsid`;
+- en modo local se eleva antes de lanzar Ansible, por lo que también puede
+  terminar descendientes root.
+
+Los instaladores directos de secretos, GC, scripts de migración y
+`backupctl` no están serializados por este mutex común. Deben ejecutarse en una
+ventana exclusiva, con ambos markers ausentes y sin Ansible activo. Cada helper
+con lock propio conserva además su exclusión específica.
+
+## Recuperar un marker abandonado
+
+Solo después de demostrar que el controlador original está detenido y que no
+hay otra mutación:
+
+```bash
+sudo -- install -d -o root -g root -m 0700 \
+  /var/backups/dockerswarm
+
+sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py \
+  recover \
+  --operation-id ID_64_HEX
+```
+
+El dry-run inspecciona inode/marker, intenta adquirir el lock común, busca
+mutadores visibles y muestra una confirmación exacta ligada al SHA-256. Para
+aplicar se repite con:
+
+```bash
+sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py \
+  recover \
+  --operation-id ID_64_HEX \
+  --apply \
+  --confirm 'CONFIRMACION_EXACTA_MOSTRADA'
+```
+
+Para un marker de bootstrap se añaden:
+
+```text
+--marker-path /run/lock/dockerswarm-bootstrap.marker
+--owner-uid 0
+--owner-gid 0
+```
+
+La evidencia se archiva antes de retirar el marker. Se usa, si es posible, el
+helper del mismo commit registrado. Un reboot mata procesos pero elimina
+`/run`; primero debe conservarse la evidencia cuando todavía sea accesible.
+
+## Secuencia de cambio
+
+1. Actualizar contratos/digests en una rama.
+2. Ejecutar validación, lint y escaneo de secretos.
+3. Revisar y hacer commit; ningún writer acepta worktree sucio.
+4. Crear el plan Terraform firmado con locking/state proof válidos.
+5. Aplicar solo mediante `apply-terraform.sh`; conservar snapshots y evidencia
+   mientras el lock remoto sigue ligado a la operación.
+6. Aplicar Ansible mediante `deploy-ansible.sh`.
+7. Repetir Ansible y exigir `changed=0`.
+8. Validar firewall, servicios, TLS, DNS, logs, backups y unidades fallidas.
+9. Registrar aceptación y rollback.
+
+Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
+paralelo si afectan al mismo servidor o ventana de cutover.
 
 ## Reinicios
 
-Antes de reiniciar:
+Antes:
 
-1. Confirmar una ventana de mantenimiento.
-2. Ejecutar `dockerd --validate --config-file=/etc/docker/daemon.json`.
-3. Verificar que existe una copia de seguridad reciente del estado de Swarm.
+1. confirmar ventana y consola fuera de banda;
+2. ejecutar
+   `sudo -- dockerd --validate --config-file=/etc/docker/daemon.json`;
+3. verificar un backup reciente y que la unlock key externa está disponible si
+   autolock está activo.
 
 Después:
 
-1. Confirmar `systemctl is-active docker`.
-2. Confirmar `docker node ls` y que el manager está `Ready` y `Leader`.
-3. Revisar el journal desde el instante exacto del reinicio.
-4. Confirmar réplicas y health checks de cada servicio.
+1. `sudo -- systemctl is-active docker`;
+2. `sudo -- docker node ls`;
+3. comprobar manager `Ready`, `Active`, `Leader`;
+4. revisar journal desde el instante del reinicio;
+5. comprobar réplicas, healthchecks, rutas y alertas.
 
-`live-restore` no mantiene servicios Swarm durante el reinicio del daemon.
+`live-restore` no conserva el plano de control de Swarm durante un reinicio de
+Docker.
 
-## Copia de seguridad y recuperación
+## Logging
 
-El estado del manager reside en `/var/lib/docker/swarm`. La copia coherente
-requiere detener Docker y copiar el directorio completo. En este mononodo eso
-genera indisponibilidad. La copia debe almacenarse fuera del VPS, cifrada y con
-pruebas periódicas de restauración.
+El daemon usa `local` por defecto. Sus ficheros internos no se manipulan:
+se consultan mediante `sudo -- docker logs`.
 
-No se crea una copia local automática porque no protege frente a la pérdida del
-servidor y no existe todavía un destino externo autorizado.
+`docker service logs` requiere `json-file` o `journald`; cada servicio que lo
+necesita declara su driver y rotación. Iptables rota mediante rsyslog y el
+helper soportado de Ubuntu 26.04.
 
-También son estado irremplazable:
+## Backup y autolock
 
-- los states de Terraform, que se exportan cifrados con
-  `snapshot-terraform-state.sh`;
-- `/srv/dockerswarm/traefik/acme.json`, que contiene la cuenta y certificados
-  ACME;
-- el inventario de recursos importados y los manifests de aplicaciones;
-- la unlock key, únicamente si en el futuro se activa autolock.
+La automatización de backup existe y está versionada, pero permanece
+desactivada hasta disponer de R2, contraseña restic, escrow externo y restore
+probado. No se confunde “timer codificado” con “copia productiva existente”.
 
-Cada copia debe llevar checksum, fecha UTC, commit de origen, cifrado antes de
-salir del host y una prueba de restauración en un entorno aislado. No se programa
-un timer hasta seleccionar destino off-host, retención y destinatario `age`.
+Autolock sigue desactivado. No se ejecuta manualmente
+`docker swarm update --autolock=true`: la salida contiene la única unlock key y
+un crash antes de custodiarla puede bloquear el manager. La activación está en
+`STOP` hasta integrar un destino externo, escribir/verificar la clave y ensayar
+el arranque como una operación aprobada.
 
-## Mantenimiento y cambios
+Cuando se active, la copia fría de Raft detendrá Docker, verificará el escrow,
+restaurará el mismo Swarm ID y subirá el artefacto solo después de recuperar el
+daemon. El detalle está en
+[`BACKUP_RECOVERY.md`](BACKUP_RECOVERY.md).
 
-Todo cambio sigue esta secuencia:
+## Mantenimiento
 
-1. Actualizar versiones y digests en una rama.
-2. Ejecutar bootstrap, validación integrada, lint y escaneo de secretos.
-3. Crear planes desde un commit limpio con `plan-terraform.sh` y revisarlos
-   como datos sensibles.
-4. Tomar snapshots cifrados antes de aplicar.
-5. Aplicar Ansible con `deploy-ansible.sh`; el playbook mantiene `serial: 1` y
-   escribe la release, commit y hash contractual aplicados.
-6. Repetir Ansible y exigir `changed=0`.
-7. Validar firewall, edge, TLS, DNS, logs y unidades fallidas.
-8. Tomar snapshots posteriores y registrar el resultado.
-
-La estrategia de releases, repositorios, protecciones GitHub y cadencia
-periódica se define en [`REPOSITORIES.md`](REPOSITORIES.md).
-
-Dependabot propone actualizaciones semanales, pero nunca las aplica. Una
-actualización de Docker, Traefik, Terraform, provider o acción de CI exige
-repetir las pruebas y revisar las excepciones versionadas.
-
-Los Docker Configs de Traefik son inmutables. `gc-edge-configs.sh` opera en
-dry-run, protege referencias actuales y previas de todos los servicios y
-conserva las dos generaciones más recientes de cada tipo. `--apply` solo se usa
-después de revisar la lista; los objetos eliminados se reproducen desde Git.
-
-## Autolock
-
-Autolock protege las claves del manager en reposo, pero obliga a proporcionar una
-unlock key después de cada reinicio de Docker. No debe activarse hasta disponer
-de custodia externa, recuperación probada y un procedimiento de arranque. La
-clave nunca se guarda en Git ni en logs.
-
-## Ampliación a varios nodos
-
-Antes de unir otro servidor:
-
-1. Crear una red privada o VPN entre nodos.
-2. Asignar direcciones estables.
-3. Autorizar los puertos internos solo dentro de esa red.
-4. Diseñar pools overlay que no solapen redes existentes.
-5. Decidir el número y la distribución de managers.
-6. Probar backup, restauración y pérdida de quorum.
-
-Los pools globales definidos durante `docker swarm init` no pueden modificarse
-después sin recrear el Swarm.
-
-## Acceso privilegiado
-
-La pertenencia al grupo `docker` equivale a acceso root. Debe limitarse a
-administradores, proteger sus claves SSH y revisarse periódicamente.
+- semanal: disco/inodos, unidades, certificados, backups y markers;
+- mensual: drift Terraform, usuarios/claves, rotación y restore de aplicación;
+- trimestral: recuperación de state, ACME y Raft en un host aislado;
+- antes de ampliar el Swarm: red privada, quorum impar, capacidad, backup y
+  prueba de pérdida de manager.

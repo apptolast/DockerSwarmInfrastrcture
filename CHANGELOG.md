@@ -8,20 +8,87 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
-- Roots Terraform separados para bootstrap R2, DNS Cloudflare y perímetro
-  Netcup.
-- Roles Ansible para plataforma, baseline adoptado del host, edge Traefik y
-  trazabilidad del despliegue.
-- Contrato compartido, tests de seguridad, CI, escaneo de secretos y runbooks
-  de migración, estado y recuperación.
-- Wrappers seguros para planes Terraform y despliegues Ansible versionados.
+- Roots Terraform aislados para bootstrap R2, diez A de Cloudflare y perímetro
+  Netcup, con imports/adopción, identidades de backend, locking proof,
+  migración y tests offline.
+- Wrappers Terraform ligados a commit/state/backend, planes firmados,
+  snapshots cifrados y evidencia de locking.
+- Bootstrap fresco de Ubuntu 26.04 para `admin`, claves SSH externas, política
+  staged/final y rollback automático de acceso.
+- Gestión reproducible de paquetes, repositorios, CrowdSec Hub, Fail2ban,
+  PSAD, Chrony, rsyslog, UFW, SSH y firewall Docker.
+- Mutex host-global compartido por bootstrap y todos los playbooks Ansible,
+  markers fail-closed, recuperación con evidencia y supervisor de procesos.
+- Catálogo cerrado de servicios y denylist, stacks de workloads, restore
+  markers, secrets por identidad, preflight de imágenes y capacidad.
+- Kropia, Minecraft Stats, Minecraft, n8n, OpenClaw limpio, Passbolt, webs de
+  Alberto/Pablo y Shlink fijados por digest.
+- Traefik file-provider sin socket Docker, rutas explícitas y redes aisladas
+  por workload.
+- Stack interno de Prometheus, Alertmanager, Loki, Grafana, Alloy, exporters,
+  blackbox y acceso mediante túneles.
+- Backup restic de aplicaciones/ACME/observabilidad/Minecraft, copia fría de
+  Raft, retención, métricas y ensayos de restore.
+- CI, validadores reales de OpenSSH/Traefik, tests adversariales, lint,
+  escaneo de secretos y documentación de reconstrucción/cutover.
 
 ### Changed
 
-- El daemon Docker activa `no-new-privileges` y conserva logging `local`
-  acotado.
-- La política pública queda limitada de forma contractual a `80/TCP` y
-  `443/TCP`.
+- Este repositorio pasa a ser el único propietario de toda la IaC, incluidos
+  stacks, rutas, migración, observabilidad y backup.
+- El daemon Docker declara `no-new-privileges`, `userland-proxy: false` y
+  logging `local` acotado.
+- La exposición coherente incluye `80/443` y el puerto Minecraft, pero
+  `25565/TCP` permanece cerrado por gate mientras `online-mode=false`.
+- DNS distingue diez A gestionados: nueve adopciones existentes, ocho cambios
+  HTTP en el cutover y Minecraft conservado en legacy.
+- Las herramientas de seguridad heredadas se preservan e inventarían; no se
+  purgan ni se reescribe PAM de forma destructiva.
+- Backup queda codificado pero fail-closed hasta R2, restic, autolock y escrow
+  externo probados.
+
+### Security
+
+- Los usuarios humanos dejan de pertenecer al grupo root-equivalent `docker`.
+- Los despliegues rechazan worktrees sucios, holders perdidos, descendientes
+  huérfanos, markers alterados y estado externo no probado.
+- La configuración SSH se valida con el parser real y solo deshabilita root
+  tras reconexión independiente y rollback armado.
+- Tokens, claves, passwords, states y backups permanecen fuera de Git.
+
+### Fixed
+
+- Eliminadas carreras entre bootstrap y despliegues Ansible mediante un único
+  inode de flock para ambos scopes.
+- El modo Ansible local eleva supervisor y comando juntos, permitiendo terminar
+  también descendientes root.
+- Los checks post-state incompatibles con `--check` quedan correctamente
+  condicionados.
+- El despliegue edge usa `prune: true` y verifica un inventario exacto sin
+  borrar Configs históricos referenciados.
+- El auto-desbloqueo del Swarm comparaba contra un estado `docker info`
+  imposible (`locked true`) que nunca ocurre en la realidad
+  (`ControlAvailable` es `false` mientras el manager está bloqueado); el
+  desbloqueo automático era inalcanzable.
+- El firewall Docker degrada de nuevo a solo IPv4 si falta la cadena
+  `DOCKER-USER` de `ip6tables`, en vez de abortar `ExecStartPost` y tumbar
+  `docker.service`.
+- `terraform-safety.py` abre los ficheros de firma/lock con `O_NOFOLLOW` y
+  verifica el descriptor ya abierto, cerrando una ventana TOCTOU de symlink
+  entre la comprobación y la lectura.
+- `site.yml` ejecuta `capacity_preflight` antes de `host_security`, igual que
+  el resto de playbooks, para que el gate de capacidad corra antes de
+  cualquier mutación real del host.
+- El helper de lock host-global clasifica el estado del Swarm con
+  `/usr/bin/docker` explícito en vez de resolver `docker` por `PATH`.
+- El timer de rollback SSH puede limpiar su marker de confirmación bajo
+  `ProtectSystem=strict` y detiene (no solo deshabilita) el timer/path ya
+  armados.
+- `restore_databases.sh` ya no adopta una base de datos no vacía sin marker
+  propio solo porque exista el marker de fase; exige evidencia verificada.
+
+Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
+estén aplicados en producción.
 
 ## [0.1.0] - Pendiente de despliegue
 

@@ -14,13 +14,16 @@ Publica únicamente `80/TCP` y `443/TCP`. Usa:
 - `/srv/dockerswarm/traefik/acme.json` como estado persistente;
 - el secret externo `cloudflare_dns_api_token_v1`;
 - dos Docker Configs inmutables con nombre derivado de SHA-256;
-- la overlay externa, cifrada y no attachable `apptolast-edge`;
-- un único router público:
-  `Host(edge.apptolast.com) && Path(/ping)`.
+- ocho overlays de workload aisladas y una overlay de monitorización, todas
+  externas, cifradas y no attachable;
+- nueve routers explícitos: `/ping` de `edge.apptolast.com` y los ocho
+  servicios HTTP aprobados.
 
-Esto es estado declarado, no evidencia de despliegue. No se ha verificado desde
-esta documentación la existencia del secret, el certificado, la red, el stack
-ni el registro en producción.
+Esto es estado declarado, no evidencia de despliegue. El Docker Secret
+`cloudflare_dns_api_token_v1` existe, pero Docker no permite observar su valor
+ni scope. No existen todavía certificado, overlays, stack ni servicios. La
+credencial debe rotarse antes de producción porque fue expuesta fuera del
+gestor previsto.
 
 ## Separación de credenciales
 
@@ -89,8 +92,8 @@ La invocación interactiva no incluye el token en argumentos, entorno ni
 historial:
 
 ```bash
-scripts/install-cloudflare-secret.sh \
-  --secret-name cloudflare_dns_api_token_v1 \
+sudo -- ./scripts/install-cloudflare-secret.sh \
+  --secret-name cloudflare_dns_api_token_v2 \
   --zone apptolast.com
 ```
 
@@ -98,10 +101,11 @@ Para automatización, `--token-file` solo acepta un fichero regular, no symlink,
 sin permisos de grupo/otros. El operador debe retirarlo de forma segura después;
 el modo interactivo es preferible para el bootstrap manual.
 
-El operador debe confirmar primero que ese nombre no existe. Los secrets no se
-actualizan in-place; si `cloudflare_dns_api_token_v1` ya existe, no se borra ni
-se reemplaza a ciegas. Se investiga qué servicios lo referencian y se rota a un
-nombre nuevo.
+El operador debe confirmar primero que ese nombre no existe y que no hay una
+operación Ansible activa. Los secrets no se actualizan in-place:
+`cloudflare_dns_api_token_v1` no se borra ni se reemplaza a ciegas. Se crea una
+versión nueva, se cambia la referencia versionada y solo se revoca la anterior
+tras verificar el servicio.
 
 No se registra el token ni un hash reutilizable de su valor. Sí se registra el
 ID/nombre de Docker, `CreatedAt`, identificador visible del token Cloudflare,
@@ -159,18 +163,23 @@ sobrescribe la huella instalada con `profile: production`.
 
 ## Arranque DNS-only
 
-El único registro que este repositorio declara inicialmente es el A de
-`edge.apptolast.com` hacia la IPv4 contractual, con `proxied = false` y TTL
-`300`. El objetivo es validar el plano edge sin mover aplicaciones.
+El root DNS gestiona exactamente diez A DNS-only:
+
+- un registro nuevo, `edge.apptolast.com`;
+- nueve registros de aplicación existentes que primero se adoptan sin cambiar;
+- de esos nueve, ocho HTTP cambian a la IPv4 nueva en el cutover actual;
+- Minecraft permanece en la IPv4 legacy porque su gate vale `false`.
 
 El orden es:
 
-1. importar el registro si ya existe o revisar un plan de creación si no existe;
-2. confirmar que ninguna otra automatización lo gestiona;
-3. aplicar únicamente ese registro;
-4. verificar respuesta autoritativa y desde resolvers externos;
-5. completar ACME y comprobar `https://edge.apptolast.com/ping`;
-6. confirmar que no apareció ningún router de aplicación.
+1. importar los nueve A existentes mediante el flujo de adopción y comprobar
+   que el plan no cambia contenido;
+2. confirmar que ninguna otra automatización los gestiona;
+3. validar Traefik y los ocho workloads con resolución forzada local;
+4. revisar un plan separado que crea `edge` y mueve solo los ocho A HTTP;
+5. aplicar y verificar DNS autoritativo/resolvers externos;
+6. completar ACME y comprobar `/ping` y cada router;
+7. confirmar que Minecraft no cambió.
 
 DNS-01 utiliza un TXT de challenge y no exige mover el A/AAAA de una aplicación
 para emitir su certificado:
@@ -248,8 +257,10 @@ edge-traefik-dynamic-<16-hex>
 
 Cada objeto lleva labels `com.apptolast.managed-by=ansible`,
 `com.apptolast.stack=edge`, `com.apptolast.kind=static|dynamic` y el SHA-256
-completo. El contenido y las labels se verifican antes del deploy.
-`prune: false` conserva versiones anteriores.
+completo. El contenido y las labels se verifican antes del deploy. El stack se
+aplica con `prune: true` y después se exige exactamente el servicio
+`edge_traefik`; esto retira servicios huérfanos del stack, no Docker Configs
+históricos.
 
 Este comportamiento evita mutaciones invisibles y mantiene material de
 rollback. También genera objetos huérfanos con el tiempo; no se borran como
@@ -312,15 +323,15 @@ Swarm sigue el
 
 ## Bloqueos actuales que requieren evidencia externa
 
-- contenido/validez/scope del token ACME no disponible;
-- existencia y referencias del secret `cloudflare_dns_api_token_v1` no
-  verificadas en producción;
+- contenido/validez/scope del token ACME no observable y rotación pendiente;
+- secret `cloudflare_dns_api_token_v1` existente pero todavía sin consumidor;
 - staging ACME no demostrado;
 - estado, permisos y backup de `acme.json` no verificados;
 - registro DNS aplicado y delegación autoritativa no verificados;
 - stack, red, puertos y logs de producción no observados desde este documento;
 - destino offsite y custodio de claves aún no documentados;
-- rutas y stacks de aplicaciones todavía ausentes.
+- rutas y stacks de aplicaciones declarados, pero todavía no desplegados;
+- ocho overlays de workload y la overlay de monitorización aún no creadas.
 
 Ninguno de estos bloqueos se resuelve inventando un valor en Git.
 

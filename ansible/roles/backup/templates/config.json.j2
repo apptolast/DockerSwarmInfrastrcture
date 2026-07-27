@@ -1,0 +1,39 @@
+{{
+  {
+    "schema_version": 1,
+    "restic": {
+      "version": backup_restic_version,
+      "binary": backup_restic_binary,
+      "binary_sha256": backup_restic_lock.binary_sha256,
+      "repository": (
+        "s3:https://" + backup_r2_account_id
+        + ".r2.cloudflarestorage.com/" + backup_r2_bucket
+        + "/" + backup_r2_prefix
+      ),
+      "password_file": backup_password_file,
+      "access_key_id_file": backup_r2_access_key_id_file,
+      "secret_access_key_file": backup_r2_secret_access_key_file,
+      "cache_directory": backup_cache_directory
+    },
+    "runtime": {
+      "hostname": backup_hostname,
+      "lock_file": backup_lock_file,
+      "staging_directory": backup_staging_directory,
+      "status_directory": backup_status_directory,
+      "metrics_directory": backup_metrics_directory
+    },
+    "services": {
+      "minecraft": backup_minecraft_service
+    },
+    "databases": backup_databases,
+    "datasets": backup_datasets,
+    "consistency_groups": backup_consistency_groups,
+    "retention": backup_retention,
+    "swarm_state": {
+      "source": "/var/lib/docker/swarm",
+      "unlock_key_file": backup_swarm_unlock_key_file,
+      "require_autolock": true,
+      "rehearsal_tmpfs_size": backup_rehearsal_tmpfs_size
+    }
+  } | to_nice_json
+}}

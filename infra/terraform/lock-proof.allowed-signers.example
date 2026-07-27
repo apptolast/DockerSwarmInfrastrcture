@@ -1,0 +1,7 @@
+# Do not use this example as a trust registry.
+#
+# After the owner explicitly approves a dedicated proof-signing public key,
+# create the tracked file `lock-proof.allowed-signers` with one OpenSSH
+# allowed-signers entry in this form:
+#
+# apptolast-terraform-lock-proof namespaces="terraform-r2-lock-proof" ssh-ed25519 AAAA... approved-lock-proof-key

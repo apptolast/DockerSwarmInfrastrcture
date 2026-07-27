@@ -3,8 +3,11 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly PUBLIC_INTERFACE="eth0"
 readonly POLICY_CHAIN="DOCKERSWARM-INGRESS"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly PROJECT_DIR
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -19,6 +22,53 @@ for command_name in \
     fail "required command not found: ${command_name}"
 done
 
+contract_python="${PROJECT_DIR}/.venv/bin/python"
+[[ -x "${contract_python}" ]] ||
+  fail "locked Python environment is missing; run scripts/bootstrap-tooling.sh"
+mapfile -t firewall_contract < <(
+  "${contract_python}" - "${PROJECT_DIR}/config/platform.yml" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+contract = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+ports = contract["platform_public_tcp_ports"]
+enabled = contract["platform_minecraft_public_enabled"]
+effective = ports if enabled else [port for port in ports if port != 25565]
+print(contract["platform_public_interface"])
+print(contract["platform_public_ipv4"])
+print(" ".join(str(port) for port in ports))
+print(" ".join(str(port) for port in effective))
+print(" ".join(str(port) for port in contract["platform_public_ipv6_tcp_ports"]))
+print("true" if enabled else "false")
+PY
+)
+(( ${#firewall_contract[@]} == 6 )) ||
+  fail "cannot derive the firewall contract from config/platform.yml"
+readonly PUBLIC_INTERFACE="${firewall_contract[0]}"
+readonly PUBLIC_IPV4="${firewall_contract[1]}"
+IFS=' ' read -r -a public_tcp_ports <<<"${firewall_contract[2]}"
+IFS=' ' read -r -a effective_public_tcp_ports <<<"${firewall_contract[3]}"
+IFS=' ' read -r -a public_ipv6_tcp_ports <<<"${firewall_contract[4]}"
+readonly MINECRAFT_PUBLIC_ENABLED="${firewall_contract[5]}"
+readonly -a public_tcp_ports
+readonly -a effective_public_tcp_ports
+readonly -a public_ipv6_tcp_ports
+[[ "${MINECRAFT_PUBLIC_ENABLED}" == "true" ||
+  "${MINECRAFT_PUBLIC_ENABLED}" == "false" ]] ||
+  fail "platform_minecraft_public_enabled must be a boolean"
+
+contains_port() {
+  local needle="$1"
+  shift
+  local port
+  for port in "$@"; do
+    [[ "${port}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
 ufw_status="$(ufw status verbose)"
 grep -Fx 'Status: active' <<<"${ufw_status}" >/dev/null ||
   fail "UFW is not active"
@@ -27,11 +77,35 @@ grep -F \
   <<<"${ufw_status}" >/dev/null ||
   fail "UFW defaults are not deny for incoming, outgoing and routed traffic"
 
-for port in 80 443; do
-  grep -E \
-    "^${port}/tcp[[:space:]]+ALLOW IN[[:space:]]+Anywhere" \
-    <<<"${ufw_status}" >/dev/null ||
-    fail "UFW does not authorize reviewed TCP port ${port}"
+ufw_ipv4_rules="$(iptables -S ufw-user-input)"
+for port in "${public_tcp_ports[@]}"; do
+  matching_rules="$(
+    grep -F -- "-d ${PUBLIC_IPV4}/32" <<<"${ufw_ipv4_rules}" |
+      grep -F -- "-i ${PUBLIC_INTERFACE}" |
+      grep -F -- "--dport ${port}" |
+      grep -E -- '(-j|--jump) ACCEPT([[:space:]]|$)' ||
+      true
+  )"
+  if contains_port "${port}" "${effective_public_tcp_ports[@]}"; then
+    [[ "$(grep -c . <<<"${matching_rules}")" -eq 1 ]] ||
+      fail "UFW must authorize reviewed IPv4 TCP port ${port} exactly once"
+  else
+    [[ -z "${matching_rules}" ]] ||
+      fail "staged IPv4 TCP port ${port} is open before its safety gate"
+  fi
+done
+
+(( ${#public_ipv6_tcp_ports[@]} == 0 )) ||
+  fail "public IPv6 application TCP is outside the reviewed contract"
+ufw_ipv6_rules="$(ip6tables -S ufw6-user-input)"
+for port in "${public_tcp_ports[@]}"; do
+  matching_rules="$(
+    grep -F -- "--dport ${port}" <<<"${ufw_ipv6_rules}" |
+      grep -E -- '(-j|--jump) ACCEPT([[:space:]]|$)' ||
+      true
+  )"
+  [[ -z "${matching_rules}" ]] ||
+    fail "IPv6 application TCP port ${port} is unexpectedly public"
 done
 
 [[ "$(iptables -S INPUT | head -n 1)" == "-P INPUT DROP" ]] ||
@@ -99,14 +173,24 @@ fi
 iptables -C "${POLICY_CHAIN}" \
   -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT ||
   fail "${POLICY_CHAIN} lacks the established-traffic rule"
-for port in 80 443; do
-  iptables -C "${POLICY_CHAIN}" \
-    -i "${PUBLIC_INTERFACE}" \
-    -p tcp \
-    -m conntrack --ctdir ORIGINAL \
-    --ctorigdstport "${port}" \
-    -j ACCEPT ||
-    fail "${POLICY_CHAIN} lacks reviewed public TCP port ${port}"
+for port in "${public_tcp_ports[@]}"; do
+  if contains_port "${port}" "${effective_public_tcp_ports[@]}"; then
+    iptables -C "${POLICY_CHAIN}" \
+      -i "${PUBLIC_INTERFACE}" \
+      -p tcp \
+      -m conntrack --ctdir ORIGINAL \
+      --ctorigdstport "${port}" \
+      -j ACCEPT ||
+      fail "${POLICY_CHAIN} lacks reviewed public TCP port ${port}"
+  else
+    ! iptables -C "${POLICY_CHAIN}" \
+      -i "${PUBLIC_INTERFACE}" \
+      -p tcp \
+      -m conntrack --ctdir ORIGINAL \
+      --ctorigdstport "${port}" \
+      -j ACCEPT 2>/dev/null ||
+      fail "${POLICY_CHAIN} opens staged TCP port ${port}"
+  fi
 done
 iptables -C "${POLICY_CHAIN}" \
   -i "${PUBLIC_INTERFACE}" \
@@ -144,14 +228,14 @@ fi
 ip6tables -C "${POLICY_CHAIN}" \
   -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT ||
   fail "IPv6 ${POLICY_CHAIN} lacks the established-traffic rule"
-for port in 80 443; do
-  ip6tables -C "${POLICY_CHAIN}" \
+for port in "${public_tcp_ports[@]}"; do
+  ! ip6tables -C "${POLICY_CHAIN}" \
     -i "${PUBLIC_INTERFACE}" \
     -p tcp \
     -m conntrack --ctdir ORIGINAL \
     --ctorigdstport "${port}" \
-    -j ACCEPT ||
-    fail "IPv6 ${POLICY_CHAIN} lacks reviewed public TCP port ${port}"
+    -j ACCEPT 2>/dev/null ||
+    fail "IPv6 ${POLICY_CHAIN} unexpectedly opens TCP port ${port}"
 done
 ip6tables -C "${POLICY_CHAIN}" \
   -i "${PUBLIC_INTERFACE}" \
@@ -174,11 +258,24 @@ if (( ${#service_ids[@]} > 0 )); then
   )
 fi
 
-expected_ports=(
-  "edge_traefik|443|8443|tcp|host"
-  "edge_traefik|80|8000|tcp|host"
-)
-if (( ${#published_ports[@]} > 0 )); then
+expected_ports=()
+mapfile -t active_service_names < <(docker service ls --format '{{.Name}}')
+if printf '%s\n' "${active_service_names[@]}" |
+  grep -Fx edge_traefik >/dev/null; then
+  expected_ports+=(
+    "edge_traefik|443|8443|tcp|host"
+    "edge_traefik|80|8000|tcp|host"
+  )
+fi
+if [[ "${MINECRAFT_PUBLIC_ENABLED}" == "true" ]]; then
+  if printf '%s\n' "${active_service_names[@]}" |
+    grep -Fx workloads_minecraft >/dev/null; then
+    expected_ports+=(
+      "workloads_minecraft|25565|25565|tcp|host"
+    )
+  fi
+fi
+if (( ${#published_ports[@]} > 0 || ${#expected_ports[@]} > 0 )); then
   mapfile -t expected_ports < <(printf '%s\n' "${expected_ports[@]}" | sort)
   [[ "$(printf '%s\n' "${published_ports[@]}")" == \
     "$(printf '%s\n' "${expected_ports[@]}")" ]] || {
@@ -189,5 +286,5 @@ if (( ${#published_ports[@]} > 0 )); then
 fi
 
 printf '%s\n' \
-  "Firewall validation passed: only reviewed edge ports are public," \
+  "Firewall validation passed: only gated IPv4 ports are public," \
   "internal Swarm ports are closed, and DOCKER-USER ordering is valid."

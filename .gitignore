@@ -11,6 +11,8 @@
 *.swp
 *.tmp
 *.backup.*
+__pycache__/
+*.pyc
 
 # Ansible runtime inputs and retry artifacts.
 ansible/inventory/production/group_vars/vault.yml

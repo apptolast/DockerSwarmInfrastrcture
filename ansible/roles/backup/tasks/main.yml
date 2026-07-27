@@ -1,0 +1,429 @@
+---
+- name: Reject activation without reviewed backup inputs
+  ansible.builtin.assert:
+    that:
+      - backup_activation_enabled | bool
+      - backup_r2_account_id is match("^[a-f0-9]{32}$")
+      - >-
+        backup_r2_bucket
+        is match("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+      - backup_r2_prefix is match("^[a-zA-Z0-9][a-zA-Z0-9._/-]+$")
+      - ansible_facts["architecture"] in backup_restic_locks
+      - >-
+        backup_databases | map(attribute="id") | list
+        == [
+          "n8n-postgres",
+          "n8n-vectors",
+          "n8n-rag",
+          "passbolt-postgres",
+          "shlink-postgres"
+        ]
+      - >-
+        backup_datasets | map(attribute="id") | list
+        == [
+          "n8n-home",
+          "passbolt-gpg",
+          "passbolt-jwt",
+          "minecraft-data",
+          "minecraft-mods",
+          "openclaw-clean-home",
+          "traefik-acme",
+          "runtime-secret-source",
+          "observability-secret-source",
+          "observability-prometheus",
+          "observability-alertmanager",
+          "observability-loki",
+          "observability-grafana"
+        ]
+      - >-
+        backup_consistency_groups | map(attribute="id") | list
+        == [
+          "n8n",
+          "passbolt",
+          "shlink",
+          "openclaw",
+          "traefik",
+          "observability-prometheus",
+          "observability-alertmanager",
+          "observability-loki",
+          "observability-grafana",
+          "immutable-secrets"
+        ]
+    fail_msg: >-
+      Backup activation remains fail-closed until an R2 account/bucket,
+      four root-only secret files, and backup_activation_enabled are supplied.
+
+- name: Inspect the platform Swarm auto-unlock lifecycle files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - path: /usr/local/libexec/dockerswarm-swarm-unlock
+      mode: "0700"
+    - path: /etc/systemd/system/dockerswarm-swarm-unlock.service
+      mode: "0644"
+    - path: /etc/systemd/system/docker.service.d/20-dockerswarm-firewall.conf
+      mode: "0644"
+  loop_control:
+    label: "{{ item.path }}"
+  register: backup_swarm_unlock_lifecycle_files
+
+- name: Require the reproducible Swarm auto-unlock lifecycle
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.pw_name == "root"
+      - item.stat.gr_name == "root"
+      - item.stat.mode == item.item.mode
+    fail_msg: >-
+      Apply the platform role before backup so an autolocked manager can
+      recover after both boot and Ansible-triggered Docker restarts.
+  loop: "{{ backup_swarm_unlock_lifecycle_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Read the Swarm auto-unlock enablement
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - dockerswarm-swarm-unlock.service
+  register: backup_swarm_unlock_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require Swarm auto-unlock on the boot path
+  ansible.builtin.assert:
+    that:
+      - backup_swarm_unlock_enabled.stdout == "enabled"
+    fail_msg: >-
+      dockerswarm-swarm-unlock.service must be enabled before autolock backup
+      activation.
+
+- name: Inspect externally provisioned backup secret files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ backup_password_file }}"
+    - "{{ backup_r2_access_key_id_file }}"
+    - "{{ backup_r2_secret_access_key_file }}"
+    - "{{ backup_swarm_unlock_key_file }}"
+  loop_control:
+    label: "{{ item }}"
+  register: backup_secret_files
+  no_log: true
+
+- name: Verify backup secret file ownership and permissions
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.pw_name == "root"
+      - item.stat.gr_name == "root"
+      - item.stat.mode == "0600"
+      - item.stat.size | int > 0
+      - item.stat.size | int <= 4096
+    fail_msg: >-
+      Every backup credential and the Swarm unlock-key escrow must be a
+      non-empty root:root 0600 regular file outside Git.
+  loop: "{{ backup_secret_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+
+- name: Select the reviewed restic artifact lock
+  ansible.builtin.set_fact:
+    backup_restic_lock: >-
+      {{ backup_restic_locks[ansible_facts["architecture"]] }}
+
+- name: Install backup runtime prerequisites
+  ansible.builtin.apt:
+    name:
+      - bzip2
+      - tar
+    state: present
+    update_cache: false
+
+- name: Create backup installation and runtime directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /usr/local/libexec
+      mode: "0755"
+    - path: /var/cache/dockerswarm
+      mode: "0750"
+    - path: "{{ backup_runtime_root }}"
+      mode: "0700"
+    - path: "{{ backup_staging_directory }}"
+      mode: "0700"
+    - path: "{{ backup_cache_directory }}"
+      mode: "0700"
+    - path: "{{ backup_status_directory }}"
+      mode: "0700"
+    - path: "{{ backup_metrics_directory }}"
+      mode: "0755"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install the host-global mutation-lock components for backup
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+    dest: "/usr/local/libexec/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - ansible-operation-lock.py
+    - host_global_operation_lock.py
+    - run-locked-command.py
+
+- name: Download the locked restic release artifact
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/restic/restic/releases/download/v{{
+      backup_restic_version }}/restic_{{
+      backup_restic_version }}_linux_{{
+      backup_restic_lock.archive_architecture }}.bz2
+    dest: >-
+      /var/cache/dockerswarm/restic_{{
+      backup_restic_version }}_linux_{{
+      backup_restic_lock.archive_architecture }}.bz2
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ backup_restic_lock.archive_sha256 }}"
+    force: false
+
+- name: Inspect the installed restic binary
+  ansible.builtin.stat:
+    path: "{{ backup_restic_binary }}"
+    checksum_algorithm: sha256
+  register: backup_installed_restic
+
+- name: Install the reviewed restic binary
+  when: >-
+    not backup_installed_restic.stat.exists
+    or backup_installed_restic.stat.checksum
+       | default("") != backup_restic_lock.binary_sha256
+  block:
+    - name: Decompress the reviewed restic artifact
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/bzip2
+          - --decompress
+          - --keep
+          - --force
+          - >-
+            /var/cache/dockerswarm/restic_{{
+            backup_restic_version }}_linux_{{
+            backup_restic_lock.archive_architecture }}.bz2
+      changed_when: true
+
+    - name: Copy the verified restic binary into the executable path
+      ansible.builtin.copy:
+        src: >-
+          /var/cache/dockerswarm/restic_{{
+          backup_restic_version }}_linux_{{
+          backup_restic_lock.archive_architecture }}
+        dest: "{{ backup_restic_binary }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+- name: Re-read the installed restic binary checksum
+  ansible.builtin.stat:
+    path: "{{ backup_restic_binary }}"
+    checksum_algorithm: sha256
+  register: backup_verified_restic
+
+- name: Verify the installed restic binary identity
+  ansible.builtin.assert:
+    that:
+      - backup_verified_restic.stat.exists
+      - backup_verified_restic.stat.checksum
+        == backup_restic_lock.binary_sha256
+    fail_msg: "Installed restic binary differs from the reviewed release."
+
+- name: Read the installed restic version
+  ansible.builtin.command:
+    argv:
+      - "{{ backup_restic_binary }}"
+      - version
+  register: backup_restic_version_output
+  changed_when: false
+  check_mode: false
+
+- name: Verify the installed restic version
+  ansible.builtin.assert:
+    that:
+      - >-
+        backup_restic_version_output.stdout
+        is match("^restic " + backup_restic_version + " ")
+    fail_msg: "Installed restic version differs from the reviewed release."
+
+- name: Install the backup controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../backup/backupctl.py"
+    dest: "{{ backup_controller_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install backup command entry points
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/{{ item.source }}"
+    dest: "/usr/local/sbin/{{ item.destination }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - source: backup-application.sh
+      destination: dockerswarm-backup-application
+    - source: backup-swarm-state.sh
+      destination: dockerswarm-backup-swarm-state
+    - source: backup-verify.sh
+      destination: dockerswarm-backup-verify
+    - source: backup-rehearse.sh
+      destination: dockerswarm-backup-rehearse
+  loop_control:
+    label: "{{ item.destination }}"
+
+- name: Render the credential-free backup configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ backup_config_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Validate the installed backup configuration offline
+  ansible.builtin.command:
+    argv:
+      - "{{ backup_controller_binary }}"
+      - --config
+      - "{{ backup_config_file }}"
+      - validate-config
+  changed_when: false
+  check_mode: false
+
+- name: Initialize the encrypted R2 repository when explicitly authorized
+  ansible.builtin.command:
+    argv:
+      - "{{ backup_controller_binary }}"
+      - --config
+      - "{{ backup_config_file }}"
+      - init
+      - --confirm-create-repository
+  when: backup_initialize_repository | bool
+  register: backup_repository_init
+  changed_when: backup_repository_init.stdout == "REPOSITORY_CREATED"
+  environment: "{{ operation_lock_guard_environment }}"
+  no_log: true
+
+- name: Verify that the encrypted R2 repository already exists
+  ansible.builtin.command:
+    argv:
+      - "{{ backup_controller_binary }}"
+      - --config
+      - "{{ backup_config_file }}"
+      - verify
+  when: not backup_initialize_repository | bool
+  changed_when: false
+  environment: "{{ operation_lock_guard_environment }}"
+  no_log: true
+  check_mode: false
+
+- name: Install backup systemd service units
+  ansible.builtin.template:
+    src: backup.service.j2
+    dest: "/etc/systemd/system/{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: dockerswarm-application-backup
+      description: ApptoLast application-consistent off-host backup
+      command: /usr/local/sbin/dockerswarm-backup-application
+    - name: dockerswarm-swarm-state-backup
+      description: ApptoLast cold Docker Swarm state backup
+      command: /usr/local/sbin/dockerswarm-backup-swarm-state
+    - name: dockerswarm-backup-verify
+      description: ApptoLast full off-host backup verification
+      command: /usr/local/sbin/dockerswarm-backup-verify
+    - name: dockerswarm-backup-rehearsal
+      description: ApptoLast application restore rehearsal
+      command: /usr/local/sbin/dockerswarm-backup-rehearse
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install backup systemd timer units
+  ansible.builtin.template:
+    src: backup.timer.j2
+    dest: "/etc/systemd/system/{{ item.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: dockerswarm-application-backup
+      description: Schedule application-consistent off-host backups
+      calendar: "{{ backup_application_calendar }}"
+    - name: dockerswarm-swarm-state-backup
+      description: Schedule cold Docker Swarm state backups
+      calendar: "{{ backup_swarm_state_calendar }}"
+    - name: dockerswarm-backup-verify
+      description: Schedule full off-host backup verification
+      calendar: "{{ backup_verify_calendar }}"
+    - name: dockerswarm-backup-rehearsal
+      description: Schedule application restore rehearsals
+      calendar: "{{ backup_rehearsal_calendar }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Reload systemd after installing backup units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Enable backup timers without starting jobs immediately
+  ansible.builtin.systemd_service:
+    name: "{{ item }}.timer"
+    enabled: true
+    state: started
+  loop:
+    - dockerswarm-application-backup
+    - dockerswarm-swarm-state-backup
+    - dockerswarm-backup-verify
+    - dockerswarm-backup-rehearsal
+
+- name: Read enabled backup timer state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}.timer"
+  loop:
+    - dockerswarm-application-backup
+    - dockerswarm-swarm-state-backup
+    - dockerswarm-backup-verify
+    - dockerswarm-backup-rehearsal
+  register: backup_enabled_timers
+  changed_when: false
+  check_mode: false
+
+- name: Verify every backup timer is enabled
+  ansible.builtin.assert:
+    that:
+      - item.stdout == "enabled"
+    fail_msg: "Backup timer is not enabled: {{ item.item }}"
+  loop: "{{ backup_enabled_timers.results }}"
+  loop_control:
+    label: "{{ item.item }}"

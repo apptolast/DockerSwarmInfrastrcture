@@ -1,0 +1,7 @@
+# Managed by Ansible. Interactive shells and arbitrary arguments are denied.
+%{{ observability_access_group }} ALL=(root) NOPASSWD: \
+  {{ observability_remote_forward_helper }} --stdio grafana, \
+  {{ observability_remote_forward_helper }} --stdio prometheus, \
+  {{ observability_remote_forward_helper }} --stdio alertmanager, \
+  {{ observability_remote_forward_helper }} --stdio loki, \
+  {{ observability_remote_forward_helper }} --stdio alloy

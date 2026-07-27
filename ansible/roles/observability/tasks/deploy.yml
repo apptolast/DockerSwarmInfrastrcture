@@ -1,0 +1,649 @@
+---
+- name: Create persistent observability directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ observability_state_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install the namespace-scoped SSH forwarding helper
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../scripts/observability-forward-remote.py
+    dest: "{{ observability_remote_forward_helper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Verify the observability access group exists
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - group
+      - "{{ observability_access_group }}"
+  changed_when: false
+
+- name: Install the exact observability stdio sudo policy
+  ansible.builtin.template:
+    src: observability-forward.sudoers.j2
+    dest: "{{ observability_remote_forward_sudoers }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "/usr/sbin/visudo --check --file=%s"
+
+- name: Install the restricted read-only Docker API proxy
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../scripts/docker-readonly-proxy.py
+    dest: "{{ observability_docker_proxy_helper }}"
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Restart restricted Docker API proxy
+
+- name: Install the restricted Docker API proxy service
+  ansible.builtin.template:
+    src: docker-readonly-proxy.service.j2
+    dest: >-
+      /etc/systemd/system/{{ observability_docker_proxy_service }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart restricted Docker API proxy
+
+- name: Verify the restricted Docker API proxy unit
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - --recursive-errors=no
+      - verify
+      - >-
+        /etc/systemd/system/{{ observability_docker_proxy_service }}
+  changed_when: false
+
+- name: Reconcile the restricted Docker API proxy before Alloy
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the restricted Docker API proxy is enabled and started
+  ansible.builtin.systemd_service:
+    name: "{{ observability_docker_proxy_service }}"
+    enabled: true
+    state: started
+
+- name: Probe the restricted Docker API allowlist
+  ansible.builtin.command:
+    argv:
+      - "{{ observability_docker_proxy_helper }}"
+      - --probe
+      - --listen
+      - "{{ observability_docker_proxy_socket }}"
+  changed_when: false
+
+- name: Inspect the restricted Docker API socket
+  ansible.builtin.stat:
+    path: "{{ observability_docker_proxy_socket }}"
+  register: observability_docker_proxy_socket_stat
+
+- name: Verify the restricted Docker API socket identity and mode
+  ansible.builtin.assert:
+    that:
+      - observability_docker_proxy_socket_stat.stat.issock
+      - observability_docker_proxy_socket_stat.stat.pw_name == "root"
+      - observability_docker_proxy_socket_stat.stat.gr_name == "root"
+      - observability_docker_proxy_socket_stat.stat.mode == "0600"
+    fail_msg: >-
+      The restricted Docker API socket is absent or not root-only.
+
+- name: Install the host-global mutation-lock components for observability
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+    dest: "/usr/local/libexec/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - ansible-operation-lock.py
+    - host_global_operation_lock.py
+    - run-locked-command.py
+
+- name: Install the PostgreSQL monitoring-role provisioner
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir
+         }}/../../scripts/provision-observability-db-users.py
+    dest: "{{ observability_database_provisioner }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the observability secret identity verifier
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../scripts/install-observability-secrets.py
+    dest: "{{ observability_secret_installer }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Bind every external Docker Secret to its current private source
+  ansible.builtin.command:
+    argv:
+      - "{{ observability_secret_installer }}"
+      - --verify-only
+      - --catalog
+      - "{{ observability_installed_secret_catalog }}"
+      - --source-dir
+      - "{{ observability_secret_source_dir }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Inspect versioned external observability Docker Secrets
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ item.external_name }}"
+  loop: "{{ observability_secrets }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: observability_secret_inspections
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify observability Docker Secret contract labels
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).Spec.Name
+        == item.item.external_name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.managed-by"]
+        == "observability-secret-installer"
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.secret-key"] == item.item.key
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.secret-version"]
+        == observability_secret_version
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.source-sha256"]
+        is match("^[a-f0-9]{64}$")
+    fail_msg: "An observability Docker Secret has unexpected metadata."
+  loop: "{{ observability_secret_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Initialize verified immutable observability resource references
+  ansible.builtin.set_fact:
+    observability_verified_config_references: {}
+    observability_verified_secret_references: {}
+    observability_verified_external_network_references: {}
+
+- name: Index exact verified observability Docker Config references
+  ansible.builtin.set_fact:
+    observability_verified_config_references: >-
+      {{
+        observability_verified_config_references
+        | combine({
+          item.item.item.key: {
+            "id": (item.stdout | from_json | first).ID,
+            "name": (item.stdout | from_json | first).Spec.Name
+          }
+        })
+      }}
+  loop: "{{ observability_verified_configs.results }}"
+  loop_control:
+    label: "{{ item.item.item.key }}"
+
+- name: Index exact verified observability Docker Secret references
+  ansible.builtin.set_fact:
+    observability_verified_secret_references: >-
+      {{
+        observability_verified_secret_references
+        | combine({
+          item.item.key: {
+            "id": (item.stdout | from_json | first).ID,
+            "name": (item.stdout | from_json | first).Spec.Name
+          }
+        })
+      }}
+  loop: "{{ observability_secret_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Inspect required external overlay networks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ item.name }}"
+  loop:
+    - key: edge-monitoring
+      name: "{{ platform_edge_monitoring_network }}"
+      internal: false
+    - key: n8n-monitoring
+      name: apptolast-n8n-monitoring
+      internal: true
+    - key: workloads-n8n-backend
+      name: workloads_n8n-backend
+      internal: true
+    - key: workloads-n8n-coordination
+      name: workloads_n8n-coordination
+      internal: true
+    - key: workloads-passbolt-backend
+      name: workloads_passbolt-backend
+      internal: true
+    - key: workloads-shlink-backend
+      name: workloads_shlink-backend
+      internal: true
+    - key: minecraft-monitoring
+      name: apptolast-minecraft-monitoring
+      internal: true
+  loop_control:
+    label: "{{ item.name }}"
+  register: observability_external_networks
+  changed_when: false
+  check_mode: false
+
+- name: Verify required overlay network identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).Driver == "overlay"
+      - >-
+        (item.stdout | from_json | first).Scope == "swarm"
+      - >-
+        not (item.stdout | from_json | first).Attachable
+      - >-
+        (item.stdout | from_json | first).Internal
+        == item.item.internal
+      - >-
+        (item.stdout | from_json | first).Options.encrypted
+        | default(None) == ""
+    fail_msg: >-
+      External network {{ item.item.name }} differs from the encrypted Swarm
+      contract required by observability.
+  loop: "{{ observability_external_networks.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Index exact verified observability external network references
+  ansible.builtin.set_fact:
+    observability_verified_external_network_references: >-
+      {{
+        observability_verified_external_network_references
+        | combine({
+          item.item.key: {
+            "id": (item.stdout | from_json | first).Id,
+            "name": (item.stdout | from_json | first).Name,
+            "internal": (item.stdout | from_json | first).Internal
+          }
+        })
+      }}
+  loop: "{{ observability_external_networks.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Inspect the current Swarm node placement labels
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - inspect
+      - self
+  register: observability_node_before
+  changed_when: false
+  check_mode: false
+
+- name: Add the dedicated observability placement label
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - update
+      - --label-add
+      - platform.observability=true
+      - self
+  when: >-
+    (observability_node_before.stdout | from_json | first).
+    Spec.Labels["platform.observability"] | default("") != "true"
+  changed_when: true
+
+- name: Re-read the current Swarm node placement labels
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - inspect
+      - self
+  register: observability_node_after
+  changed_when: false
+  check_mode: false
+
+- name: Verify the dedicated observability placement label
+  ansible.builtin.assert:
+    that:
+      - >-
+        (observability_node_after.stdout | from_json | first).
+        Spec.Labels["platform.observability"] == "true"
+    fail_msg: "The node lacks platform.observability=true."
+
+- name: Provision least-privilege PostgreSQL monitoring roles
+  ansible.builtin.command:
+    argv:
+      - "{{ observability_database_provisioner }}"
+      - --catalog
+      - "{{ playbook_dir }}/../../stacks/observability/secrets.yml"
+      - --source-dir
+      - "{{ observability_secret_source_dir }}"
+      - --role
+      - "{{ observability_postgres_role }}"
+  changed_when: false
+  check_mode: false
+  environment: "{{ operation_lock_guard_environment }}"
+  no_log: true
+
+- name: Deploy the exact reviewed observability stack
+  community.docker.docker_stack:
+    name: "{{ observability_stack_name }}"
+    state: present
+    compose:
+      - "{{ observability_install_root }}/stack.yml"
+    detach: false
+    prune: true
+    resolve_image: never
+
+- name: Wait for every observability replica to converge
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - "{{ observability_stack_name }}"
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: observability_stack_replicas
+  changed_when: false
+  check_mode: false
+  until:
+    - >-
+      observability_stack_replicas.stdout_lines | length
+      == observability_expected_stack_services | length
+    - >-
+      observability_stack_replicas.stdout_lines
+      | reject("match", "^" + observability_stack_name + "_.+=1/1$")
+      | list | length == 0
+  retries: 36
+  delay: 10
+
+- name: Inspect converged observability services
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ observability_stack_name }}_{{ item.key }}"
+  loop: "{{ observability_expected_images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: observability_deployed_services
+  changed_when: false
+  check_mode: false
+
+- name: Verify deployed observability image and placement identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image == item.item.value
+      - >-
+        "node.labels.platform.observability == true" in
+        (item.stdout | from_json | first).
+        Spec.TaskTemplate.Placement.Constraints
+      - >-
+        (item.stdout | from_json | first).Endpoint.Spec.Ports
+        | default([]) | length == 0
+      - >-
+        (item.stdout | from_json | first).Spec.UpdateConfig.FailureAction
+        == "rollback"
+      - >-
+        (item.stdout | from_json | first).Spec.RollbackConfig.Order
+        == "stop-first"
+    fail_msg: >-
+      Deployed service {{ item.item.key }} differs from the reviewed internal
+      observability contract.
+  loop: "{{ observability_deployed_services.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Verify exact live observability resource references
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - >-
+        {{ observability_install_root
+           }}/bin/validate-swarm-deployment.py
+      - --stack
+      - "{{ observability_install_root }}/stack.yml"
+      - --stack-name
+      - "{{ observability_stack_name }}"
+      - --docker-bin
+      - /usr/bin/docker
+      - --verified-configs
+      - "{{ observability_verified_config_references | to_json }}"
+      - --verified-secrets
+      - "{{ observability_verified_secret_references | to_json }}"
+      - --verified-external-networks
+      - >-
+        {{
+          observability_verified_external_network_references
+          | to_json
+        }}
+  changed_when: false
+  check_mode: false
+
+- name: Wait for every observability task healthcheck
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --filter
+      - >-
+        label=com.docker.swarm.service.name={{
+          observability_stack_name }}_{{ item }}
+      - --filter
+      - status=running
+      - --format
+      - "{% raw %}{{.Status}}{% endraw %}"
+  loop: "{{ observability_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: observability_runtime_health
+  changed_when: false
+  check_mode: false
+  until:
+    - observability_runtime_health.stdout_lines | length == 1
+    - observability_runtime_health.stdout is search("\\(healthy\\)$")
+  retries: 36
+  delay: 10
+
+- name: Resolve runtime task IDs needed by smoke tests
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --filter
+      - >-
+        label=com.docker.swarm.service.name={{
+          observability_stack_name }}_{{ item }}
+      - --filter
+      - status=running
+      - --format
+      - "{% raw %}{{.ID}}{% endraw %}"
+  loop:
+    - prometheus
+    - grafana
+  loop_control:
+    label: "{{ item }}"
+  register: observability_runtime_task_ids
+  changed_when: false
+  check_mode: false
+
+- name: Verify smoke-test task identities are unambiguous
+  ansible.builtin.assert:
+    that:
+      - item.stdout_lines | length == 1
+      - item.stdout is match("^[a-f0-9]{12,64}$")
+    fail_msg: >-
+      Expected exactly one running observability task for {{ item.item }}.
+  loop: "{{ observability_runtime_task_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Index smoke-test task IDs
+  ansible.builtin.set_fact:
+    observability_runtime_task_id: >-
+      {{
+        observability_runtime_task_id | default({})
+        | combine({item.item: item.stdout})
+      }}
+  loop: "{{ observability_runtime_task_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Verify every Prometheus scrape pool is present and healthy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - exec
+      - "{{ observability_runtime_task_id.prometheus }}"
+      - /bin/wget
+      - --quiet
+      - --output-document=-
+      - "http://127.0.0.1:9090/api/v1/targets?state=active"
+  register: observability_prometheus_targets
+  changed_when: false
+  check_mode: false
+  until:
+    - observability_prometheus_targets.rc == 0
+    - >-
+      (
+        observability_prometheus_targets.stdout
+        | default(
+          '{"status":"","data":{"activeTargets":[]}}',
+          true
+        )
+        | from_json
+      ).status == "success"
+    - >-
+      (
+        observability_prometheus_targets.stdout
+        | default(
+          '{"status":"","data":{"activeTargets":[]}}',
+          true
+        )
+        | from_json
+      ).data.activeTargets
+      | map(attribute="labels.job") | unique | sort
+      == observability_expected_scrape_jobs | sort
+    - >-
+      (
+        observability_prometheus_targets.stdout
+        | default(
+          '{"status":"","data":{"activeTargets":[]}}',
+          true
+        )
+        | from_json
+      ).data.activeTargets
+      | rejectattr("health", "equalto", "up") | list | length == 0
+  retries: 24
+  delay: 10
+
+- name: Verify Prometheus loaded every healthy alert rule
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - exec
+      - "{{ observability_runtime_task_id.prometheus }}"
+      - /bin/wget
+      - --quiet
+      - --output-document=-
+      - "http://127.0.0.1:9090/api/v1/rules?type=alert"
+  register: observability_prometheus_rules
+  changed_when: false
+  check_mode: false
+  until:
+    - observability_prometheus_rules.rc == 0
+    - >-
+      (
+        observability_prometheus_rules.stdout
+        | default(
+          '{"status":"","data":{"groups":[]}}',
+          true
+        )
+        | from_json
+      ).status == "success"
+    - >-
+      (
+        observability_prometheus_rules.stdout
+        | default(
+          '{"status":"","data":{"groups":[]}}',
+          true
+        )
+        | from_json
+      ).data.groups
+      | map(attribute="rules") | flatten
+      | map(attribute="name") | unique | sort
+      == observability_expected_alerts | sort
+    - >-
+      (
+        observability_prometheus_rules.stdout
+        | default(
+          '{"status":"","data":{"groups":[]}}',
+          true
+        )
+        | from_json
+      ).data.groups
+      | map(attribute="rules") | flatten
+      | rejectattr("health", "equalto", "ok") | list | length == 0
+  retries: 12
+  delay: 10
+
+- name: Probe Loki and Alloy health from the internal monitoring network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - exec
+      - "{{ observability_runtime_task_id.grafana }}"
+      - /usr/bin/wget
+      - --quiet
+      - --spider
+      - --timeout=5
+      - "{{ item.url }}"
+  loop:
+    - name: loki-ready
+      url: http://loki:3100/ready
+    - name: alloy-components-healthy
+      url: http://tasks.alloy:12345/-/healthy
+  loop_control:
+    label: "{{ item.name }}"
+  register: observability_internal_health_probes
+  changed_when: false
+  check_mode: false
+  until: observability_internal_health_probes.rc == 0
+  retries: 12
+  delay: 10

@@ -1,0 +1,24 @@
+---
+- name: Reconcile internal Docker Swarm observability
+  hosts: swarm_managers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/capacity.yml
+    - ../../config/platform.yml
+    - ../../config/services.yml
+    - ../../stacks/observability/secrets.yml
+    - ../group_vars/all.yml
+
+  roles:
+    - role: operation_lock_guard
+    - role: capacity_preflight
+      tags:
+        - capacity
+    - role: image_preflight
+    - role: workloads_runner_image
+    - role: observability
+    - role: deployment_metadata

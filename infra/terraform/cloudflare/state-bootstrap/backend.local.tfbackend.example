@@ -1,3 +1,5 @@
 # Replace this with an absolute path on encrypted storage outside the Git
 # checkout. Back up that state with age after every bootstrap-root change.
+# The exact real path must also be approved as production in the tracked
+# backend-identities.json; this ignored file cannot authorize a path itself.
 path = "/REPLACE_WITH_ENCRYPTED_OFF_REPOSITORY_PATH/state-bootstrap.tfstate"

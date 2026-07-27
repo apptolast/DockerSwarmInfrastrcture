@@ -1,0 +1,2 @@
+# Initial declarative import only. The initialize safety contract rejects false.
+adoption_only = true

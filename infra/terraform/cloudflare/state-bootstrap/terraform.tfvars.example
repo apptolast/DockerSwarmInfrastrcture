@@ -1,4 +1,4 @@
-cloudflare_account_id = "00000000000000000000000000000000"
+cloudflare_account_id = "becc1c00820a0f6779e9b278ab150abf"
 
 state_buckets = {
   cloudflare_dns = {
@@ -9,4 +9,9 @@ state_buckets = {
     name     = "replace-with-netcup-state-bucket"
     location = "weur"
   }
+}
+
+dockerswarm_backup_bucket = {
+  name     = "replace-with-dockerswarm-backup-bucket"
+  location = "weur"
 }

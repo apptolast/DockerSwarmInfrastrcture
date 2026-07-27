@@ -25,3 +25,13 @@ updates:
     directory: /infra/terraform/netcup/perimeter
     schedule:
       interval: weekly
+
+  - package-ecosystem: npm
+    directory: /images/n8n-runners
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /images/n8n-runners
+    schedule:
+      interval: weekly

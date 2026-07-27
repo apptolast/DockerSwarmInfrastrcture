@@ -1,0 +1,894 @@
+---
+- name: Verify every declared dataset bind exists
+  ansible.builtin.stat:
+    path: "{{ item.value }}"
+  loop: "{{ workloads_paths | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: workloads_dataset_stats
+
+- name: Enforce restored dataset bind identity
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+    fail_msg: >-
+      Dataset {{ item.item.key }} is absent, non-directory or a symlink;
+      deployment is blocked until restore finishes.
+  loop: "{{ workloads_dataset_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Hash the current controller service catalog
+  ansible.builtin.stat:
+    path: "{{ workloads_catalog_source_path }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  delegate_to: localhost
+  become: false
+  register: workloads_controller_catalog_stat
+
+- name: Inspect immutable restore evidence artifacts
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  loop:
+    - key: marker
+      path: "{{ workloads_restore_marker_path }}"
+    - key: runtime
+      path: "{{ workloads_runtime_manifest_path }}"
+    - key: recovery
+      path: "{{ workloads_recovery_manifest_path }}"
+    - key: installed_catalog
+      path: "{{ workloads_install_root }}/services.yml"
+    - key: secret_identity_key
+      path: "{{ workloads_secret_identity_key_path }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: workloads_restore_evidence_stats
+
+- name: Index immutable restore evidence hashes
+  ansible.builtin.set_fact:
+    workloads_restore_evidence: >-
+      {{
+        workloads_restore_evidence | default({})
+        | combine({item.item.key: item.stat})
+      }}
+  loop: "{{ workloads_restore_evidence_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Enforce safe restore evidence files
+  ansible.builtin.assert:
+    that:
+      - item.value.exists
+      - item.value.isreg
+      - not item.value.islnk
+      - item.value.checksum is match("^[a-f0-9]{64}$")
+    fail_msg: >-
+      Restore evidence {{ item.key }} is absent, unsafe or cannot be hashed.
+  loop: "{{ workloads_restore_evidence | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Enforce private restore marker ownership and catalog identity
+  ansible.builtin.assert:
+    that:
+      - workloads_restore_evidence.marker.pw_name == "root"
+      - workloads_restore_evidence.marker.gr_name == "root"
+      - workloads_restore_evidence.marker.mode == "0600"
+      - workloads_restore_evidence.secret_identity_key.pw_name == "root"
+      - workloads_restore_evidence.secret_identity_key.gr_name == "root"
+      - workloads_restore_evidence.secret_identity_key.mode == "0600"
+      - workloads_restore_evidence.secret_identity_key.size == 32
+      - >-
+        workloads_restore_evidence.installed_catalog.checksum
+        == workloads_controller_catalog_stat.stat.checksum
+    fail_msg: >-
+      Restore evidence ownership or the installed service catalog is invalid.
+
+- name: Read the restore completion marker
+  ansible.builtin.slurp:
+    src: "{{ workloads_restore_marker_path }}"
+  register: workloads_restore_marker_raw
+
+- name: Decode the restore completion marker
+  ansible.builtin.set_fact:
+    workloads_restore_marker: >-
+      {{ workloads_restore_marker_raw.content | b64decode | from_json }}
+
+- name: Enforce verified restore evidence before deployment
+  ansible.builtin.assert:
+    that:
+      - workloads_restore_marker.schemaVersion | int == 2
+      - workloads_restore_marker.runtimeManifestSchemaVersion | int == 4
+      - workloads_restore_marker.catalogVersion == catalog_version
+      - >-
+        workloads_restore_marker.catalogSha256
+        == workloads_controller_catalog_stat.stat.checksum
+      - >-
+        workloads_restore_marker.runtimeManifestSha256
+        == workloads_restore_evidence.runtime.checksum
+      - >-
+        workloads_restore_marker.sourceBackupSha256
+        == workloads_restore_evidence.recovery.checksum
+      - >-
+        workloads_restore_marker.sourceBackupDigestKind
+        == "sha256-of-verified-recovery-manifest"
+      - >-
+        workloads_restore_marker.secretIdentityKeySha256
+        == workloads_restore_evidence.secret_identity_key.checksum
+      - >-
+        workloads_restore_marker.secretIdentityKeyDigestKind
+        == "sha256-of-random-hmac-key"
+      - >-
+        workloads_restore_marker.approvedServices | sort
+        == workloads_runtime_service_ids | sort
+      - >-
+        workloads_restore_marker.datasets.keys() | list | sort
+        ==
+        (datasets | rejectattr("owner", "equalto", "traefik-edge")
+        | map(attribute="id") | list | sort)
+      - >-
+        workloads_restore_marker.databaseRestores.keys() | list | sort
+        == ["n8n", "passbolt", "shlink"]
+      - workloads_restore_marker.openClawLegacyImported is sameas false
+      - workloads_restore_marker.databaseRestores.n8n == "verified"
+      - workloads_restore_marker.databaseRestores.passbolt == "verified"
+      - workloads_restore_marker.databaseRestores.shlink == "verified"
+      - >-
+        workloads_restore_marker.datasets["minecraft-mods"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["minecraft-worlds"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["n8n-home"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["n8n-postgres"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["openclaw-clean-home"]
+        == "initialized-empty"
+      - >-
+        workloads_restore_marker.datasets["passbolt-gpg"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["passbolt-jwt"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["passbolt-postgres"]
+        == "restored-and-verified"
+      - >-
+        workloads_restore_marker.datasets["shlink-postgres"]
+        == "restored-and-verified"
+    fail_msg: >-
+      The restore completion marker is incomplete, stale, or imports legacy
+      OpenClaw state. Workload deployment is blocked.
+
+- name: Validate the complete restore marker schema and artifact hashes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - >-
+        {{ workloads_install_root
+           }}/bin/validate-workloads-restore-marker.py
+      - --marker
+      - "{{ workloads_restore_marker_path }}"
+      - --services
+      - "{{ workloads_install_root }}/services.yml"
+      - --runtime-manifest
+      - "{{ workloads_runtime_manifest_path }}"
+      - --recovery-manifest
+      - "{{ workloads_recovery_manifest_path }}"
+      - --secret-identity-key
+      - "{{ workloads_secret_identity_key_path }}"
+  changed_when: false
+  check_mode: false
+
+- name: List every running or stopped Docker container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - list
+      - --all
+      - --quiet
+      - --no-trunc
+  register: workloads_all_container_ids
+  changed_when: false
+  check_mode: false
+
+- name: Inspect every running or stopped Docker container
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/docker", "container", "inspect"]
+        + workloads_all_container_ids.stdout_lines
+      }}
+  when: workloads_all_container_ids.stdout_lines | length > 0
+  register: workloads_all_container_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Enforce exclusive ownership of restored PostgreSQL paths
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - >-
+        {{ workloads_install_root
+           }}/bin/validate-workloads-container-gate.py
+      - --mount-contract
+      - "{{ workloads_db_mount_contract | to_json }}"
+    stdin: >-
+      {{
+        workloads_all_container_inspect.stdout
+        if workloads_all_container_ids.stdout_lines | length > 0
+        else "[]"
+      }}
+  changed_when: false
+  check_mode: false
+
+- name: Inspect every immutable external Docker Secret
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ item.external_name }}"
+  loop: "{{ workloads_secrets }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: workloads_secret_inspections
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify every Docker Secret against its retained private source
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ workloads_install_root }}/bin/install-workload-secrets.py"
+      - --catalog
+      - "{{ workloads_install_root }}/secrets.yml"
+      - --source-dir
+      - "{{ workloads_secret_source_dir }}"
+      - --runtime-manifest
+      - "{{ workloads_runtime_manifest_path }}"
+      - --verify-only
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify Docker Secret contract labels
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Spec.Name
+        == item.item.external_name
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.managed-by"] == "workload-secret-installer"
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.secret-key"] == item.item.key
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.secret-version"] == workloads_secret_version
+      - >-
+        (item.stdout | from_json | first).Spec.Labels[
+          "com.apptolast.secret-source-hmac-sha256"]
+        is match("^[a-f0-9]{64}$")
+    fail_msg: "An external Docker Secret has unexpected identity or labels."
+  loop: "{{ workloads_secret_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Initialize verified immutable resource references
+  ansible.builtin.set_fact:
+    workloads_verified_config_references: {}
+    workloads_verified_secret_references: {}
+    workloads_verified_external_network_references: {}
+
+- name: Index exact verified Docker Config references
+  ansible.builtin.set_fact:
+    workloads_verified_config_references: >-
+      {{
+        workloads_verified_config_references
+        | combine({
+          item.item.item.key: {
+            "id": (item.stdout | from_json | first).ID,
+            "name": (item.stdout | from_json | first).Spec.Name
+          }
+        })
+      }}
+  loop: "{{ workloads_verified_configs.results }}"
+  loop_control:
+    label: "{{ item.item.item.key }}"
+
+- name: Index exact verified Docker Secret references
+  ansible.builtin.set_fact:
+    workloads_verified_secret_references: >-
+      {{
+        workloads_verified_secret_references
+        | combine({
+          item.item.key: {
+            "id": (item.stdout | from_json | first).ID,
+            "name": (item.stdout | from_json | first).Spec.Name
+          }
+        })
+      }}
+  loop: "{{ workloads_secret_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Inspect every dedicated HTTP backend network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ item.value }}"
+  loop: "{{ workloads_edge_networks | dict2items }}"
+  loop_control:
+    label: "{{ item.value }}"
+  register: workloads_edge_network_inspections
+  changed_when: false
+  check_mode: false
+
+- name: Verify every dedicated encrypted HTTP backend network
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).Name == item.item.value
+      - >-
+        (item.stdout | from_json | first).Driver == "overlay"
+      - >-
+        (item.stdout | from_json | first).Scope == "swarm"
+      - >-
+        not (item.stdout | from_json | first).Attachable
+      - >-
+        not (item.stdout | from_json | first).Internal
+      - >-
+        (item.stdout | from_json | first).Options.encrypted
+        | default(None) == ""
+    fail_msg: >-
+      Dedicated edge network {{ item.item.value }} is absent or differs from
+      the encrypted, non-attachable reviewed contract.
+  loop: "{{ workloads_edge_network_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.value }}"
+
+- name: Index exact verified external network references
+  ansible.builtin.set_fact:
+    workloads_verified_external_network_references: >-
+      {{
+        workloads_verified_external_network_references
+        | combine({
+          "edge-" + item.item.key: {
+            "id": (item.stdout | from_json | first).Id,
+            "name": (item.stdout | from_json | first).Name,
+            "internal": (item.stdout | from_json | first).Internal
+          }
+        })
+      }}
+  loop: "{{ workloads_edge_network_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.value }}"
+
+- name: Inspect the current Swarm node placement labels
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - inspect
+      - self
+  register: workloads_node_inspect
+  changed_when: false
+  check_mode: false
+
+- name: List every node eligible for application workloads
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - list
+      - --filter
+      - node.label=platform.workloads=true
+      - --format
+      - "{% raw %}{{.ID}}{% endraw %}"
+  register: workloads_eligible_nodes
+  changed_when: false
+  check_mode: false
+
+- name: Enforce the local-only workloads placement contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        (workloads_node_inspect.stdout | from_json | first).
+        Spec.Labels["platform.workloads"] == "true"
+      - workloads_eligible_nodes.stdout_lines | length == 1
+      - >-
+        workloads_eligible_nodes.stdout_lines | first
+        == (workloads_node_inspect.stdout | from_json | first).ID
+    fail_msg: >-
+      Exactly this manager must be the sole platform.workloads=true node until
+      the local runner image is distributed by an explicit multi-node design.
+
+- name: Enforce the preflighted n8n runner runtime identity
+  ansible.builtin.assert:
+    that:
+      - workloads_runner_image_runtime is defined
+      - >-
+        workloads_runner_image_runtime.image_reference
+        == workloads_images.n8n_runner
+      - >-
+        workloads_runner_image_runtime.context_sha256
+        == workloads_n8n_runner.context_sha256
+      - >-
+        workloads_runner_image_runtime.image_id
+        is match("^sha256:[a-f0-9]{64}$")
+    fail_msg: >-
+      The local n8n runner image was not preflighted before stack mutation.
+
+- name: Deploy the exact reviewed workloads stack
+  community.docker.docker_stack:
+    name: "{{ workloads_stack_name }}"
+    state: present
+    compose:
+      - "{{ workloads_install_root }}/stack.yml"
+    detach: false
+    prune: true
+    resolve_image: never
+    with_registry_auth: false
+
+- name: Wait for every workload replica to converge
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - "{{ workloads_stack_name }}"
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: workloads_stack_replicas
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  until:
+    - workloads_stack_replicas.stdout_lines | length
+      == workloads_expected_stack_services | length
+    - >-
+      workloads_stack_replicas.stdout_lines
+      | reject("match", "^" + workloads_stack_name + "_.+=1/1$")
+      | list | length == 0
+  retries: 36
+  delay: 10
+
+- name: Collect complete Swarm task diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - ps
+      - --no-trunc
+      - "{{ workloads_stack_name }}_{{ item }}"
+  loop: "{{ workloads_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: workloads_service_ps_diagnostics
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Enforce exact workload convergence
+  ansible.builtin.assert:
+    that:
+      - workloads_stack_replicas.rc == 0
+      - workloads_stack_replicas.stdout_lines | length
+        == workloads_expected_stack_services | length
+      - >-
+        workloads_stack_replicas.stdout_lines
+        | reject("match", "^" + workloads_stack_name + "_.+=1/1$")
+        | list | length == 0
+      - >-
+        workloads_service_ps_diagnostics.results
+        | selectattr("rc", "equalto", 0)
+        | list | length == workloads_expected_stack_services | length
+    fail_msg: >-
+      Workload convergence failed. Full docker service ps diagnostics:
+      {{
+        workloads_service_ps_diagnostics.results
+        | map(attribute="stdout")
+        | list
+      }}
+
+- name: Locate every unique running workload task container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - list
+      - --quiet
+      - --no-trunc
+      - --filter
+      - >-
+        label=com.docker.swarm.service.name={{
+          workloads_stack_name }}_{{ item }}
+      - --filter
+      - status=running
+  loop: "{{ workloads_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: workloads_task_container_ids
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Enforce one running task container per workload service
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines | length == 1
+    fail_msg: >-
+      Service {{ item.item }} has no unique running task. Full docker service
+      ps diagnostics:
+      {{
+        workloads_service_ps_diagnostics.results
+        | map(attribute="stdout")
+        | list
+      }}
+  loop: "{{ workloads_task_container_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Index running workload task containers
+  ansible.builtin.set_fact:
+    workloads_task_container_by_service: >-
+      {{
+        workloads_task_container_by_service | default({})
+        | combine({item.item: item.stdout_lines | first})
+      }}
+  loop: "{{ workloads_task_container_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Wait for every running workload task to become healthy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - "{{ workloads_task_container_by_service[item] }}"
+  loop: "{{ workloads_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: workloads_healthy_task_inspections
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  until: >-
+    workloads_healthy_task_inspections.rc == 0
+    and
+    (workloads_healthy_task_inspections.stdout | from_json | length == 1)
+    and
+    (
+      (workloads_healthy_task_inspections.stdout | from_json | first).
+      State.Running
+    )
+    and
+    (
+      (workloads_healthy_task_inspections.stdout | from_json | first).
+      State.Health.Status == "healthy"
+    )
+  retries: 36
+  delay: 10
+
+- name: Enforce healthy workload task state
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0
+        and (item.stdout | from_json | length == 1)
+        and (item.stdout | from_json | first).State.Running
+        and
+        (item.stdout | from_json | first).State.Health.Status == "healthy"
+    fail_msg: >-
+      Workload task {{ item.item }} is not healthy. Full docker service ps
+      diagnostics:
+      {{
+        workloads_service_ps_diagnostics.results
+        | map(attribute="stdout")
+        | list
+      }}
+  loop: "{{ workloads_healthy_task_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Verify restored application database table invariants
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - exec
+      - "{{ workloads_task_container_by_service[item.service] }}"
+      - psql
+      - -X
+      - -v
+      - ON_ERROR_STOP=1
+      - -A
+      - -t
+      - -U
+      - "{{ item.user }}"
+      - -d
+      - "{{ item.database }}"
+      - -c
+      - >-
+        SELECT count(*) FROM pg_catalog.pg_class
+        WHERE relkind IN ('r','p')
+        AND relnamespace NOT IN (
+          SELECT oid FROM pg_catalog.pg_namespace
+          WHERE nspname LIKE 'pg_%' OR nspname='information_schema'
+        );
+  loop: "{{ workloads_database_invariants }}"
+  loop_control:
+    label: "{{ item.database }}"
+  register: workloads_database_table_counts
+  changed_when: false
+  check_mode: false
+
+- name: Enforce non-empty restored application databases
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim is match("^[1-9][0-9]*$")
+    fail_msg: >-
+      Restored database {{ item.item.database }} has no application tables.
+  loop: "{{ workloads_database_table_counts.results }}"
+  loop_control:
+    label: "{{ item.item.database }}"
+
+- name: Verify exact restored pgvector extension versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - exec
+      - "{{ workloads_task_container_by_service['n8n-db'] }}"
+      - psql
+      - -X
+      - -v
+      - ON_ERROR_STOP=1
+      - -A
+      - -t
+      - -U
+      - n8n
+      - -d
+      - "{{ item.database }}"
+      - -c
+      - >-
+        SELECT extversion FROM pg_extension WHERE extname='vector';
+  loop:
+    - database: vectors
+      version: 0.8.1
+    - database: rag
+      version: 0.8.2
+  loop_control:
+    label: "{{ item.database }}"
+  register: workloads_vector_versions
+  changed_when: false
+  check_mode: false
+
+- name: Enforce exact restored pgvector extension versions
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == item.item.version
+    fail_msg: >-
+      Restored database {{ item.item.database }} has pgvector
+      {{ item.stdout | trim }}, expected {{ item.item.version }}.
+  loop: "{{ workloads_vector_versions.results }}"
+  loop_control:
+    label: "{{ item.item.database }}"
+
+- name: Smoke every exact public HTTP backend against this server
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - --silent
+      - --show-error
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --connect-timeout
+      - "5"
+      - --max-time
+      - "20"
+      - --noproxy
+      - "*"
+      - --resolve
+      - "{{ item.hostname }}:443:{{ platform_public_ipv4 }}"
+      - "https://{{ item.hostname }}{{ item.path }}"
+  loop: "{{ workloads_http_smoke_targets }}"
+  loop_control:
+    label: "{{ item.service }}"
+  register: workloads_http_smoke_results
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  until:
+    - workloads_http_smoke_results.rc == 0
+    - workloads_http_smoke_results.stdout == item.status
+  retries: 18
+  delay: 10
+
+- name: Enforce every exact public HTTP backend smoke target
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout == item.item.status
+    fail_msg: >-
+      Public smoke failed for {{ item.item.hostname }}{{ item.item.path }}:
+      curl rc={{ item.rc }}, HTTP={{ item.stdout | default("none") }}.
+  loop: "{{ workloads_http_smoke_results.results }}"
+  loop_control:
+    label: "{{ item.item.service }}"
+
+- name: Inspect converged workload services
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ workloads_stack_name }}_{{ item.key }}"
+  loop: "{{ workloads_expected_images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: workloads_deployed_services
+  changed_when: false
+  check_mode: false
+
+- name: Verify deployed workload image and placement identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image == item.item.value
+      - >-
+        "node.labels.platform.workloads == true" in
+        (item.stdout | from_json | first).
+        Spec.TaskTemplate.Placement.Constraints
+      - >-
+        (item.stdout | from_json | first).Spec.Mode.Replicated.Replicas == 1
+      - >-
+        (item.stdout | from_json | first).Spec.UpdateConfig.Order
+        == "stop-first"
+      - >-
+        (item.stdout | from_json | first).Spec.RollbackConfig.Order
+        == "stop-first"
+    fail_msg: >-
+      Deployed service {{ item.item.key }} differs from the reviewed contract.
+  loop: "{{ workloads_deployed_services.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Verify exact live Config, Secret and network references
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ workloads_install_root }}/bin/validate-swarm-deployment.py"
+      - --stack
+      - "{{ workloads_install_root }}/stack.yml"
+      - --stack-name
+      - "{{ workloads_stack_name }}"
+      - --docker-bin
+      - /usr/bin/docker
+      - --verified-configs
+      - "{{ workloads_verified_config_references | to_json }}"
+      - --verified-secrets
+      - "{{ workloads_verified_secret_references | to_json }}"
+      - --verified-external-networks
+      - >-
+        {{
+          workloads_verified_external_network_references
+          | to_json
+        }}
+  changed_when: false
+  check_mode: false
+
+- name: Inspect the converged Minecraft service ingress contract
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ workloads_stack_name }}_minecraft"
+  register: workloads_minecraft_service_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Couple Minecraft Swarm ingress to the reviewed public gate
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          platform_minecraft_public_enabled | bool
+          and
+          (workloads_minecraft_service_inspect.stdout
+          | from_json | first).Spec.EndpointSpec.Ports
+          ==
+          [{
+            "Protocol": "tcp",
+            "TargetPort": 25565,
+            "PublishedPort": 25565,
+            "PublishMode": "host"
+          }]
+        )
+        or
+        (
+          not (platform_minecraft_public_enabled | bool)
+          and
+          ((workloads_minecraft_service_inspect.stdout
+          | from_json | first).Spec.EndpointSpec.Ports
+          | default([]) | length == 0)
+        )
+      - >-
+        platform_dns_cutover.minecraft
+        == platform_minecraft_public_enabled
+    fail_msg: >-
+      Minecraft Swarm ingress, firewall/DNS contract and the reviewed public
+      gate are not in the same state. Internal TCP health is probed only by
+      Blackbox on apptolast-minecraft-monitoring.
+
+- name: Locate the running n8n runner task container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - list
+      - --quiet
+      - --no-trunc
+      - --filter
+      - >-
+        label=com.docker.swarm.service.name={{
+          workloads_stack_name }}_n8n-runners
+      - --filter
+      - status=running
+  register: workloads_n8n_runner_container_ids
+  changed_when: false
+  check_mode: false
+
+- name: Enforce a unique running n8n runner task
+  ansible.builtin.assert:
+    that:
+      - workloads_n8n_runner_container_ids.stdout_lines | length == 1
+    fail_msg: "The converged n8n runner task container is not unique."
+
+- name: Inspect the running n8n runner task container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - "{{ workloads_n8n_runner_container_ids.stdout_lines | first }}"
+  register: workloads_n8n_runner_container_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Verify the running n8n runner uses the preflight image ID
+  ansible.builtin.assert:
+    that:
+      - >-
+        (workloads_n8n_runner_container_inspect.stdout
+        | from_json | first).Image
+        == workloads_runner_image_runtime.image_id
+      - >-
+        (workloads_n8n_runner_container_inspect.stdout | from_json | first).
+        Config.Image == workloads_images.n8n_runner
+      - >-
+        (workloads_n8n_runner_container_inspect.stdout | from_json | first).
+        Config.Labels["com.docker.swarm.service.name"]
+        == workloads_stack_name + "_n8n-runners"
+    fail_msg: >-
+      The running n8n runner task does not use the locally verified image.

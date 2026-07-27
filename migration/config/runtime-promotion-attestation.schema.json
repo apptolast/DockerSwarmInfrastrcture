@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apptolast.com/schemas/runtime-promotion-attestation-v1.json",
+  "title": "AppToLast final runtime promotion attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "signerIdentity",
+    "legacyIPv4",
+    "targetIPv4",
+    "sourceBackup",
+    "catalogSha256",
+    "platformSha256",
+    "runtimeManifestSha256",
+    "recoveryManifestSha256",
+    "readyMarkerSha256",
+    "secretCatalogSha256",
+    "secretSourcesSha256",
+    "runtimeTreeSha256",
+    "legacyWritersStopped",
+    "finalBackupVerified",
+    "legacyStoppedAt",
+    "backupStartedAt",
+    "backupCompletedAt",
+    "issuedAt",
+    "expiresAt",
+    "sourceCommit"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "signerIdentity": {
+      "const": "apptolast-runtime-promotion"
+    },
+    "legacyIPv4": {
+      "const": "138.199.157.58"
+    },
+    "targetIPv4": {
+      "const": "159.195.156.57"
+    },
+    "sourceBackup": {
+      "pattern": "^apptolast-data-[0-9]{8}T[0-9]{6}Z$",
+      "type": "string"
+    },
+    "catalogSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "platformSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "runtimeManifestSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "recoveryManifestSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "readyMarkerSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "secretCatalogSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "secretSourcesSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "runtimeTreeSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "legacyWritersStopped": {
+      "const": true
+    },
+    "finalBackupVerified": {
+      "const": true
+    },
+    "legacyStoppedAt": {
+      "$ref": "#/$defs/utc"
+    },
+    "backupStartedAt": {
+      "$ref": "#/$defs/utc"
+    },
+    "backupCompletedAt": {
+      "$ref": "#/$defs/utc"
+    },
+    "issuedAt": {
+      "$ref": "#/$defs/utc"
+    },
+    "expiresAt": {
+      "$ref": "#/$defs/utc"
+    },
+    "sourceCommit": {
+      "pattern": "^[a-f0-9]{40,64}$",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "utc": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?\\+00:00$",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+---
+- name: Derive the workloads contract from the service catalog
+  ansible.builtin.import_tasks: derive.yml
+
+- name: Render and validate the workloads stack
+  ansible.builtin.import_tasks: render.yml
+
+- name: Reconcile the workloads stack
+  ansible.builtin.import_tasks: deploy.yml
+  when:
+    - not workloads_render_only | bool
+    - not ansible_check_mode

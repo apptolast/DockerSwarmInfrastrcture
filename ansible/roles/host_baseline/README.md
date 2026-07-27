@@ -7,10 +7,19 @@ Ubuntu 26.04 Docker Swarm manager. It is deliberately separate from the
 
 ## Safety contract
 
-The role keeps the existing `admin` identity, SSH port 22, `sshusers` group,
-authorized keys, account password, sudo policy, and Docker-group membership.
-It never creates `ops`, replaces `authorized_keys`, locks the password, grants
-passwordless sudo, changes the SSH port, resets UFW, or opens port 25565.
+The role itself keeps the existing `admin` identity, SSH port 22, `sshusers`
+group, authorized keys, account password, sudo policy, and Docker-group
+membership. It never creates `ops`, replaces `authorized_keys`, locks the
+password, grants passwordless sudo, changes the SSH port, resets UFW, or
+opens port 25565.
+
+`host-baseline.yml` (the playbook) also runs the separate `host_security`
+role first, which intentionally reconciles `admin`'s supplementary groups to
+exactly `sudo` and `sshusers` — removing Docker-group membership if present,
+per the final contract in the top-level README ("El grupo `docker` equivale
+a root... el contrato final elimina a todos los usuarios humanos, incluido
+`admin`, de ese grupo"). That group change comes from `host_security`, not
+from this role.
 
 Before writing the SSH drop-in it proves that:
 

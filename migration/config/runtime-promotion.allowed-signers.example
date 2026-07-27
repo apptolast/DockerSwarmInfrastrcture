@@ -1,0 +1,11 @@
+# This example deliberately authorizes nobody.
+# Install a reviewed OpenSSH allowed-signers line outside Git at:
+# /etc/dockerswarm/migration/runtime-promotion.allowed-signers
+#
+# Required principal:
+# apptolast-runtime-promotion
+# Required signature namespace:
+# runtime-promotion@apptolast.com
+#
+# Example syntax after replacing the complete public key:
+# apptolast-runtime-promotion ssh-ed25519 AAAA_REPLACE_COMPLETE_KEY

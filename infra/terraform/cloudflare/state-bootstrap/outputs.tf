@@ -8,3 +8,11 @@ output "state_buckets" {
     }
   }
 }
+
+output "dockerswarm_backup_bucket" {
+  description = "Dedicated private bucket consumed by the backup Ansible role."
+  value = {
+    name     = cloudflare_r2_bucket.dockerswarm_backups.name
+    location = cloudflare_r2_bucket.dockerswarm_backups.location
+  }
+}

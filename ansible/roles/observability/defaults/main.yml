@@ -1,0 +1,194 @@
+---
+observability_stack_name: observability
+observability_install_root: "{{ platform_install_root }}/observability"
+observability_state_root: "{{ platform_state_root }}/observability"
+observability_render_only: false
+observability_render_root: "{{ playbook_dir }}/../../.build/observability"
+observability_secret_source_dir: >-
+  {{ observability_state_root }}/secrets/files
+observability_monitoring_network: apptolast-observability
+observability_postgres_role: apptolast_monitor
+observability_remote_forward_helper: >-
+  /usr/local/libexec/dockerswarm-observability-forward
+observability_remote_forward_sudoers: >-
+  /etc/sudoers.d/dockerswarm-observability-forward
+observability_access_group: sudo
+observability_docker_proxy_helper: >-
+  /usr/local/libexec/dockerswarm-docker-readonly-proxy
+observability_docker_proxy_unit_helper: >-
+  {{ observability_docker_proxy_helper }}
+observability_docker_proxy_service: >-
+  dockerswarm-docker-readonly-proxy.service
+observability_docker_proxy_socket: >-
+  /run/dockerswarm-observability/docker-readonly.sock
+observability_database_provisioner: >-
+  /usr/local/libexec/dockerswarm-provision-observability-db-users
+observability_secret_installer: >-
+  /usr/local/libexec/dockerswarm-install-observability-secrets
+observability_installed_secret_catalog: >-
+  {{ observability_install_root }}/secrets.yml
+
+observability_http_probe_paths:
+  kropia: /health
+  minecraft-stats: /actuator/health
+  n8n: /healthz
+  openclaw-clean: /healthz
+  passbolt: /healthcheck/status.json
+  personal-website-alberto: /robots.txt
+  personal-website-pablo: /placeholder-logo.svg
+  shlink: /rest/health
+
+observability_expected_components:
+  - prometheus
+  - alertmanager
+  - blackbox-exporter
+  - loki
+  - alloy
+  - grafana
+  - node-exporter
+  - cadvisor
+  - postgres-exporter
+  - redis-exporter
+
+observability_expected_stack_services:
+  - prometheus
+  - alertmanager
+  - blackbox-exporter
+  - loki
+  - alloy
+  - grafana
+  - node-exporter
+  - cadvisor
+  - postgres-exporter-n8n
+  - postgres-exporter-passbolt
+  - postgres-exporter-shlink
+  - redis-exporter
+
+observability_expected_scrape_jobs:
+  - prometheus
+  - alertmanager
+  - blackbox-exporter
+  - loki
+  - alloy
+  - grafana
+  - node-exporter
+  - cadvisor
+  - postgres-exporter-n8n
+  - postgres-exporter-passbolt
+  - postgres-exporter-shlink
+  - redis-exporter
+  - traefik
+  - n8n
+  - blackbox-http-public
+  - blackbox-minecraft-tcp
+
+observability_expected_alerts:
+  - PrometheusTargetDown
+  - PublicEndpointDown
+  - MinecraftEndpointDown
+  - HostMemoryPressure
+  - HostFilesystemSpaceLow
+  - HostFilesystemWillFillIn24Hours
+  - ContainerAggregateMemoryPressure
+  - BackupMetricsMissing
+  - BackupLastRunFailed
+  - ApplicationBackupStale
+  - ExternalAlertDeliveryDisabled
+  - PrometheusRuleEvaluationFailures
+  - LokiDiscardingLogs
+
+observability_config_specs:
+  - key: prometheus_config
+    source: prometheus.yml.j2
+    destination: prometheus.yml
+    kind: application-config
+    template: true
+  - key: prometheus_alerts
+    source: prometheus-alerts.yml
+    destination: prometheus-alerts.yml
+    kind: alert-rules
+    template: false
+  - key: alertmanager_config
+    source: alertmanager.yml
+    destination: alertmanager.yml
+    kind: application-config
+    template: false
+  - key: blackbox_config
+    source: blackbox.yml
+    destination: blackbox.yml
+    kind: application-config
+    template: false
+  - key: loki_config
+    source: loki.yml
+    destination: loki.yml
+    kind: application-config
+    template: false
+  - key: alloy_config
+    source: alloy.alloy
+    destination: alloy.alloy
+    kind: application-config
+    template: false
+  - key: grafana_datasources
+    source: grafana-datasources.yml
+    destination: grafana-datasources.yml
+    kind: grafana-provisioning
+    template: false
+  - key: grafana_dashboards
+    source: grafana-dashboards.yml
+    destination: grafana-dashboards.yml
+    kind: grafana-provisioning
+    template: false
+  - key: grafana_dashboard_overview
+    source: platform-overview.json
+    source_directory: dashboards
+    destination: dashboards/platform-overview.json
+    kind: grafana-dashboard
+    template: false
+  - key: grafana_dashboard_logs
+    source: platform-logs.json
+    source_directory: dashboards
+    destination: dashboards/platform-logs.json
+    kind: grafana-dashboard
+    template: false
+
+observability_state_directories:
+  - path: "{{ observability_state_root }}"
+    owner: root
+    group: root
+    mode: "0750"
+  - path: "{{ observability_paths.prometheus }}"
+    owner: "65534"
+    group: "65534"
+    mode: "0750"
+  - path: "{{ observability_paths.alertmanager }}"
+    owner: "65534"
+    group: "65534"
+    mode: "0750"
+  - path: "{{ observability_paths.loki }}"
+    owner: "10001"
+    group: "10001"
+    mode: "0750"
+  - path: "{{ observability_paths.alloy }}"
+    owner: root
+    group: root
+    mode: "0750"
+  - path: "{{ observability_paths.grafana }}"
+    owner: "472"
+    group: "472"
+    mode: "0750"
+  - path: "{{ observability_paths.grafana }}/dashboards"
+    owner: "472"
+    group: "472"
+    mode: "0750"
+  - path: "{{ observability_state_root }}/secrets"
+    owner: root
+    group: root
+    mode: "0700"
+  - path: "{{ observability_secret_source_dir }}"
+    owner: root
+    group: root
+    mode: "0700"
+  - path: /var/lib/node_exporter/textfile_collector
+    owner: root
+    group: root
+    mode: "0755"

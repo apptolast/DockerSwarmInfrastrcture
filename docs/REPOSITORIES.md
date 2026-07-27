@@ -1,147 +1,148 @@
 # Repositorios, carpetas y ciclo de mantenimiento
 
-## Decisión
+## Decisión de propiedad
 
-No se necesita crear otro repositorio de infraestructura ahora. Este repositorio
-debe ser la única fuente de verdad de plataforma:
+`git@github.com:apptolast/DockerSwarmInfrastrcture.git` es la única fuente de
+verdad IaC de este servidor. El nombre remoto conserva por ahora su grafía
+actual para no romper clones, protecciones ni automatizaciones.
 
-- perímetro Cloudflare y Netcup mediante Terraform;
-- host, Docker, Swarm y edge mediante Ansible;
-- scripts de comprobación, CI y runbooks de recuperación.
+Pertenecen a este repositorio:
 
-El remoto actual se llama `DockerSwarmInfrastrcture`. Conviene renombrarlo a
-`dockerswarm-platform` para corregir el typo y expresar su responsabilidad,
-pero el cambio se hará después de confirmar enlaces, protecciones y
-automatizaciones. GitHub suele mantener redirecciones, pero cada clon, secret,
-badge y pipeline debe verificarse; este repositorio no ejecuta el renombrado.
+- Terraform de Cloudflare, R2 y Netcup;
+- bootstrap, identidad, seguridad y configuración del host;
+- Docker Engine, Swarm, firewall y redes;
+- Traefik, todos los routers y stacks de servicios;
+- migración y contratos de datos;
+- observabilidad, backup, restore y disaster recovery;
+- validadores, CI, políticas, runbooks y evidencias no sensibles.
 
-`MigracionNetCup` conserva temporalmente aplicaciones, Compose, datos y
-procedimientos de migración. Tras el inventario se elige una de estas opciones:
+`MigracionNetCup` solo conserva evidencia histórica del origen. No tiene
+permiso de aplicar infraestructura, firewall, DNS, Traefik ni stacks en
+paralelo con este repositorio. No se crea `apptolast-workloads`: fragmentar la
+infraestructura contradiría el propietario único acordado.
 
-1. Renombrarlo a `apptolast-workloads` y convertirlo en el monorepo de stacks.
-2. Crear `apptolast-workloads` limpio y archivar `MigracionNetCup` como
-   evidencia de la transición.
+El código fuente de una aplicación sí puede vivir en su propio repositorio. Su
+pipeline construye una imagen inmutable; este repo fija el digest y gobierna
+cómo se ejecuta en el servidor.
 
-La segunda opción es preferible si el historial antiguo contiene estructura
-obsoleta, secretos ya revocados o automatización peligrosa. No se crea un
-repositorio por aplicación hasta que exista una diferencia real de equipo,
-permisos, release o ciclo de vida.
+## Fronteras de estado
 
-Los secretos, states y backups no constituyen repositorios Git. Residen en sus
-backends y gestores cifrados con acceso, rotación y recuperación propios.
-
-## Propiedad final
-
-| Objeto | Repositorio propietario |
+| Objeto | Propietario |
 | --- | --- |
-| R2 de state, DNS y firewall de proveedor | `dockerswarm-platform` |
-| Host, Docker, Swarm, Traefik y red edge | `dockerswarm-platform` |
-| Stacks, routers y configuración no sensible de apps | `apptolast-workloads` |
-| Esquemas, migraciones y pruebas de cada app | Repo de workloads o de la app |
-| Datos, credenciales y material de backup | Backend/gestor externo |
-| Expediente de corte y evidencias sensibles | Almacén operativo restringido |
+| Definición completa del servidor y sus servicios | Este repositorio |
+| Código fuente y tests internos de cada aplicación | Repo de la aplicación |
+| Imágenes publicadas | Registry, referenciadas aquí por digest |
+| State Terraform | Backend R2 dedicado y snapshots cifrados |
+| Datos de producción | `/srv/dockerswarm` más backup externo probado |
+| Tokens, contraseñas y claves privadas | Gestor de secretos externo |
+| Planes y evidencias sensibles de cambios | Almacén operativo restringido |
 
-Un objeto nunca tiene dos repositorios, states o pipelines con permiso de
+Un objeto no puede tener dos repositorios, states o pipelines con permiso de
 escritura simultáneo.
 
-## Organización de este repositorio
+## Organización
 
 ```text
 .
-├── .github/               CI, Dependabot, CODEOWNERS y plantilla de PR
+├── .github/               CI, Dependabot, CODEOWNERS y PR
 ├── ansible/
-│   ├── inventory/         Destinos sin secretos
-│   ├── playbooks/         Entradas operativas pequeñas
-│   └── roles/             Estado del host y del Swarm por responsabilidad
-├── config/                Contratos compartidos y configuración base
-├── docs/                  Arquitectura, decisiones y runbooks
+│   ├── inventory/         destinos sin secretos
+│   ├── playbooks/         entradas operativas pequeñas
+│   ├── roles/             estado por responsabilidad
+│   └── templates/         políticas compartidas Jinja
+├── backup/                controlador y contratos de backup/restore
+├── config/                contratos y allowlists comunes
+├── docs/                  decisiones y runbooks
+├── images/                builds auxiliares reproducibles
 ├── infra/terraform/
 │   ├── cloudflare/
 │   │   ├── state-bootstrap/
 │   │   └── apptolast-dns/
-│   └── netcup/perimeter/
-├── scripts/               Wrappers y verificaciones sin lógica duplicada
-├── stacks/                Templates de stacks propiedad de plataforma
-└── tests/                 Fixtures sin datos de producción
+│   ├── netcup/perimeter/
+│   └── testing/           harness offline sin credenciales
+├── migration/             restauración exacta y evidencia
+├── scripts/               wrappers y validadores fail-closed
+├── stacks/
+│   ├── edge/
+│   ├── observability/
+│   └── workloads/
+└── tests/                 regresión y pruebas adversariales
 ```
 
-Reglas de organización:
+Reglas:
 
-- cada root Terraform tiene backend, lock, variables, outputs, tests y README;
-- cada rol Ansible posee una sola capa y no gestiona recursos del proveedor;
-- `config/platform.yml` es el contrato común, no un almacén de secretos;
-- `requirements-dev.in` declara Python directo y `requirements-dev.txt`
-  bloquea todo el grafo con hashes; se regenera con
-  `scripts/update-python-lock.sh`;
-- un fichero generado va a `.build`, `.terraform.d` o un destino ignorado;
-- toda excepción de seguridad tiene motivo, propietario y prueba;
-- los inventarios sensibles y `host_vars` reales no entran en Git.
+- cada root Terraform tiene backend, identidad, lock, tests y README propios;
+- todo recurso preexistente se importa antes de aplicar;
+- cada rol Ansible tiene una responsabilidad y pre/postcondiciones explícitas;
+- `config/*.yml` contiene contratos, nunca secretos;
+- imágenes, providers, Python, colecciones y acciones se fijan por versión,
+  hash o digest;
+- los generados van a destinos ignorados, no al árbol versionado;
+- las fuentes de secretos se crean fuera del repo y se identifican por
+  catálogo/checksum;
+- toda excepción de seguridad tiene razón, límite y prueba.
 
-## Versionado y releases
+## Versionado y despliegue
 
-`platform_release_version` usa SemVer y empieza en `0.1.0` mientras el edge y
-la recuperación no estén aceptados en producción.
+`platform_release_version` usa SemVer. La versión `0.1.0` sigue pendiente hasta
+que el runtime y la recuperación sean aceptados.
 
-- **patch:** corrección compatible, test o documentación sin cambiar contrato;
-- **minor:** capacidad nueva compatible, recurso o control operativo;
-- **major:** cambio de propietario, contrato incompatible o reconstrucción.
+- **patch:** corrección compatible, test o documentación;
+- **minor:** capacidad nueva compatible o control operativo;
+- **major:** cambio incompatible de contrato o propiedad.
 
-Todo cambio se registra en `CHANGELOG.md`. Una release de producción:
+Una release:
 
-1. tiene worktree limpio, PR revisada y CI verde;
-2. actualiza versión y changelog en el mismo commit;
-3. usa un tag firmado `vMAJOR.MINOR.PATCH`;
-4. conserva planes, aprobación y evidencia fuera de Git;
-5. se despliega con los wrappers versionados;
-6. deja `/opt/dockerswarm/DEPLOYED_VERSION.yml` con commit, perfil y contrato;
-7. registra validación y rollback en el expediente operativo.
+1. parte de un worktree limpio y CI verde;
+2. actualiza contrato y `CHANGELOG.md` en el mismo commit;
+3. usa commit y tag firmados cuando las identidades estén aprovisionadas;
+4. conserva plan, aprobación y evidencia fuera de Git;
+5. aplica exclusivamente mediante wrappers versionados;
+6. deja commit, perfil y hash contractual en el host;
+7. repite Ansible y exige idempotencia;
+8. registra aceptación y rollback.
 
-No se etiqueta `0.1.0` por el simple hecho de que el código compile.
+Bootstrap y Ansible comparten un mutex host-global. Los writers Terraform usan
+locking remoto y pruebas firmadas. Los helpers directos que quedan fuera de
+esas fronteras solo se ejecutan en una ventana exclusiva documentada.
 
-## GitHub
+## Protección GitHub
 
-Configuración recomendada para `main`:
+Para `main`:
 
-- PR obligatoria y conversación resuelta;
-- CI `Terraform, Ansible, Traefik and security` obligatoria;
-- revisión de CODEOWNERS;
-- force-push y borrado de rama protegida deshabilitados;
-- commits y tags firmados cuando todas las identidades estén preparadas;
-- secret scanning, push protection y Dependabot habilitados;
-- entorno `production` con aprobación manual y sin ejecución desde forks.
-
-La CI de este repositorio es deliberadamente read-only. No se habilita
-`terraform apply` ni Ansible de producción en GitHub hasta disponer de
-credenciales separadas, environment protegido, backup probado y responsable de
-rollback.
+- PR y conversaciones resueltas obligatorias;
+- CI y CODEOWNERS obligatorios;
+- force-push y borrado deshabilitados;
+- secret scanning y push protection habilitados;
+- commits/tags firmados al completar el bootstrap de identidades;
+- entorno `production` protegido y sin ejecución desde forks;
+- CI read-only hasta disponer de credenciales separadas y rollback probado.
 
 ## Cadencia mínima
 
 ### Semanal
 
-- revisar PR de dependencias y advisories;
-- ejecutar CI y comprobar unidades/servicios fallidos;
-- revisar espacio, inodos, logs y expiración próxima de certificados.
+- revisar dependencias, advisories y unidades fallidas;
+- comprobar espacio, inodos, logs, backups y certificados;
+- confirmar que no existe drift o marker de operación abandonado.
 
 ### Mensual
 
-- ejecutar planes read-only de los tres roots y clasificar drift;
-- comprobar uso y próxima rotación de tokens, incluido el refresh token Netcup;
-- verificar snapshots cifrados, checksums y copia offsite;
-- revisar usuarios, claves SSH, grupo Docker y permisos GitHub.
+- ejecutar planes read-only de cada root y clasificar drift;
+- revisar usuarios, claves SSH, permisos GitHub y rotación de credenciales;
+- verificar snapshots cifrados y ejecutar el ensayo de aplicaciones.
 
 ### Trimestral
 
-- restaurar states, ACME y una copia coherente de Swarm en entorno aislado;
-- ensayar rollback y medir RTO/RPO;
-- revisar firewall Netcup, UFW, `DOCKER-USER` y superficie publicada;
-- retirar Configs, secrets y accesos obsoletos tras su retención.
+- reconstruir states y restaurar datos en un entorno aislado;
+- ensayar recuperación de Raft/ACME y medir RTO/RPO;
+- revisar Netcup, UFW, `DOCKER-USER`, DNS y superficie publicada;
+- retirar accesos, Configs y secrets obsoletos conforme a su retención.
 
 ### Antes de cada cambio
 
-- plan, backup y rollback objetivos;
-- commit/tag exacto y worktree limpio;
-- ventana y consola de recuperación;
-- aplicación serial;
-- segunda ejecución Ansible con `changed=0`;
-- validación externa de DNS, TLS, datos y observabilidad.
+- commit exacto, plan, backup, ventana y rollback;
+- consola fuera de banda si se toca acceso o red;
+- aplicación serial bajo el lock correspondiente;
+- segunda ejecución idempotente;
+- verificación externa de DNS, TLS, datos y observabilidad.

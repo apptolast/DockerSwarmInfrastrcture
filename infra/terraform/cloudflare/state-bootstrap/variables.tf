@@ -44,3 +44,36 @@ variable "state_buckets" {
     error_message = "Every Terraform root must use a different R2 bucket."
   }
 }
+
+variable "dockerswarm_backup_bucket" {
+  description = "Dedicated private R2 bucket for encrypted host and app backups."
+  type = object({
+    name     = string
+    location = string
+  })
+
+  validation {
+    condition = (
+      can(regex(
+        "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$",
+        var.dockerswarm_backup_bucket.name
+      )) &&
+      contains(
+        ["apac", "eeur", "enam", "oc", "weur", "wnam"],
+        var.dockerswarm_backup_bucket.location
+      )
+    )
+    error_message = <<-EOT
+      The backup bucket name must be 3-63 lowercase letters, digits or hyphens
+      and its location must be an R2 hint supported by the pinned provider.
+    EOT
+  }
+
+  validation {
+    condition = !contains(
+      [for bucket in values(var.state_buckets) : bucket.name],
+      var.dockerswarm_backup_bucket.name
+    )
+    error_message = "The backup bucket must be distinct from both state buckets."
+  }
+}

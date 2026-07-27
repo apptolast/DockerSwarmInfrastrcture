@@ -1,0 +1,37 @@
+---
+- name: Restart CrowdSec
+  ansible.builtin.systemd_service:
+    name: crowdsec.service
+    enabled: true
+    state: restarted
+
+- name: Restart Fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban.service
+    enabled: true
+    state: restarted
+
+- name: Restart PSAD
+  ansible.builtin.systemd_service:
+    name: psad.service
+    enabled: true
+    state: restarted
+
+- name: Restart rsyslog
+  ansible.builtin.systemd_service:
+    name: rsyslog.service
+    enabled: true
+    state: restarted
+
+- name: Reload UFW
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - --force
+      - reload
+  changed_when: true
+
+- name: Reload bootstrap OpenSSH
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: reloaded

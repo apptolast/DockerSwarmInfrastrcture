@@ -1,0 +1,20 @@
+---
+- name: Render internal observability without mutating a Swarm
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../../config/services.yml
+    - ../../stacks/observability/secrets.yml
+    - ../group_vars/all.yml
+
+  vars:
+    observability_render_only: true
+    observability_docker_proxy_unit_helper: >-
+      {{ playbook_dir }}/../../scripts/docker-readonly-proxy.py
+
+  roles:
+    - role: observability

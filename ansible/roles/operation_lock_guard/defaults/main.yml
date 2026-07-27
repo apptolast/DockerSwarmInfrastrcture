@@ -1,0 +1,9 @@
+---
+operation_lock_guard_operation_id: ""
+operation_lock_guard_controller: ""
+operation_lock_guard_mode: ""
+operation_lock_guard_scope: ansible
+operation_lock_guard_lock_path: /run/lock/dockerswarm-iac.lock
+operation_lock_guard_marker_path: /run/lock/dockerswarm-ansible.marker
+operation_lock_guard_owner_uid: 1001
+operation_lock_guard_owner_gid: 1001

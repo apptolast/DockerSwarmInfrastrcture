@@ -11,7 +11,8 @@ platform_docker_packages:
 
 edge_install_root: "{{ platform_install_root }}"
 edge_state_root: "{{ platform_state_root }}"
-edge_network: "{{ platform_edge_network }}"
+edge_monitoring_network: "{{ platform_edge_monitoring_network }}"
+edge_networks: "{{ platform_edge_networks }}"
 
 edge_traefik_image: >-
   traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8

@@ -1,0 +1,330 @@
+---
+- name: Validate top-level workload inputs
+  ansible.builtin.assert:
+    that:
+      - schema_version | int == 1
+      - catalog_version is match("^[0-9]+\\.[0-9]+\\.[0-9]+$")
+      - target.services_root == workloads_state_root
+      - workloads_stack_name is match("^[a-z][a-z0-9-]*$")
+      - platform_minecraft_public_enabled is boolean
+      - >-
+        platform_dns_cutover.minecraft
+        == platform_minecraft_public_enabled
+      - >-
+        (25565 in platform_public_tcp_ports)
+        and (platform_public_tcp_ports | sort == [80, 443, 25565])
+      - >-
+        workloads_edge_networks
+        ==
+        {
+          "kropia": "apptolast-edge-kropia",
+          "minecraft-stats": "apptolast-edge-minecraft-stats",
+          "n8n": "apptolast-edge-n8n",
+          "openclaw": "apptolast-edge-openclaw",
+          "passbolt": "apptolast-edge-passbolt",
+          "portfolio-alberto": "apptolast-edge-portfolio-alberto",
+          "portfolio-pablo": "apptolast-edge-portfolio-pablo",
+          "shlink": "apptolast-edge-shlink"
+        }
+      - >-
+        workloads_edge_networks.values() | list | unique | length == 8
+      - workloads_secret_catalog_version | int == 1
+      - workloads_secret_version is match("^v[1-9][0-9]*$")
+      - >-
+        approved_services | map(attribute="id") | list | sort
+        ==
+        (workloads_runtime_service_ids + ["traefik-edge"]) | sort
+      - >-
+        denied_services | map(attribute="id") | list
+        | intersect(workloads_runtime_service_ids) | length == 0
+    fail_msg: >-
+      The service, secret, path or network catalog is outside the approved
+      workloads contract.
+
+- name: Index approved services by catalog ID
+  ansible.builtin.set_fact:
+    workloads_approved_by_id: >-
+      {{
+        workloads_approved_by_id | default({})
+        | combine({item.id: item})
+      }}
+  loop: "{{ approved_services }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Index datasets by catalog ID
+  ansible.builtin.set_fact:
+    workloads_dataset_by_id: >-
+      {{
+        workloads_dataset_by_id | default({})
+        | combine({item.id: item})
+      }}
+  loop: "{{ datasets }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Index Docker Secrets by contract key
+  ansible.builtin.set_fact:
+    workloads_secret_names: >-
+      {{
+        workloads_secret_names | default({})
+        | combine({item.key: item.external_name})
+      }}
+  loop: "{{ workloads_secrets }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Derive the audited n8n runner source reference
+  ansible.builtin.set_fact:
+    workloads_n8n_runner_source_reference: >-
+      {{
+        (workloads_approved_by_id["n8n"].images
+        | selectattr("component", "equalto", "runner") | first).reference
+      }}
+
+- name: Describe the repository-native n8n runner image
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/../../scripts/manage-n8n-runner-image.py"
+      - describe
+      - --context
+      - "{{ workloads_runner_context_source }}"
+      - --source-reference
+      - "{{ workloads_n8n_runner_source_reference }}"
+  delegate_to: localhost
+  become: false
+  register: workloads_n8n_runner_description_raw
+  changed_when: false
+  check_mode: false
+
+- name: Record the n8n runner build identity
+  ansible.builtin.set_fact:
+    workloads_n8n_runner: >-
+      {{ workloads_n8n_runner_description_raw.stdout | from_json }}
+
+- name: Derive immutable images only from the service catalog
+  ansible.builtin.set_fact:
+    workloads_images:
+      kropia: >-
+        {{
+          (workloads_approved_by_id["kropia"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      minecraft: >-
+        {{
+          (workloads_approved_by_id["minecraft"].images
+          | selectattr("component", "equalto", "server") | first).reference
+        }}
+      minecraft_stats: >-
+        {{
+          (workloads_approved_by_id["minecraft-stats"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      n8n_app: >-
+        {{
+          (workloads_approved_by_id["n8n"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      n8n_database: >-
+        {{
+          (workloads_approved_by_id["n8n"].images
+          | selectattr("component", "equalto", "database") | first).reference
+        }}
+      n8n_runner: >-
+        {{ workloads_n8n_runner.image_reference }}
+      n8n_redis: >-
+        {{
+          (workloads_approved_by_id["n8n"].images
+          | selectattr("component", "equalto", "workflow-cache")
+          | first).reference
+        }}
+      n8n_browser: >-
+        {{
+          (workloads_approved_by_id["n8n"].images
+          | selectattr("component", "equalto", "browser") | first).reference
+        }}
+      openclaw: >-
+        {{
+          (workloads_approved_by_id["openclaw-clean"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      passbolt_app: >-
+        {{
+          (workloads_approved_by_id["passbolt"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      passbolt_database: >-
+        {{
+          (workloads_approved_by_id["passbolt"].images
+          | selectattr("component", "equalto", "database") | first).reference
+        }}
+      portfolio_alberto: >-
+        {{
+          (workloads_approved_by_id["personal-website-alberto"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      portfolio_pablo: >-
+        {{
+          (workloads_approved_by_id["personal-website-pablo"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      shlink_app: >-
+        {{
+          (workloads_approved_by_id["shlink"].images
+          | selectattr("component", "equalto", "app") | first).reference
+        }}
+      shlink_database: >-
+        {{
+          (workloads_approved_by_id["shlink"].images
+          | selectattr("component", "equalto", "database") | first).reference
+        }}
+
+- name: Derive bind paths only from the dataset catalog
+  ansible.builtin.set_fact:
+    workloads_paths:
+      minecraft_mods: >-
+        {{ workloads_dataset_by_id["minecraft-mods"].target_path }}
+      minecraft_worlds: >-
+        {{ workloads_dataset_by_id["minecraft-worlds"].target_path }}
+      n8n_home: >-
+        {{ workloads_dataset_by_id["n8n-home"].target_path }}
+      n8n_postgres: >-
+        {{ workloads_dataset_by_id["n8n-postgres"].target_path }}
+      openclaw_home: >-
+        {{ workloads_dataset_by_id["openclaw-clean-home"].target_path }}
+      passbolt_gpg: >-
+        {{ workloads_dataset_by_id["passbolt-gpg"].target_path }}
+      passbolt_jwt: >-
+        {{ workloads_dataset_by_id["passbolt-jwt"].target_path }}
+      passbolt_postgres: >-
+        {{ workloads_dataset_by_id["passbolt-postgres"].target_path }}
+      shlink_postgres: >-
+        {{ workloads_dataset_by_id["shlink-postgres"].target_path }}
+
+- name: Derive the exclusive PostgreSQL mount ownership contract
+  ansible.builtin.set_fact:
+    workloads_db_mount_contract:
+      "{{ workloads_paths.n8n_postgres }}": >-
+        {{ workloads_stack_name }}_n8n-db
+      "{{ workloads_paths.passbolt_postgres }}": >-
+        {{ workloads_stack_name }}_passbolt-db
+      "{{ workloads_paths.shlink_postgres }}": >-
+        {{ workloads_stack_name }}_shlink-db
+
+- name: Derive exact post-deployment smoke targets
+  ansible.builtin.set_fact:
+    workloads_http_smoke_targets:
+      - service: kropia
+        hostname: "{{ workloads_approved_by_id.kropia.hostnames | first }}"
+        path: /health
+        status: "200"
+      - service: minecraft-stats
+        hostname: >-
+          {{ workloads_approved_by_id["minecraft-stats"].hostnames | first }}
+        path: /actuator/health
+        status: "200"
+      - service: n8n
+        hostname: "{{ workloads_approved_by_id.n8n.hostnames | first }}"
+        path: /healthz
+        status: "200"
+      - service: openclaw
+        hostname: >-
+          {{ workloads_approved_by_id["openclaw-clean"].hostnames | first }}
+        path: /readyz
+        status: "200"
+      - service: passbolt
+        hostname: "{{ workloads_approved_by_id.passbolt.hostnames | first }}"
+        path: /healthcheck/status.json
+        status: "200"
+      - service: portfolio-alberto
+        hostname: >-
+          {{
+            workloads_approved_by_id["personal-website-alberto"].hostnames
+            | first
+          }}
+        path: /
+        status: "200"
+      - service: portfolio-pablo
+        hostname: >-
+          {{
+            workloads_approved_by_id["personal-website-pablo"].hostnames
+            | first
+          }}
+        path: /
+        status: "200"
+      - service: shlink
+        hostname: "{{ workloads_approved_by_id.shlink.hostnames | first }}"
+        path: /rest/health
+        status: "200"
+    workloads_database_invariants:
+      - service: n8n-db
+        user: n8n
+        database: n8n
+      - service: passbolt-db
+        user: passbolt
+        database: passbolt
+      - service: shlink-db
+        user: shlink
+        database: shlink
+
+- name: Validate derived image, dataset and secret identities
+  ansible.builtin.assert:
+    that:
+      - workloads_images | length == 15
+      - workloads_images.values() | list | unique | length == 15
+      - workloads_n8n_runner.schema_version | int == 1
+      - >-
+        workloads_n8n_runner.context_sha256
+        is match("^[a-f0-9]{64}$")
+      - >-
+        workloads_n8n_runner.source_reference
+        == workloads_n8n_runner_source_reference
+      - >-
+        workloads_images.values() | list
+        | reject("equalto", workloads_images.n8n_runner)
+        | select("match", "^.+@sha256:[a-f0-9]{64}$")
+        | list | length == 14
+      - >-
+        workloads_images.n8n_runner
+        is match("^apptolast/n8n-runners:src-[a-f0-9]{64}$")
+      - workloads_paths | length == 9
+      - >-
+        workloads_paths.values() | list
+        | select("match", "^/srv/dockerswarm/services/.+")
+        | list | length == 9
+      - workloads_secrets | map(attribute="key") | list | unique | length
+        == workloads_secrets | length
+      - >-
+        workloads_secrets | map(attribute="external_name")
+        | list | unique | length == workloads_secrets | length
+      - >-
+        workloads_secrets | map(attribute="source_file")
+        | list | unique | length == workloads_secrets | length
+      - workloads_secret_names | length == workloads_secrets | length
+      - workloads_db_mount_contract | length == 3
+      - >-
+        workloads_secrets | map(attribute="external_name") | list
+        | select("match", "^[a-z0-9-]+-" + workloads_secret_version + "$")
+        | list | length == workloads_secrets | length
+    fail_msg: >-
+      Derived workloads images, bind paths or external secrets are invalid.
+
+- name: Derive the expected image for each Swarm service
+  ansible.builtin.set_fact:
+    workloads_expected_images:
+      kropia: "{{ workloads_images.kropia }}"
+      minecraft: "{{ workloads_images.minecraft }}"
+      minecraft-stats: "{{ workloads_images.minecraft_stats }}"
+      n8n: "{{ workloads_images.n8n_app }}"
+      n8n-db: "{{ workloads_images.n8n_database }}"
+      n8n-runners: "{{ workloads_images.n8n_runner }}"
+      openclaw: "{{ workloads_images.openclaw }}"
+      passbolt: "{{ workloads_images.passbolt_app }}"
+      passbolt-db: "{{ workloads_images.passbolt_database }}"
+      portfolio-alberto: "{{ workloads_images.portfolio_alberto }}"
+      portfolio-pablo: "{{ workloads_images.portfolio_pablo }}"
+      redis-coordinator: "{{ workloads_images.n8n_redis }}"
+      selenium: "{{ workloads_images.n8n_browser }}"
+      shlink: "{{ workloads_images.shlink_app }}"
+      shlink-db: "{{ workloads_images.shlink_database }}"
