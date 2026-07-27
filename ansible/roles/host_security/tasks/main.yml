@@ -694,6 +694,7 @@
     file_type: file
     recurse: false
   register: host_security_crowdsec_acquisitions
+  when: not ansible_check_mode
 
 - name: Enforce the exact CrowdSec acquisition set
   ansible.builtin.assert:
@@ -706,6 +707,7 @@
       An unmanaged CrowdSec acquisition source would duplicate or expand the
       reviewed log scope.
     quiet: true
+  when: not ansible_check_mode
 
 - name: Install the exact Fail2ban SSH jail
   ansible.builtin.template:

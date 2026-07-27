@@ -102,6 +102,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   prioridad 40) y `config/host-security.yml` bloquea `sudo=1.9.17p2-1ubuntu3`
   para que la reconstrucción disponga del binario. No se altera la alternativa
   del sistema, no se concede `NOPASSWD` y no se almacena ninguna contraseña.
+- El assert del conjunto exacto de acquisitions de CrowdSec no podía pasar
+  bajo `--check`: `ansible.builtin.find` sí se ejecuta en check mode y lee el
+  estado vivo, mientras la plantilla y los borrados solo se simulan, de modo
+  que comparaba el estado real contra el deseado. Queda condicionado con
+  `when: not ansible_check_mode`, igual que el par equivalente de grupos del
+  administrador. El apply sigue enforzándolo sin cambios.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.
