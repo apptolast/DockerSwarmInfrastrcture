@@ -1,0 +1,86 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(./**)",
+      "Glob(./**)",
+      "Grep(./**)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+
+      "Bash(./scripts/bootstrap-tooling.sh:*)",
+      "Bash(./scripts/validate-iac.sh:*)",
+      "Bash(./scripts/lint.sh:*)",
+      "Bash(./scripts/validate-contract.py:*)",
+      "Bash(./scripts/validate-host-security.py:*)",
+      "Bash(./scripts/validate-ssh-policy.py:*)",
+      "Bash(./scripts/validate-services.py:*)",
+      "Bash(./scripts/validate-workloads.sh:*)",
+      "Bash(./scripts/validate-observability.sh:*)",
+      "Bash(./scripts/validate-capacity.sh:*)",
+      "Bash(./scripts/backup-self-test.sh:*)",
+      "Bash(./scripts/validate-traefik-config.sh:*)",
+
+      "Bash(docker info:*)",
+      "Bash(docker node ls:*)",
+      "Bash(docker service ls:*)",
+      "Bash(docker network ls:*)",
+      "Bash(sudo -- docker info:*)",
+      "Bash(sudo -- docker node ls:*)",
+      "Bash(sudo -- docker service ls:*)",
+
+      "Bash(terraform fmt:*)",
+      "Bash(terraform init:*)",
+      "Bash(terraform validate:*)",
+      "Bash(terraform test:*)",
+      "Bash(terraform plan:*)",
+
+      "Bash(sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py:*)",
+      "Bash(sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py:*)",
+
+      "Bash(./scripts/deploy-ansible.sh --playbook * --check:*)",
+
+      "Bash(npx --yes markdownlint-cli2*:*)"
+    ],
+    "ask": [
+      "Bash(./scripts/deploy-ansible.sh --playbook * --confirm-production:*)",
+      "Bash(terraform apply:*)",
+      "Bash(./scripts/apply-terraform.sh:*)",
+      "Bash(./scripts/migrate-terraform-state.sh:*)",
+      "Bash(sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py recover:*)",
+      "Bash(sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py recover:*)",
+      "Bash(git push:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/secrets/**)",
+      "Read(**/*secret*)",
+      "Read(**/*.tfvars)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+
+      "Bash(rm -rf /*)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(curl * | sh*)",
+      "Bash(curl * | bash*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git status --porcelain 2>/dev/null | grep -q . && echo '{\"systemMessage\": \"Uncommitted changes remain in the working tree (git status --porcelain is non-empty).\"}' || exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
