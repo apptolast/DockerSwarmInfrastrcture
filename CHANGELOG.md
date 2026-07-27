@@ -129,6 +129,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- El assert de identidad del servicio Traefik leía
+  `ContainerSpec.ReadonlyRootfs`, clave que la API de Docker no expone para
+  servicios Swarm; la real es `ContainerSpec.ReadOnly`. La condición abortaba
+  con `object of type 'dict' has no attribute`.
+- El stack declaraba `security_opt: no-new-privileges:true`, que
+  `docker stack deploy` ignora en Swarm y por el que emite un warning en cada
+  despliegue; el assert por servicio exigía después ese valor y nunca podía
+  cumplirse. Se retiran ambos: la garantía sigue vigente porque
+  `config/daemon.json` fija `no-new-privileges` para todo el daemon y tanto
+  `validate-iac.sh` como el rol `platform` lo verifican de forma exacta.
 - `ping.manualRouting: true` desactiva el router interno que sirve `/ping`,
   pero el CLI `traefik healthcheck` del healthcheck del contenedor consulta esa
   ruta con el path fijo `/ping` sobre el entrypoint `traefik`. Recibía 404, el

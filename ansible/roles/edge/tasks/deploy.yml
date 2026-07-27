@@ -402,10 +402,7 @@
         ~ ":" ~ (edge_traefik_runtime_gid | string)
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.ReadonlyRootfs
-      - >-
-        (edge_deployed_traefik_service.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Privileges.NoNewPrivileges
+        Spec.TaskTemplate.ContainerSpec.ReadOnly
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
         Spec.TaskTemplate.ContainerSpec.Configs | length == 2

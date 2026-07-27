@@ -48,8 +48,6 @@ services:
       - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     stop_grace_period: 30s
     healthcheck:
       test:
