@@ -435,6 +435,25 @@
     - crowdsec-hubupdate.timer
     - crowdsec-hubupdate.service
 
+# Masking crowdsec-hubupdate.service makes the unit its timer triggers vanish,
+# so systemd leaves the timer at ActiveState=failed (Result=resources) even
+# though it is masked and can no longer run. Clear that residual state so the
+# promotion gate below reads a deterministic ActiveState. A non-zero exit is
+# tolerated here (systemd reports "not loaded" for an already-masked, unloaded
+# unit); the assert that follows is the real gate and is not relaxed.
+- name: Clear the residual failure that masking leaves on the Hub units
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - reset-failed
+      - "{{ item }}"
+  loop:
+    - crowdsec-hubupdate.timer
+    - crowdsec-hubupdate.service
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
 - name: Read the CrowdSec Hub update unit states
   ansible.builtin.command:
     argv:

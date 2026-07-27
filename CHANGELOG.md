@@ -108,6 +108,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   que comparaba el estado real contra el deseado. Queda condicionado con
   `when: not ansible_check_mode`, igual que el par equivalente de grupos del
   administrador. El apply sigue enforzándolo sin cambios.
+- El apply de `host_security` fallaba de forma reproducible en `Enforce
+  versioned-only CrowdSec Hub promotion`: al enmascarar
+  `crowdsec-hubupdate.service` desaparece la unidad que dispara su timer y
+  systemd deja `crowdsec-hubupdate.timer` en `ActiveState=failed`
+  (`Result=resources`) aunque ya esté enmascarado. La propia tarea de
+  enmascarado creaba el estado que el gate siguiente rechazaba. Ahora se
+  limpia ese residuo con `systemctl reset-failed` antes de leer el estado;
+  el assert de promoción no se relaja.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.
