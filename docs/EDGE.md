@@ -12,7 +12,7 @@ Publica únicamente `80/TCP` y `443/TCP`. Usa:
 - ningún provider Docker/Swarm y ningún socket Docker;
 - DNS-01 de ACME mediante Cloudflare;
 - `/srv/dockerswarm/traefik/acme.json` como estado persistente;
-- el secret externo `cloudflare_dns_api_token_v1`;
+- el secret externo `cloudflare_dns_api_token_v2`;
 - dos Docker Configs inmutables con nombre derivado de SHA-256;
 - ocho overlays de workload aisladas y una overlay de monitorización, todas
   externas, cifradas y no attachable;
@@ -20,10 +20,12 @@ Publica únicamente `80/TCP` y `443/TCP`. Usa:
   servicios HTTP aprobados.
 
 Esto es estado declarado, no evidencia de despliegue. El Docker Secret
-`cloudflare_dns_api_token_v1` existe, pero Docker no permite observar su valor
-ni scope. No existen todavía certificado, overlays, stack ni servicios. La
-credencial debe rotarse antes de producción porque fue expuesta fuera del
-gestor previsto.
+`cloudflare_dns_api_token_v1` sigue existiendo (rotación pendiente de revocar
+hasta verificar el servicio con la v2, según el propio procedimiento de este
+documento) pero ya no está referenciado por `edge_traefik_cloudflare_secret_name`.
+`cloudflare_dns_api_token_v2` es la versión activa, instalada y verificada
+(TXT efímero) el 2026-07-27. No existen todavía certificado, overlays, stack
+ni servicios.
 
 ## Separación de credenciales
 
@@ -110,6 +112,17 @@ tras verificar el servicio.
 No se registra el token ni un hash reutilizable de su valor. Sí se registra el
 ID/nombre de Docker, `CreatedAt`, identificador visible del token Cloudflare,
 scope, custodio y fecha de próxima revisión.
+
+### Registro de secrets instalados
+
+<!-- markdownlint-disable MD013 -->
+
+| Docker secret | ID Docker | `CreatedAt` | ID visible Cloudflare | Scope | Custodio | Próxima revisión |
+| --- | --- | --- | --- | --- | --- | --- |
+| `cloudflare_dns_api_token_v2` | `2l8zyn0elq7ir45hm87qx63zv` | 2026-07-27T09:20:10Z | `185f75d78a7b79a5b1d41e595fdaf90f` | Zone Read + DNS Edit sobre `apptolast.com` (uso ACME/Traefik) | Pablo Hurtado Gonzalo | 2026-10-25 |
+| `cloudflare_dns_api_token_v1` | `hq1sjhfojnyujxf96ryngdiu0` | 2026-07-26 (aprox.) | desconocido | desconocido; expuesto fuera del gestor previsto | Pablo Hurtado Gonzalo | revocar tras verificar `v2` en servicio |
+
+<!-- markdownlint-enable MD013 -->
 
 ## ACME: staging antes de producción
 
