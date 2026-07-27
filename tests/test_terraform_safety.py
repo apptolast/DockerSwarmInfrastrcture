@@ -845,6 +845,48 @@ class TerraformSafetyTests(unittest.TestCase):
             "be checked here",
         )
 
+    def test_every_terraform_validate_caller_archives_the_config_directory(
+        self,
+    ) -> None:
+        # contract.tf (and other roots) read
+        # `${path.module}/../../../../config/*.yml` via yamldecode(file(...)),
+        # which Terraform only evaluates starting at `terraform validate`.
+        # Any wrapper that materializes a runtime copy via `git archive` and
+        # then calls verify-terraform-validate must include config/ in its
+        # archive list, or the isolated copy is missing the files those
+        # roots read (plan-terraform.sh did not, until this was found by
+        # actually running it against real infrastructure on 2026-07-27).
+        wrapper_scripts = sorted((PROJECT_ROOT / "scripts").glob("*.sh"))
+        checked = 0
+        for script_path in wrapper_scripts:
+            text = script_path.read_text(encoding="utf-8")
+            if "verify-terraform-validate" not in text or "git " not in text:
+                continue
+            archive_match = re.search(
+                r"archive --format=tar[^|]*\|", text, re.DOTALL
+            )
+            self.assertIsNotNone(
+                archive_match,
+                f"{script_path.name} calls verify-terraform-validate but "
+                "has no git archive block to check",
+            )
+            archived_block = archive_match.group(0)
+            self.assertRegex(
+                archived_block,
+                r"\bconfig\b",
+                f"{script_path.name} calls verify-terraform-validate "
+                "(which runs terraform validate against a real root) but "
+                "its git archive list omits the config directory that "
+                "contract.tf reads via file()",
+            )
+            checked += 1
+        self.assertGreaterEqual(
+            checked,
+            3,
+            "expected plan-terraform.sh, apply-terraform.sh and "
+            "migrate-terraform-state.sh to be checked here",
+        )
+
     def test_saved_plan_policy_rejects_every_delete(self) -> None:
         terraform_safety.validate_plan_document(
             "cloudflare/apptolast-dns",

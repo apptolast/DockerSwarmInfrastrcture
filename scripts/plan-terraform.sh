@@ -311,9 +311,8 @@ retain_plan=false
 cleanup() {
   [[ ! -d "${terraform_data_dir}" ]] ||
     find "${terraform_data_dir}" -depth -delete
-  [[ -n "${DEBUG_KEEP_ATTESTATION:-}" ]] ||
-    { [[ ! -d "${attestation_dir}" ]] ||
-      find "${attestation_dir}" -depth -delete; }
+  [[ ! -d "${attestation_dir}" ]] ||
+    find "${attestation_dir}" -depth -delete
   if [[ "${plan_created}" == true && "${retain_plan}" == false ]]; then
     [[ ! -f "${output_plan}" ]] ||
       find "${output_plan}" -maxdepth 0 -type f -delete
@@ -328,6 +327,7 @@ trap cleanup EXIT
 runtime_project="${attestation_dir}/source"
 install --directory --mode=0700 "${runtime_project}"
 git -C "${PROJECT_DIR}" archive --format=tar "${revision}" \
+  config \
   infra/terraform \
   scripts/r2-cross-credential-probe.py \
   scripts/r2-operation-lease.py \

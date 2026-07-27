@@ -312,6 +312,7 @@ trap cleanup EXIT
 runtime_project="${attestation_dir}/source"
 install --directory --mode=0700 "${runtime_project}"
 git -C "${PROJECT_DIR}" archive --format=tar "${revision}" \
+  config \
   infra/terraform \
   scripts/r2-cross-credential-probe.py \
   scripts/r2-operation-lease.py \
