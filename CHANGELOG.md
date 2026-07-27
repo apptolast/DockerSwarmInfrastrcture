@@ -129,6 +129,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- `ping.manualRouting: true` desactiva el router interno que sirve `/ping`,
+  pero el CLI `traefik healthcheck` del healthcheck del contenedor consulta esa
+  ruta con el path fijo `/ping` sobre el entrypoint `traefik`. Recibía 404, el
+  contenedor se declaraba enfermo y Swarm lo reiniciaba cada 60 s
+  indefinidamente. Se vuelve al enrutado interno por defecto; el entrypoint
+  `traefik` no se publica, y el router `edge-health` sobre TLS se conserva.
+- El Docker secret `cloudflare_dns_api_token_v2` no contenía un token válido:
+  ACME fallaba con `failed to find zone apptolast.com: 403 9109 Invalid access
+  token`, mientras el token de `/etc/dockerswarm/terraform` verificaba
+  correctamente contra la API. Se instala su valor como
+  `cloudflare_dns_api_token_v3` y el contrato apunta ahí; v1 y v2 se conservan
+  para revocarlos por separado.
 - El rol instala fail2ban con `banaction = ufw`, de modo que cada baneo añade
   una regla a la misma cadena que `validate-ufw-contract.py` exige exacta:
   cualquier baneo activo hacía fallar `platform` y `host-baseline`. En un host

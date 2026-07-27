@@ -21,6 +21,6 @@ edge_traefik_runtime_uid: 65532
 edge_traefik_runtime_gid: 65532
 edge_traefik_stack_name: edge
 edge_traefik_acme_email: acme@apptolast.com
-edge_traefik_cloudflare_secret_name: cloudflare_dns_api_token_v2
+edge_traefik_cloudflare_secret_name: cloudflare_dns_api_token_v3
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json
