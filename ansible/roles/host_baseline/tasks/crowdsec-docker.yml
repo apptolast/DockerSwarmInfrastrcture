@@ -40,7 +40,7 @@
           (host_baseline_crowdsec_bouncer_source.content | b64decode)
           | regex_replace(
               "(?m)^([ ]{2}- INPUT)$",
-              "\\1\n  - DOCKER-USER"
+              "\g<1>\n  - DOCKER-USER"
             )
       }}
   no_log: true

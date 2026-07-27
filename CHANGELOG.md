@@ -119,6 +119,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - `docs/KNOWN_ISSUES.md` describía el prefijo de `sudo-rs` con un espacio
   final dentro de un code span, que markdownlint MD038 rechaza y hacía fallar
   `scripts/lint.sh`. El texto se reformula sin alterar el hecho descrito.
+- Las cinco sustituciones `regex_replace` que construyen argumentos dentro de
+  escalares YAML plegados usaban `\\1`, que llega literal a `re.sub` y no se
+  expande: `validate-ufw-contract.py` recibía `--public-port=\1`, y el
+  candidato del bouncer CrowdSec habría reemplazado su línea `- INPUT` por
+  `\1`. Ahora usan `\g<1>`, que sí expande en ese contexto.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.

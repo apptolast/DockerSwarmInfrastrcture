@@ -980,7 +980,7 @@
           + (
             platform_public_tcp_ports
             | map("string")
-            | map("regex_replace", "^(.*)$", "--public-port=\\1")
+            | map("regex_replace", "^(.*)$", "--public-port=\g<1>")
             | list
           )
           + (
@@ -991,7 +991,7 @@
                 | map(attribute="port")
               )
             | map("join", ":")
-            | map("regex_replace", "^(.*)$", "--egress=\\1")
+            | map("regex_replace", "^(.*)$", "--egress=\g<1>")
             | list
           )
         )
