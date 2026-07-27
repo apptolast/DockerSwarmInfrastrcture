@@ -129,6 +129,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- `docker node update` no acepta el alias `self`, que sí resuelve
+  `docker node inspect`: el daemon responde `node self not found`. Las
+  etiquetas de colocación de `platform` y `observability` nunca llegaban a
+  aplicarse. Ahora ambas usan el ID real del nodo, ya disponible en el
+  `inspect` previo.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.

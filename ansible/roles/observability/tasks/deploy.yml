@@ -317,7 +317,7 @@
       - update
       - --label-add
       - platform.observability=true
-      - self
+      - "{{ (observability_node_before.stdout | from_json | first).ID }}"
   when: >-
     (observability_node_before.stdout | from_json | first).
     Spec.Labels["platform.observability"] | default("") != "true"

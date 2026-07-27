@@ -761,7 +761,7 @@
           - update
           - --label-add
           - "{{ item.key }}={{ item.value }}"
-          - self
+          - "{{ (platform_swarm_node.stdout | from_json | first).ID }}"
       loop: "{{ platform_node_labels | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
