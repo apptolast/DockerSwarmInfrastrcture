@@ -129,6 +129,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- El rol instala fail2ban con `banaction = ufw`, de modo que cada baneo añade
+  una regla a la misma cadena que `validate-ufw-contract.py` exige exacta:
+  cualquier baneo activo hacía fallar `platform` y `host-baseline`. En un host
+  con SSH público eso convierte cada ejecución en una lotería. El validador
+  ahora tolera denegaciones acotadas por origen (`REJECT`/`DROP`), que solo
+  pueden estrechar el ingress; todo `ACCEPT` se sigue verificando igual.
 - `docker node update` no acepta el alias `self`, que sí resuelve
   `docker node inspect`: el daemon responde `node self not found`. Las
   etiquetas de colocación de `platform` y `observability` nunca llegaban a

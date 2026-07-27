@@ -123,6 +123,37 @@ def app_rule_matches(
     return port in allowed_ports and Counter(without_port) == expected_static
 
 
+def deny_rule_matches(rule: list[str], chain: str) -> bool:
+    """Recognize a source-scoped denial, such as a fail2ban ban.
+
+    This repository installs fail2ban with ``banaction = ufw``, so every ban it
+    issues is appended to the very user chain this contract validates. Refusing
+    them would make each reviewed run depend on whether a ban happened to be
+    active, which is not a property the contract is meant to assert.
+
+    A denial restricted to a source address can only narrow ingress, never
+    widen it, so tolerating it keeps the contract meaningful while making it
+    deterministic. Every ACCEPT rule is still checked by ``app_rule_matches``,
+    including one scoped to a source address.
+    """
+    if len(rule) < 6 or rule[:2] != ["-A", chain]:
+        return False
+    if rule[2] != "-s" or "/" not in rule[3]:
+        return False
+    try:
+        ipaddress.ip_network(rule[3], strict=False)
+    except ValueError:
+        return False
+    verdict = rule[4:]
+    if verdict == ["-j", "DROP"]:
+        return True
+    return len(verdict) == 4 and verdict[:3] == [
+        "-j",
+        "REJECT",
+        "--reject-with",
+    ] and verdict[3] in {"icmp-port-unreachable", "icmp6-port-unreachable"}
+
+
 def output_rules(chain: str, egress: set[tuple[str, int]]) -> list[list[str]]:
     return [
         [
@@ -157,7 +188,12 @@ def validate(
     expected_ipv4_ssh = ssh_rules("ufw-user-input", ssh_port, False)
     if not all(rule in ipv4_input for rule in expected_ipv4_ssh):
         raise UfwContractError("the exact IPv4 SSH limit is absent")
-    remaining_ipv4 = [rule for rule in ipv4_input if rule not in expected_ipv4_ssh]
+    remaining_ipv4 = [
+        rule
+        for rule in ipv4_input
+        if rule not in expected_ipv4_ssh
+        and not deny_rule_matches(rule, "ufw-user-input")
+    ]
     app_ports: list[int] = []
     for rule in remaining_ipv4:
         if not app_rule_matches(
@@ -175,7 +211,12 @@ def validate(
         raise UfwContractError("required IPv4 application ingress is incomplete")
 
     expected_ipv6 = ssh_rules("ufw6-user-input", ssh_port, True)
-    if ipv6_input != expected_ipv6:
+    observed_ipv6 = [
+        rule
+        for rule in ipv6_input
+        if not deny_rule_matches(rule, "ufw6-user-input")
+    ]
+    if observed_ipv6 != expected_ipv6:
         raise UfwContractError("IPv6 ingress is not exactly SSH-only")
 
     expected_ipv4_output = output_rules("ufw-user-output", egress)

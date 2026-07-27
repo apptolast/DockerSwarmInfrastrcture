@@ -116,6 +116,37 @@ class UfwContractTests(unittest.TestCase):
         with self.assertRaises(validator.UfwContractError):
             self.validate()
 
+    def test_source_scoped_denials_are_tolerated_but_permits_are_not(
+        self,
+    ) -> None:
+        for verdict in (
+            ["-j", "REJECT", "--reject-with", "icmp-port-unreachable"],
+            ["-j", "DROP"],
+        ):
+            with self.subTest(verdict=verdict):
+                self.ipv4_input.append(
+                    ["-A", "ufw-user-input", "-s", "198.51.100.7/32"] + verdict
+                )
+                self.ipv6_input.append(
+                    ["-A", "ufw6-user-input", "-s", "2001:db8::7/128"] + verdict
+                )
+                self.validate()
+                self.ipv4_input.pop()
+                self.ipv6_input.pop()
+
+        self.ipv4_input.append(
+            ["-A", "ufw-user-input", "-s", "198.51.100.7/32", "-j", "ACCEPT"]
+        )
+        with self.assertRaises(validator.UfwContractError):
+            self.validate()
+        self.ipv4_input.pop()
+
+        self.ipv4_input.append(
+            ["-A", "ufw-user-input", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"]
+        )
+        with self.assertRaises(validator.UfwContractError):
+            self.validate()
+
     def test_duplicate_or_ipv6_application_rule_is_rejected(self) -> None:
         self.ipv4_input.append(list(self.ipv4_input[-1]))
         with self.assertRaises(validator.UfwContractError):
