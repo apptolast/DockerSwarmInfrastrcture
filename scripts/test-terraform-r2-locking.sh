@@ -330,6 +330,12 @@ export TF_INPUT=0
 export TF_WORKSPACE=default
 export TF_CLI_CONFIG_FILE=/dev/null
 export TF_PLUGIN_CACHE_DIR="${PROJECT_DIR}/.terraform.d/plugin-cache"
+# Terraform 1.15.8 emits ANSI color codes and box-drawing characters around
+# diagnostic output (e.g. the "Lock Info" block) even when stdout is not a
+# TTY under this invocation pattern; confirmed against real R2 output. The
+# stale-lock ID is later parsed from that block with sed, which requires
+# plain text.
+export TF_CLI_ARGS=-no-color
 install --directory --mode=0750 "${TF_PLUGIN_CACHE_DIR}"
 
 install --mode=0600 "${backend_config}" \
