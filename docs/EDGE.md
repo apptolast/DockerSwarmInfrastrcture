@@ -134,6 +134,16 @@ scope, custodio y fecha de próxima revisión.
 
 <!-- markdownlint-enable MD013 -->
 
+El mismo token (`185f75d78a7b79a5b1d41e595fdaf90f`,
+`cloudflare_dns_api_token_v2` arriba) se reutiliza también como
+`CLOUDFLARE_API_TOKEN` para las operaciones de Terraform sobre
+`cloudflare/apptolast-dns`, copiado fuera de Git en
+`/etc/dockerswarm/terraform/dns-zone-api-token.txt` (root:root, 0600). No es
+un token nuevo ni distinto: es una decisión explícita del propietario del
+repositorio de reutilizar el mismo credential entre ACME/Traefik y Terraform
+en vez de provisionar uno separado. Ver `docs/TERRAFORM_STATE.md` para el
+detalle del gate de cutover DNS que este token desbloquea.
+
 ## ACME: staging antes de producción
 
 El valor declarado actualmente para `edge_traefik_acme_ca_server` es el

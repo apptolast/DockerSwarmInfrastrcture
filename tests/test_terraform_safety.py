@@ -255,6 +255,7 @@ def dns_plan(
                         )
                     },
                     "after": {
+                        "name": "n8n.apptolast.com",
                         "content": (
                             terraform_safety.DNS_LEGACY_IPV4
                             if adoption_only
@@ -1089,13 +1090,29 @@ class TerraformSafetyTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             terraform_safety.TerraformSafetyError,
-            "host-readiness coordinator",
+            "host-readiness",
         ):
             terraform_safety.validate_plan_document(
                 "cloudflare/apptolast-dns",
                 dns_plan(legacy_to_target=True),
                 "established",
             )
+        with self.assertRaisesRegex(
+            terraform_safety.TerraformSafetyError,
+            "host-readiness",
+        ):
+            terraform_safety.validate_plan_document(
+                "cloudflare/apptolast-dns",
+                dns_plan(legacy_to_target=True),
+                "established",
+                {"target_hostname": "some-other-host.apptolast.com"},
+            )
+        terraform_safety.validate_plan_document(
+            "cloudflare/apptolast-dns",
+            dns_plan(legacy_to_target=True),
+            "established",
+            {"target_hostname": "n8n.apptolast.com"},
+        )
         initialize_edge = dns_plan(adoption_only=True)
         initialize_edge["resource_changes"][0] = {
             "address": 'cloudflare_dns_record.managed["edge"]',
@@ -1103,19 +1120,36 @@ class TerraformSafetyTests(unittest.TestCase):
                 "actions": ["create"],
                 "before": None,
                 "after": {
+                    "name": terraform_safety.HOST_READINESS_TARGET_HOSTNAME,
                     "content": terraform_safety.DNS_PLATFORM_IPV4,
                 },
             },
         }
         with self.assertRaisesRegex(
             terraform_safety.TerraformSafetyError,
-            "host-readiness coordinator",
+            "host-readiness",
         ):
             terraform_safety.validate_plan_document(
                 "cloudflare/apptolast-dns",
                 initialize_edge,
                 "initialize",
             )
+        with self.assertRaisesRegex(
+            terraform_safety.TerraformSafetyError,
+            "host-readiness",
+        ):
+            terraform_safety.validate_plan_document(
+                "cloudflare/apptolast-dns",
+                initialize_edge,
+                "initialize",
+                {"target_hostname": "n8n.apptolast.com"},
+            )
+        terraform_safety.validate_plan_document(
+            "cloudflare/apptolast-dns",
+            initialize_edge,
+            "initialize",
+            {"target_hostname": terraform_safety.HOST_READINESS_TARGET_HOSTNAME},
+        )
 
     def test_sidecar_binds_commit_plan_backend_and_state(self) -> None:
         plan_bytes = terraform_safety.canonical_json(dns_plan())
@@ -2197,6 +2231,248 @@ class TerraformPlanSignatureTests(unittest.TestCase):
                     b'{"schema":2}\n',
                     Path(f"{sidecar}.sig"),
                     project,
+                )
+
+
+class HostReadinessProofTests(unittest.TestCase):
+    def make_signed_proof(
+        self,
+        project: Path,
+        *,
+        overrides: dict[str, object] | None = None,
+    ) -> tuple[Path, Path]:
+        signing_dir = project / "infra/terraform"
+        signing_dir.mkdir(parents=True, exist_ok=True)
+        private_key = project / "host-readiness-signing-key"
+        subprocess.run(
+            (
+                "ssh-keygen",
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-f",
+                str(private_key),
+            ),
+            check=True,
+        )
+        public_key = Path(f"{private_key}.pub").read_text(encoding="utf-8").strip()
+        (signing_dir / "host-readiness.allowed-signers").write_text(
+            f"{terraform_safety.HOST_READINESS_SIGNER} "
+            f'namespaces="{terraform_safety.HOST_READINESS_NAMESPACE}" '
+            f"{public_key}\n",
+            encoding="utf-8",
+        )
+        document = {
+            "schema": 1,
+            "root": "cloudflare/apptolast-dns",
+            "source_commit": "a" * 40,
+            "signer_identity": terraform_safety.HOST_READINESS_SIGNER,
+            "target_hostname": terraform_safety.HOST_READINESS_TARGET_HOSTNAME,
+            "target_ipv4": terraform_safety.DNS_PLATFORM_IPV4,
+            "swarm_task_health": "healthy",
+            "probe_result": "OK",
+            "operator": "test-operator",
+            "issued_at": "2026-07-27T12:00:00Z",
+            "expires_at": "2026-07-27T13:00:00Z",
+        }
+        document.update(overrides or {})
+        proof = project / "host-readiness-proof.json"
+        proof.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            (
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-f",
+                str(private_key),
+                "-n",
+                terraform_safety.HOST_READINESS_NAMESPACE,
+                str(proof),
+            ),
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return proof, Path(f"{proof}.sig")
+
+    def test_valid_proof_is_accepted_and_bound_facts_are_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            proof, _ = self.make_signed_proof(project)
+            now = datetime(2026, 7, 27, 12, 30, tzinfo=timezone.utc)
+            result = terraform_safety.validate_host_readiness_proof(
+                proof,
+                "cloudflare/apptolast-dns",
+                "a" * 40,
+                project,
+                now,
+            )
+            self.assertEqual(result["probe_result"], "OK")
+
+    def test_tampered_proof_fails_signature_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            proof, _ = self.make_signed_proof(project)
+            proof.write_text(
+                proof.read_text(encoding="utf-8").replace("healthy", "unhealthy"),
+                encoding="utf-8",
+            )
+            with self.assertRaises(terraform_safety.TerraformSafetyError):
+                terraform_safety.validate_host_readiness_proof(
+                    proof,
+                    "cloudflare/apptolast-dns",
+                    "a" * 40,
+                    project,
+                    datetime(2026, 7, 27, 12, 30, tzinfo=timezone.utc),
+                )
+
+    def test_bound_facts_are_individually_enforced(self) -> None:
+        now = datetime(2026, 7, 27, 12, 30, tzinfo=timezone.utc)
+        cases = {
+            "root": "netcup/perimeter",
+            "source_commit": "b" * 40,
+            "target_hostname": "n8n.apptolast.com",
+            "target_ipv4": "10.0.0.1",
+            "swarm_task_health": "starting",
+            "probe_result": "FAIL",
+            "operator": "",
+            "issued_at": "2026-07-27T13:30:00Z",
+            "expires_at": "2026-07-27T11:00:00Z",
+        }
+        for field, bad_value in cases.items():
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as temporary:
+                    project = Path(temporary)
+                    proof, _ = self.make_signed_proof(
+                        project,
+                        overrides={field: bad_value},
+                    )
+                    with self.assertRaises(terraform_safety.TerraformSafetyError):
+                        terraform_safety.validate_host_readiness_proof(
+                            proof,
+                            "cloudflare/apptolast-dns",
+                            "a" * 40,
+                            project,
+                            now,
+                        )
+
+    def test_validity_window_longer_than_the_plan_cap_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            proof, _ = self.make_signed_proof(
+                project,
+                overrides={
+                    "issued_at": "2026-07-27T12:00:00Z",
+                    "expires_at": "2026-07-27T14:00:01Z",
+                },
+            )
+            with self.assertRaises(terraform_safety.TerraformSafetyError):
+                terraform_safety.validate_host_readiness_proof(
+                    proof,
+                    "cloudflare/apptolast-dns",
+                    "a" * 40,
+                    project,
+                    datetime(2026, 7, 27, 12, 30, tzinfo=timezone.utc),
+                )
+
+    def test_expired_and_not_yet_valid_proofs_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            proof, _ = self.make_signed_proof(project)
+            with self.assertRaises(terraform_safety.TerraformSafetyError):
+                terraform_safety.validate_host_readiness_proof(
+                    proof,
+                    "cloudflare/apptolast-dns",
+                    "a" * 40,
+                    project,
+                    datetime(2026, 7, 27, 13, 0, 1, tzinfo=timezone.utc),
+                )
+            with self.assertRaises(terraform_safety.TerraformSafetyError):
+                terraform_safety.validate_host_readiness_proof(
+                    proof,
+                    "cloudflare/apptolast-dns",
+                    "a" * 40,
+                    project,
+                    datetime(2026, 7, 27, 11, 59, 59, tzinfo=timezone.utc),
+                )
+
+    def test_end_to_end_sidecar_embeds_and_replays_the_verified_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            proof_path, _ = self.make_signed_proof(
+                project,
+                overrides={
+                    "source_commit": "c" * 40,
+                    "issued_at": "2026-07-26T12:00:00Z",
+                    "expires_at": "2026-07-26T13:00:00Z",
+                },
+            )
+            now = datetime(2026, 7, 26, 12, 30, tzinfo=timezone.utc)
+            host_readiness = terraform_safety.validate_host_readiness_proof(
+                proof_path,
+                "cloudflare/apptolast-dns",
+                "c" * 40,
+                project,
+                now,
+            )
+            plan = dns_plan(adoption_only=True)
+            plan["resource_changes"][0] = {
+                "address": 'cloudflare_dns_record.managed["edge"]',
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "name": terraform_safety.HOST_READINESS_TARGET_HOSTNAME,
+                        "content": terraform_safety.DNS_PLATFORM_IPV4,
+                    },
+                },
+            }
+            plan_bytes = terraform_safety.canonical_json(plan)
+            backend = {
+                "schema": 1,
+                "root": "cloudflare/apptolast-dns",
+                "identity_sha256": "a" * 64,
+            }
+            state = terraform_safety.attest_empty_state("cloudflare/apptolast-dns")
+            sidecar = terraform_safety.build_sidecar(
+                "cloudflare/apptolast-dns",
+                plan_bytes,
+                "b" * 64,
+                "c" * 40,
+                backend,
+                state,
+                None,
+                "initialize",
+                clean_plan_ui_attestation(),
+                host_readiness,
+            )
+            self.assertEqual(sidecar["host_readiness"]["probe_result"], "OK")
+            with mock.patch.object(
+                terraform_safety,
+                "verify_plan_signature",
+                return_value={
+                    "signature_sha256": "3" * 64,
+                    "allowed_signers_sha256": "4" * 64,
+                    "signer_identity": terraform_safety.PLAN_SIGNER,
+                },
+            ):
+                terraform_safety.verify_sidecar(
+                    "cloudflare/apptolast-dns",
+                    sidecar,
+                    plan_bytes,
+                    "b" * 64,
+                    "c" * 40,
+                    backend,
+                    state,
+                    terraform_safety.canonical_json(sidecar),
+                    Path("/unused/plan.metadata.json.sig"),
+                    project,
+                    now,
+                    host_readiness_attestation=host_readiness,
                 )
 
 

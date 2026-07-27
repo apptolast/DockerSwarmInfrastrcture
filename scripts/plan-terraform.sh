@@ -15,6 +15,7 @@ readonly SAFETY_BIN="${PROJECT_DIR}/scripts/terraform-safety.py"
 readonly PLAN_ALLOWED_SIGNERS="${PROJECT_DIR}/infra/terraform/plan.allowed-signers"
 readonly BACKEND_IDENTITIES="${PROJECT_DIR}/infra/terraform/backend-identities.json"
 readonly LOCK_ALLOWED_SIGNERS="${PROJECT_DIR}/infra/terraform/lock-proof.allowed-signers"
+readonly HOST_READINESS_ALLOWED_SIGNERS="${PROJECT_DIR}/infra/terraform/host-readiness.allowed-signers"
 readonly PLAN_SIGNER_IDENTITY="apptolast-terraform-plan"
 readonly PLAN_SIGNATURE_NAMESPACE="terraform-saved-plan"
 
@@ -24,6 +25,7 @@ var_file=""
 output_plan=""
 backend_mode=""
 lock_proof=""
+host_readiness=""
 initialize_confirmation=""
 signing_key=""
 
@@ -34,7 +36,7 @@ Usage:
       --backend-mode established|initialize [--lock-proof PATH]
       --signing-key PATH
       [--confirm-initialize 'INITIALIZE:ROOT:COMMIT:BACKEND_SHA256']
-      [--var-file PATH] [--out PATH]
+      [--var-file PATH] [--out PATH] [--host-readiness PATH]
 
 ROOT is one of:
   cloudflare/state-bootstrap
@@ -49,6 +51,11 @@ root identity atomically. State migration uses migrate-terraform-state.sh.
 
 Remote R2 roots also require --lock-proof: a current two-client proof bound to
 the exact bucket, endpoint, and pinned Terraform version.
+
+A plan that creates or cuts a DNS record over to the platform IPv4 also
+requires --host-readiness: a current proof from host-readiness-probe.sh bound
+to that exact hostname. Without it, or with one for another hostname, that
+change is rejected.
 
 The worktree must be clean so every saved plan maps to one Git commit.
 Terraform's detailed exit code is preserved: 0 means no changes, 2 means the
@@ -129,6 +136,11 @@ while (( $# > 0 )); do
     --lock-proof)
       (( $# >= 2 )) || fail "--lock-proof requires a path"
       lock_proof="$2"
+      shift 2
+      ;;
+    --host-readiness)
+      (( $# >= 2 )) || fail "--host-readiness requires a path"
+      host_readiness="$2"
       shift 2
       ;;
     --confirm-initialize)
@@ -225,6 +237,18 @@ if [[ -n "${lock_proof}" ]]; then
   lock_proof="$(realpath "${lock_proof}")"
   [[ -f "${lock_proof}.sig" && ! -L "${lock_proof}.sig" ]] ||
     fail "the lock proof signature must be adjacent and non-symlink"
+fi
+if [[ -n "${host_readiness}" ]]; then
+  [[ -f "${HOST_READINESS_ALLOWED_SIGNERS}" && ! -L "${HOST_READINESS_ALLOWED_SIGNERS}" ]] ||
+    fail "approved tracked host-readiness signer registry is absent"
+  git -C "${PROJECT_DIR}" ls-files --error-unmatch \
+    "infra/terraform/host-readiness.allowed-signers" >/dev/null ||
+    fail "host-readiness.allowed-signers must be tracked"
+  [[ -f "${host_readiness}" && ! -L "${host_readiness}" ]] ||
+    fail "the host-readiness proof must be a regular, non-symlink file"
+  host_readiness="$(realpath "${host_readiness}")"
+  [[ -f "${host_readiness}.sig" && ! -L "${host_readiness}.sig" ]] ||
+    fail "the host-readiness proof signature must be adjacent and non-symlink"
 fi
 if [[ -n "${var_file}" ]]; then
   [[ -f "${var_file}" && ! -L "${var_file}" ]] ||
@@ -528,15 +552,23 @@ case "${plan_status}" in
     "${TERRAFORM_BIN}" -chdir="${terraform_root}" show \
       -json "${output_plan}" >"${plan_document}" 2>"${plan_show_stderr}"
     assert_empty_file "${plan_show_stderr}" "Terraform show saved plan"
-    "${PYTHON_BIN}" "${runtime_safety_bin}" build-sidecar \
-        --root "${root_name}" \
-        --plan-sha256 "${plan_sha256}" \
-        --source-commit "${revision}" \
-        --backend-attestation "${backend_attestation}" \
-        --state-attestation "${state_attestation}" \
-        --ui-attestation "${plan_ui_attestation}" \
-        --variable-file-sha256 "${variable_file_sha256}" \
-        --operation-mode "${backend_mode}" \
+    build_sidecar_args=(
+      build-sidecar
+      --root "${root_name}"
+      --plan-sha256 "${plan_sha256}"
+      --source-commit "${revision}"
+      --backend-attestation "${backend_attestation}"
+      --state-attestation "${state_attestation}"
+      --ui-attestation "${plan_ui_attestation}"
+      --variable-file-sha256 "${variable_file_sha256}"
+      --operation-mode "${backend_mode}"
+      --project-dir "${runtime_project}"
+    )
+    if [[ -n "${host_readiness}" ]]; then
+      build_sidecar_args+=(--host-readiness "${host_readiness}")
+    fi
+    "${PYTHON_BIN}" "${runtime_safety_bin}" \
+        "${build_sidecar_args[@]}" \
         <"${plan_document}" >"${temporary_sidecar}"
     ssh-keygen -Y sign \
       -f "${signing_key}" \

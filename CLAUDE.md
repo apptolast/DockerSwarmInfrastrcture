@@ -243,7 +243,7 @@ your changes first.
 
 ## Open STOP gates (as of last review)
 
-This list reflects the state observed as of 2026-07-26 per README.md and
+This list reflects the state observed as of 2026-07-27 per README.md and
 the docs below. It MUST be re-verified against current `README.md`,
 `docs/TERRAFORM_STATE.md`, and `docs/MIGRATION.md` before being treated as
 current — gates close over time.
@@ -252,8 +252,18 @@ current — gates close over time.
   locking proof, and encrypted snapshots.
 - Needs real signing identities/signatures for plans and locking tests,
   kept outside Git.
-- Needs a Cloudflare Terraform token separate from the currently-exposed
-  one, plus a rotated ACME credential.
+- Cloudflare Terraform token for DNS operations: provisioned 2026-07-27,
+  real Zone:DNS scope confirmed against the live Cloudflare API for the
+  `apptolast.com` zone, stored outside Git under
+  `/etc/dockerswarm/terraform/dns-zone-api-token.txt`. Its Cloudflare
+  token ID (`185f75d78a7b79a5b1d41e595fdaf90f`, confirmed via
+  `/user/tokens/verify`) is identical to the already-registered
+  `cloudflare_dns_api_token_v2` Docker secret
+  (`docs/EDGE.md`, "Registro de secrets instalados") — this is the same
+  ACME/Traefik credential reused for Terraform, not a distinct one, per
+  the owner's explicit authorization to reuse credentials across
+  purposes rather than provision new ones. The originally-requested
+  rotated ACME credential is still open and unrelated to this reuse.
 - Needs real Netcup SCP/import credentials if that root is activated.
 - Needs an external custodian for the Swarm unlock key before autolock is
   enabled.
@@ -264,11 +274,17 @@ current — gates close over time.
   refresh/promotion via
   `migration/scripts/promote_runtime_generation.py`, before starting
   workloads.
-- DNS cutover to the new platform IP is separately and unconditionally
-  blocked by `scripts/terraform-safety.py` until a not-yet-written signed
-  "host-readiness" coordinator exists. This one gate cannot be unblocked
-  by any credential or evidence — only by writing and reviewing that
-  coordinator first.
+- DNS cutover to the new platform IP: the signed host-readiness
+  coordinator this gate needed now exists
+  (`scripts/host-readiness-probe.sh` plus the verification chain in
+  `scripts/terraform-safety.py`, added 2026-07-27) and
+  `plan-terraform.sh`/`apply-terraform.sh` accept its proof via
+  `--host-readiness`. Absence of a proof, or one for the wrong hostname,
+  still fails exactly as before. The coordinator has never been run
+  against the real platform and no cutover has happened — that remains a
+  separate, deliberate decision requiring genuine platform readiness
+  (Traefik/ACME actually deployed and serving) plus the repository
+  owner's explicit go-ahead, not just the presence of the code.
 
 None of these gates may be satisfied by inventing values, hardcoding a
 credential, or adding a bypass flag. If a task seems to require passing

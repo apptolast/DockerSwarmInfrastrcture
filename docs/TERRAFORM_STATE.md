@@ -464,17 +464,45 @@ root exacto — cualquier otro diagnóstico, en cualquier otro root, o durante
 descrito arriba (falta de cuarentena persistente del backend local) sigue
 vigente sin cambios: un plan limpio no autoriza escribir state.
 
-STOP de cutover actual: todo create o cambio DNS hacia la IP de plataforma
-desde ausencia/legacy se rechaza, incluido `edge` durante initialize. El
-coordinador futuro deberá aceptar un proof JSON canónico firmado y de corta
-vigencia, ligado como mínimo a `schema`, contrato/commit del repo, IP origen y
-destino, root/backend, hash del catálogo de servicios, hashes de metadata
-desplegada e imágenes, restore markers, resultados de smoke HTTPS/TCP por
-servicio, operation ID/lock del host, operador y `tested_at`/`valid_until`.
-El wrapper deberá mantener el mismo lock de mutación host desde esas pruebas
-hasta adquirir el lease Terraform y aplicar el plan. Ese esquema todavía no
-está implementado ni aceptado; por tanto no existe proof que pueda saltar el
-STOP.
+STOP de cutover: todo create o cambio DNS hacia la IP de plataforma desde
+ausencia/legacy se rechaza por defecto, incluido `edge` durante initialize
+(`scripts/terraform-safety.py::validate_plan_document`). Desde 2026-07-27
+existe un coordinador de host-readiness real que puede levantar este STOP,
+pero solo para el hostname exacto que atestigua:
+
+- `scripts/host-readiness-probe.sh` es un script de operador (requiere root,
+  exige worktree limpio) que comprueba, contra el host real, exactamente lo
+  mismo que el propio rol `edge` verifica tras desplegar Traefik: exactamente
+  una tarea Swarm `edge_traefik` corriendo con healthcheck Docker `healthy`,
+  y una petición HTTPS real a `https://edge.apptolast.com/ping` resuelta por
+  IP mediante `curl --resolve` (independiente de DNS) que devuelve `OK` sobre
+  un certificado que el sistema valida de verdad. No tiene modo
+  `acme-staging`: un certificado de staging nunca puede satisfacer este
+  gate.
+- Solo si las dos comprobaciones pasan escribe un proof JSON canónico no
+  secreto, con vigencia de 1 hora (igual al límite de frescura del propio
+  plan), ligado a `schema`, `root`, `source_commit`, `target_hostname`,
+  `target_ipv4`, `swarm_task_health`, `probe_result`, `operator`,
+  `issued_at`/`expires_at`, y lo firma con una clave ed25519 dedicada
+  (`apptolast-terraform-host-readiness`, espacio de nombres
+  `terraform-host-readiness`) cuya clave pública vive en el registro
+  versionado `infra/terraform/host-readiness.allowed-signers`.
+- `plan-terraform.sh` y `apply-terraform.sh` aceptan `--host-readiness PATH`
+  (adjunto a un `.sig`); `terraform-safety.py` verifica la firma contra ese
+  registro, revalida cada campo (root, commit, vigencia, salud, resultado del
+  probe) y solo entonces compara `target_hostname` contra el `name` exacto
+  del registro DNS que el plan crea o modifica. El proof queda embebido en el
+  sidecar firmado del plan, así que `apply` lo revalida fresco desde el mismo
+  fichero, no simplemente lo repite de memoria.
+
+Esto cierra la ausencia de mecanismo, no el cutover en sí: a fecha de esta
+revisión el probe no se ha ejecutado nunca contra la plataforma real (no hay
+ningún proof emitido), y ningún `apply` ha creado el registro `edge`. Un
+cutover real sigue exigiendo, además del proof, que la plataforma esté
+genuinamente lista (Traefik/ACME desplegados y sirviendo) y una decisión
+explícita del propietario del repositorio — el proof por sí solo demuestra un
+hecho técnico puntual, no autoriza la decisión de negocio de mover tráfico
+real.
 
 El éxito significa solo «copia verificada». Después se congelan y revocan de
 forma comprobable todos los writers/credenciales del origen. Solo entonces un

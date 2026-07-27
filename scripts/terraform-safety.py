@@ -57,6 +57,17 @@ LOCK_PROOF_ALLOWED_SIGNERS = Path("infra/terraform/lock-proof.allowed-signers")
 PLAN_SIGNER = "apptolast-terraform-plan"
 PLAN_NAMESPACE = "terraform-saved-plan"
 PLAN_ALLOWED_SIGNERS = Path("infra/terraform/plan.allowed-signers")
+HOST_READINESS_SIGNER = "apptolast-terraform-host-readiness"
+HOST_READINESS_NAMESPACE = "terraform-host-readiness"
+HOST_READINESS_ALLOWED_SIGNERS = Path(
+    "infra/terraform/host-readiness.allowed-signers"
+)
+# Must stay bound to the same DNS_PLATFORM_IPV4 the cutover check below
+# compares against, and to the exact hostname config/platform.yml assigns
+# to edge_traefik_hostname -- a proof for a different host or IP must never
+# be accepted as evidence for this one.
+HOST_READINESS_TARGET_HOSTNAME = "edge.apptolast.com"
+HOST_READINESS_MAX_SECONDS = PLAN_MAX_SECONDS
 BACKEND_IDENTITIES_PATH = Path("infra/terraform/backend-identities.json")
 SNAPSHOT_RECIPIENTS_PATH = Path("infra/terraform/snapshot-recipients.json")
 LOCKING_CONTRACT_PATHS = (
@@ -950,6 +961,110 @@ def verify_plan_signature(
         "allowed_signers_sha256": sha256_bytes(allowed_signers_bytes),
         "signer_identity": PLAN_SIGNER,
     }
+
+
+def verify_host_readiness_signature(
+    proof_bytes: bytes,
+    signature_path: Path,
+    project_dir: Path,
+) -> dict[str, str]:
+    signature_bytes = require_regular_file(
+        signature_path,
+        "host-readiness proof signature",
+    )
+    allowed_signers_path = (
+        project_dir.resolve(strict=True) / HOST_READINESS_ALLOWED_SIGNERS
+    )
+    allowed_signers_bytes = require_regular_file(
+        allowed_signers_path,
+        "approved host-readiness signer registry",
+    )
+    try:
+        result = subprocess.run(
+            (
+                "ssh-keygen",
+                "-Y",
+                "verify",
+                "-f",
+                str(allowed_signers_path),
+                "-I",
+                HOST_READINESS_SIGNER,
+                "-n",
+                HOST_READINESS_NAMESPACE,
+                "-s",
+                str(signature_path),
+            ),
+            input=proof_bytes,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError as exc:
+        raise TerraformSafetyError(
+            "cannot execute ssh-keygen to verify the host-readiness proof"
+        ) from exc
+    if result.returncode != 0:
+        raise TerraformSafetyError(
+            "host-readiness proof has no valid signature from an approved signer"
+        )
+    return {
+        "signature_sha256": sha256_bytes(signature_bytes),
+        "allowed_signers_sha256": sha256_bytes(allowed_signers_bytes),
+        "signer_identity": HOST_READINESS_SIGNER,
+    }
+
+
+def validate_host_readiness_proof(
+    proof_path: Path,
+    root: str,
+    source_commit: str,
+    project_dir: Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    proof_bytes = require_regular_file(proof_path, "host-readiness proof")
+    verify_host_readiness_signature(
+        proof_bytes,
+        Path(f"{proof_path}.sig"),
+        project_dir,
+    )
+    proof = load_json_bytes(proof_bytes, "host-readiness proof")
+    current = now or datetime.now(timezone.utc)
+    if proof.get("schema") != CONTRACT_VERSION:
+        raise TerraformSafetyError("host-readiness proof schema is not supported")
+    if proof.get("signer_identity") != HOST_READINESS_SIGNER:
+        raise TerraformSafetyError("host-readiness proof signer identity is invalid")
+    if proof.get("root") != root:
+        raise TerraformSafetyError("host-readiness proof belongs to another root")
+    if (
+        proof.get("source_commit") != source_commit
+        or re.fullmatch(r"[a-f0-9]{40}", str(proof.get("source_commit"))) is None
+    ):
+        raise TerraformSafetyError("host-readiness proof source commit is stale")
+    if proof.get("target_hostname") != HOST_READINESS_TARGET_HOSTNAME:
+        raise TerraformSafetyError(
+            "host-readiness proof targets an unexpected hostname"
+        )
+    if proof.get("target_ipv4") != DNS_PLATFORM_IPV4:
+        raise TerraformSafetyError("host-readiness proof targets an unexpected IPv4")
+    if proof.get("swarm_task_health") != "healthy":
+        raise TerraformSafetyError(
+            "host-readiness proof does not assert a healthy Swarm task"
+        )
+    if proof.get("probe_result") != "OK":
+        raise TerraformSafetyError(
+            "host-readiness proof does not assert a passing HTTPS probe"
+        )
+    if not isinstance(proof.get("operator"), str) or not proof["operator"].strip():
+        raise TerraformSafetyError("host-readiness proof is missing an operator")
+    issued_at = parse_utc(proof.get("issued_at"), "host-readiness issued_at")
+    expires_at = parse_utc(proof.get("expires_at"), "host-readiness expires_at")
+    if not issued_at < expires_at:
+        raise TerraformSafetyError("host-readiness proof time ordering is invalid")
+    if (expires_at - issued_at).total_seconds() > HOST_READINESS_MAX_SECONDS:
+        raise TerraformSafetyError("host-readiness proof validity window is too long")
+    if issued_at > current or current >= expires_at:
+        raise TerraformSafetyError("host-readiness proof is not currently valid")
+    return proof
 
 
 def s3_endpoint(config: dict[str, Any]) -> str:
@@ -2283,6 +2398,7 @@ def validate_plan_document(
     root: str,
     plan: dict[str, Any],
     operation_mode: str,
+    host_readiness_attestation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if plan.get("format_version") != "1.2":
         raise TerraformSafetyError(
@@ -2474,10 +2590,21 @@ def validate_plan_document(
                 before_content != DNS_PLATFORM_IPV4
                 and after["content"] == DNS_PLATFORM_IPV4
             ):
-                raise TerraformSafetyError(
-                    "DNS creation/cutover to the platform is disabled until a "
-                    "signed host-readiness coordinator is implemented"
-                )
+                # A missing attestation (the default) still fails exactly as
+                # before: this gate cannot be satisfied by omission, only by
+                # a proof that names this exact hostname, already verified
+                # (signature, freshness, root, and source commit) by the
+                # caller before it ever reaches this function.
+                if (
+                    host_readiness_attestation is None
+                    or host_readiness_attestation.get("target_hostname")
+                    != after.get("name")
+                ):
+                    raise TerraformSafetyError(
+                        "DNS creation/cutover to the platform requires a "
+                        "valid signed host-readiness proof covering this "
+                        "exact hostname"
+                    )
         for action in actions:
             counts[action] += 1
     ordered_inventory = sorted(planned_inventory)
@@ -2566,6 +2693,7 @@ def build_sidecar(
     variable_file_sha256: str | None,
     operation_mode: str,
     plan_ui_attestation: dict[str, Any],
+    host_readiness_attestation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if re.fullmatch(r"[a-f0-9]{64}", plan_sha256) is None:
         raise TerraformSafetyError("saved plan SHA-256 is invalid")
@@ -2592,7 +2720,9 @@ def build_sidecar(
     ):
         raise TerraformSafetyError("variable file SHA-256 is invalid")
     plan = load_json_bytes(plan_bytes, "saved plan JSON")
-    plan_contract = validate_plan_document(root, plan, operation_mode)
+    plan_contract = validate_plan_document(
+        root, plan, operation_mode, host_readiness_attestation
+    )
     validated_plan_ui = validate_plan_ui_attestation(plan_ui_attestation, root)
     timestamp = plan.get("timestamp")
     parse_utc(timestamp, "plan timestamp")
@@ -2620,6 +2750,7 @@ def build_sidecar(
         ],
         "backend": backend_attestation,
         "prior_state": state_attestation,
+        "host_readiness": host_readiness_attestation,
     }
 
 
@@ -2635,6 +2766,7 @@ def verify_sidecar(
     sidecar_signature: Path,
     project_dir: Path,
     now: datetime | None = None,
+    host_readiness_attestation: dict[str, Any] | None = None,
 ) -> None:
     verify_plan_signature(
         sidecar_bytes,
@@ -2653,6 +2785,7 @@ def verify_sidecar(
         sidecar.get("variable_file_sha256"),
         sidecar.get("operation_mode"),
         sidecar.get("plan_ui"),
+        host_readiness_attestation,
     )
     if sidecar != expected:
         raise TerraformSafetyError(
@@ -2862,6 +2995,8 @@ def parser() -> argparse.ArgumentParser:
         choices=("established", "initialize"),
         required=True,
     )
+    sidecar.add_argument("--project-dir", type=Path, required=True)
+    sidecar.add_argument("--host-readiness", type=Path)
 
     verify = subparsers.add_parser("verify-sidecar")
     verify.add_argument("--root", choices=root_choices, required=True)
@@ -2871,6 +3006,7 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--backend-attestation", type=Path, required=True)
     verify.add_argument("--state-attestation", type=Path, required=True)
     verify.add_argument("--project-dir", type=Path, required=True)
+    verify.add_argument("--host-readiness", type=Path)
 
     plan_signature = subparsers.add_parser("verify-plan-signature")
     plan_signature.add_argument("--sidecar", type=Path, required=True)
@@ -3037,6 +3173,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state attestation",
             )
             plan_bytes = sys.stdin.buffer.read()
+            host_readiness = None
+            if args.host_readiness is not None:
+                host_readiness = validate_host_readiness_proof(
+                    args.host_readiness,
+                    args.root,
+                    args.source_commit,
+                    args.project_dir,
+                )
             if args.command == "build-sidecar":
                 ui_attestation, _ = load_json_file(
                     args.ui_attestation,
@@ -3055,6 +3199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     variable_sha,
                     args.operation_mode,
                     ui_attestation,
+                    host_readiness,
                 )
             else:
                 sidecar, sidecar_bytes = load_json_file(
@@ -3072,6 +3217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sidecar_bytes,
                     Path(f"{args.sidecar}.sig"),
                     args.project_dir,
+                    host_readiness_attestation=host_readiness,
                 )
                 document = {"verified": True}
         elif args.command == "verify-plan-signature":

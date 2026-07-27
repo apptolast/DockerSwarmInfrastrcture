@@ -16,6 +16,7 @@ readonly SNAPSHOT_BIN="${PROJECT_DIR}/scripts/snapshot-terraform-state.sh"
 readonly LEASE_BIN="${PROJECT_DIR}/scripts/r2-operation-lease.py"
 
 root_name=""
+host_readiness=""
 backend_config=""
 plan_path=""
 sidecar_path=""
@@ -31,12 +32,14 @@ Usage:
       --plan PATH --sidecar PATH
       --snapshot-recipient-file PATH --snapshot-output-dir PATH
       --confirm 'APPLY:ROOT:COMMIT:PLAN_SHA256:RECIPIENT_SHA256'
-      [--lock-proof PATH]
+      [--lock-proof PATH] [--host-readiness PATH]
 
 The wrapper only applies a saved non-destructive plan created by
 plan-terraform.sh. It requires the adjacent approved sidecar signature, same
 clean commit, backend identity, default workspace, state
-lineage/serial/inventory, and current locking proof.
+lineage/serial/inventory, and current locking proof. A plan that creates or
+cuts a DNS record over to the platform IPv4 also requires the exact same
+--host-readiness proof supplied at plan time, re-verified fresh.
 Established state is snapshotted immediately before apply. Every apply attempt,
 including initialization, is followed by a mandatory encrypted state snapshot.
 EOF
@@ -120,6 +123,11 @@ while (( $# > 0 )); do
     --lock-proof)
       (( $# >= 2 )) || fail "--lock-proof requires a path"
       lock_proof="$2"
+      shift 2
+      ;;
+    --host-readiness)
+      (( $# >= 2 )) || fail "--host-readiness requires a path"
+      host_readiness="$2"
       shift 2
       ;;
     --snapshot-recipient-file)
@@ -208,6 +216,19 @@ if [[ -n "${lock_proof}" ]]; then
   lock_proof="$(realpath "${lock_proof}")"
   [[ -f "${lock_proof}.sig" && ! -L "${lock_proof}.sig" ]] ||
     fail "the lock proof signature must be adjacent and non-symlink"
+fi
+if [[ -n "${host_readiness}" ]]; then
+  [[ -f "${PROJECT_DIR}/infra/terraform/host-readiness.allowed-signers" &&
+    ! -L "${PROJECT_DIR}/infra/terraform/host-readiness.allowed-signers" ]] ||
+    fail "approved tracked host-readiness signer registry is absent"
+  git -C "${PROJECT_DIR}" ls-files --error-unmatch \
+    "infra/terraform/host-readiness.allowed-signers" >/dev/null ||
+    fail "host-readiness.allowed-signers must be tracked"
+  [[ -f "${host_readiness}" && ! -L "${host_readiness}" ]] ||
+    fail "the host-readiness proof must be a regular, non-symlink file"
+  host_readiness="$(realpath "${host_readiness}")"
+  [[ -f "${host_readiness}.sig" && ! -L "${host_readiness}.sig" ]] ||
+    fail "the host-readiness proof signature must be adjacent and non-symlink"
 fi
 
 backend_config="$(realpath "${backend_config}")"
@@ -357,6 +378,13 @@ if [[ -n "${lock_proof}" ]]; then
   install --mode=0600 "${lock_proof}.sig" \
     "${attestation_dir}/locking-proof.json.sig"
   lock_proof="${attestation_dir}/locking-proof.json"
+fi
+if [[ -n "${host_readiness}" ]]; then
+  install --mode=0600 "${host_readiness}" \
+    "${attestation_dir}/host-readiness-proof.json"
+  install --mode=0600 "${host_readiness}.sig" \
+    "${attestation_dir}/host-readiness-proof.json.sig"
+  host_readiness="${attestation_dir}/host-readiness-proof.json"
 fi
 
 "${PYTHON_BIN}" "${runtime_safety_bin}" verify-plan-signature \
@@ -556,14 +584,21 @@ reviewed_plan_stderr="${attestation_dir}/reviewed-plan.stderr"
   -json "${plan_path}" >"${reviewed_plan_document}" \
   2>"${reviewed_plan_stderr}"
 assert_empty_file "${reviewed_plan_stderr}" "Terraform show saved plan"
-"${PYTHON_BIN}" "${runtime_safety_bin}" verify-sidecar \
-    --root "${root_name}" \
-    --sidecar "${sidecar_path}" \
-    --plan-sha256 "${plan_sha256}" \
-    --source-commit "${revision}" \
-    --backend-attestation "${backend_attestation}" \
-    --state-attestation "${state_before}" \
-    --project-dir "${runtime_project}" \
+verify_sidecar_args=(
+  verify-sidecar
+  --root "${root_name}"
+  --sidecar "${sidecar_path}"
+  --plan-sha256 "${plan_sha256}"
+  --source-commit "${revision}"
+  --backend-attestation "${backend_attestation}"
+  --state-attestation "${state_before}"
+  --project-dir "${runtime_project}"
+)
+if [[ -n "${host_readiness}" ]]; then
+  verify_sidecar_args+=(--host-readiness "${host_readiness}")
+fi
+"${PYTHON_BIN}" "${runtime_safety_bin}" \
+    "${verify_sidecar_args[@]}" \
     <"${reviewed_plan_document}" >/dev/null
 
 lease_transition prestate_verified
