@@ -48,8 +48,14 @@ use_lockfile=true. The other backend config must use the other root's production
 bucket. Primary bucket credentials come only from
 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY. The two 0600 files contain the other
 root's R2 credentials. Those credentials must first pass read, write, list, and
-delete controls in their own bucket, then receive exact AccessDenied responses
-for those operations against the primary bucket.
+delete controls in their own bucket, then, unless they are the exact same
+credential as the primary root's (registered as such in
+backend-identities.json), receive exact AccessDenied responses for those
+operations against the primary bucket. When the owner has registered the
+same credential for both roots, there is nothing left to deny; the four
+cross_credential_*_denied results (and terraform_backend_access_denied) are
+recorded as null rather than a fabricated true, and the two negative-control
+checks are skipped rather than run against a foregone result.
 
 The probe creates only terraform_data in the disposable state key. It tests two
 clients, normal release, stale-lock recovery after SIGKILL, and credential
@@ -402,6 +408,16 @@ other_secret_key="$(
 )"
 [[ -n "${other_access_key}" && -n "${other_secret_key}" ]] ||
   fail "cross-credential files must not be empty"
+# Detected from the actual key material, never a flag: true only when the
+# owner registered the same R2 credential for both roots in
+# backend-identities.json. There is then no cross-root access to deny, so
+# the raw negative-control init below and the probe's negative-control
+# HTTP round trip are skipped rather than run against a foregone result.
+credentials_are_shared=false
+if [[ "${other_access_key}" == "${AWS_ACCESS_KEY_ID}" &&
+  "${other_secret_key}" == "${AWS_SECRET_ACCESS_KEY}" ]]; then
+  credentials_are_shared=true
+fi
 
 run_with_other_credentials() (
   export AWS_ACCESS_KEY_ID="${other_access_key}"
@@ -454,20 +470,22 @@ if any(part in {"", ".", ".."} for part in key.split("/")):
     raise SystemExit("ERROR: other backend key contains an unsafe path segment")
 PY
 
-set +e
-run_with_other_credentials \
-  env TF_DATA_DIR="${client_other_denied}" \
-  "${TERRAFORM_BIN}" -chdir="${runtime_probe_root}" init \
-    -backend-config="${backend_config}" \
-    -input=false \
-    -lockfile=readonly \
-    -reconfigure >"${probe_dir}/other-init.log" 2>&1
-other_status=$?
-set -e
-[[ "${other_status}" -ne 0 ]] ||
-  fail "the other root credential can access this state bucket"
-grep -F "AccessDenied" "${probe_dir}/other-init.log" >/dev/null ||
-  fail "the other-credential backend init failed for a reason other than AccessDenied"
+if [[ "${credentials_are_shared}" == false ]]; then
+  set +e
+  run_with_other_credentials \
+    env TF_DATA_DIR="${client_other_denied}" \
+    "${TERRAFORM_BIN}" -chdir="${runtime_probe_root}" init \
+      -backend-config="${backend_config}" \
+      -input=false \
+      -lockfile=readonly \
+      -reconfigure >"${probe_dir}/other-init.log" 2>&1
+  other_status=$?
+  set -e
+  [[ "${other_status}" -ne 0 ]] ||
+    fail "the other root credential can access this state bucket"
+  grep -F "AccessDenied" "${probe_dir}/other-init.log" >/dev/null ||
+    fail "the other-credential backend init failed for a reason other than AccessDenied"
+fi
 credential_results="${probe_dir}/credential-results.json"
 credential_probe_key="lock-tests/credential-isolation/$(date -u +%Y%m%d%H%M%S)-${RANDOM}.probe"
 "${PYTHON_BIN}" "${runtime_credential_probe_bin}" \
@@ -674,7 +692,8 @@ proof_tmp="$(
   "${other_access_key_file}" \
   "${operator}" \
   "${revision}" \
-  "${proof_tmp}" <<'PY'
+  "${proof_tmp}" \
+  "${credentials_are_shared}" <<'PY'
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -692,8 +711,11 @@ primary_access_key = os.environ["AWS_ACCESS_KEY_ID"]
 cross_access_key = Path(sys.argv[5]).read_text(encoding="utf-8").strip()
 primary_identity = hashlib.sha256(primary_access_key.encode()).hexdigest()
 cross_identity = hashlib.sha256(cross_access_key.encode()).hexdigest()
-if primary_identity == cross_identity:
-    raise SystemExit("ERROR: primary and cross credentials are identical")
+# Equality is allowed: it means the owner registered the same R2
+# credential for both roots (infra/terraform/backend-identities.json),
+# which credential_results already reflects (the four
+# cross_credential_*_denied fields are null, not True, in that case) --
+# not a defect to reject here.
 if (
     scope["locking_scope"]["primary_access_key_id_sha256"]
     != primary_identity
@@ -715,6 +737,9 @@ if {root, cross_root} != {
     raise SystemExit("ERROR: proof scopes are not the two remote roots")
 operator = sys.argv[6].strip()
 revision = sys.argv[7]
+credentials_are_shared = sys.argv[9] == "true"
+if credentials_are_shared != (primary_identity == cross_identity):
+    raise SystemExit("ERROR: shared-credential flag disagrees with the tested identities")
 now = datetime.now(timezone.utc).replace(microsecond=0)
 document = {
     "schema": 1,
@@ -745,7 +770,9 @@ document = {
         "normal_release": True,
         "interrupted_client_recovered": True,
         "distributed_operation_lease": True,
-        "terraform_backend_access_denied": True,
+        "terraform_backend_access_denied": (
+            None if credentials_are_shared else True
+        ),
         **credential_results,
     },
 }

@@ -132,6 +132,89 @@ class R2CredentialProbeTests(unittest.TestCase):
         with self.assertRaises(r2_probe.ProbeError):
             self.run_with_transport(invalid_transport)
 
+    def test_shared_credential_skips_negative_controls_only(self) -> None:
+        objects: dict[tuple[str, str], bytes] = {}
+
+        def shared_transport(**request):
+            bucket = request["bucket"]
+            key = request["key"]
+            method = request["method"]
+            access_key = request["access_key"]
+            body = request["body"]
+            if access_key != "primary-access":
+                raise AssertionError(f"unexpected credential in request: {request}")
+            if bucket == "primary-state":
+                # Legitimate primary-credential-against-primary-bucket
+                # preflight/cleanup traffic, unrelated to the (skipped)
+                # negative-control round trip -- always a plain 404 here,
+                # since this fixture never populates the primary bucket.
+                if method == "GET":
+                    return 404, error_xml("NoSuchKey")
+                raise AssertionError(f"unexpected primary-bucket request: {request}")
+            if bucket != "other-state":
+                raise AssertionError(f"unexpected bucket in request: {request}")
+            object_key = (bucket, key)
+            if method == "GET" and key is not None:
+                if object_key not in objects:
+                    return 404, error_xml("NoSuchKey")
+                return 200, objects[object_key]
+            if method == "GET" and key is None:
+                keys = "".join(
+                    f"<Contents><Key>{stored_key}</Key></Contents>"
+                    for stored_bucket, stored_key in objects
+                    if stored_bucket == bucket
+                )
+                return 200, f"<ListBucketResult>{keys}</ListBucketResult>".encode()
+            if method == "PUT":
+                objects[object_key] = body
+                return 200, b""
+            if method == "DELETE":
+                objects.pop(object_key, None)
+                return 204, b""
+            raise AssertionError(f"unexpected request: {request}")
+
+        with (
+            mock.patch.object(
+                r2_probe,
+                "backend_identity",
+                side_effect=(
+                    ("primary-state", "https://account.r2.example"),
+                    ("other-state", "https://account.r2.example"),
+                ),
+            ),
+            mock.patch.object(
+                r2_probe,
+                "read_secret",
+                side_effect=("primary-access", "primary-secret"),
+            ),
+            mock.patch.object(r2_probe, "request", side_effect=shared_transport),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "AWS_ACCESS_KEY_ID": "primary-access",
+                    "AWS_SECRET_ACCESS_KEY": "primary-secret",
+                },
+                clear=True,
+            ),
+        ):
+            result = r2_probe.run_probe(self.arguments())
+        self.assertEqual(
+            result,
+            {
+                "cross_credential_own_bucket_list_succeeded": True,
+                "cross_credential_own_bucket_read_succeeded": True,
+                "cross_credential_own_bucket_write_succeeded": True,
+                "cross_credential_own_bucket_delete_succeeded": True,
+                "cross_credential_list_denied": None,
+                "cross_credential_read_denied": None,
+                "cross_credential_write_denied": None,
+                "cross_credential_delete_denied": None,
+            },
+        )
+        # No leftover objects: the positive-control round trip cleaned up
+        # after itself, and no primary-bucket probe object was ever created.
+        self.assertEqual(objects, {})
+
     def test_preexisting_disposable_object_is_never_overwritten(self) -> None:
         transport = self.successful_transport()
         primary_requests = 0

@@ -660,6 +660,151 @@ class TerraformSafetyTests(unittest.TestCase):
                             now + timedelta(days=31),
                         )
 
+    def test_shared_r2_credential_waives_only_the_denial_checks(self) -> None:
+        now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+        metadata = s3_metadata()
+        shared_access_key = PRIMARY_ACCESS_KEY
+        shared_identity = terraform_safety.sha256_bytes(
+            shared_access_key.encode("utf-8")
+        )
+        shared_registry = backend_registry()
+        shared_registry["netcup/perimeter"]["production"][
+            "access_key_id_sha256"
+        ] = shared_identity
+        locking_scope = {
+            "backend_type": "s3",
+            "bucket": "apptolast-dns-state",
+            "endpoint": (
+                "https://"
+                f"{terraform_safety.CLOUDFLARE_ACCOUNT_ID}"
+                ".r2.cloudflarestorage.com"
+            ),
+            "root": "cloudflare/apptolast-dns",
+            "backend_registry_role": "production",
+            "backend_registry_sha256": BACKEND_REGISTRY_SHA256,
+            "primary_access_key_id_sha256": shared_identity,
+            "terraform_version": terraform_safety.TERRAFORM_VERSION,
+        }
+        scope_sha = terraform_safety.sha256_bytes(
+            terraform_safety.canonical_json(locking_scope)
+        )
+        positive_scope = {
+            "backend_type": "s3",
+            "bucket": "apptolast-netcup-state",
+            "endpoint": (
+                "https://"
+                f"{terraform_safety.CLOUDFLARE_ACCOUNT_ID}"
+                ".r2.cloudflarestorage.com"
+            ),
+            "root": "netcup/perimeter",
+            "backend_registry_role": "production",
+            "backend_registry_sha256": BACKEND_REGISTRY_SHA256,
+            "primary_access_key_id_sha256": shared_identity,
+            "terraform_version": terraform_safety.TERRAFORM_VERSION,
+        }
+
+        def build_proof(*, honest: bool) -> dict:
+            denial_value = None if honest else True
+            return {
+                "schema": 1,
+                "terraform_version": terraform_safety.TERRAFORM_VERSION,
+                "root": "cloudflare/apptolast-dns",
+                "backend_registry_role": "production",
+                "cross_root": "netcup/perimeter",
+                "locking_scope_sha256": scope_sha,
+                "locking_contract_sha256": terraform_safety.locking_contract(
+                    PROJECT_ROOT
+                )["sha256"],
+                "primary_access_key_id_sha256": shared_identity,
+                "cross_access_key_id_sha256": shared_identity,
+                "cross_credential_positive_scope_sha256": (
+                    terraform_safety.sha256_bytes(
+                        terraform_safety.canonical_json(positive_scope)
+                    )
+                ),
+                "source_commit": "9" * 40,
+                "signer_identity": terraform_safety.LOCK_PROOF_SIGNER,
+                "tested_at": "2026-07-27T11:00:00Z",
+                "valid_until": "2026-07-28T11:00:00Z",
+                "operator": "reviewed-test",
+                "results": {
+                    "exclusive_create": True,
+                    "second_client_blocked": True,
+                    "normal_release": True,
+                    "interrupted_client_recovered": True,
+                    "distributed_operation_lease": True,
+                    "terraform_backend_access_denied": denial_value,
+                    "cross_credential_own_bucket_list_succeeded": True,
+                    "cross_credential_own_bucket_read_succeeded": True,
+                    "cross_credential_own_bucket_write_succeeded": True,
+                    "cross_credential_own_bucket_delete_succeeded": True,
+                    "cross_credential_list_denied": denial_value,
+                    "cross_credential_read_denied": denial_value,
+                    "cross_credential_write_denied": denial_value,
+                    "cross_credential_delete_denied": denial_value,
+                },
+            }
+
+        signature = {
+            "signature_sha256": "1" * 64,
+            "allowed_signers_sha256": "2" * 64,
+            "signer_identity": terraform_safety.LOCK_PROOF_SIGNER,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            honest_path = Path(temporary) / "honest-proof.json"
+            honest_path.write_text(
+                json.dumps(build_proof(honest=True)), encoding="utf-8"
+            )
+            dishonest_path = Path(temporary) / "dishonest-proof.json"
+            dishonest_path.write_text(
+                json.dumps(build_proof(honest=False)), encoding="utf-8"
+            )
+            with mock.patch.object(
+                terraform_safety,
+                "load_backend_identities",
+                return_value=(shared_registry, BACKEND_REGISTRY_SHA256),
+            ):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "AWS_ACCESS_KEY_ID": shared_access_key,
+                        "AWS_SECRET_ACCESS_KEY": "shared-r2-secret-key",
+                    },
+                    clear=True,
+                ):
+                    with mock.patch.object(
+                        terraform_safety,
+                        "verify_lock_proof_signature",
+                        return_value=signature,
+                    ):
+                        attestation = terraform_safety.attest_backend(
+                            "cloudflare/apptolast-dns",
+                            metadata,
+                            "default",
+                            PROJECT_ROOT,
+                            honest_path,
+                            now,
+                        )
+                        self.assertEqual(
+                            attestation["locking"]["mechanism"],
+                            "s3-lockfile",
+                        )
+                        # A proof claiming True for a property that was
+                        # never testable (the credential cannot be denied
+                        # access to itself) is a fabricated result, not a
+                        # stronger one, and must still be rejected.
+                        with self.assertRaises(
+                            terraform_safety.TerraformSafetyError
+                        ):
+                            terraform_safety.attest_backend(
+                                "cloudflare/apptolast-dns",
+                                metadata,
+                                "default",
+                                PROJECT_ROOT,
+                                dishonest_path,
+                                now,
+                            )
+
     def test_saved_plan_policy_rejects_every_delete(self) -> None:
         terraform_safety.validate_plan_document(
             "cloudflare/apptolast-dns",

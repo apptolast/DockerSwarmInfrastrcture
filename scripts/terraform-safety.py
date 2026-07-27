@@ -1086,11 +1086,17 @@ def validate_lock_proof(
     if (
         not isinstance(cross_identity, str)
         or re.fullmatch(r"[a-f0-9]{64}", cross_identity) is None
-        or cross_identity == primary_identity
     ):
         raise TerraformSafetyError(
-            "locking proof has no distinct cross-credential identity"
+            "locking proof has no valid cross-credential identity"
         )
+    # Equality means the owner registered the same R2 credential for both
+    # roots in backend-identities.json (both identities are independently
+    # verified against that registry below and against the live primary
+    # credential above, so this comparison cannot be spoofed by the proof
+    # alone). There is then no cross-root access left to deny -- see the
+    # conditional required_results below.
+    shared_credential = cross_identity == primary_identity
     registry, registry_sha256 = load_backend_identities(project_dir)
     cross_production = registry[cross_root]["production"]
     if (
@@ -1136,25 +1142,38 @@ def validate_lock_proof(
         raise TerraformSafetyError("locking proof source commit is invalid")
     if proof.get("signer_identity") != LOCK_PROOF_SIGNER:
         raise TerraformSafetyError("locking proof signer identity is invalid")
-    required_results = (
+    required_true_results = (
         "exclusive_create",
         "second_client_blocked",
         "normal_release",
         "interrupted_client_recovered",
         "distributed_operation_lease",
-        "terraform_backend_access_denied",
         "cross_credential_own_bucket_list_succeeded",
         "cross_credential_own_bucket_read_succeeded",
         "cross_credential_own_bucket_write_succeeded",
         "cross_credential_own_bucket_delete_succeeded",
+    )
+    # These specifically prove the *other* credential is denied access to
+    # this bucket. With a shared credential (shared_credential above) there
+    # is nothing to deny, so the harness records them as null rather than a
+    # fabricated True -- required here to be exactly that, never silently
+    # omitted or set to any other value, and never null when a genuinely
+    # distinct credential was tested.
+    cross_denial_results = (
+        "terraform_backend_access_denied",
         "cross_credential_list_denied",
         "cross_credential_read_denied",
         "cross_credential_write_denied",
         "cross_credential_delete_denied",
     )
     results = proof.get("results")
-    if not isinstance(results, dict) or any(
-        results.get(key) is not True for key in required_results
+    if (
+        not isinstance(results, dict)
+        or any(results.get(key) is not True for key in required_true_results)
+        or any(
+            results.get(key) is not (None if shared_credential else True)
+            for key in cross_denial_results
+        )
     ):
         raise TerraformSafetyError("locking proof does not pass every required test")
     tested_at = parse_utc(proof.get("tested_at"), "tested_at")

@@ -218,9 +218,21 @@ El proof:
 - identifica los dos roots, buckets y hashes de Access Key IDs registrados;
 - liga por hash el commit limpio y cada fichero del harness ejecutado;
 - identifica un operador responsable;
-- marca los catorce resultados obligatorios como verdaderos, incluido el lease
-  distribuido CAS;
+- marca como verdaderos los diez resultados obligatorios (incluido el lease
+  distribuido CAS) y, salvo excepción registrada, los cuatro
+  `cross_credential_*_denied` más `terraform_backend_access_denied`;
 - usa timestamps UTC y una vigencia máxima de 24 horas.
+
+**Excepción de credencial compartida.** Si `backend-identities.json` registra
+la misma credencial R2 para ambos roots (decisión explícita del propietario,
+ver `docs/EDGE.md`), no existe acceso cruzado que denegar: la credencial no
+puede estar denegada a sí misma. En ese caso concreto los cinco resultados de
+denegación se registran como `null`, nunca como `true` fabricado ni omitidos,
+y `scripts/test-terraform-r2-locking.sh` detecta la situación comparando las
+claves reales, nunca mediante una bandera manual. Los diez resultados
+restantes —incluidos los cuatro `cross_credential_own_bucket_*_succeeded`,
+que siguen probando que la credencial compartida funciona de verdad contra el
+otro bucket— siguen siendo obligatoriamente `true`.
 
 No contiene Access Keys en claro, solo sus hashes SHA-256. El state vacío de la
 key desechable puede conservarse

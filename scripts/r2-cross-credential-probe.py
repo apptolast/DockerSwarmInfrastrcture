@@ -192,7 +192,7 @@ def require_s3_error(
         raise ProbeError(f"{context} did not return {expected_status} {expected_code}")
 
 
-def run_probe(args: argparse.Namespace) -> dict[str, bool]:
+def run_probe(args: argparse.Namespace) -> dict[str, bool | None]:
     if (
         re.fullmatch(
             r"lock-tests/credential-isolation/[a-zA-Z0-9._-]+\.probe",
@@ -215,6 +215,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, bool]:
     )
     other_access = read_secret(args.other_access_key_file, "other access key")
     other_secret = read_secret(args.other_secret_key_file, "other secret key")
+    # Detected from the actual key material rather than a caller-supplied
+    # flag, so this cannot be told "shared" while distinct keys are in play
+    # or vice versa. When the owner has registered the same R2 credential
+    # for both roots (infra/terraform/backend-identities.json), there is no
+    # cross-root access to deny: the credential is, trivially, not denied
+    # access to itself. The positive-control checks below still run and
+    # still matter -- they prove the shared credential genuinely works
+    # end-to-end against the other root's bucket, catching real
+    # misconfiguration -- only the negative-control (expected 403) checks
+    # are skipped, since there is nothing left to disprove.
+    shared_credential = other_access == primary_access and other_secret == primary_secret
     marker = (f"apptolast-r2-credential-isolation:{args.probe_key}\n").encode("utf-8")
     other_key = f"{args.probe_key}.other-write"
     positive_key = f"{args.probe_key}.positive-control"
@@ -353,6 +364,23 @@ def run_probe(args: argparse.Namespace) -> dict[str, bool]:
                 raise ProbeError(
                     "cross credential could not clean its positive-control object"
                 )
+
+    if shared_credential:
+        # There is no "other" credential to deny: it is the primary
+        # credential. Skip the negative-control round trip entirely rather
+        # than run it and paper over its now-meaningless result -- the
+        # positive-control block above already proved this exact credential
+        # genuinely works end-to-end against the other root's bucket.
+        return {
+            "cross_credential_own_bucket_list_succeeded": True,
+            "cross_credential_own_bucket_read_succeeded": True,
+            "cross_credential_own_bucket_write_succeeded": True,
+            "cross_credential_own_bucket_delete_succeeded": True,
+            "cross_credential_list_denied": None,
+            "cross_credential_read_denied": None,
+            "cross_credential_write_denied": None,
+            "cross_credential_delete_denied": None,
+        }
 
     primary_put, _ = call("PUT", key=args.probe_key, body=marker)
     if primary_put != 200:
