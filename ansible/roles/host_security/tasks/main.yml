@@ -901,6 +901,38 @@
   register: host_security_ufw_ssh
   changed_when: "'Rule added' in host_security_ufw_ssh.stdout"
 
+- name: Remove protocol-agnostic legacy egress rules from UFW
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - --force
+      - delete
+      - allow
+      - out
+      - "{{ item | string }}"
+  environment:
+    LC_ALL: C
+  loop: >-
+    {{
+      host_security_required_host_egress
+      | map(attribute="port")
+      | unique
+      | sort
+    }}
+  register: host_security_ufw_legacy_egress
+  changed_when: "'Rule deleted' in host_security_ufw_legacy_egress.stdout"
+  failed_when:
+    - host_security_ufw_legacy_egress.rc != 0
+    - >-
+      "Could not delete non-existent rule"
+      not in
+      (
+        host_security_ufw_legacy_egress.stdout
+        ~ host_security_ufw_legacy_egress.stderr
+      )
+  when:
+    - not ansible_check_mode
+
 - name: Allow only reviewed host egress classes
   ansible.builtin.command:
     argv:

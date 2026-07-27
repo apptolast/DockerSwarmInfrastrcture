@@ -124,6 +124,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   expande: `validate-ufw-contract.py` recibía `--public-port=\1`, y el
   candidato del bouncer CrowdSec habría reemplazado su línea `- INPUT` por
   `\1`. Ahora usan `\g<1>`, que sí expande en ese contexto.
+- El contrato UFW de egress solo añadía sus reglas cualificadas por protocolo,
+  dejando vivas las reglas legacy sin protocolo del host previo (25, 53, 123,
+  443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
+  `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
+  de los propios puertos revisados.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.
