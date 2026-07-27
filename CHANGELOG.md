@@ -116,6 +116,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   enmascarado creaba el estado que el gate siguiente rechazaba. Ahora se
   limpia ese residuo con `systemctl reset-failed` antes de leer el estado;
   el assert de promoción no se relaja.
+- `docs/KNOWN_ISSUES.md` describía el prefijo de `sudo-rs` con un espacio
+  final dentro de un code span, que markdownlint MD038 rechaza y hacía fallar
+  `scripts/lint.sh`. El texto se reformula sin alterar el hecho descrito.
 
 Nada de esta sección afirma que los stacks, DNS, Terraform remoto o backup ya
 estén aplicados en producción.

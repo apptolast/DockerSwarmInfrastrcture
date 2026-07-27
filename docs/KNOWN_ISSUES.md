@@ -72,8 +72,8 @@ El complemento `become` de Ansible construye el indicador exacto
 `[sudo via ansible, key=<id>] password:` y solo lo reconoce cuando alguna
 línea de la salida **empieza** por ese texto (`check_password_prompt`, en
 `ansible/plugins/become/__init__.py`). La línea de `sudo-rs` empieza por
-`[sudo: `, así que la coincidencia nunca ocurre y la escalada aborta sin
-haber enviado nunca la contraseña.
+`[sudo:` seguido de un espacio, así que la coincidencia nunca ocurre y la
+escalada aborta sin haber enviado nunca la contraseña.
 
 ```text
 Timeout (12s) waiting for privilege escalation prompt
