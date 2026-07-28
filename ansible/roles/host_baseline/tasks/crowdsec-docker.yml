@@ -29,21 +29,22 @@
   register: host_baseline_crowdsec_bouncer_source
   no_log: true
 
+# La comprobacion de presencia tiene que ser por linea exacta, igual que la
+# asercion posterior. Con una prueba de subcadena, el comentario
+# "#  - DOCKER-USER" que trae el fichero por defecto ya contenia
+# "  - DOCKER-USER", de modo que se tomaba la rama "ya esta puesto", el
+# candidato salia sin el gancho y la asercion siguiente, que exige exactamente
+# una linea igual a "  - DOCKER-USER", fallaba siempre. El playbook
+# host-baseline abortaba ahi, en su ultima tarea, despues de haber reescrito
+# sshd_config, la politica de APT, journald y los sysctl, dejando el host a
+# medio converger y sin metadatos de despliegue.
+#
+# El comentario va aqui, en YAML, y NO dentro del escalar plegado: un bloque
+# {# ... #} dentro de `>-` deja un espacio antes del valor renderizado, que
+# desplaza la primera linea del fichero y lo vuelve YAML invalido.
 - name: Build the CrowdSec DOCKER-USER candidate in memory
   ansible.builtin.set_fact:
     host_baseline_crowdsec_bouncer_candidate: >-
-      {#
-        La comprobacion de presencia tiene que ser por linea exacta, igual
-        que la asercion posterior. Con una prueba de subcadena, el comentario
-        "#  - DOCKER-USER" que trae el fichero por defecto ya contenia
-        "  - DOCKER-USER", de modo que se tomaba la rama "ya esta puesto",
-        el candidato salia sin el gancho y la asercion siguiente, que exige
-        exactamente una linea igual a "  - DOCKER-USER", fallaba siempre.
-        El playbook host-baseline abortaba ahi, en su ultima tarea, despues
-        de haber reescrito sshd_config, la politica de APT, journald y los
-        sysctl, dejando el host a medio converger y sin metadatos de
-        despliegue.
-      #}
       {{
         (host_baseline_crowdsec_bouncer_source.content | b64decode)
         if (
