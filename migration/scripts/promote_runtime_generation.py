@@ -1324,6 +1324,17 @@ def inspect_process_references(roots: Sequence[Path]) -> tuple[str, ...]:
                     target = os.readlink(process / field)
                 except FileNotFoundError:
                     break
+                except PermissionError:
+                    # El proceso existe pero no podemos leer a que apunta, de
+                    # modo que no es posible demostrar que no referencia el
+                    # arbol protegido. Se registra como referencia bloqueante
+                    # en lugar de abortar: el llamante ya falla en cerrado
+                    # ante cualquier referencia, y asi el motivo queda
+                    # enumerado en la evidencia. Un /proc sin `hidepid` deja
+                    # visibles procesos ajenos ilegibles, que antes hacian
+                    # estallar el recorrido entero.
+                    references.append(f"{pid}:{field}:unreadable")
+                    break
                 except OSError as error:
                     if not process.exists():
                         break
@@ -1338,6 +1349,9 @@ def inspect_process_references(roots: Sequence[Path]) -> tuple[str, ...]:
                     descriptors = tuple(fd_directory.iterdir())
                 except FileNotFoundError:
                     continue
+                except PermissionError:
+                    references.append(f"{pid}:fd:unreadable")
+                    continue
                 except OSError as error:
                     if not process.exists():
                         continue
@@ -1349,6 +1363,9 @@ def inspect_process_references(roots: Sequence[Path]) -> tuple[str, ...]:
                         target = os.readlink(descriptor)
                     except FileNotFoundError:
                         continue
+                    except PermissionError:
+                        references.append(f"{pid}:fd:unreadable")
+                        break
                     except OSError as error:
                         if not process.exists():
                             break
@@ -1361,6 +1378,9 @@ def inspect_process_references(roots: Sequence[Path]) -> tuple[str, ...]:
                 try:
                     command = (process / "cmdline").read_bytes()
                 except FileNotFoundError:
+                    continue
+                except PermissionError:
+                    references.append(f"{pid}:cmdline:unreadable")
                     continue
                 except OSError as error:
                     if not process.exists():

@@ -831,6 +831,57 @@ class RuntimeGenerationPromotionTests(unittest.TestCase):
                 if child.stderr is not None:
                     child.stderr.close()
 
+    def test_uninspectable_process_blocks_instead_of_aborting(self) -> None:
+        # Un /proc sin `hidepid` deja visibles procesos ajenos cuyos enlaces
+        # no se pueden leer. Antes eso abortaba el recorrido entero con
+        # PromotionError; ahora se registra como referencia bloqueante, de
+        # modo que la promocion sigue fallando en cerrado pero enumerando el
+        # motivo. Se fuerza el EACCES sobre un hijo propio para que la prueba
+        # no dependa de como este montado /proc.
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "print('ready', flush=True); "
+                    "sys.stdin.buffer.read(1)"
+                ),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            assert child.stdout is not None
+            self.assertEqual(child.stdout.readline(), b"ready\n")
+            prefix = f"/proc/{child.pid}/"
+            real_readlink = os.readlink
+
+            def deny_child(path, *args, **kwargs):
+                if str(path).startswith(prefix):
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_readlink(path, *args, **kwargs)
+
+            with tempfile.TemporaryDirectory() as temporary:
+                protected = Path(temporary) / "services"
+                protected.mkdir(mode=0o700)
+                with mock.patch.object(promotion.os, "readlink", deny_child):
+                    references = promotion.inspect_process_references(
+                        (protected,)
+                    )
+            self.assertIn(f"{child.pid}:cwd:unreadable", references)
+        finally:
+            if child.stdin is not None:
+                child.stdin.write(b"x")
+                child.stdin.flush()
+                child.stdin.close()
+            child.wait(timeout=10)
+            if child.stdout is not None:
+                child.stdout.close()
+            if child.stderr is not None:
+                child.stderr.close()
+
     def test_production_mutation_has_no_boolean_lock_bypass(self) -> None:
         source = (
             REPOSITORY_ROOT / "migration/scripts/promote_runtime_generation.py"
