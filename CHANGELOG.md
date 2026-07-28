@@ -8,6 +8,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real
+  del host tras el primer despliegue productivo de este árbol: lo aplicado y
+  verificado, los servicios que aún no convergen con su diagnóstico, el bloqueo
+  circular que impide redesplegar `workloads` y las compuertas externas que
+  siguen cerradas.
 - Roots Terraform aislados para bootstrap R2, diez A de Cloudflare y perímetro
   Netcup, con imports/adopción, identidades de backend, locking proof,
   migración y tests offline.
@@ -58,14 +63,6 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - La configuración SSH se valida con el parser real y solo deshabilita root
   tras reconexión independiente y rollback armado.
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
-
-### Added
-
-- [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real
-  del host tras el primer despliegue productivo de este árbol: lo aplicado y
-  verificado, los servicios que aún no convergen con su diagnóstico, el bloqueo
-  circular que impide redesplegar `workloads` y las compuertas externas que
-  siguen cerradas.
 
 ### Fixed
 
