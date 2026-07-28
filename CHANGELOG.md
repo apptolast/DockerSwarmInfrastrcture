@@ -113,6 +113,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Un simple ensayo `--playbook host-baseline --check` dejaba el host sin
+  filtrado de CrowdSec. Las dos tareas que validan la configuración del
+  bouncer llevaban `check_mode: false`, de modo que se ejecutaban también en
+  modo comprobación, y su `-t` retira `CROWDSEC_CHAIN` de ambas familias al
+  salir: se observó cómo las referencias pasaban de 3 a 0 durante un ensayo
+  que por definición no debe cambiar nada. Ahora se omiten en modo
+  comprobación, y tras las pruebas el rol reconcilia el estado real y espera a
+  que la cadena vuelva antes de comprobar el orden de `DOCKER-USER`, porque
+  los handlers sólo se disparaban cuando el fichero cambiaba y en un host ya
+  convergido nadie reponía las cadenas.
 - La comprobación de configuración del bouncer de CrowdSec dejaba el host sin
   filtrado. `crowdsec-firewall-bouncer -t` está documentado como «test config
   and exit», pero inicializa el backend real y al salir retira las cadenas;

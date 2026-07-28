@@ -69,6 +69,10 @@
   check_mode: false
   no_log: true
 
+# Sin `check_mode: false`: `-t` inicializa el backend real y al salir retira
+# CROWDSEC_CHAIN de ambas familias, de modo que un simple ensayo `--check`
+# dejaba el host sin filtrado de CrowdSec. Un ensayo no puede mutar el
+# cortafuegos vivo, asi que en modo comprobacion esta tarea se omite.
 - name: Validate the CrowdSec firewall-bouncer configuration
   ansible.builtin.command:
     argv:
@@ -77,7 +81,6 @@
       - "{{ host_baseline_crowdsec_bouncer_config }}"
       - -t
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Verify the Fail2ban daemon responds

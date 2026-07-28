@@ -73,6 +73,9 @@
     quiet: true
   no_log: true
 
+# Sin `check_mode: false`, por el mismo motivo que en security.yml: `-t`
+# retira CROWDSEC_CHAIN al salir y un ensayo no puede dejar el host sin
+# filtrado.
 - name: Parse the credential-bearing bouncer candidate in memory
   ansible.builtin.command:
     argv:
@@ -83,7 +86,6 @@
     stdin: "{{ host_baseline_crowdsec_bouncer_candidate }}"
     stdin_add_newline: true
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Register DOCKER-USER with the CrowdSec firewall bouncer
@@ -100,6 +102,67 @@
   notify:
     - Host baseline restart CrowdSec firewall bouncer
     - Host baseline restart Docker ingress ordering
+
+# Las pruebas `-t` anteriores, incluida la de `validate:` de la tarea previa,
+# retiran CROWDSEC_CHAIN al salir. Los handlers solo se disparan si el fichero
+# cambio, de modo que en un host ya convergido nadie repone las cadenas y la
+# comprobacion de orden de DOCKER-USER que viene despues fallaria sobre un
+# cortafuegos que las pruebas acababan de desmontar. Se reconcilia aqui.
+- name: Read the live CrowdSec IPv4 enforcement after the bouncer tests
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv4
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Read the live CrowdSec IPv6 enforcement after the bouncer tests
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv6
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Restore CrowdSec enforcement torn down by the bouncer tests
+  ansible.builtin.systemd_service:
+    name: crowdsec-firewall-bouncer
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - >-
+      "CROWDSEC_CHAIN" not in host_baseline_crowdsec_ipv4.stdout
+      or "CROWDSEC_CHAIN" not in host_baseline_crowdsec_ipv6.stdout
+
+- name: Wait for CrowdSec IPv4 enforcement to return
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv4_final
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'CROWDSEC_CHAIN' in host_baseline_crowdsec_ipv4_final.stdout"
+  when: not ansible_check_mode
+
+- name: Wait for CrowdSec IPv6 enforcement to return
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv6_final
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'CROWDSEC_CHAIN' in host_baseline_crowdsec_ipv6_final.stdout"
+  when: not ansible_check_mode
 
 - name: Install the CrowdSec and Docker ordering helper
   ansible.builtin.template:
