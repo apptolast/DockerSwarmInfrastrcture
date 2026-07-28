@@ -39,6 +39,26 @@
     state: restarted
   listen: Host baseline restart CrowdSec firewall bouncer
 
+# systemd da por arrancado el bouncer antes de que este haya creado sus
+# ipsets, y el script de ordenacion de DOCKER-USER inserta reglas que
+# referencian CROWDSEC_CHAIN, la cual usa `-m set --match-set`. Si corre en
+# esa ventana, iptables falla con "Can't open socket to ipset" y
+# dockerswarm-docker-firewall.service no arranca. Los handlers se ejecutan en
+# el orden en que se declaran, de modo que esta espera se intercala entre el
+# reinicio del bouncer y la reordenacion.
+- name: Wait for the CrowdSec ipsets to exist
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ipset
+      - list
+      - -n
+  register: host_baseline_crowdsec_ipsets
+  changed_when: false
+  retries: 24
+  delay: 5
+  until: "'crowdsec-blacklists' in host_baseline_crowdsec_ipsets.stdout"
+  listen: Host baseline restart CrowdSec firewall bouncer
+
 - name: Restart Docker ingress ordering
   ansible.builtin.systemd_service:
     name: "{{ host_baseline_docker_firewall_service }}"

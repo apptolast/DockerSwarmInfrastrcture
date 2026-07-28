@@ -113,6 +113,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `dockerswarm-docker-firewall.service` fallaba al final de `host-baseline`
+  con `iptables: Can't open socket to ipset`. systemd da por arrancado el
+  bouncer de CrowdSec antes de que éste haya creado sus ipsets, y el handler
+  que reordena `DOCKER-USER` se ejecutaba acto seguido insertando reglas que
+  referencian `CROWDSEC_CHAIN`, que a su vez usa `-m set --match-set`. Se
+  intercala una espera por los ipsets entre ambos handlers.
 - Un simple ensayo `--playbook host-baseline --check` dejaba el host sin
   filtrado de CrowdSec. Las dos tareas que validan la configuración del
   bouncer llevaban `check_mode: false`, de modo que se ejecutaban también en
