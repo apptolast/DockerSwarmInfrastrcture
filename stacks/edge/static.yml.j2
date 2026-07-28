@@ -21,7 +21,7 @@ entryPoints:
       underscoreHeadersStrategy: reject
       redirections:
         entryPoint:
-          to: websecure
+          to: ":443"
           scheme: https
           permanent: true
   websecure:
@@ -86,7 +86,6 @@ certificatesResolvers:
         provider: cloudflare
         resolvers:
           - "1.1.1.1:53"
-          - "9.9.9.9:53"
 
 metrics:
   addInternals: true

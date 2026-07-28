@@ -129,6 +129,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- La redirección HTTP→HTTPS apuntaba al entrypoint `websecure`, cuya dirección
+  interna es `:8443`, de modo que Traefik redirigía a un puerto que no está
+  publicado: `http://<host>/` acababa en `https://<host>:8443/`. Se redirige al
+  puerto público `:443`, que es la otra forma admitida por `to`.
+- Declarar dos resolvers para DNS-01 exige que ambos vean el TXT, y Quad9
+  cachea el NXDOMAIN más tiempo que Cloudflare, así que la comprobación
+  expiraba en cinco de los nueve dominios. Se deja solo `1.1.1.1`, el resolver
+  del proveedor que hospeda la zona.
 - El reto DNS-01 no declaraba `resolvers`, así que la comprobación de
   propagación usaba el resolver embebido de Docker (`127.0.0.11`), que devuelve
   NXDOMAIN para `_acme-challenge.<host>` y agotaba el plazo pese a haberse
