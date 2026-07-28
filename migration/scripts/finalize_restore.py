@@ -81,9 +81,12 @@ CRITICAL_FILES = {
 }
 SECRET_IDENTITY_KEY_FILE = "workloads_secret_identity_hmac_key"
 SECRET_IDENTITY_KEY_SIZE = 32
+# El almacén vectorial de n8n solo transporta la extensión pgvector y no
+# declara tablas propias; rag sí las tiene.  El tercer elemento es el mínimo
+# exigible de tablas para cada fase.
 VECTOR_RESTORE_MARKERS = {
-    "database-vectors-081": ("vectors", "0.8.1"),
-    "database-rag-082": ("rag", "0.8.2"),
+    "database-vectors-081": ("vectors", "0.8.1", 0),
+    "database-rag-082": ("rag", "0.8.2", 1),
 }
 
 
@@ -282,7 +285,11 @@ def validate_restore_phase_markers(services_root: Path) -> None:
         "vectorExtensionVersion",
         "completedAt",
     }
-    for phase, (database, extension_version) in VECTOR_RESTORE_MARKERS.items():
+    for phase, (
+        database,
+        extension_version,
+        minimum_tables,
+    ) in VECTOR_RESTORE_MARKERS.items():
         marker = load_json_mapping(
             state_dir / f"{phase}.json",
             f"marker {phase}",
@@ -297,7 +304,7 @@ def validate_restore_phase_markers(services_root: Path) -> None:
             or marker.get("dumpSha256") != sha256_file(dump)
             or not isinstance(marker.get("tableCount"), int)
             or isinstance(marker.get("tableCount"), bool)
-            or marker["tableCount"] <= 0
+            or marker["tableCount"] < minimum_tables
             or not isinstance(marker.get("schemaSha256"), str)
             or re.fullmatch(r"[a-f0-9]{64}", marker["schemaSha256"]) is None
             or marker.get("vectorExtensionVersion") != extension_version

@@ -292,7 +292,14 @@ write_vector_database_marker() {
     fail "Base vectorial inválida"
   [[ "${dump_sha256}" =~ ^[a-f0-9]{64}$ ]] ||
     fail "SHA-256 de dump vectorial inválido"
-  [[ "${table_count}" =~ ^[0-9]+$ && "${table_count}" -gt 0 ]] ||
+  # El almacén vectorial de n8n solo transporta la extensión pgvector y no
+  # declara tablas propias, así que exigirle una sería rechazar el dump real.
+  # rag sí las tiene y conserva el mínimo. El contenido queda ligado igualmente
+  # por dumpSha256, schemaSha256 y vectorExtensionVersion.
+  local minimum_tables=1
+  [[ "${phase_name}" != "database-vectors-081" ]] || minimum_tables=0
+  [[ "${table_count}" =~ ^[0-9]+$ &&
+    "${table_count}" -ge "${minimum_tables}" ]] ||
     fail "Conteo de tablas vectorial inválido"
   [[ "${schema_sha256}" =~ ^[a-f0-9]{64}$ ]] ||
     fail "SHA-256 de esquema vectorial inválido"
@@ -361,7 +368,7 @@ if (
     or document["database"] != sys.argv[3]
     or document["dumpSha256"] != sys.argv[4]
     or not sys.argv[5].isdigit()
-    or int(sys.argv[5]) <= 0
+    or int(sys.argv[5]) < (0 if sys.argv[2] == "database-vectors-081" else 1)
     or document["tableCount"] != int(sys.argv[5])
     or document["schemaSha256"] != sys.argv[6]
     or re.fullmatch(r"[a-f0-9]{64}", document["schemaSha256"]) is None

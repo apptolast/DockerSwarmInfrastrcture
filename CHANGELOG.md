@@ -129,6 +129,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- El restore vectorial exigía al menos una tabla en las dos bases con pgvector,
+  pero `vectors.dump` contiene únicamente la extensión y su comentario: el
+  almacén vectorial de n8n nunca llegó a usarse, de modo que la fase no podía
+  completarse contra el backup real. `vectors` admite ahora cero tablas y `rag`
+  conserva el mínimo; el contenido sigue ligado por `dumpSha256`,
+  `schemaSha256` y `vectorExtensionVersion`.
 - La redirección HTTP→HTTPS apuntaba al entrypoint `websecure`, cuya dirección
   interna es `:8443`, de modo que Traefik redirigía a un puerto que no está
   publicado: `http://<host>/` acababa en `https://<host>:8443/`. Se redirige al
