@@ -59,6 +59,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   tras reconexión independiente y rollback armado.
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
+### Added
+
+- [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real
+  del host tras el primer despliegue productivo de este árbol: lo aplicado y
+  verificado, los servicios que aún no convergen con su diagnóstico, el bloqueo
+  circular que impide redesplegar `workloads` y las compuertas externas que
+  siguen cerradas.
+
 ### Fixed
 
 - Eliminadas carreras entre bootstrap y despliegues Ansible mediante un único
