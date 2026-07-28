@@ -373,6 +373,41 @@
   retries: 18
   delay: 5
 
+# Con `detach: true` el cliente regresa antes de que swarmkit cierre su
+# ventana `monitor`, asi que un servicio revertido seguiria en 1/1 pero con el
+# spec anterior. Esta comprobacion recupera esa senal.
+- name: Read the Traefik update state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ edge_traefik_stack_name }}_traefik"
+      - --format
+      - "{% raw %}{{json .UpdateStatus}}{% endraw %}"
+  register: edge_traefik_update_state
+  changed_when: false
+  check_mode: false
+
+- name: Reject a Traefik update that rolled back or paused
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          edge_traefik_update_state.stdout
+          | from_json | default({}, true)
+        ).get("State", "none")
+        not in [
+          "rollback_started",
+          "rollback_paused",
+          "rollback_completed",
+          "paused"
+        ]
+    fail_msg: >-
+      Traefik did not keep the reviewed spec; Swarm reported update status
+      {{ edge_traefik_update_state.stdout }}.
+    quiet: true
+
 - name: Read the converged Traefik service
   ansible.builtin.command:
     argv:

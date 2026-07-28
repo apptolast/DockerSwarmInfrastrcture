@@ -394,6 +394,44 @@
   retries: 36
   delay: 10
 
+# Con `detach: true` el cliente regresa antes de que swarmkit cierre su
+# ventana `monitor`, asi que un servicio revertido seguiria en 1/1 pero con el
+# spec anterior. Esta comprobacion recupera esa senal.
+- name: Read the update state of every observability service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ observability_stack_name }}_{{ item }}"
+      - --format
+      - "{% raw %}{{json .UpdateStatus}}{% endraw %}"
+  loop: "{{ observability_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: observability_update_states
+  changed_when: false
+  check_mode: false
+
+- name: Reject any observability update that rolled back or paused
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | default({}, true)).get("State", "none")
+        not in [
+          "rollback_started",
+          "rollback_paused",
+          "rollback_completed",
+          "paused"
+        ]
+    fail_msg: >-
+      Service {{ item.item }} did not keep the reviewed spec; Swarm reported
+      update status {{ item.stdout }}.
+    quiet: true
+  loop: "{{ observability_update_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Inspect converged observability services
   ansible.builtin.command:
     argv:

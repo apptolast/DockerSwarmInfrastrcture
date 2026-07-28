@@ -134,15 +134,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   comprobación pasa a ser por línea exacta, igual que la aserción.
 - Los tres despliegues de pila (`edge`, `workloads` y `observability`) pedían
   a `community.docker.docker_stack` que esperase con `detach: false`, lo que
-  añade `--detach=false` y delega la convergencia en el esperador propio del
-  cliente de Docker. Ese esperador se colgó tres veces seguidas con la pila ya
-  convergida: dieciséis servicios en `1/1`, todos los `UpdateStatus` en
-  `completed`, cero eventos de tarea y el proceso consumiendo 6 s de CPU en
-  11 min, es decir sondeando en vacío. Cada rol ya verifica la convergencia
-  por su cuenta, y de forma más estricta, porque exige el inventario exacto de
-  servicios del contrato en `1/1` antes de comprobar identidad de imagen,
-  ubicación, Configs, Secrets y redes. Se pasa a `detach: true`, que además es
-  el valor por defecto del módulo.
+  añade `--detach=false`. Eso no se colgaba: el cliente de Docker recorre los
+  servicios de uno en uno (defecto reconocido, docker/cli #4907) y por cada
+  uno sólo sale cuando `converged && time.Since(convergedAt) >= monitor`, con
+  `monitor` leído de `Spec.UpdateConfig.Monitor`. Esta pila declara
+  `monitor: 120s`, así que quince servicios suponen unos treinta minutos de
+  sondeo en vacío incluso cuando todo está ya en `1/1`. Se pasa a
+  `detach: true`, que es el valor por defecto del módulo, y la convergencia
+  queda en manos de la comprobación propia de cada rol, acotada en el tiempo.
+  A cambio, el cliente ya no observa la ventana `monitor`, de modo que una
+  actualización revertida por swarmkit podría verse como `1/1` con el spec
+  anterior; para no perder esa señal, cada rol rechaza ahora explícitamente
+  los estados `rollback_started`, `rollback_paused`, `rollback_completed` y
+  `paused`. La espera ilimitada que sí existió fue la de `selenium` con la
+  interfaz vxlan huérfana, que corresponde al fallo abierto docker/cli #5299.
 - `inspect_process_references` abortaba con `PromotionError` en cuanto
   encontraba un proceso visible pero ilegible. En este host no se notaba
   porque `/proc` va montado con `hidepid=invisible` y los procesos ajenos ni

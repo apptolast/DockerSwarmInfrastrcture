@@ -494,6 +494,48 @@
   retries: 36
   delay: 10
 
+# Con `detach: true` el cliente regresa antes de que swarmkit cierre su
+# ventana `monitor` de 120 s, de modo que una actualizacion fallida puede
+# revertirse despues de que la espera anterior haya visto 1/1. Un servicio
+# revertido sigue en 1/1, pero con el spec ANTERIOR. Sin esta comprobacion el
+# play daria por bueno un despliegue que en realidad volvio atras, que es
+# justo la trampa `rollback_paused`. Recupera la unica senal que aportaba el
+# esperador del cliente, y ademas acotada en el tiempo.
+- name: Read the update state of every workload service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ workloads_stack_name }}_{{ item }}"
+      - --format
+      - "{% raw %}{{json .UpdateStatus}}{% endraw %}"
+  loop: "{{ workloads_expected_stack_services }}"
+  loop_control:
+    label: "{{ item }}"
+  register: workloads_update_states
+  changed_when: false
+  check_mode: false
+
+- name: Reject any workload update that rolled back or paused
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json | default({}, true)).get("State", "none")
+        not in [
+          "rollback_started",
+          "rollback_paused",
+          "rollback_completed",
+          "paused"
+        ]
+    fail_msg: >-
+      Service {{ item.item }} did not keep the reviewed spec; Swarm reported
+      update status {{ item.stdout }}.
+    quiet: true
+  loop: "{{ workloads_update_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Collect complete Swarm task diagnostics
   ansible.builtin.command:
     argv:
