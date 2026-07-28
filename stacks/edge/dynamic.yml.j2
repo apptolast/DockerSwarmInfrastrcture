@@ -149,6 +149,16 @@ http:
           - url: http://workloads_minecraft-stats:8080
         healthCheck:
           path: /actuator/health
+          # El nombre DNS del servicio en Swarm es `workloads_minecraft-stats`
+          # y Traefik reutiliza el host de `url` como cabecera Host de la
+          # sonda. El Tomcat embebido de Spring Boot aplica RFC 1123 y
+          # rechaza con 400 cualquier Host con guion bajo, de modo que la
+          # sonda fallaba siempre, Traefik marcaba caido el unico backend y
+          # la ruta publica devolvia 503 "no available server" aunque el
+          # contenedor estuviese sano. `hostname` fija un Host valido sin
+          # tocar el destino de la conexion. Es el unico backend afectado:
+          # el resto responde 2xx/3xx con el Host con guion bajo.
+          hostname: "{{ minecraft_stats.hostnames | first }}"
           interval: 15s
           timeout: 3s
     n8n:
