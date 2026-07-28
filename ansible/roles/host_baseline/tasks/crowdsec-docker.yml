@@ -32,10 +32,26 @@
 - name: Build the CrowdSec DOCKER-USER candidate in memory
   ansible.builtin.set_fact:
     host_baseline_crowdsec_bouncer_candidate: >-
+      {#
+        La comprobacion de presencia tiene que ser por linea exacta, igual
+        que la asercion posterior. Con una prueba de subcadena, el comentario
+        "#  - DOCKER-USER" que trae el fichero por defecto ya contenia
+        "  - DOCKER-USER", de modo que se tomaba la rama "ya esta puesto",
+        el candidato salia sin el gancho y la asercion siguiente, que exige
+        exactamente una linea igual a "  - DOCKER-USER", fallaba siempre.
+        El playbook host-baseline abortaba ahi, en su ultima tarea, despues
+        de haber reescrito sshd_config, la politica de APT, journald y los
+        sysctl, dejando el host a medio converger y sin metadatos de
+        despliegue.
+      #}
       {{
         (host_baseline_crowdsec_bouncer_source.content | b64decode)
-        if "  - DOCKER-USER" in
+        if (
           (host_baseline_crowdsec_bouncer_source.content | b64decode)
+          .splitlines()
+          | select("equalto", "  - DOCKER-USER")
+          | list | length == 1
+        )
         else
           (host_baseline_crowdsec_bouncer_source.content | b64decode)
           | regex_replace(
