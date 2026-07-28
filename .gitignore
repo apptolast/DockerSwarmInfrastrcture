@@ -8,6 +8,11 @@
 .venv/
 *.key
 *.pem
+# Anclas de confianza publicas de Let's Encrypt staging. No son material
+# secreto (cuatro raices autofirmadas, cero claves privadas) y
+# tests/test_edge_state_safety.py fija su sha256, asi que deben viajar en el
+# commit: sin ellas la reconstruccion pierde el bundle anclado y CI falla.
+!ansible/roles/edge/files/letsencrypt-staging-roots.pem
 *.swp
 *.tmp
 *.backup.*
