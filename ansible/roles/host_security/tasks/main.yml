@@ -407,9 +407,19 @@
       - host_security_pam_sshd.stat.gr_name == "root"
       - host_security_pam_sshd.stat.mode == "0644"
     fail_msg: >-
-      The existing OpenSSH PAM file is structurally unsafe. Its content is
-      deliberately preserved until legacy MFA receives a separate decision.
+      The existing OpenSSH PAM file is structurally unsafe.
     quiet: true
+
+- name: Retire the inert OpenSSH MFA hook
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sshd
+    regexp: '^\s*auth\s+\S+\s+pam_google_authenticator\.so'
+    state: absent
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when: host_security_ssh_mfa_policy == "retired"
 
 - name: Inventory preserved legacy host-security packages
   ansible.builtin.package_facts:

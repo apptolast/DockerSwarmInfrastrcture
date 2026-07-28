@@ -110,6 +110,13 @@ def validate(document: Any, now: datetime) -> None:
             )
         names.add(name)
 
+    # La política de MFA de SSH debe ser una decisión explícita del contrato.
+    mfa_policy = contract.get("host_security_ssh_mfa_policy")
+    if mfa_policy not in ("retired", "required"):
+        raise HostSecurityContractError(
+            "host_security_ssh_mfa_policy must be 'retired' or 'required'"
+        )
+
     # El endurecimiento de /proc debe declararse entero: las opciones que se
     # escriben en fstab y las que se exigen sobre el montaje efectivo tienen
     # que coincidir, y `hidepid` nunca puede quedar en modo permisivo. El

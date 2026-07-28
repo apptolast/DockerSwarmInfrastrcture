@@ -229,6 +229,16 @@ host_security_fail2ban_maxretry: 5
 host_security_psad_log_path: /var/log/iptables.log
 host_security_psad_auto_ids_danger_level: 5
 
+# Decisión del propietario registrada el 2026-07-28: el MFA de SSH mediante
+# pam_google_authenticator se retira formalmente. Estaba instalado desde el
+# 2026-07-21 pero era inerte: ningún usuario tenía `~/.google_authenticator` y
+# el modificador `nullok` hace que el módulo dé por buena la autenticación
+# cuando no hay secreto, de modo que el acceso ya era sólo por clave pública.
+# Retirarlo no cambia cómo se entra al host; lo que hace es dejar de fingir un
+# segundo factor que nunca existió, y permite que la plantilla de
+# endurecimiento SSH deje de tratarlo como estado a preservar.
+host_security_ssh_mfa_policy: retired
+
 # Endurecimiento de /proc. `hidepid=2` (que el nucleo representa como
 # `invisible`) oculta por completo los /proc/<pid> ajenos, incluidos uid y
 # gid, segun la documentacion oficial del kernel en

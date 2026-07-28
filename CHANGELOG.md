@@ -65,6 +65,24 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Se retira formalmente el MFA de SSH por `pam_google_authenticator`
+  (`host_security_ssh_mfa_policy: retired`). Estaba instalado desde el
+  2026-07-21 pero era inerte: ningún usuario tenía `~/.google_authenticator`
+  y el modificador `nullok` da por buena la autenticación cuando no hay
+  secreto, así que el acceso ya era sólo por clave pública. Retirarlo no
+  cambia cómo se entra al host; deja de aparentar un segundo factor que nunca
+  existió y permite que el endurecimiento SSH deje de tratarlo como estado a
+  preservar. Decisión explícita del propietario, registrada en el contrato.
+- Queda documentado que `PasswordAuthentication no` no bastaba para cerrar la
+  autenticación por contraseña. Con `UsePAM yes` y
+  `KbdInteractiveAuthentication yes`, el método `keyboard-interactive` recorre
+  la pila PAM de `/etc/pam.d/sshd`, que incluye `common-auth` y por tanto
+  `pam_unix.so`; `admin` y `root` tienen hash de contraseña real, de modo que
+  el servidor anunciaba `publickey,keyboard-interactive` y una contraseña
+  válida bastaba para entrar. La plantilla de endurecimiento de
+  `host_baseline` ya fija `KbdInteractiveAuthentication no` y
+  `AuthenticationMethods publickey`, que es exactamente lo que cierra esa vía;
+  hasta ahora no llegaba a aplicarse porque el playbook abortaba antes.
 - El endurecimiento de `/proc` pasa a estar codificado en el repositorio
   (`host_security_proc_mount_options`). `hidepid=2`, que el núcleo representa
   como `invisible`, estaba aplicado a mano en `/etc/fstab` desde el
@@ -95,6 +113,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `host_baseline` abortaba siempre en `crowdsec-docker.yml`, su última tarea,
+  porque la comprobación de presencia del gancho `DOCKER-USER` era por
+  subcadena mientras la aserción posterior exigía una línea exacta. El fichero
+  del bouncer trae `#  - DOCKER-USER` comentado, que contiene la subcadena
+  pero no es la línea, así que se tomaba la rama «ya está puesto», el
+  candidato salía sin el gancho y la aserción fallaba. Como `any_errors_fatal`
+  corta el play, el host quedaba a medio converger —con `sshd_config`, APT,
+  journald y sysctl ya reescritos— y sin metadatos de despliegue. La
+  comprobación pasa a ser por línea exacta, igual que la aserción.
 - Los tres despliegues de pila (`edge`, `workloads` y `observability`) pedían
   a `community.docker.docker_stack` que esperase con `detach: false`, lo que
   añade `--detach=false` y delega la convergencia en el esperador propio del
