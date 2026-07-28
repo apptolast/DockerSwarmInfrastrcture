@@ -171,6 +171,10 @@ services:
         - >-
           wget -q --spider
           http://127.0.0.1:8080/actuator/health || exit 1
+      # El arranque en frio de Spring Boot supera los 20 s por defecto, de
+      # modo que la sonda marcaba el contenedor como no sano antes de que
+      # /actuator/health existiese y Swarm revertia la actualizacion.
+      start_period: 2m
     deploy:
       <<: *deploy-defaults
       labels:
@@ -179,7 +183,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 384M
+          memory: 448M
         reservations:
           cpus: "0.10"
           memory: 192M
@@ -218,7 +222,7 @@ services:
       resources:
         limits:
           cpus: "1.00"
-          memory: 512M
+          memory: 448M
         reservations:
           cpus: "0.20"
           memory: 256M
@@ -608,7 +612,7 @@ services:
       resources:
         limits:
           cpus: "0.75"
-          memory: 320M
+          memory: 256M
         reservations:
           cpus: "0.15"
           memory: 192M
@@ -727,7 +731,10 @@ services:
         - >-
           wget -q --spider
           http://127.0.0.1:8080/rest/health || exit 1
-      start_period: 45s
+      # Shlink migra la base, genera proxies y descarga GeoLite antes de
+      # levantar RoadRunner; 45 s no bastaban y la reversion dejaba el
+      # servicio clavado en el spec anterior.
+      start_period: 2m
     deploy:
       <<: *deploy-defaults
       labels:
@@ -736,10 +743,10 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 320M
+          memory: 384M
         reservations:
           cpus: "0.10"
-          memory: 128M
+          memory: 192M
 
   portfolio-pablo:
     <<: *service-defaults
