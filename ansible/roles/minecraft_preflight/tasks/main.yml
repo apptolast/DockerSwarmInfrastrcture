@@ -14,12 +14,17 @@
       - minecraft_contract.runtime_uid == 1000
       - minecraft_contract.runtime_gid == 1000
       - minecraft_contract.artifacts | length == 5
+      # Un servidor en modo offline solo puede publicarse si el propietario
+      # ha registrado su aceptacion explicita en el contrato. La compuerta no
+      # desaparece: sin esa bandera sigue fallando en cerrado como siempre.
       - >-
         minecraft_contract.online_mode
         or not (platform_minecraft_public_enabled | bool)
+        or (platform_minecraft_offline_public_accepted | bool)
     fail_msg: >-
       The Minecraft version/artifact contract is malformed, or an
-      offline-mode server would be exposed publicly.
+      offline-mode server would be exposed publicly without
+      platform_minecraft_offline_public_accepted.
     quiet: true
 
 - name: Inspect every immutable Minecraft runtime artifact

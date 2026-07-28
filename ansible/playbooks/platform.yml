@@ -9,6 +9,11 @@
   vars_files:
     - ../../config/host-security.yml
     - ../../config/platform.yml
+    # El rol `platform` es quien abre el 25565 en UFW y en la cadena de
+    # Docker. Sin el contrato de Minecraft no puede comprobar `online_mode`,
+    # de modo que un `--playbook platform` aislado publicaria el puerto sin
+    # ver la compuerta de aceptacion. Cargarlo aqui cierra ese hueco.
+    - ../../config/minecraft.yml
     - ../group_vars/all.yml
 
   roles:

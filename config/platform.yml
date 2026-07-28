@@ -6,17 +6,25 @@ platform_admin_uid: 1001
 platform_admin_gid: 1001
 platform_public_ipv4: 159.195.156.57
 platform_dns_legacy_ipv4: 138.199.157.58
+# El corte de DNS ya ocurrio: las diez etiquetas resuelven a
+# platform_public_ipv4 (verificado con `dig +short <etiqueta>.apptolast.com A`
+# el 2026-07-28) y el servidor legado 138.199.157.58 fue eliminado por el
+# propietario. Mientras estas banderas declaraban `false`, dns.tf calculaba
+# `cutover ? public : legacy`, de modo que un `terraform apply` habria
+# reapuntado nueve registros vivos a un servidor inexistente. Declarar aqui el
+# estado real convierte ese apply en un no-op y devuelve al repositorio la
+# condicion de fuente de verdad que exige la regla de oro.
 platform_dns_cutover:
   edge: true
-  kropia: false
-  minecraft-stats: false
-  minecraft: false
-  n8n: false
-  openclaw: false
-  passbolt: false
-  generadorcodigosqr: false
-  pablohurtadohg: false
-  albertohidalgo: false
+  kropia: true
+  minecraft-stats: true
+  minecraft: true
+  n8n: true
+  openclaw: true
+  passbolt: true
+  generadorcodigosqr: true
+  pablohurtadohg: true
+  albertohidalgo: true
 platform_public_ipv6: "2a0a:4cc0:c2:866b:142e:fff:fef4:c4da"
 platform_public_ipv6_prefix: "2a0a:4cc0:c2:866b::/64"
 platform_public_interface: eth0
@@ -42,7 +50,15 @@ platform_public_tcp_ports:
   - 80
   - 443
   - 25565
-platform_minecraft_public_enabled: false
+platform_minecraft_public_enabled: true
+# Aceptacion explicita, codificada y auditable del riesgo de publicar el
+# servidor de Minecraft con `online_mode: false` (config/minecraft.yml). Al
+# desactivarse la autenticacion de Mojang/Microsoft, cualquiera que alcance el
+# 25565 puede conectarse con CUALQUIER nombre de usuario, incluido el de un
+# operador. El propietario fue informado de esta consecuencia exacta y la
+# acepto. La compuerta no se elimina: sigue existiendo y falla en cerrado
+# mientras esta bandera valga `false`, que es su valor por defecto.
+platform_minecraft_offline_public_accepted: true
 platform_public_ipv6_tcp_ports: []
 edge_cloudflare_zone: apptolast.com
 edge_traefik_hostname: edge.apptolast.com

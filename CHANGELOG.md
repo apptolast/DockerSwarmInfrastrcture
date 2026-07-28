@@ -43,10 +43,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   stacks, rutas, migración, observabilidad y backup.
 - El daemon Docker declara `no-new-privileges`, `userland-proxy: false` y
   logging `local` acotado.
-- La exposición coherente incluye `80/443` y el puerto Minecraft, pero
-  `25565/TCP` permanece cerrado por gate mientras `online-mode=false`.
-- DNS distingue diez A gestionados: nueve adopciones existentes, ocho cambios
-  HTTP en el cutover y Minecraft conservado en legacy.
+- La exposición coherente incluye `80/443` y `25565/TCP`. El gate de Minecraft
+  se abre únicamente porque el propietario registró su aceptación explícita en
+  `platform_minecraft_offline_public_accepted`; sin esa bandera el puerto
+  sigue cerrado con `online-mode=false`.
+- `platform_dns_cutover` declara el corte que ya había ocurrido en las diez
+  etiquetas. Todas resolvían ya a `platform_public_ipv4` y el servidor legado
+  `138.199.157.58` fue eliminado, pero nueve banderas seguían en `false` y
+  `dns.tf` calcula `cutover ? public : legacy`: un `terraform apply` sobre la
+  raíz habría reapuntado nueve registros vivos a una máquina inexistente.
+  Declarar el estado real convierte ese plan en un no-op. La rama
+  `adoption_only` se conserva solo como prueba unitaria y queda marcada como
+  inaplicable.
 - Las herramientas de seguridad heredadas se preservan e inventarían; no se
   purgan ni se reescribe PAM de forma destructiva.
 - Backup queda codificado pero fail-closed hasta R2, restic, autolock y escrow
@@ -57,6 +65,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- `platform_minecraft_offline_public_accepted` codifica de forma auditable la
+  aceptación explícita del propietario para publicar Minecraft con
+  `online_mode: false`, tras habérsele expuesto la consecuencia exacta:
+  cualquiera que alcance el 25565 puede conectarse con cualquier nombre de
+  usuario, incluido el de un operador. La compuerta no se elimina ni se
+  relaja; sigue fallando en cerrado por defecto y ahora se comprueba en el rol
+  `platform`, en `minecraft_preflight`, en `scripts/validate-contract.py` y en
+  el bloque `check` de la raíz Terraform de DNS.
+- `ansible/playbooks/platform.yml` carga `config/minecraft.yml` porque el rol
+  `platform` es quien abre el 25565 en UFW y en la cadena de Docker: sin el
+  contrato no podía comprobar `online_mode` y un `--playbook platform` aislado
+  habría publicado el puerto sin ver la compuerta de aceptación.
 - Los usuarios humanos dejan de pertenecer al grupo root-equivalent `docker`.
 - Los despliegues rechazan worktrees sucios, holders perdidos, descendientes
   huérfanos, markers alterados y estado externo no probado.
@@ -66,6 +86,28 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La sonda de salud de Traefik hacia `minecraft-stats` reutilizaba el host de
+  la URL del servidor como cabecera `Host`, es decir
+  `workloads_minecraft-stats`. El Tomcat embebido de Spring Boot aplica
+  RFC 1123 y rechaza con 400 cualquier `Host` con guion bajo, así que el único
+  backend quedaba marcado como caído y `minecraft-stats.apptolast.com`
+  respondía 503 `no available server` pese a que el contenedor estaba sano y
+  su propia sonda, que usa `127.0.0.1`, pasaba. Se fija `hostname` en el
+  `healthCheck`. Es el único backend afectado: el resto responde 2xx/3xx con
+  el `Host` con guion bajo.
+- `.gitignore` excluía
+  `ansible/roles/edge/files/letsencrypt-staging-roots.pem` mediante el patrón
+  `*.pem`, de modo que el bundle anclado nunca viajó en ningún commit:
+  `tests/test_edge_state_safety.py` fija su sha256, CI fallaba con
+  `FileNotFoundError` y una reconstrucción desde commit habría perdido el
+  ancla de confianza. Son cuatro raíces públicas autofirmadas de Let's Encrypt
+  staging, sin material privado, así que se versionan con una negación
+  explícita y acotada a ese fichero.
+- `scripts/provision-observability-db-users.py` ejecutaba `psql` sin
+  `--username`, por lo que tomaba el nombre de la cuenta del sistema y trataba
+  de autenticarse con el rol `postgres`, inexistente en las tres instancias:
+  sus superusuarios son `n8n`, `passbolt` y `shlink`. Se nombra explícitamente
+  el superusuario real de cada base.
 - Traefik declaraba `ping.entryPoint` sin `manualRouting`, de modo que el
   router `edge-health` no podía usar `ping@internal`; se activa
   `manualRouting` y se añade el router interno `edge-ping-internal`, sin el

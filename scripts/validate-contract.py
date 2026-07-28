@@ -53,6 +53,7 @@ required_keys = {
     "platform_edge_networks",
     "platform_public_tcp_ports",
     "platform_minecraft_public_enabled",
+    "platform_minecraft_offline_public_accepted",
     "platform_public_ipv6_tcp_ports",
     "edge_cloudflare_zone",
     "edge_traefik_hostname",
@@ -166,6 +167,10 @@ if public_ports != [80, 443, 25565]:
 
 if not isinstance(contract["platform_minecraft_public_enabled"], bool):
     fail("platform_minecraft_public_enabled must be boolean")
+if not isinstance(
+    contract["platform_minecraft_offline_public_accepted"], bool
+):
+    fail("platform_minecraft_offline_public_accepted must be boolean")
 if (
     dns_cutover["minecraft"]
     != contract["platform_minecraft_public_enabled"]
@@ -177,11 +182,19 @@ if (
     or not isinstance(minecraft_document.get("minecraft_contract"), dict)
 ):
     fail("config/minecraft.yml has no minecraft_contract mapping")
+# Publicar con `online_mode: false` deja el 25565 sin autenticacion de
+# Mojang/Microsoft. La compuerta sigue cerrada por defecto y solo la abre una
+# aceptacion explicita del propietario registrada en el contrato, de modo que
+# la decision queda auditable en el repositorio en lugar de desaparecer.
 if (
     dns_cutover["minecraft"]
     and minecraft_document["minecraft_contract"].get("online_mode") is not True
+    and contract["platform_minecraft_offline_public_accepted"] is not True
 ):
-    fail("Minecraft cannot cut over publicly while online_mode is false")
+    fail(
+        "Minecraft cannot cut over publicly while online_mode is false "
+        "unless platform_minecraft_offline_public_accepted is true"
+    )
 if contract["platform_public_ipv6_tcp_ports"] != []:
     fail("public application TCP over IPv6 is outside the reviewed contract")
 

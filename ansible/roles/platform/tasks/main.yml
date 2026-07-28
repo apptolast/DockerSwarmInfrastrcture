@@ -17,6 +17,13 @@
       - platform_netcup_server_id | int == 900782
       - platform_public_tcp_ports | sort == [80, 443, 25565]
       - platform_minecraft_public_enabled is boolean
+      - platform_minecraft_offline_public_accepted is boolean
+      # Abrir el 25565 con `online_mode: false` exige la aceptacion explicita
+      # del propietario registrada en el contrato.
+      - >-
+        minecraft_contract.online_mode
+        or not (platform_minecraft_public_enabled | bool)
+        or (platform_minecraft_offline_public_accepted | bool)
       - >-
         platform_effective_public_tcp_ports | sort
         ==

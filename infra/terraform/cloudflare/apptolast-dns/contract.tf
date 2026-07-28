@@ -50,7 +50,9 @@ check "platform_contract" {
       local.platform_contract.platform_minecraft_public_enabled &&
       (
         !local.platform_contract.platform_dns_cutover.minecraft ||
-        local.minecraft_contract.minecraft_contract.online_mode == true
+        local.minecraft_contract.minecraft_contract.online_mode == true ||
+        local.platform_contract
+        .platform_minecraft_offline_public_accepted == true
       ) &&
       can(regex(
         "^[a-z0-9.-]+$",

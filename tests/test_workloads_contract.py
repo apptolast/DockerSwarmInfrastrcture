@@ -706,13 +706,10 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         candidate["services"]["n8n-runners"]["networks"].append("n8n-browser")
         self.assert_rejected(candidate)
 
-    def test_minecraft_public_port_is_absent_while_gate_is_closed(self) -> None:
+    def test_minecraft_public_port_tracks_its_gate(self) -> None:
         import copy
 
-        self.assertNotIn("ports", self.stack["services"]["minecraft"])
-
-        enabled_stack = copy.deepcopy(self.stack)
-        enabled_stack["services"]["minecraft"]["ports"] = [
+        published = [
             {
                 "target": 25565,
                 "published": 25565,
@@ -720,16 +717,50 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
                 "mode": "host",
             }
         ]
-        enabled_platform = copy.deepcopy(self.platform)
-        enabled_platform["platform_minecraft_public_enabled"] = True
-        enabled_platform["platform_dns_cutover"]["minecraft"] = True
+
+        # El contrato vigente publica el puerto porque el propietario registro
+        # su aceptacion explicita del modo offline.
+        self.assertIs(
+            self.platform["platform_minecraft_public_enabled"], True
+        )
+        self.assertIs(
+            self.platform["platform_minecraft_offline_public_accepted"], True
+        )
+        self.assertEqual(
+            self.stack["services"]["minecraft"]["ports"], published
+        )
         workload_validator.validate_stack(
-            enabled_stack,
+            self.stack,
             self.services,
             self.secrets,
             self.runner_metadata,
-            enabled_platform,
+            self.platform,
         )
+
+        # Con la compuerta cerrada el puerto desaparece del stack renderizado.
+        disabled_platform = copy.deepcopy(self.platform)
+        disabled_platform["platform_minecraft_public_enabled"] = False
+        disabled_platform["platform_dns_cutover"]["minecraft"] = False
+        disabled_stack = copy.deepcopy(self.stack)
+        del disabled_stack["services"]["minecraft"]["ports"]
+        workload_validator.validate_stack(
+            disabled_stack,
+            self.services,
+            self.secrets,
+            self.runner_metadata,
+            disabled_platform,
+        )
+
+        # Y publicarlo con la compuerta cerrada sigue rechazandose, que es la
+        # direccion que impide que ingress y DNS se separen en silencio.
+        with self.assertRaises(workload_validator.ContractError):
+            workload_validator.validate_stack(
+                copy.deepcopy(self.stack),
+                self.services,
+                self.secrets,
+                self.runner_metadata,
+                disabled_platform,
+            )
 
     def test_n8n_security_switches_are_fail_closed(self) -> None:
         import copy

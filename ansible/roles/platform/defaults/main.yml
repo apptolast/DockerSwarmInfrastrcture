@@ -19,6 +19,9 @@ platform_public_tcp_ports:
   - 443
   - 25565
 platform_minecraft_public_enabled: false
+# Fail-closed: publicar Minecraft en modo offline exige que el contrato lo
+# acepte explicitamente. El valor por defecto nunca lo permite.
+platform_minecraft_offline_public_accepted: false
 platform_public_ipv6_tcp_ports: []
 platform_effective_public_tcp_ports: >-
   {{
