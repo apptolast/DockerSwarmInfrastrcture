@@ -171,7 +171,11 @@ COMMIT;
 """
 
 
-def provision(container_id: str, sql: str, service_name: str) -> None:
+def provision(
+    container_id: str, sql: str, service_name: str, superuser: str
+) -> None:
+    if not ROLE_RE.fullmatch(superuser):
+        raise ProvisionError(f"invalid superuser identifier for {service_name}")
     completed = subprocess.run(
         [
             "/usr/bin/docker",
@@ -181,6 +185,16 @@ def provision(container_id: str, sql: str, service_name: str) -> None:
             "postgres",
             container_id,
             "psql",
+            # `--user postgres` es la cuenta del sistema dentro del contenedor,
+            # no el rol de PostgreSQL. Cada instancia se inicializa con
+            # POSTGRES_USER propio (n8n, passbolt y shlink en
+            # stacks/workloads/stack.yml.j2), de modo que el rol `postgres`
+            # nunca llega a existir y psql, que por defecto toma el nombre de
+            # la cuenta del sistema, fallaba con
+            # `FATAL: role "postgres" does not exist`. Hay que nombrar el
+            # superusuario real de forma explicita.
+            "--username",
+            superuser,
             "--dbname",
             "postgres",
             "--no-psqlrc",
@@ -244,6 +258,7 @@ def main() -> int:
                 container_id,
                 build_sql(args.role, database, password, marker),
                 service_name,
+                database,
             )
     except (OSError, ProvisionError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
