@@ -767,9 +767,24 @@
 - name: Verify deployed workload image and placement identities
   ansible.builtin.assert:
     that:
+      # Docker normaliza el registro por defecto al guardar la referencia en
+      # el spec del servicio: `docker.io/library/postgres@sha256:X` se guarda
+      # como `postgres@sha256:X` y `docker.io/apptolast/kropia-web@sha256:X`
+      # como `apptolast/kropia-web@sha256:X`. El contrato fija el registro de
+      # forma explicita a proposito, asi que la comparacion normaliza el lado
+      # esperado en lugar de relajar el contrato. Sin esto la comprobacion no
+      # podia pasar para ninguna imagen de Docker Hub: solo la superaban
+      # n8n-runners, declarada sin prefijo, y openclaw, alojada en ghcr.io.
+      # El digest es identico en ambos lados, de modo que la identidad
+      # verificada sigue siendo exacta.
       - >-
         (item.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Image == item.item.value
+        Spec.TaskTemplate.ContainerSpec.Image
+        == (
+          item.item.value
+          | regex_replace("^docker\\.io/library/", "")
+          | regex_replace("^docker\\.io/", "")
+        )
       - >-
         "node.labels.platform.workloads == true" in
         (item.stdout | from_json | first).
