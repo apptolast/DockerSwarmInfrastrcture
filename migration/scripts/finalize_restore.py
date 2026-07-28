@@ -340,8 +340,13 @@ def validate_datasets(
                 f"{identifier}/{relative_file}",
             )
 
-    n8n_binary_data = services_root / EXPECTED_RELATIVE_PATHS["n8n-home"] / "binaryData"
-    require_real_directory(n8n_binary_data, "n8n-home/binaryData")
+    # n8n resuelve el almacén de binarios a ~/.n8n/storage salvo que se fije
+    # N8N_BINARY_DATA_STORAGE_PATH o N8N_STORAGE_PATH; `binaryData` es el
+    # layout anterior, que el stack migra con N8N_MIGRATE_FS_STORAGE_PATH.
+    n8n_binary_data = (
+        services_root / EXPECTED_RELATIVE_PATHS["n8n-home"] / "storage"
+    )
+    require_real_directory(n8n_binary_data, "n8n-home/storage")
 
     openclaw_home = services_root / EXPECTED_RELATIVE_PATHS["openclaw-clean-home"]
     if any(openclaw_home.iterdir()):

@@ -129,6 +129,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- `finalize_restore.py` exigía el directorio `binaryData` de n8n, que es el
+  layout anterior: n8n resuelve el almacén de binarios a `~/.n8n/storage` salvo
+  que se fije `N8N_BINARY_DATA_STORAGE_PATH` o `N8N_STORAGE_PATH`, y el stack
+  activa `N8N_MIGRATE_FS_STORAGE_PATH`. `prepare_runtime.py` ya materializaba
+  `storage`, de modo que las dos mitades del utillaje se contradecían y el gate
+  no podía emitirse. Ningún dato estaba ausente: los 258 ficheros conservan sus
+  rutas relativas.
 - El restore vectorial exigía al menos una tabla en las dos bases con pgvector,
   pero `vectors.dump` contiene únicamente la extensión y su comentario: el
   almacén vectorial de n8n nunca llegó a usarse, de modo que la fase no podía

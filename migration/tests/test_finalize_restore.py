@@ -36,7 +36,7 @@ def create_runtime(parent: Path) -> Path:
         "minecraft/data/world_berenejena/level.dat": b"level",
         "minecraft/mods/fabric.jar": b"mod",
         "n8n/home/config": b'{"encryptionKey":"fixture"}',
-        "n8n/home/binaryData/fixture": b"binary",
+        "n8n/home/storage/fixture": b"binary",
         "n8n/postgres/pgdata/PG_VERSION": b"16\n",
         "passbolt/gpg/serverkey_private.asc": b"private",
         "passbolt/jwt/jwt.key": b"jwt",
