@@ -65,6 +65,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- El endurecimiento de `/proc` pasa a estar codificado en el repositorio
+  (`host_security_proc_mount_options`). `hidepid=2`, que el núcleo representa
+  como `invisible`, estaba aplicado a mano en `/etc/fstab` desde el
+  2026-07-21 y no lo recogía ningún commit: una reconstrucción desde un commit
+  revisado habría devuelto el host con los `/proc/<pid>` ajenos visibles. La
+  línea manual usaba además `defaults`, que implica `suid,dev,exec` y por
+  tanto retiraba `nosuid,nodev,noexec`, las opciones con las que systemd monta
+  `/proc`; se restituyen. `scripts/validate-host-security.py` rechaza el
+  contrato si alguna de ellas falta o si `hidepid` queda permisivo.
 - `platform_minecraft_offline_public_accepted` codifica de forma auditable la
   aceptación explícita del propietario para publicar Minecraft con
   `online_mode: false`, tras habérsele expuesto la consecuencia exacta:
@@ -86,6 +95,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `inspect_process_references` abortaba con `PromotionError` en cuanto
+  encontraba un proceso visible pero ilegible. En este host no se notaba
+  porque `/proc` va montado con `hidepid=invisible` y los procesos ajenos ni
+  siquiera aparecen, de modo que el error se resolvía como
+  `FileNotFoundError`; en el runner de CI, con un `/proc` normal, PID 1 es
+  visible e ilegible y el recorrido entero estallaba. Ahora se registra como
+  referencia bloqueante, con lo que la promoción sigue fallando en cerrado
+  —`promote_runtime_generation.py` ya rechaza cualquier referencia— pero
+  enumerando el motivo en vez de morir con un error opaco.
+- La verificación de identidad de imagen comparaba la referencia declarada
+  con la que Docker guarda en el spec, y Docker normaliza el registro por
+  defecto: `docker.io/library/postgres@sha256:X` se almacena como
+  `postgres@sha256:X`. La comprobación no podía pasar para ninguna imagen de
+  Docker Hub —sólo la superaban `n8n-runners`, declarada sin prefijo, y
+  `openclaw`, alojada en `ghcr.io`—, y quedaba enmascarada porque la tarea
+  anterior fallaba antes. Se normaliza el lado esperado, sin relajar el
+  contrato: el digest sigue comparándose exacto.
 - La sonda de salud de Traefik hacia `minecraft-stats` reutilizaba el host de
   la URL del servidor como cabecera `Host`, es decir
   `workloads_minecraft-stats`. El Tomcat embebido de Spring Boot aplica

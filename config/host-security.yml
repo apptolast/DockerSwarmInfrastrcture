@@ -228,3 +228,20 @@ host_security_required_host_egress:
 host_security_fail2ban_maxretry: 5
 host_security_psad_log_path: /var/log/iptables.log
 host_security_psad_auto_ids_danger_level: 5
+
+# Endurecimiento de /proc. `hidepid=2` (que el nucleo representa como
+# `invisible`) oculta por completo los /proc/<pid> ajenos, incluidos uid y
+# gid, segun la documentacion oficial del kernel en
+# https://docs.kernel.org/filesystems/proc.html. Estaba aplicado a mano en
+# /etc/fstab desde el 2026-07-21 y no lo recogia ningun commit, de modo que
+# una reconstruccion desde el repositorio habria devuelto el host sin esa
+# proteccion. Aquella linea manual usaba ademas `defaults`, que implica
+# `suid,dev,exec` y por tanto retiraba `nosuid,nodev,noexec`, las opciones con
+# las que systemd monta /proc por defecto; aqui se restituyen.
+host_security_proc_mount_options: nosuid,nodev,noexec,relatime,hidepid=2
+host_security_proc_required_options:
+  - nosuid
+  - nodev
+  - noexec
+  - relatime
+  - hidepid=invisible

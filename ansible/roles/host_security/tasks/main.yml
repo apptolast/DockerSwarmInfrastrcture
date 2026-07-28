@@ -1122,6 +1122,72 @@
   delay: 10
   when: not ansible_check_mode
 
+- name: Pin the reviewed /proc mount options in fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\s*proc\s+/proc\s+proc\s'
+    line: "proc /proc proc {{ host_security_proc_mount_options }} 0 0"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+
+- name: Read the effective /proc mount options
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/awk
+      - '$2 == "/proc" { print $4 }'
+      - /proc/mounts
+  register: host_security_proc_observed
+  changed_when: false
+  check_mode: false
+
+- name: Restore the reviewed /proc hardening when it drifts
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mount
+      - -o
+      - "remount,{{ host_security_proc_mount_options }}"
+      - /proc
+  when:
+    - not ansible_check_mode
+    - >-
+      host_security_proc_required_options
+      | difference(host_security_proc_observed.stdout | trim | split(","))
+      | length > 0
+  register: host_security_proc_remounted
+  changed_when: host_security_proc_remounted.rc == 0
+
+- name: Re-read the effective /proc mount options
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/awk
+      - '$2 == "/proc" { print $4 }'
+      - /proc/mounts
+  register: host_security_proc_verified
+  changed_when: false
+  check_mode: false
+
+- name: Verify the effective /proc hardening
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_proc_required_options
+        | difference(
+          host_security_proc_verified.stdout | trim | split(",")
+        )
+        | length == 0
+    fail_msg: >-
+      /proc is mounted as
+      "{{ host_security_proc_verified.stdout | trim }}", which lacks
+      {{
+        host_security_proc_required_options
+        | difference(host_security_proc_verified.stdout | trim | split(","))
+        | join(", ")
+      }}.
+    quiet: true
+  when: not ansible_check_mode
+
 - name: Apply the requested lockout-safe SSH bootstrap phase
   ansible.builtin.import_tasks: ssh.yml
   when: host_security_ssh_phase != "none"

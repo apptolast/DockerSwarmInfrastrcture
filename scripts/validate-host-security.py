@@ -110,6 +110,34 @@ def validate(document: Any, now: datetime) -> None:
             )
         names.add(name)
 
+    # El endurecimiento de /proc debe declararse entero: las opciones que se
+    # escriben en fstab y las que se exigen sobre el montaje efectivo tienen
+    # que coincidir, y `hidepid` nunca puede quedar en modo permisivo. El
+    # nucleo representa `hidepid=2` como `invisible`.
+    proc_options = contract.get("host_security_proc_mount_options")
+    proc_required = contract.get("host_security_proc_required_options")
+    if not isinstance(proc_options, str) or not isinstance(proc_required, list):
+        raise HostSecurityContractError("the /proc hardening contract is absent")
+    declared = [item.strip() for item in proc_options.split(",") if item.strip()]
+    if "hidepid=2" not in declared:
+        raise HostSecurityContractError("/proc must declare hidepid=2")
+    for mandatory in ("nosuid", "nodev", "noexec"):
+        if mandatory not in declared:
+            raise HostSecurityContractError(
+                f"/proc must declare {mandatory}"
+            )
+    if not all(isinstance(item, str) for item in proc_required):
+        raise HostSecurityContractError("/proc required options are invalid")
+    if "hidepid=invisible" not in proc_required:
+        raise HostSecurityContractError(
+            "/proc must require the effective hidepid=invisible"
+        )
+    for mandatory in ("nosuid", "nodev", "noexec"):
+        if mandatory not in proc_required:
+            raise HostSecurityContractError(
+                f"/proc must require the effective {mandatory}"
+            )
+
 
 def main() -> int:
     try:
