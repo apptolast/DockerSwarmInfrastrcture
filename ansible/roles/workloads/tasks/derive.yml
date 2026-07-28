@@ -243,13 +243,18 @@
         hostname: "{{ workloads_approved_by_id.passbolt.hostnames | first }}"
         path: /healthcheck/status.json
         status: "200"
+      # La web de Alberto usa enrutado por idioma de Next.js: `/` responde
+      # siempre 307 hacia `/es`, que es su comportamiento correcto y no un
+      # fallo. La sonda apuntaba a `/` esperando 200, de modo que el playbook
+      # fallaba al final aunque el despliegue fuese correcto. Se comprueba la
+      # pagina ya renderizada, que ademas verifica mas que la redireccion.
       - service: portfolio-alberto
         hostname: >-
           {{
             workloads_approved_by_id["personal-website-alberto"].hostnames
             | first
           }}
-        path: /
+        path: /es
         status: "200"
       - service: portfolio-pablo
         hostname: >-
