@@ -1098,6 +1098,85 @@
   no_log: true
   when: not ansible_check_mode
 
+# `-t` esta documentado como "test config and exit", pero el bouncer
+# inicializa el backend real y al salir retira las cadenas. Las cadenas de
+# iptables son globales, no por proceso, de modo que la instancia de prueba
+# desmonta las de la instancia viva y nadie las vuelve a poner: el servicio
+# sigue `active` mientras CROWDSEC_CHAIN ha desaparecido de ambas familias y
+# el host deja de filtrar sin que nada lo señale. Ocurrio el 2026-07-28 y
+# dejo la maquina ~20 h sin bloqueo alguno de CrowdSec. Se reconcilia aqui,
+# justo despues de la prueba, en lugar de confiar en que no pase.
+- name: Read the live CrowdSec IPv4 firewall enforcement
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_security_crowdsec_chain_ipv4
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Read the live CrowdSec IPv6 firewall enforcement
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_security_crowdsec_chain_ipv6
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Restore CrowdSec enforcement torn down by the configuration test
+  ansible.builtin.systemd_service:
+    name: crowdsec-firewall-bouncer
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - >-
+      "CROWDSEC_CHAIN" not in host_security_crowdsec_chain_ipv4.stdout
+      or "CROWDSEC_CHAIN" not in host_security_crowdsec_chain_ipv6.stdout
+
+- name: Re-read the live CrowdSec IPv4 firewall enforcement
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_security_crowdsec_chain_ipv4_final
+  changed_when: false
+  check_mode: false
+  retries: 12
+  delay: 5
+  until: "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv4_final.stdout"
+  when: not ansible_check_mode
+
+- name: Re-read the live CrowdSec IPv6 firewall enforcement
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_security_crowdsec_chain_ipv6_final
+  changed_when: false
+  check_mode: false
+  retries: 12
+  delay: 5
+  until: "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv6_final.stdout"
+  when: not ansible_check_mode
+
+- name: Verify CrowdSec is enforcing on both address families
+  ansible.builtin.assert:
+    that:
+      - "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv4_final.stdout"
+      - "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv6_final.stdout"
+    fail_msg: >-
+      CrowdSec is not filtering: CROWDSEC_CHAIN is absent from the live
+      iptables or ip6tables ruleset even after restarting the bouncer.
+    quiet: true
+  when: not ansible_check_mode
+
 - name: Verify Fail2ban and its SSH jail
   ansible.builtin.command:
     argv:

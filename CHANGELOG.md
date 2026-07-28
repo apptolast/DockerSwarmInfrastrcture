@@ -113,6 +113,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La comprobación de configuración del bouncer de CrowdSec dejaba el host sin
+  filtrado. `crowdsec-firewall-bouncer -t` está documentado como «test config
+  and exit», pero inicializa el backend real y al salir retira las cadenas;
+  como las cadenas de iptables son globales y no por proceso, la instancia de
+  prueba desmontaba las de la instancia viva y nadie las reponía. El servicio
+  seguía `active` mientras `CROWDSEC_CHAIN` había desaparecido de ambas
+  familias, de modo que el host estuvo unas 20 horas sin bloquear nada y sin
+  que ningún control lo señalase. El rol `host_security` reconcilia ahora ese
+  estado justo después de la prueba y falla en cerrado si la cadena no acaba
+  presente en IPv4 e IPv6.
 - `host_baseline` abortaba siempre en `crowdsec-docker.yml`, su última tarea,
   porque la comprobación de presencia del gancho `DOCKER-USER` era por
   subcadena mientras la aserción posterior exigía una línea exacta. El fichero
