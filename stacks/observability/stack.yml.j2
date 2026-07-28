@@ -4,8 +4,6 @@ version: "3.8"
 x-service-defaults: &service-defaults
   init: true
   read_only: true
-  security_opt:
-    - no-new-privileges:true
   logging:
     driver: local
     options:

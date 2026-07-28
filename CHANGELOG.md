@@ -129,6 +129,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- Los stacks de workloads y observabilidad arrastraban el mismo
+  `security_opt: no-new-privileges:true` que Swarm ignora y por el que avisa en
+  cada `docker stack deploy`. Se retira de ambos por la razón ya aplicada al
+  edge: la garantía la impone `config/daemon.json` para todo el daemon.
 - `workloads_db_mount_contract` declaraba sus rutas como claves de un mapping
   con sintaxis Jinja, pero Ansible plantilla los valores y nunca las claves: el
   gate de contenedores recibía la cadena literal `{{ workloads_paths... }}` como
