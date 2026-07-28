@@ -346,7 +346,11 @@
     state: present
     compose:
       - "{{ edge_install_root }}/edge/stack.yml"
-    detach: false
+    # Mismo motivo que en el rol workloads: el esperador propio del cliente de
+    # Docker puede quedarse colgado sin condicion de salida aunque la pila ya
+    # haya convergido. La tarea siguiente exige el inventario exacto del edge
+    # en 1/1, de modo que la verificacion no se pierde.
+    detach: true
     prune: true
     resolve_image: never
 

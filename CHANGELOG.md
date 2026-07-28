@@ -95,6 +95,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Los tres despliegues de pila (`edge`, `workloads` y `observability`) pedían
+  a `community.docker.docker_stack` que esperase con `detach: false`, lo que
+  añade `--detach=false` y delega la convergencia en el esperador propio del
+  cliente de Docker. Ese esperador se colgó tres veces seguidas con la pila ya
+  convergida: dieciséis servicios en `1/1`, todos los `UpdateStatus` en
+  `completed`, cero eventos de tarea y el proceso consumiendo 6 s de CPU en
+  11 min, es decir sondeando en vacío. Cada rol ya verifica la convergencia
+  por su cuenta, y de forma más estricta, porque exige el inventario exacto de
+  servicios del contrato en `1/1` antes de comprobar identidad de imagen,
+  ubicación, Configs, Secrets y redes. Se pasa a `detach: true`, que además es
+  el valor por defecto del módulo.
 - `inspect_process_references` abortaba con `PromotionError` en cuanto
   encontraba un proceso visible pero ilegible. En este host no se notaba
   porque `/proc` va montado con `hidepid=invisible` y los procesos ajenos ni

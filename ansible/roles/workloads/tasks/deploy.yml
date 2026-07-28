@@ -456,7 +456,17 @@
     state: present
     compose:
       - "{{ workloads_install_root }}/stack.yml"
-    detach: false
+    # `detach: false` anade `--detach=false`, con lo que el cliente de Docker
+    # espera por su cuenta a que los servicios converjan. Ese esperador se
+    # colgo tres veces seguidas con el cluster ya convergido: los dieciseis
+    # servicios en 1/1, todos los UpdateStatus en `completed`, cero eventos de
+    # tarea y el proceso consumiendo 6 s de CPU en 11 min, es decir sondeando
+    # en vacio sin condicion de salida. La convergencia la verifica igualmente
+    # la tarea siguiente, que es mas estricta porque exige el inventario
+    # exacto de servicios del contrato y que todos esten en 1/1, y despues se
+    # comprueban identidad de imagen, ubicacion, Configs, Secrets y redes. El
+    # valor por defecto del modulo es `true`; aqui se declara explicito.
+    detach: true
     prune: true
     resolve_image: never
     with_registry_auth: false

@@ -363,7 +363,11 @@
     state: present
     compose:
       - "{{ observability_install_root }}/stack.yml"
-    detach: false
+    # Mismo motivo que en el rol workloads. Esta pila nunca se ha desplegado y
+    # declara doce servicios, asi que habria sido la mas expuesta a que el
+    # esperador del cliente se colgase en su primera ejecucion. La tarea
+    # siguiente exige el inventario exacto de servicios en 1/1.
+    detach: true
     prune: true
     resolve_image: never
 
