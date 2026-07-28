@@ -68,8 +68,12 @@ entryPoints:
         allowEncodedSlash: false
       underscoreHeadersStrategy: reject
 
+# manualRouting desactiva el router interno por defecto, que es el requisito
+# para que el router edge-health de dynamic.yml pueda referenciar
+# ping@internal como servicio propio.
 ping:
   entryPoint: traefik
+  manualRouting: true
 
 providers:
   file:

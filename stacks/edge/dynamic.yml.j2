@@ -18,6 +18,15 @@ http:
       service: ping@internal
       tls:
         certResolver: letsencrypt
+    # ping.manualRouting desactiva el router interno por defecto de Traefik,
+    # asi que este router explicito es el que atiende `traefik healthcheck`,
+    # que consulta /ping sobre el entryPoint interno. Sin el, el healthcheck
+    # del contenedor recibe 404 y Swarm mata el edge completo.
+    edge-ping-internal:
+      rule: "Path(`/ping`)"
+      entryPoints:
+        - traefik
+      service: ping@internal
     kropia:
       rule: "Host(`{{ kropia.hostnames | first }}`)"
       entryPoints:

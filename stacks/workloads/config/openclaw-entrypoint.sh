@@ -15,5 +15,12 @@ fi
 export OPENCLAW_GATEWAY_TOKEN="${secret_value}"
 unset secret_value
 
+# El gateway se niega a arrancar sin configuracion ("Missing config. Run
+# `openclaw setup` or set gateway.mode=local", exit 78). Se declara el modo
+# de forma no interactiva e idempotente sobre el estado persistido en
+# ${OPENCLAW_STATE_DIR}/openclaw.json en lugar de recurrir al bypass
+# --allow-unconfigured, que segun su propia ayuda deja la config sin reparar.
+node openclaw.mjs config set gateway.mode local
+
 exec tini -s -- \
   node openclaw.mjs gateway --bind lan --port 18789 --verbose

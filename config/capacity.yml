@@ -1,7 +1,7 @@
 ---
 capacity_contract:
   schema_version: 1
-  reviewed_at: "2026-07-26"
+  reviewed_at: "2026-07-28"
 
   topology:
     model: single-node
@@ -98,7 +98,7 @@ capacity_contract:
     workloads:
       reservations:
         cpu_millicores: 2300
-        memory_mib: 5760
+        memory_mib: 5856
       limits:
         cpu_millicores: 11600
         memory_mib: 9728
@@ -112,7 +112,7 @@ capacity_contract:
     aggregate:
       reservations:
         cpu_millicores: 3470
-        memory_mib: 7072
+        memory_mib: 7168
       limits:
         cpu_millicores: 17200
         memory_mib: 12352

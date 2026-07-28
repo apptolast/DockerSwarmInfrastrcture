@@ -299,7 +299,11 @@ edge_routes = {
     ),
     "shlink": ("shlink", "http://workloads_shlink:8080"),
 }
-if set(dynamic["http"]["routers"]) != {"edge-health", *edge_routes}:
+if set(dynamic["http"]["routers"]) != {
+    "edge-health",
+    "edge-ping-internal",
+    *edge_routes,
+}:
     fail("the rendered edge router allowlist differs from the service catalog")
 if set(dynamic["http"]["services"]) != set(edge_routes):
     fail("the rendered edge backend allowlist differs from the service catalog")

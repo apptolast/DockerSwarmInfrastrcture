@@ -330,9 +330,13 @@ def validate_stack(
             raise ContractError(f"privileged mode found in {service_name}")
         if service.get("read_only") is not True:
             raise ContractError(f"read-only root missing for {service_name}")
-        if "no-new-privileges:true" not in service.get("security_opt", []):
+        # `security_opt` no se comprueba: `docker stack deploy` lo ignora en
+        # modo Swarm, de modo que exigirlo solo daba una garantia falsa. El
+        # campo se retiro de los stacks en f693549 y esta comprobacion era el
+        # resto que quedaba de aquel cambio.
+        if service.get("security_opt") is not None:
             raise ContractError(
-                f"no-new-privileges missing for {service_name}"
+                f"swarm-ignored security_opt found in {service_name}"
             )
         healthcheck = service.get("healthcheck")
         if not isinstance(healthcheck, dict):

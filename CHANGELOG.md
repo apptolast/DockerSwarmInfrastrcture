@@ -66,6 +66,24 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Traefik declaraba `ping.entryPoint` sin `manualRouting`, de modo que el
+  router `edge-health` no podía usar `ping@internal`; se activa
+  `manualRouting` y se añade el router interno `edge-ping-internal`, sin el
+  cual `traefik healthcheck` recibía 404 y Swarm habría matado el edge.
+- Passbolt comprobaba su salud buscando la palabra `database` en
+  `/healthcheck/status.json`, que responde `{"header":{...},"body":"OK"}`; el
+  predicado fallaba siempre y Swarm terminaba la tarea tras los reintentos.
+- Shlink heredaba `num_workers: 0` de RoadRunner, es decir un worker por
+  CPU: 16 procesos PHP en un cgroup de 256 MiB que el kernel mataba. Se
+  fijan `WEB_WORKER_NUM` y `TASK_WORKER_NUM`.
+- Minecraft Stats dimensionaba el heap al 25 % del cgroup y dejaba el
+  metaspace sin tope, superando su límite de memoria; se acotan con
+  `JAVA_TOOL_OPTIONS` y se amplía su reserva revisada.
+- El gateway de OpenClaw abortaba con «Missing config» (exit 78); su
+  entrypoint declara ahora `gateway.mode=local` de forma idempotente en
+  lugar de recurrir al bypass `--allow-unconfigured`.
+- Reajustados los límites de memoria de `workloads` contra el consumo
+  medido, manteniendo intacto el total revisado en `config/capacity.yml`.
 - Eliminadas carreras entre bootstrap y despliegues Ansible mediante un único
   inode de flock para ambos scopes.
 - El modo Ansible local eleva supervisor y comando juntos, permitiendo terminar

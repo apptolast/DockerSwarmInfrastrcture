@@ -148,6 +148,12 @@ services:
     cap_drop:
       - ALL
     environment:
+      # Sin estos topes la JVM dimensiona el heap al 25 % del cgroup y deja
+      # el metaspace sin limite, de modo que el proceso rebasaba el limite
+      # y el kernel lo mataba (oom-kill CONSTRAINT_MEMCG, exit 137).
+      JAVA_TOOL_OPTIONS: >-
+        -XX:MaxRAMPercentage=50.0
+        -XX:MaxMetaspaceSize=128m
       MINECRAFT_SERVER_NAME: Server De la Chavalada
       MINECRAFT_STATS_PATH: /minecraft-data/server_chavalda/stats
       MINECRAFT_USER_CACHE_PATH: /minecraft-data/usercache.json
@@ -173,10 +179,10 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 192M
+          memory: 384M
         reservations:
           cpus: "0.10"
-          memory: 96M
+          memory: 192M
 
   n8n-db:
     <<: *service-defaults
@@ -514,7 +520,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 192M
         reservations:
           cpus: "0.10"
           memory: 128M
@@ -586,9 +592,13 @@ services:
       <<: *health-defaults
       test:
         - CMD-SHELL
+        # /healthcheck/status.json responde
+        # {"header":{...,"message":"OK",...},"body":"OK"}: nunca contiene la
+        # palabra "database", de modo que el predicado anterior fallaba
+        # siempre y Swarm terminaba la tarea tras agotar los reintentos.
         - >-
           curl -kfsS https://127.0.0.1/healthcheck/status.json |
-          grep -q database
+          grep -q '"status":"success"'
       start_period: 1m
     deploy:
       <<: *deploy-defaults
@@ -598,7 +608,7 @@ services:
       resources:
         limits:
           cpus: "0.75"
-          memory: 384M
+          memory: 320M
         reservations:
           cpus: "0.15"
           memory: 192M
@@ -637,7 +647,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 192M
         reservations:
           cpus: "0.10"
           memory: 128M
@@ -656,7 +666,13 @@ services:
       DB_USER: shlink
       DEFAULT_DOMAIN: generadorcodigosqr.apptolast.com
       IS_HTTPS_ENABLED: "true"
+      # El .rr.yml de la imagen usa num_workers: ${TASK_WORKER_NUM:-0} y
+      # ${WEB_WORKER_NUM:-0}; RoadRunner interpreta 0 como "un worker por
+      # CPU", asi que en este host de 8 nucleos arrancaba 16 procesos PHP
+      # dentro del cgroup y el kernel los mataba (exit 137).
+      TASK_WORKER_NUM: "2"
       TIMEZONE: Europe/Madrid
+      WEB_WORKER_NUM: "4"
     configs:
       - source: shlink_entrypoint
         target: /run/configs/shlink-entrypoint.sh
@@ -720,7 +736,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 320M
         reservations:
           cpus: "0.10"
           memory: 128M
@@ -794,7 +810,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 192M
+          memory: 128M
         reservations:
           cpus: "0.10"
           memory: 96M
