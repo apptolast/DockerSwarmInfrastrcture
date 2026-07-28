@@ -204,13 +204,19 @@
 
 - name: Derive the exclusive PostgreSQL mount ownership contract
   ansible.builtin.set_fact:
-    workloads_db_mount_contract:
-      "{{ workloads_paths.n8n_postgres }}": >-
-        {{ workloads_stack_name }}_n8n-db
-      "{{ workloads_paths.passbolt_postgres }}": >-
-        {{ workloads_stack_name }}_passbolt-db
-      "{{ workloads_paths.shlink_postgres }}": >-
-        {{ workloads_stack_name }}_shlink-db
+    # Ansible plantilla los valores de un mapping, nunca sus claves: escritas
+    # como "{{ ... }}:" llegarían literales al contrato de montaje.
+    workloads_db_mount_contract: >-
+      {{
+        {
+          workloads_paths.n8n_postgres:
+            workloads_stack_name ~ "_n8n-db",
+          workloads_paths.passbolt_postgres:
+            workloads_stack_name ~ "_passbolt-db",
+          workloads_paths.shlink_postgres:
+            workloads_stack_name ~ "_shlink-db",
+        }
+      }}
 
 - name: Derive exact post-deployment smoke targets
   ansible.builtin.set_fact:

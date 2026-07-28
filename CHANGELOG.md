@@ -129,6 +129,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   443 y 587). `validate-ufw-contract.py` las contaba como drift y abortaba
   `platform`. Ahora se borran antes de aplicar el contrato, derivando la lista
   de los propios puertos revisados.
+- `workloads_db_mount_contract` declaraba sus rutas como claves de un mapping
+  con sintaxis Jinja, pero Ansible plantilla los valores y nunca las claves: el
+  gate de contenedores recibía la cadena literal `{{ workloads_paths... }}` como
+  ruta de montaje y abortaba el despliegue. El mapping se construye ahora en una
+  única expresión. `--check` no lo detectaba porque el assert solo contaba tres
+  claves, y literales eran tres igualmente.
 - `finalize_restore.py` exigía el directorio `binaryData` de n8n, que es el
   layout anterior: n8n resuelve el almacén de binarios a `~/.n8n/storage` salvo
   que se fije `N8N_BINARY_DATA_STORAGE_PATH` o `N8N_STORAGE_PATH`, y el stack
