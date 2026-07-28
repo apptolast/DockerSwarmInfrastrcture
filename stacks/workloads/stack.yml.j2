@@ -151,8 +151,18 @@ services:
       # Sin estos topes la JVM dimensiona el heap al 25 % del cgroup y deja
       # el metaspace sin limite, de modo que el proceso rebasaba el limite
       # y el kernel lo mataba (oom-kill CONSTRAINT_MEMCG, exit 137).
+      #
+      # El heap se fija en valor absoluto y NO como porcentaje del cgroup.
+      # `MaxRAMPercentage` escala con el limite: al subirlo de 384 a 448 MiB
+      # el techo del heap paso de 192 a 224 MiB mientras el consumo nativo
+      # (metaspace, code cache, pilas de hilos, buffers directos y
+      # estructuras del GC) seguia siendo el mismo, asi que ampliar el limite
+      # empeoraba el OOM en lugar de resolverlo. El kernel lo mato con
+      # anon-rss 455448 kB contra un limite de 448 MiB. Con 192 MiB de heap
+      # el servicio ya se habia observado sano consumiendo 317 MiB, de modo
+      # que conservar ese techo dentro del limite mayor deja margen real.
       JAVA_TOOL_OPTIONS: >-
-        -XX:MaxRAMPercentage=50.0
+        -Xmx192m
         -XX:MaxMetaspaceSize=128m
       MINECRAFT_SERVER_NAME: Server De la Chavalada
       MINECRAFT_STATS_PATH: /minecraft-data/server_chavalda/stats
