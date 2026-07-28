@@ -213,6 +213,21 @@
   register: workloads_all_container_inspect
   changed_when: false
   check_mode: false
+  # Un contenedor puede desaparecer entre el listado y la inspeccion porque
+  # Swarm recoge las tareas que terminan. En ese caso `docker container
+  # inspect` devuelve codigo distinto de cero aunque haya inspeccionado
+  # correctamente el resto, y un contenedor que ya no existe no puede
+  # retener ningun mount, asi que la garantia del gate siguiente se mantiene.
+  # Solo se tolera ese error concreto: cualquier otro fallo, o un codigo
+  # distinto de cero sin diagnostico, sigue abortando el despliegue.
+  failed_when: >-
+    workloads_all_container_inspect.rc != 0
+    and (
+      workloads_all_container_inspect.stderr_lines | length == 0
+      or workloads_all_container_inspect.stderr_lines
+      | reject("search", "No such container")
+      | list | length > 0
+    )
 
 - name: Enforce exclusive ownership of restored PostgreSQL paths
   ansible.builtin.command:
