@@ -173,6 +173,15 @@
     mode: "0750"
   notify: Host baseline restart Docker ingress ordering
 
+- name: Install the CrowdSec ipset readiness helper
+  ansible.builtin.template:
+    src: crowdsec-ipset-ready.sh.j2
+    dest: "{{ host_baseline_crowdsec_ipset_wait_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Host baseline restart Docker ingress ordering
+
 - name: Create the Docker ingress-policy override directory
   ansible.builtin.file:
     path: "{{ host_baseline_docker_firewall_override_directory }}"

@@ -86,5 +86,8 @@ host_baseline_docker_firewall_script: >-
   /usr/local/sbin/dockerswarm-docker-firewall
 host_baseline_crowdsec_order_script: >-
   /usr/local/sbin/dockerswarm-crowdsec-order
+host_baseline_crowdsec_ipset_wait_script: >-
+  /usr/local/sbin/dockerswarm-wait-for-crowdsec-ipsets
+host_baseline_crowdsec_ipset_wait_timeout_seconds: 90
 
 host_baseline_run_expensive_validations: true

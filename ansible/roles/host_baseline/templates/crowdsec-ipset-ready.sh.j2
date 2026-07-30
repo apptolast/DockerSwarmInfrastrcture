@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly TIMEOUT_SECONDS={{ host_baseline_crowdsec_ipset_wait_timeout_seconds | int }}
+readonly IPV4_IPSET_PATTERN='^crowdsec-blacklists-[0-9]+$'
+readonly IPV6_IPSET_PATTERN='^crowdsec6-blacklists-[0-9]+$'
+
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  if ipsets="$(/usr/sbin/ipset list -n 2>/dev/null)" &&
+    /usr/bin/grep -Eq "${IPV4_IPSET_PATTERN}" <<<"${ipsets}" &&
+    /usr/bin/grep -Eq "${IPV6_IPSET_PATTERN}" <<<"${ipsets}"; then
+    exit 0
+  fi
+  /usr/bin/sleep 1
+done
+
+printf 'Timed out waiting for CrowdSec IPv4 and IPv6 ipsets after %ss.\n' \
+  "${TIMEOUT_SECONDS}" >&2
+exit 1

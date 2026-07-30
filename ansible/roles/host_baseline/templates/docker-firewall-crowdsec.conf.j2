@@ -3,4 +3,6 @@ Wants=crowdsec-firewall-bouncer.service
 After=crowdsec-firewall-bouncer.service
 
 [Service]
+CapabilityBoundingSet=CAP_NET_RAW
+ExecStartPre={{ host_baseline_crowdsec_ipset_wait_script }}
 ExecStartPost={{ host_baseline_crowdsec_order_script }}

@@ -10,7 +10,7 @@ Type=oneshot
 ExecStart=/usr/local/sbin/dockerswarm-docker-firewall
 RemainAfterExit=yes
 
-CapabilityBoundingSet=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
