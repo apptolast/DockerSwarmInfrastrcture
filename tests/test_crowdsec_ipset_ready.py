@@ -86,6 +86,7 @@ class CrowdSecIPSetReadinessTests(unittest.TestCase):
             "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW",
             SERVICE_UNIT.read_text(encoding="utf-8"),
         )
+        self.assertIn("WantedBy=docker.service", SERVICE_UNIT.read_text(encoding="utf-8"))
         self.assertIn(
             "CapabilityBoundingSet=CAP_NET_RAW",
             DROP_IN.read_text(encoding="utf-8"),

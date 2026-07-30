@@ -15,3 +15,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
+
+[Install]
+WantedBy=docker.service
