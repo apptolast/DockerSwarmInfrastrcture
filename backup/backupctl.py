@@ -2366,8 +2366,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 False,
                 detail=detail,
             )
-        except Exception:
-            pass
+        except Exception as status_error:  # noqa: BLE001 - best effort
+            # La captura sigue siendo ancha a proposito: este handler no
+            # debe enmascarar el error primario, que ya viaja por los
+            # except de :2477 y :2482. Pero silenciarlo por completo deja
+            # ciega a la monitorizacion: si esta escritura falla, el gauge
+            # dockerswarm_backup_last_run_success conserva el 1 del run
+            # anterior y la alerta critica BackupLastRunFailed no dispara.
+            print(
+                "WARNING: cannot record backup failure status: "
+                f"{type(status_error).__name__}",
+                file=sys.stderr,
+            )
 
     try:
         config = BackupConfig.load(arguments.config)

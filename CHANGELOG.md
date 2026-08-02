@@ -127,6 +127,19 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `backup/backupctl.py` deja de tragarse en silencio el fallo de la única
+  escritura del estado y de las métricas del backup. `record_failure()`
+  envolvía esa escritura en `except Exception: pass`, de modo que un
+  `OSError` por disco lleno o permisos, o un fichero de estado corrupto,
+  la hacían fracasar sin dejar rastro. El efecto no era cosmético: el
+  gauge `dockerswarm_backup_last_run_success` conservaba el `1` del run
+  anterior, así que la alerta `BackupLastRunFailed`
+  (`severity: critical`) nunca disparaba. Y el único respaldo de
+  frescura, `ApplicationBackupStale`, filtra `kind="application"`,
+  mientras que se instalan cuatro tipos —`application`, `swarm-state`,
+  `verify` y `rehearsal`—, con lo que tres quedaban sin ninguna alerta.
+  La captura sigue siendo ancha a propósito para no enmascarar el error
+  primario, pero ahora avisa por `stderr`.
 - `dockerswarm-docker-firewall.service` fallaba al final de `host-baseline`
   con `iptables: Can't open socket to ipset`. systemd da por arrancado el
   bouncer de CrowdSec antes de que éste haya creado sus ipsets, y el handler
