@@ -5,12 +5,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from datetime import datetime, timezone
 import hashlib
-from ipaddress import IPv4Address
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import stat
@@ -18,7 +15,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from datetime import datetime, timezone
+from ipaddress import IPv4Address
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import yaml

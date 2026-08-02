@@ -7,11 +7,11 @@ import copy
 import datetime
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any
 
 import yaml
-
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONTRACT = PROJECT_DIR / "config/services.yml"

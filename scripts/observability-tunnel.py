@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 
-
 REMOTE_HELPER = "/usr/local/libexec/dockerswarm-observability-forward"
 SERVICE_PORTS = {
     "grafana": 3000,

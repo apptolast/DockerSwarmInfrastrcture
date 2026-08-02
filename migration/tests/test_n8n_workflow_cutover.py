@@ -3,11 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

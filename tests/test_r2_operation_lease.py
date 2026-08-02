@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
-from types import SimpleNamespace
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

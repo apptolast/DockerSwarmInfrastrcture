@@ -8,7 +8,6 @@ import ctypes
 import errno
 import fcntl
 import os
-from pathlib import Path
 import pty
 import select
 import selectors
@@ -17,6 +16,7 @@ import sys
 import termios
 import time
 import tty
+from pathlib import Path
 
 PR_SET_PDEATHSIG = 1
 PR_SET_CHILD_SUBREAPER = 36

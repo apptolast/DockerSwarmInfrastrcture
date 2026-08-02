@@ -16,7 +16,6 @@ import hmac
 import importlib.util
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -28,7 +27,9 @@ import sys
 import tarfile
 import tempfile
 import time
-from typing import Any, Iterator, NoReturn, Sequence
+from collections.abc import Iterator, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any, NoReturn
 
 SCHEMA_VERSION = 1
 RESTIC_VERSION = "0.19.1"
@@ -449,7 +450,7 @@ def validate_manifest_tree(root: Path) -> tuple[Path, dict[str, Any]]:
 
 
 def validate_restored_contract(
-    config: "BackupConfig", manifest: dict[str, Any]
+    config: BackupConfig, manifest: dict[str, Any]
 ) -> None:
     artifacts = manifest["artifacts"]
     observed = {artifact["id"]: artifact for artifact in artifacts}
@@ -466,8 +467,8 @@ def validate_restored_contract(
     databases = {database["id"]: database for database in config.document["databases"]}
     datasets = {dataset["id"]: dataset for dataset in config.document["datasets"]}
     expected_types = {
-        **{identifier: "postgres-custom-dump" for identifier in databases},
-        **{identifier: "filesystem-tar" for identifier in datasets},
+        **dict.fromkeys(databases, "postgres-custom-dump"),
+        **dict.fromkeys(datasets, "filesystem-tar"),
     }
     if {
         identifier: artifact["type"] for identifier, artifact in observed.items()
@@ -589,7 +590,7 @@ class BackupConfig:
     document: dict[str, Any]
 
     @classmethod
-    def load(cls, path: Path) -> "BackupConfig":
+    def load(cls, path: Path) -> BackupConfig:
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -2366,7 +2367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 False,
                 detail=detail,
             )
-        except Exception as status_error:  # noqa: BLE001 - best effort
+        except Exception as status_error:
             # La captura sigue siendo ancha a proposito: este handler no
             # debe enmascarar el error primario, que ya viaja por los
             # except de :2477 y :2482. Pero silenciarlo por completo deja

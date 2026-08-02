@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import re
 import select
 import signal
@@ -13,8 +12,8 @@ import socket
 import stat
 import sys
 import threading
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-
 
 DEFAULT_LISTEN = Path(
     "/run/dockerswarm-observability/docker-readonly.sock"
@@ -214,7 +213,7 @@ def send_error(client: socket.socket, status: int, message: str) -> None:
         431: "Request Header Fields Too Large",
         502: "Bad Gateway",
     }.get(status, "Error")
-    body = f"{reason}: {message}\n".encode("utf-8")
+    body = f"{reason}: {message}\n".encode()
     response = (
         f"HTTP/1.1 {status} {reason}\r\n"
         "Content-Type: text/plain; charset=utf-8\r\n"

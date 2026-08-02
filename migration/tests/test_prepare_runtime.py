@@ -4,12 +4,12 @@ import base64
 import io
 import json
 import os
-from pathlib import Path
-from unittest import mock
 import sys
 import tarfile
 import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))

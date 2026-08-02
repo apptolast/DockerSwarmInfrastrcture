@@ -9,17 +9,16 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path, PurePosixPath
 import secrets
 import shutil
-import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 
 from backup_safety import SafetyError, sha256_file, verify_checksum_tree
 

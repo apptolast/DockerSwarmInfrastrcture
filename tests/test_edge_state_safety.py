@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EDGE_DEPLOY = (

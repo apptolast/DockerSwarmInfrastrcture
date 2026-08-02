@@ -8,11 +8,11 @@ import base64
 import binascii
 import hashlib
 import json
-from pathlib import Path
 import stat
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 ALLOWED_KEY_TYPES = {
     "ssh-ed25519",

@@ -11,20 +11,21 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import ipaddress
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import stat
 import subprocess
 import sys
-from typing import Any, Callable, NoReturn, Protocol, Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, NoReturn, Protocol
 
 import yaml
 
@@ -447,7 +448,7 @@ class Layout:
         return self.evidence_root / f"{generation}.json.sig"
 
     @classmethod
-    def production_layout(cls) -> "Layout":
+    def production_layout(cls) -> Layout:
         return cls(
             state_root=PRODUCTION_STATE_ROOT,
             evidence_root=PRODUCTION_EVIDENCE_ROOT,
@@ -1290,8 +1291,7 @@ class ProductionRuntimeProbe:
 
 
 def path_is_within(target: str, roots: Sequence[Path]) -> bool:
-    if target.endswith(" (deleted)"):
-        target = target[: -len(" (deleted)")]
+    target = target.removesuffix(" (deleted)")
     if not target.startswith("/"):
         return False
     candidate = Path(target)

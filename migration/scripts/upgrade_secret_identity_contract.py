@@ -11,17 +11,16 @@ non-destructive rollback.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
-import re
 import secrets
 import stat
 import sys
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml

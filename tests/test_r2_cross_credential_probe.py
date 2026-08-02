@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +22,7 @@ def error_xml(code: str) -> bytes:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f"<Error><Code>{code}</Code><Message>test</Message></Error>"
-    ).encode("utf-8")
+    ).encode()
 
 
 class R2CredentialProbeTests(unittest.TestCase):

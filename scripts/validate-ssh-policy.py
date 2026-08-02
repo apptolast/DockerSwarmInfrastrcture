@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, StrictUndefined
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONTRACT_PATH = PROJECT_DIR / "config/host-security.yml"

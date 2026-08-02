@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import re
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -175,7 +175,7 @@ def validate_marker(
     if marker.get("datasets") != expected_dataset_states:
         raise MarkerError("dataset verification evidence is incomplete")
 
-    expected_database_states = {name: "verified" for name in sorted(EXPECTED_DATABASES)}
+    expected_database_states = dict.fromkeys(sorted(EXPECTED_DATABASES), "verified")
     if marker.get("databaseRestores") != expected_database_states:
         raise MarkerError("database restore evidence is incomplete")
 

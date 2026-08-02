@@ -8,10 +8,10 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import yaml

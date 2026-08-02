@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import re
 import socket
 import subprocess
 import sys
 import threading
-
+from pathlib import Path
 
 SERVICE_PORTS = {
     "grafana": 3000,

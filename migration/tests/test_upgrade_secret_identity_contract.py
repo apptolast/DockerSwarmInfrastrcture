@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import stat
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 import yaml
 

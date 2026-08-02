@@ -12,14 +12,15 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
 import sys
 import tarfile
 import tempfile
-from typing import BinaryIO, Iterable
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 PACKAGE_RE = re.compile(
     r"^apptolast-data-(?P<stamp>[0-9]{8}T[0-9]{6}Z)\.tar\.zst\.gpg$"
@@ -139,8 +140,7 @@ def load_manifest(path: Path) -> dict[str, object]:
 
 
 def normalize_checksum_name(name: str, *, basename_only: bool) -> str:
-    if name.startswith("./"):
-        name = name[2:]
+    name = name.removeprefix("./")
     if not name or "\x00" in name or "\r" in name or "\n" in name:
         raise SafetyError("Nombre vacío o de control en fichero de checksums")
     if "\\" in name:

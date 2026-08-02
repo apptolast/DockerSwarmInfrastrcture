@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import grp
 import os
-from pathlib import Path
 import pwd
 import re
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 MIGRATION_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SCRIPT = MIGRATION_ROOT / "scripts" / "install_traefik_acme.sh"

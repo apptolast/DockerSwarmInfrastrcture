@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
-from decimal import Decimal, InvalidOperation
 import os
-from pathlib import Path
 import re
 import sys
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
 import yaml

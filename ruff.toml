@@ -1,0 +1,223 @@
+# ruff.toml - DockerSwarmInfrastrcture (apptolast)
+#
+# Colocar en la raiz del repositorio. Todas las rutas de este fichero son
+# relativas a el.
+#
+# Ruff se fija por version exacta: un bump de ruff no puede convertir un CI
+# verde en rojo sin que alguien lo suba a mano.
+required-version = "==0.16.1"
+
+# El runner de CI instala Python 3.14 (.github/workflows/validate.yml:37) y no
+# existe requires-python en el repo (no hay pyproject.toml ni setup.cfg: grep
+# de pyproject.toml/ruff.toml/setup.cfg/tox.ini/.flake8 sobre el arbol devuelve
+# vacio). Sin este valor ruff asume py39 y desactiva casi todo pyupgrade.
+target-version = "py314"
+
+# Igual al default del formatter de ruff. Explicito para que lint y format no
+# puedan divergir si el default cambia.
+line-length = 88
+
+extend-exclude = [
+  # Cache de providers de terraform: binarios y codigo vendorizado de terceros.
+  # No es codigo del repo y no debe puntuar en el lint.
+  "**/.terraform/**",
+  # ruff 0.16 mete Markdown en el alcance del FORMATTER: reescribe los bloques
+  # ```python embebidos. Verificado con un .md de prueba:
+  #   -x = {  "a":1 }
+  #   +x = {"a": 1}
+  # `ruff check` en cambio no lee .md ("No Python files found under the given
+  # path(s)"), asi que esta linea protege a los 31 ficheros .md del repo
+  # (CHANGELOG.md, CLAUDE.md, docs/**) frente a `ruff format`, no frente al
+  # linter.
+  "**/*.md",
+]
+
+# extend-exclude solo se aplica a las rutas DESCUBIERTAS por ruff. Una ruta
+# pasada de forma explicita en la linea de comandos lo salta: verificado
+# ejecutando `ruff format --check <fichero>.md` con el extend-exclude de arriba,
+# que reformateaba el fichero igualmente. Como pre-commit invoca las
+# herramientas con la lista explicita de ficheros del commit, sin este flag la
+# exclusion de Markdown seria inutil justo donde mas importa.
+force-exclude = true
+
+[lint]
+# Seleccion EXPLICITA. No se usa "ALL": la propia documentacion de Astral lo
+# desaconseja porque incorpora reglas nuevas en cada release sin revision
+# humana, y aqui mide 6798 hallazgos.
+select = [
+  "A",     # flake8-builtins - shadowing de builtins. Mide 0 hoy: guardarrail.
+  "ARG",   # flake8-unused-arguments - argumentos muertos en firmas.
+  "ASYNC", # flake8-async - await/sleep bloqueantes. Mide 0 hoy: guardarrail.
+  "B",     # flake8-bugbear - bugs reales (B904 raise-from, B905 zip strict).
+  "C4",    # flake8-comprehensions.
+  "DTZ",   # flake8-datetimez - datetime naive. Critico: backups, leases y
+           # locks del repo comparan marcas de tiempo entre host y R2.
+  "E",     # pycodestyle errors. Reactiva E402, que ruff 0.16 saco del default
+           # y que es justo lo que suprimen los 22 `# noqa: E402` del repo.
+  "ERA",   # eradicate - codigo comentado.
+  "F",     # pyflakes - imports y variables sin usar, nombres indefinidos.
+  "FLY",   # flynt - join estatico a f-string.
+  "FURB",  # refurb - modernizaciones (FURB162 fromisoformat con Z).
+  "G",     # flake8-logging-format. Mide 0 hoy: guardarrail.
+  "I",     # isort - orden de imports.
+  "ISC",   # flake8-implicit-str-concat (ver ISC001 en ignore).
+  "LOG",   # flake8-logging. Mide 0 hoy: guardarrail.
+  "N",     # pep8-naming. Mide 0 hoy: guardarrail.
+  "PERF",  # perflint.
+  "PGH",   # pygrep-hooks - `# noqa` y `# type: ignore` sin codigo.
+  "PIE",   # flake8-pie.
+  "PLC",   # pylint convention.
+  "PLE",   # pylint error. Mide 0 hoy: guardarrail.
+  "PLW",   # pylint warning. Mide 0 hoy: guardarrail.
+  "PTH",   # flake8-use-pathlib - os.path -> pathlib.
+  "RET",   # flake8-return.
+  "RSE",   # flake8-raise.
+  "RUF",   # reglas propias de ruff, incluida RUF100 (noqa muerto).
+  "S",     # flake8-bandit (ver bloque de ignore).
+  "SIM",   # flake8-simplify.
+  "SLF",   # flake8-self - acceso a _privados ajenos. Mide 0 hoy: guardarrail.
+  "TC",    # flake8-type-checking (ver TC003 en ignore).
+  "TID",   # flake8-tidy-imports - imports relativos. Mide 0 hoy: guardarrail.
+  "UP",    # pyupgrade. Con target py314 pasa de 22 a 62 hallazgos.
+  "W",     # pycodestyle warnings. Mide 0 hoy: guardarrail.
+  "YTT",   # flake8-2020 - comparaciones con sys.version. Guardarrail.
+]
+
+# NO se seleccionan estas familias, y el motivo es medido, no estetico:
+#   BLE  - BLE001 mide 20 y las 20 son capturas amplias deliberadas en codigo
+#          de ops que no puede abortar por un fallo secundario. Habilitarla
+#          obligaria a 20 `# noqa` sin ganancia. Efecto lateral asumido: el
+#          `# noqa: BLE001` de backup/backupctl.py:2369 queda muerto y RUF100
+#          lo denuncia (1 hallazgo, auto-fixable: borra el comentario).
+#   T20  - 120 hallazgos de `print`. Estos ficheros son CLI de operacion donde
+#          stdout ES la interfaz de salida; print no es un debug olvidado.
+#   TRY  - 1345 hallazgos, dominados por TRY003 (mensaje largo fuera de la
+#          clase de excepcion). Es una convencion, no un defecto.
+#   PLR  - 244 hallazgos, casi todo PLR2004 (valor magico) y PLR0913. Exigen
+#          refactor de firmas, no correccion de lint.
+#   C90  - 65 C901. La complejidad ciclomatica necesita un umbral acordado
+#          antes de bloquear el CI.
+#   COM, Q, D, ANN, EM, FBT - conflicto con el formatter (COM, Q) o cambio
+#          masivo de estilo/documentacion (D 1172, ANN 157, EM 1309).
+
+ignore = [
+# UP017 (datetime-timezone-utc) queda IGNORADA a proposito.
+#
+# Reescribe `timezone.utc` como `datetime.UTC`, que solo existe desde Python
+# 3.11. Los 40 sitios afectados estan en scripts cuyo shebang es
+# `#!/usr/bin/env python3`: los ejecuta el interprete DEL SISTEMA del VPS, no
+# el .venv de 3.14 que usa la CI. El repositorio no declara en ningun sitio
+# una version minima de Python, y la version real de python3 del host de
+# produccion no esta verificada.
+#
+# Para levantar esta exclusion hacen falta dos cosas, en este orden:
+#   1. Comprobar `python3 --version` en el VPS.
+#   2. Declarar el minimo en el repositorio, para que deje de ser implicito.
+# Mientras tanto, `timezone.utc` funciona en toda version 3.x y `datetime.UTC`
+# no. La eleccion segura es la compatible.
+"UP017",
+
+  # --- Conflictos documentados con `ruff format` -----------------------------
+  # Astral publica una lista de reglas incompatibles con su formatter. De esa
+  # lista, las unicas que `select` de arriba llega a activar son estas tres.
+  "E501",   # line-too-long: la longitud la impone el formatter. E501 pelea con
+            # el en las 9 lineas largas que el formatter no puede partir
+            # (URLs, literales de una pieza).
+  "W191",   # tab-indentation: la indentacion la impone el formatter.
+  "ISC001", # single-line-implicit-string-concatenation: Astral la marca
+            # explicitamente como incompatible con el formatter; el formatter
+            # une literales y luego ISC001 los denuncia. Mide 18. ISC002 e
+            # ISC004 siguen activas.
+
+  # --- flake8-bandit: falsos positivos estructurales de este repo ------------
+  "S603",   # subprocess-without-shell-equals-true: salta en TODA llamada a
+            # subprocess.run con lista de argumentos, que es precisamente la
+            # forma SEGURA (sin shell). Ej: scripts/validate-swarm-deployment.py:441
+            # `subprocess.run([docker_bin, object_type, "inspect", *names], ...)`.
+            # Mide 84 y no hay un solo shell=True en el repo.
+  "S606",   # start-process-with-no-shell: el mismo criterio para os.exec*.
+            # scripts/host_global_operation_lock.py:689 usa os.execv con lista y
+            # scripts/run-locked-command.py:214 os.execvp(command[0], command).
+            # Sin shell es lo correcto; la regla solo pide auditarlo.
+  "S607",   # start-process-with-partial-path: invocar `docker`, `terraform` o
+            # `ssh` por PATH es intencional. El VPS es de nodo unico con PATH
+            # fijado por el playbook de Ansible, y anclar rutas absolutas
+            # romperia el arranque cuando cambia el gestor de paquetes.
+            # Mide 28.
+  "S105",   # hardcoded-password-string: los 8 hallazgos son constantes cuyo
+            # NOMBRE contiene KEY/PASSWORD pero cuyo VALOR es un nombre de
+            # fichero o una etiqueta. Ej: scripts/install-workload-secrets.py:30
+            # SECRET_IDENTITY_KEY_FILE = "workloads_secret_identity_hmac_key" y
+            # :31 SECRET_IDENTITY_LABEL = "com.apptolast.secret-source-hmac-sha256".
+            # El secreto real nunca esta en el codigo (gitleaks lo cubre:
+            # .gitleaks.toml).
+  "S506",   # unsafe-yaml-load: los 2 hallazgos usan `UniqueKeyLoader`, que en
+            # scripts/validate-capacity.py:39 y scripts/validate-services.py:125
+            # se declara como `class UniqueKeyLoader(yaml.SafeLoader)`. Ruff
+            # solo mira el nombre del loader, no su clase base, asi que no
+            # puede saber que ya es seguro.
+  "S701",   # jinja2-autoescape-false: scripts/validate-ssh-policy.py:48 y los
+            # tests renderizan sshd_config y reglas de ufw, no HTML. Poner
+            # autoescape=True convertiria `&` y `<` en entidades HTML y
+            # corromperia la configuracion generada.
+
+  # --- Regla sin beneficio medible en este arbol -----------------------------
+  "TC003",  # typing-only-standard-library-import. No aparece sobre el codigo
+            # actual, pero emerge en cascada al aplicar --fix: UP035 reescribe
+            # `from typing import Iterator, Sequence` a
+            # `from collections.abc import ...` y entonces TC003 pide moverlo a
+            # un bloque TYPE_CHECKING (13 hallazgos post-fix). El movimiento no
+            # ahorra nada: los 9 ficheros afectados ya importan `typing` y
+            # `json`/`subprocess`, y cualquiera de ellos mete `collections.abc`
+            # en sys.modules igualmente (verificado con
+            # `python -c "import typing, sys; print('collections.abc' in sys.modules)"`
+            # -> True). A cambio introduce una trampa: un uso futuro en runtime
+            # (p.ej. isinstance(x, Sequence)) daria NameError. TC004, TC005 y
+            # TC010, que si detectan errores reales, siguen activas.
+
+  # --- Reglas obsoletas para el target ---------------------------------------
+  "PERF203", # try-except-in-loop: el coste de un try/except sin excepcion es
+             # cero desde CPython 3.11 (PEP 659 / zero-cost exceptions). Con
+             # target-version = "py314" la regla ya no describe un coste real,
+             # y los 7 hallazgos son manejo de error por elemento en bucles de
+             # reconciliacion, que es el patron correcto.
+]
+
+[lint.per-file-ignores]
+# AVISO OPERATIVO: estas claves son rutas RELATIVAS y ruff las resuelve contra
+# el directorio de trabajo, no contra la ubicacion del fichero de config. Con
+# este ruff.toml en la raiz del repo y el CI ejecutando `ruff check .` desde
+# ahi, funcionan. Si se invoca ruff desde otro directorio pasando
+# `--config /ruta/a/ruff.toml`, los patrones NO casan y el conteo sube de 229
+# a 288 (comprobado). El CI debe hacer cd a la raiz antes de llamar a ruff.
+#
+# Los dos arboles de tests son unittest sobre los scripts de ops.
+# Solo se listan reglas que ESTE arbol dispara (o que son especificas de
+# codigo de test); las que ya estan en el ignore global no se repiten aqui.
+"tests/**" = [
+  "S101",    # assert es el mecanismo de asercion de unittest. 9 de los 16 S101
+             # del repo estan aqui; otros 3 en migration/tests.
+  "S106",    # credencial falsa pasada como argumento a un doble de prueba.
+             # Mide 0 hoy; va como guardarrail porque los datos de prueba son
+             # justo donde aparecen literales con pinta de secreto.
+  "S107",    # idem, como valor por defecto de un stub. Mide 0 hoy.
+  "S108",    # /dev/shm aparece como cadena ESPERADA en asserts de contrato
+             # (tests/test_capacity_contract.py:251), no como ruta que se abra.
+  "SLF001",  # los tests inspeccionan helpers privados del modulo bajo prueba.
+  "ARG002",  # firmas de dobles y stubs que deben respetar la interfaz real.
+             # Los 7 ARG002 del repo estan en estos dos arboles.
+  "SIM117",  # apilar `with mock.patch(...)` sin fusionar mantiene una linea por
+             # parche y da diffs limpios. 25 de los 31 SIM117 estan aqui.
+  "PLC0415", # import dentro del metodo de test para aislar el estado del
+             # modulo entre casos. 8 de los 9 PLC0415 estan aqui.
+]
+"migration/tests/**" = [
+  "S101",    # los 3 S101 restantes de los arboles de test.
+  "S106",
+  "S107",
+  "S108",
+  "SLF001",
+  "ARG002",
+  "SIM117",  # los 6 SIM117 restantes.
+  "PLC0415",
+]

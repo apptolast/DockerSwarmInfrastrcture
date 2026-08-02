@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
-from types import SimpleNamespace
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
