@@ -36,6 +36,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   Raft, retención, métricas y ensayos de restore.
 - CI, validadores reales de OpenSSH/Traefik, tests adversariales, lint,
   escaneo de secretos y documentación de reconstrucción/cutover.
+- [`.gitattributes`](.gitattributes) fija LF en el índice para todo el árbol.
+  Los seis entrypoints de `stacks/workloads/config/` son el PID 1 de sus
+  servicios y se entregan al contenedor como Docker Config byte a byte: un
+  CRLF en la línea del shebang haría que el kernel buscase un intérprete
+  `/bin/sh\r` inexistente y el servicio no arrancaría. El índice ya estaba
+  limpio (`git ls-files --eol` devuelve `i/lf` en los 336 ficheros); el
+  fichero garantiza que siga estándolo desde cualquier checkout.
 
 ### Changed
 
@@ -62,6 +69,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - El catálogo de servicios excluye explícitamente `uptime-kuma` (alias
   `kuma`, hostname legacy `kuma.apptolast.com`), confirmado por el
   propietario el 2026-07-27.
+- `scripts/lint.sh` y `scripts/validate-iac.sh` extienden `bash -n` y
+  ShellCheck a `stacks/workloads/config/*.sh`. Los seis entrypoints de
+  producción quedaban fuera del gate —lo único que recibían era el SHA-256
+  con el que se nombra su Docker Config—, así que un error de sintaxis en
+  ellos atravesaba la CI entera y solo se manifestaba al no arrancar el
+  contenedor en el host. El barrido pasa de 41 a 47 scripts y los seis
+  entran sin ningún hallazgo con la configuración vigente.
 
 ### Security
 
