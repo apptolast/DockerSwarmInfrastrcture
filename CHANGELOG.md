@@ -76,6 +76,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   ellos atravesaba la CI entera y solo se manifestaba al no arrancar el
   contenedor en el host. El barrido pasa de 41 a 47 scripts y los seis
   entran sin ningún hallazgo con la configuración vigente.
+- `yamllint` se invoca con `--strict` en `scripts/validate-iac.sh`, de modo
+  que un hallazgo de nivel `warning` deja de pasar en silencio y devuelve
+  código distinto de cero. Medido antes de fijarlo: los 86 ficheros YAML
+  del repositorio —que son todos los que la lista de rutas ya cubría— dan
+  cero hallazgos incluso contando los de nivel `warning`, así que el cambio
+  no exige corregir nada y solo impide una regresión futura.
 
 ### Security
 
