@@ -76,6 +76,22 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   ellos atravesaba la CI entera y solo se manifestaba al no arrancar el
   contenedor en el host. El barrido pasa de 41 a 47 scripts y los seis
   entran sin ningún hallazgo con la configuración vigente.
+- `yamllint` se invoca con `--strict` en `scripts/validate-iac.sh`, de modo
+  que un hallazgo de nivel `warning` deja de pasar en silencio y devuelve
+  código distinto de cero. Medido antes de fijarlo: los 86 ficheros YAML
+  del repositorio —que son todos los que la lista de rutas ya cubría— dan
+  cero hallazgos incluso contando los de nivel `warning`, así que el cambio
+  no exige corregir nada y solo impide una regresión futura.
+- [`.ansible-lint`](.ansible-lint) declara `profile: production` con
+  `strict: true` y `warn_list: []`. Hasta ahora no existía fichero de
+  configuración, así que se aplicaba el perfil por defecto y nada dejaba
+  constancia de qué escalón se cumplía. Medido antes de declararlo, en el
+  runner de CI: los seis perfiles pasan, y la combinación más estricta da
+  «0 failure(s), 0 warning(s) in 110 files processed of 121 encountered.
+  Profile 'production' was required, and it passed». El `warn_list` vacío
+  convierte `experimental`, `jinja[spacing]` y `fqcn[deep]` en errores
+  duros. `skip_list` queda vacío porque la documentación oficial lo
+  desaconseja: oculta las violaciones en vez de mostrarlas.
 
 ### Security
 

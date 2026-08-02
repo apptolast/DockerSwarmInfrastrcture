@@ -118,6 +118,8 @@ jq --exit-status '
 dockerd --validate --config-file=config/daemon.json
 
 yamllint \
+  --strict \
+  .ansible-lint \
   .github \
   ansible \
   config/capacity.yml \
