@@ -241,50 +241,218 @@ profile `fresh-host`; the shared lock/profile validation in
 Writers unconditionally refuse a dirty git worktree — commit (or discard)
 your changes first.
 
-## Open STOP gates (as of last review)
+## Open STOP gates (revalidated 2026-08-02)
 
-This list reflects the state observed as of 2026-07-27 per README.md and
-the docs below. It MUST be re-verified against current `README.md`,
-`docs/TERRAFORM_STATE.md`, and `docs/MIGRATION.md` before being treated as
-current — gates close over time.
+Fully revalidated on 2026-08-02 against the worktree at `8a76620`
+("feat(agents): add the four reviewers and the sensitive-path guard
+(#10)"), which is the current `origin/main`. The previous list described
+2026-07-27 and was stale by construction: `CLAUDE.md` has not been
+touched since `d461e13` (2026-07-27), and the tree has advanced 48
+commits since then
+(`git log --oneline d461e13..origin/main | wc -l`).
 
-- Needs two independent R2 backends with separate credentials, live
-  locking proof, and encrypted snapshots.
-- Needs real signing identities/signatures for plans and locking tests,
-  kept outside Git.
-- Cloudflare Terraform token for DNS operations: provisioned 2026-07-27,
-  real Zone:DNS scope confirmed against the live Cloudflare API for the
-  `apptolast.com` zone, stored outside Git under
-  `/etc/dockerswarm/terraform/dns-zone-api-token.txt`. Its Cloudflare
-  token ID (`185f75d78a7b79a5b1d41e595fdaf90f`, confirmed via
-  `/user/tokens/verify`) is identical to the already-registered
-  `cloudflare_dns_api_token_v2` Docker secret
-  (`docs/EDGE.md`, "Registro de secrets instalados") — this is the same
-  ACME/Traefik credential reused for Terraform, not a distinct one, per
-  the owner's explicit authorization to reuse credentials across
-  purposes rather than provision new ones. The originally-requested
-  rotated ACME credential is still open and unrelated to this reuse.
-- Needs real Netcup SCP/import credentials if that root is activated.
-- Needs an external custodian for the Swarm unlock key before autolock is
-  enabled.
-- Needs explicit OAuth/business acceptance of n8n.
-- Needs an explicit decision on Minecraft's `online-mode=false` before
-  publishing it.
-- Needs proof the staged migration snapshot is final, or a versioned
-  refresh/promotion via
-  `migration/scripts/promote_runtime_generation.py`, before starting
-  workloads.
-- DNS cutover to the new platform IP: the signed host-readiness
-  coordinator this gate needed now exists
-  (`scripts/host-readiness-probe.sh` plus the verification chain in
-  `scripts/terraform-safety.py`, added 2026-07-27) and
-  `plan-terraform.sh`/`apply-terraform.sh` accept its proof via
-  `--host-readiness`. Absence of a proof, or one for the wrong hostname,
-  still fails exactly as before. The coordinator has never been run
-  against the real platform and no cutover has happened — that remains a
-  separate, deliberate decision requiring genuine platform readiness
-  (Traefik/ACME actually deployed and serving) plus the repository
-  owner's explicit go-ahead, not just the presence of the code.
+Do NOT revalidate these gates against `README.md`,
+`docs/MIGRATION.md`, `docs/BACKUP_RECOVERY.md`, or
+`migration/RUNTIME_GENERATION_PROMOTION.md`: none of them has been
+touched since `63dd546` (2026-07-27) and today they contradict the real
+state — `README.md:32` asserts
+`platform_minecraft_public_enabled: false` while
+`config/platform.yml:53` says `true`. The authoritative document for
+deployed state is `docs/DEPLOYMENT_STATUS.md` (`2cd966e`, 2026-07-28),
+which is itself an ancestor of `08cace6` and is already stale on
+Minecraft and on the DNS cutover.
+
+Labels: **CLOSED** (with the commit that closed it), **PREMISE
+OBSOLETE** (the fact that motivated the gate no longer holds), and
+**OPEN** (with what is missing and who can close it). A partially closed
+gate is marked OPEN, never CLOSED.
+
+### 1. R2 backends and encrypted snapshots — OPEN
+
+Partly closed by `ca38a3d` (2026-07-27), which is an **ancestor** of
+`d461e13` and which the previous version of this list omitted:
+`infra/terraform/backend-identities.json` registers real buckets for
+`cloudflare/apptolast-dns` (`apptolast-tfstate-dns`) and
+`netcup/perimeter` (`apptolast-tfstate-netcup`);
+`cloudflare/state-bootstrap` is still `null`.
+
+"Separate credentials" is no longer the requirement: both roots declare
+the same `access_key_id_sha256` (`4364051a…`) at
+`infra/terraform/backend-identities.json:9` and `:22`. The owner
+authorized a single account-scoped R2 credential covering all three
+buckets (`docs/EDGE.md:50-56`, commit `ca38a3d`), and `a245f71` rewrote
+the harness so that the five denial results — the four
+`cross_credential_*_denied` plus `terraform_backend_access_denied` —
+are recorded as `null` instead of a fabricated `true`
+(`docs/TERRAFORM_STATE.md:226-235`,
+`scripts/terraform-safety.py`).
+
+Missing, verified: `infra/terraform/snapshot-recipients.json` does
+**not** exist; only `snapshot-recipients.json.example` is present, and
+`git ls-files infra/terraform/` does not list the real file. Without it,
+`scripts/apply-terraform.sh:188`,
+`scripts/migrate-terraform-state.sh:218`, and
+`scripts/snapshot-terraform-state.sh:183` all fail closed, so **no
+`terraform apply` can run through the wrapper today**.
+
+Missing, not verifiable from the repo: the live locking proof lives
+outside Git (only `infra/terraform/locking-proof.json.example` is here).
+
+Only the owner can close this: register the SHA-256 of the approved
+`age` recipients file (`recipient_file_sha256`) and run
+`scripts/test-terraform-r2-locking.sh` against real R2.
+
+### 2. Signing identities — OPEN
+
+Partly closed by `ca38a3d` and `d461e13`, both at or before the last
+commit that touched this document, and also omitted before. Four
+tracked trust registries exist, with real `ssh-ed25519` keys and a
+restricted namespace: `infra/terraform/lock-proof.allowed-signers`,
+`plan.allowed-signers`, `lease-recovery.allowed-signers` (the first
+three from `ca38a3d`) and `host-readiness.allowed-signers` (from
+`d461e13`). They differ from their `.example` counterparts, which
+authorize nobody
+(`infra/terraform/plan.allowed-signers.example`).
+
+Missing, not verifiable from the repo: the private keys live outside Git
+under `/etc/dockerswarm/`; the runtime-promotion allowed-signers file
+lives outside Git by its own contract
+(`/etc/dockerswarm/migration/runtime-promotion.allowed-signers`,
+`migration/RUNTIME_GENERATION_PROMOTION.md:47`) and there is no tracked
+example at all (`ls migration/*allowed*` finds nothing). No real plan or
+lock-proof signature is observable from the repository.
+
+### 3. Cloudflare Terraform token and rotated ACME — OPEN
+
+The Terraform-token half is still exact and is reconfirmed:
+`docs/EDGE.md:137-145` documents that
+`/etc/dockerswarm/terraform/dns-zone-api-token.txt` (root:root, 0600)
+reuses the same credential `185f75d78a7b79a5b1d41e595fdaf90f` as the
+`cloudflare_dns_api_token_v2` Docker secret (`docs/EDGE.md:132`), by the
+owner's explicit decision to reuse rather than provision a new one. It
+is not a distinct token.
+
+Missing: revoking `cloudflare_dns_api_token_v1`. `docs/EDGE.md:23`
+declares it a rotation "pending revocation until the service is verified
+with v2", and `docs/EDGE.md:133` sets the condition as "revoke after
+verifying `v2` in service". That condition is **already met**:
+`docs/DEPLOYMENT_STATUS.md:14` records 9 of 9 certificates issued by
+Let's Encrypt production. Only the revocation itself is left, and only
+the owner can perform it in Cloudflare.
+
+### 4. Netcup SCP credentials — OPEN
+
+Not verifiable from the repo, and nothing indicates the root has been
+activated. The credential is injected through the environment as
+`NETCUP_SCP_REFRESH_TOKEN`
+(`infra/terraform/netcup/perimeter/README.md:29`,
+`docs/TERRAFORM_STATE.md:314`), and the only tracked variables file is
+`infra/terraform/netcup/perimeter/terraform.tfvars.example`
+(`git ls-files | grep tfvars` returns no real `.tfvars`). On top of
+that, while `snapshot-recipients.json` is missing (gate 1), no `apply`
+against this root is even possible.
+
+### 5. External custodian for the unlock key — OPEN
+
+Confirmed by the most recent document in the repository:
+`docs/DEPLOYMENT_STATUS.md:69-75` says the backup is still blocked, that
+it requires an external custodian for the Swarm unlock key and an R2
+bucket with its own credential, and that "this host has no copies
+outside itself". The STOP with its mandatory six-step sequence remains
+intact at `docs/BACKUP_RECOVERY.md:89` and is repeated at
+`docs/OPERATIONS.md:163-167`. `docker swarm update --autolock=true` MUST
+never be run by hand, under any circumstances. Only the owner can close
+this by supplying the real external destination.
+
+### 6. n8n OAuth/business acceptance — OPEN
+
+The mechanism exists and is still fail-closed:
+`migration/scripts/manage_n8n_workflows.py:50` defines
+`PUBLISH_CONFIRMATION = "I_HAVE_CONFIRMED_GOOGLE_OAUTH_CONSENT"` and the
+CLI demands it literally at `:1478`. There is no tracked
+`n8n-active-workflows.json` inventory (`git ls-files` does not list it)
+and no record that the confirmation was ever given.
+
+Beware a false closure signal: n8n serving real traffic
+(`docs/DEPLOYMENT_STATUS.md:18`) does **not** close this gate. The
+acceptance is about publishing the 46 restored workflows
+(`docs/MIGRATION.md:20-21`), not about bringing the service up. Only the
+owner can give it.
+
+### 7. Minecraft `online-mode=false` — CLOSED
+
+Closed by `08cace6` (2026-07-28). `config/platform.yml:61` declares
+`platform_minecraft_offline_public_accepted: true`, with the reasoned
+acceptance of the exact risk at `config/platform.yml:54-60`, and
+`config/platform.yml:53` sets `platform_minecraft_public_enabled: true`.
+
+The gate itself was **not** removed: its default is still `false`
+(`ansible/roles/platform/defaults/main.yml:24`) and it is still checked
+at `ansible/roles/platform/tasks/main.yml:19-26`,
+`scripts/validate-contract.py:185-197`, and
+`infra/terraform/cloudflare/apptolast-dns/contract.tf:49-56`.
+`config/minecraft.yml:9` still holds `online_mode: false`, which is
+precisely what was accepted.
+
+Note: `docs/DEPLOYMENT_STATUS.md:77-78` still says Minecraft is waiting
+for the flag; that document is from `2cd966e`, an ancestor of
+`08cace6`.
+
+### 8. Final staged snapshot or versioned promotion — OPEN
+
+Open, and its temporal premise ("before starting workloads") has already
+been overrun without closing it. `docs/DEPLOYMENT_STATUS.md:15` records
+11 of 16 Swarm services at `1/1`: workloads were started on 2026-07-28
+without the repository documenting either of the two conditions required
+by `docs/MIGRATION.md:264-271`.
+
+The previous tree was set aside as
+`/srv/dockerswarm/services.pre-runtime-v4-20260728T002105Z`
+(`docs/DEPLOYMENT_STATUS.md:27-29`), a path that does **not** match the
+transactional layout of
+`migration/scripts/promote_runtime_generation.py`
+(`/srv/dockerswarm/runtime-generations/…`,
+`migration/RUNTIME_GENERATION_PROMOTION.md:41-47`). The runbook is still
+at `STOP` (`migration/RUNTIME_GENERATION_PROMOTION.md:15-33`) and has
+not been touched since `63dd546`; there is no signed attestation in the
+repository and no evidence that this CLI has ever been run against
+`/srv`.
+
+Services already running does **not** close this gate: that is exactly
+the reasoning the closing paragraph forbids. Only the owner can close
+it, by one of the two routes in `docs/MIGRATION.md:264-271`.
+
+### 9. DNS cutover to the platform IP — PREMISE OBSOLETE
+
+The cutover **has already happened**, by hand in Cloudflare, not through
+Terraform. `08cace6` (2026-07-28) flipped the nine remaining
+`platform_dns_cutover` flags to `true` (`edge` was already `true`), so
+all ten at `config/platform.yml:17-27` now declare the cutover, and
+documents at `config/platform.yml:9-16` that the ten labels resolve to
+`platform_public_ipv4` (`159.195.156.57`, verified with
+`dig +short <label>.apptolast.com A` on 2026-07-28) and that the legacy
+server `138.199.157.58` was deleted by the owner. `CHANGELOG.md:72-79`
+records the same.
+
+What does **not** change: the signed coordinator is still mandatory.
+`scripts/host-readiness-probe.sh` and the verification chain in
+`scripts/terraform-safety.py` have existed since `d461e13`, and
+`scripts/terraform-safety.py:2598-2607` still unconditionally rejects
+any create or change toward the platform IP without a valid proof naming
+that exact hostname. The probe has never been run against the real
+platform and no proof has ever been issued.
+
+What does change, and is more dangerous than before: the risk has
+inverted. `docs/DEPLOYMENT_STATUS.md:80-87` warns that Terraform MUST
+**not** be run against `cloudflare/apptolast-dns`, because `initialize`
+mode forces `adoption_only=true` and
+`infra/terraform/cloudflare/apptolast-dns/dns.tf:55-67` then computes
+the legacy IP for the nine non-`edge` records, pointing them back at a
+server that no longer exists. On top of that, `imports.tf` does not
+cover the `edge` record (grepping for `edge` in
+`infra/terraform/cloudflare/apptolast-dns/imports.tf` yields no
+matches). Adopting the real state into Terraform is prerequisite work,
+not just one more `apply`.
 
 None of these gates may be satisfied by inventing values, hardcoding a
 credential, or adding a bypass flag. If a task seems to require passing
