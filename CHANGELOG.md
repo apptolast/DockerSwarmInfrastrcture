@@ -36,6 +36,21 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   Raft, retención, métricas y ensayos de restore.
 - CI, validadores reales de OpenSSH/Traefik, tests adversariales, lint,
   escaneo de secretos y documentación de reconstrucción/cutover.
+- Cuatro subagentes de revisión en `.claude/agents/`, ninguno con `Write`
+  ni `Edit`: `judge` (veredicto contra `CLAUDE.md` y la plantilla de PR),
+  `security-reviewer` (frontera de confianza: firewall, grupo `docker`,
+  política SSH, secretos, rotación, atestación), `guardrail-adversary`
+  (¿existe test negativo que demuestre que cada gate rechaza?) y
+  `mentor` (explica el porqué de los invariantes no obvios). Hasta ahora
+  había tres operadores y ningún revisor.
+- [`.github/workflows/guard-sensitive-paths.yml`](.github/workflows/guard-sensitive-paths.yml)
+  etiqueta las PR que tocan rutas sensibles. Usa `pull_request_target`
+  sin checkout y sin ejecutar código de la PR: solo lista nombres por
+  API. Incluye `previous_filename`, para que un rename no lo esquive, y
+  cubre además los ficheros que deciden **qué** verifica la CI
+  (`scripts/bootstrap-tooling.sh`, `scripts/lint.sh`,
+  `scripts/validate-iac.sh`, `ansible/requirements-dev.*`,
+  `.ansible-lint`), no solo los que la CI verifica.
 - [`.gitattributes`](.gitattributes) fija LF en el índice para todo el árbol.
   Los seis entrypoints de `stacks/workloads/config/` son el PID 1 de sus
   servicios y se entregan al contenedor como Docker Config byte a byte: un

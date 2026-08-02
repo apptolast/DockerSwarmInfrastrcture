@@ -1,0 +1,156 @@
+---
+name: Guardián de rutas sensibles
+
+# Etiqueta con `permissions-change` todo PR que toque las rutas que
+# gobiernan producción o la propia cadena de verificación, y deja el
+# detalle en el resumen del run para que la revisión humana no lo pase
+# por alto.
+#
+# NO bloquea: este job nunca falla el check. El bloqueo real lo hacen
+# .github/CODEOWNERS más la protección de rama; esto es la señal de
+# visibilidad que vuelve mecánica esa revisión reforzada.
+#
+# Usa `pull_request_target` A PROPÓSITO: así se ejecuta la versión de
+# este guardián que vive en la rama por defecto —un PR no puede
+# neutralizarlo desde su propia rama— y dispone del permiso de escritura
+# necesario para etiquetar.
+#
+# SEGURIDAD: el job NO hace checkout ni ejecuta código del PR. Solo pide
+# a la API la lista de NOMBRES de fichero y aplica una etiqueta, así que
+# no hay ejecución de código no confiable. Por el mismo motivo no usa
+# ninguna action de terceros: únicamente `gh`, ya preinstalado en el
+# runner. Si algún día hiciera falta una, iría pineada por SHA como en
+# .github/workflows/validate.yml.
+
+"on":
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Declarar el bloque deja en `none` todo lo que no aparezca aquí. Estas
+# tres son las que cubren las únicas llamadas que hace el job:
+#   GET  /repos/{repo}/pulls/{pr}/files    -> pull-requests
+#   POST /repos/{repo}/labels              -> issues
+#   POST /repos/{repo}/issues/{pr}/labels  -> issues + pull-requests
+permissions:
+  contents: read
+  pull-requests: write  # listar ficheros del PR y etiquetarlo
+  issues: write  # crear la etiqueta si aún no existe
+
+concurrency:
+  group: guard-sensitive-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  flag:
+    name: Marcar cambios en rutas sensibles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Detectar rutas sensibles y etiquetar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # `previous_filename` es obligatorio: en un RENAME la API solo
+          # informa de la ruta NUEVA en `.filename`, de modo que mover un
+          # fichero sensible fuera de su ruta escaparía al guardián.
+          files="$(
+            gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)'
+          )"
+
+          patterns_file="$(mktemp)"
+          trap 'rm -f "${patterns_file}"' EXIT
+
+          # Un patrón ERE por línea, sin comentarios ni líneas en blanco
+          # (grep -f las trataría como patrones). Cuatro bloques, en este
+          # orden:
+          #
+          # 1. La cadena que decide QUÉ ejecutan los checks obligatorios:
+          #    bootstrap-tooling.sh, lint.sh, validate-iac.sh, el lock que
+          #    ambos cargan, y el lock de dependencias con su generador
+          #    (incluido .ansible-lint, que fija el perfil de linting).
+          #    Quien edita esto edita el propio gate, no lo que el gate
+          #    mira: es la lección del guardián de Cenit, que dejaba fuera
+          #    justo estos ficheros.
+          # 2. El motor de operaciones peligrosas sobre el VPS y el estado
+          #    de Terraform.
+          # 3. El contrato de producción declarado en el repositorio.
+          # 4. El gobierno del propio repositorio (CI, CODEOWNERS, agentes).
+          cat >"${patterns_file}" <<'PATTERNS'
+          ^scripts/bootstrap-tooling\.sh$
+          ^scripts/lint\.sh$
+          ^scripts/validate
+          ^scripts/host-global-docker-validation-lock\.sh$
+          ^scripts/update-python-lock\.sh$
+          ^ansible/requirements-dev\.(in|txt)$
+          ^\.ansible-lint
+          ^scripts/terraform-safety\.py$
+          ^scripts/[^/]*operation[_-]lock[^/]*\.py$
+          ^scripts/r2-operation-lease\.py$
+          ^scripts/apply-terraform\.sh$
+          ^scripts/deploy-ansible\.sh$
+          ^config/
+          ^ansible/roles/host_security/
+          ^ansible/roles/host_baseline/
+          ^infra/terraform/
+          ^stacks/workloads/config/
+          ^\.gitleaks\.toml$
+          ^\.github/
+          ^\.claude/
+          PATTERNS
+
+          sensitive="$(
+            printf '%s\n' "${files}" |
+              grep -E -f "${patterns_file}" |
+              sort -u || true
+          )"
+
+          if [ -z "${sensitive}" ]; then
+            echo "Sin rutas sensibles tocadas en este PR."
+            echo "- Sin rutas sensibles en este PR." \
+              >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          motivo="Este PR toca el gate de CI, el motor de operaciones o"
+          motivo="${motivo} el contrato de producción: requiere revisión"
+          motivo="${motivo} reforzada."
+
+          echo "::warning title=Rutas sensibles::${motivo}"
+          {
+            echo "## Rutas sensibles modificadas"
+            echo ""
+            echo "${motivo}"
+            echo ""
+            echo "Ficheros (incluye el nombre previo si hubo rename):"
+            echo ""
+            printf '%s\n' "${sensitive}" |
+              while IFS= read -r sensitive_path; do
+                printf -- '- `%s`\n' "${sensitive_path}"
+              done
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+          # Se etiqueta por API REST a propósito: `gh api` no necesita
+          # contexto git local y aquí no hay checkout, así que `gh pr edit`
+          # o `gh label create` sin --repo fallarían con "not a git
+          # repository". Ningún fallo de etiquetado rompe el check.
+          descripcion="Toca el gate de CI, el motor de operaciones o el"
+          descripcion="${descripcion} contrato de producción: requiere"
+          descripcion="${descripcion} revisión reforzada"
+
+          gh label create permissions-change \
+            --repo "${REPO}" \
+            --color b60205 \
+            --description "${descripcion}" \
+            --force || true
+
+          gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
+            -f "labels[]=permissions-change" >/dev/null ||
+            echo "::warning::No se pudo aplicar permissions-change."
+
+          exit 0
