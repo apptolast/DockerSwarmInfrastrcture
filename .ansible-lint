@@ -1,0 +1,36 @@
+---
+# Perfil de ansible-lint fijado explícitamente.
+#
+# `production` es el escalón más alto que define ansible-lint. No es
+# aspiracional: se midió antes de declararlo y este árbol ya lo cumple.
+# Medición del 2026-08-02 con ansible-lint 26.6.0 / ansible-core 2.21.2,
+# en el mismo runner ubuntu-24.04 y con el mismo venv verificado por hashes
+# que usa la CI:
+#
+#   profile: production + strict: true + warn_list: []  ->  EXIT=0
+#   "Passed: 0 failure(s), 0 warning(s) in 110 files processed of 121
+#    encountered. Profile 'production' was required, and it passed."
+#
+# Declararlo aquí no corrige nada. Impide que una regresión futura pase
+# inadvertida, que es lo que ocurría hasta ahora: sin fichero de
+# configuración se aplicaba el perfil por defecto, y nada dejaba constancia
+# de qué escalón se estaba cumpliendo en realidad.
+profile: production
+
+# Un hallazgo de nivel `warning` deja de devolver 0.
+strict: true
+
+# Sin acceso a red: ansible-lint no intenta instalar colecciones. Las que
+# hacen falta ya se verifican contra sus versiones fijadas en
+# scripts/validate-iac.sh:87-105.
+offline: true
+
+# El WARN_LIST por defecto es ['experimental', 'jinja[spacing]',
+# 'fqcn[deep]']. Vaciarlo convierte esas tres en errores duros. Medido: el
+# árbol sigue pasando.
+warn_list: []
+
+# Vacío a propósito. La documentación oficial desaconseja `skip_list` porque
+# oculta las violaciones de la salida. Si algún día hiciera falta silenciar
+# algo, va en `.ansible-lint-ignore`, que sí las deja visibles.
+skip_list: []
