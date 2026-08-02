@@ -59,7 +59,8 @@ jq --exit-status '
 dockerd --validate --config-file=config/daemon.json
 
 mapfile -t shell_scripts < <(
-  find scripts migration/scripts -maxdepth 1 -type f -name '*.sh' |
+  find scripts migration/scripts stacks/workloads/config \
+    -maxdepth 1 -type f -name '*.sh' |
     sort
 )
 for script_file in "${shell_scripts[@]}"; do

@@ -216,7 +216,8 @@ for terraform_root in \
 done
 
 mapfile -t shell_scripts < <(
-  find scripts migration/scripts -maxdepth 1 -type f -name '*.sh' |
+  find scripts migration/scripts stacks/workloads/config \
+    -maxdepth 1 -type f -name '*.sh' |
     sort
 )
 for shell_script in "${shell_scripts[@]}"; do
