@@ -1,0 +1,23 @@
+---
+# Gate de Dockerfiles. Espeja la filosofía del gate de shellcheck en
+# scripts/lint.sh (`--severity=style`): el umbral más estricto que
+# hadolint admite, y las excepciones explícitas y justificadas una a una,
+# nunca bajando el listón global.
+failure-threshold: style
+
+# DL3066 «Non-numeric user-id may not be resolvable by host system».
+# images/n8n-runners/Dockerfile usa `USER root` y `USER runner`. El
+# usuario `runner` lo define la imagen base docker.io/n8nio/runners y su
+# UID numérico no forma parte de su contrato público: fijarlo aquí
+# acoplaría el Dockerfile a un detalle interno de la base, y el
+# `COPY --chown=runner:runner` depende del mismo nombre. Se ignora la
+# regla concreta en vez de relajar `failure-threshold` a `warning`, que
+# dejaría pasar en silencio cualquier hallazgo `info` futuro.
+ignored:
+  - DL3066
+
+# Cadena de suministro: todo `FROM` fuera de docker.io falla como `error`
+# vía DL3026. Comprobado que la regla está viva: sustituir docker.io por
+# ghcr.io hace saltar DL3026 en las líneas 1 y 8 del Dockerfile actual.
+trustedRegistries:
+  - docker.io

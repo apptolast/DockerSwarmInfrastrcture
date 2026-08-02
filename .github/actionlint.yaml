@@ -1,0 +1,17 @@
+---
+# Configuración de actionlint (rhysd/actionlint, NO es de GitHub).
+#
+# La imagen oficial `rhysd/actionlint` empaqueta shellcheck y pyflakes
+# (ver su Dockerfile: `COPY --from=shellcheck /bin/shellcheck` y
+# `apk add --no-cache py3-pyflakes`), así que analiza también el shell
+# embebido en cada `run:`. Sin este fichero el gate falla de salida.
+
+paths:
+  .github/workflows/guard-sensitive-paths.yml:
+    ignore:
+      # SC2016 sobre la línea 134: `printf -- '- `%s`\n' "${…}"`. Las
+      # comillas invertidas son Markdown para el step summary, no
+      # sustitución de comandos; shellcheck no puede distinguirlo. El
+      # `%s` se rellena por argumento, que es justo lo correcto: la ruta
+      # no se interpola en la cadena de formato.
+      - 'shellcheck reported issue in this script: SC2016:.+'
