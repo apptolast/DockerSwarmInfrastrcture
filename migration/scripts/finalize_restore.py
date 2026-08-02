@@ -8,18 +8,17 @@ supported caller.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
-
 from backup_safety import SafetyError
 
 EXPECTED_SERVICES = {

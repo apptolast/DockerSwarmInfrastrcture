@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import yaml

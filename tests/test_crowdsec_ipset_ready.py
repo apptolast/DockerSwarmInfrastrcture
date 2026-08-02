@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = (

@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import ipaddress
 import shlex
 import subprocess
 import sys
+from collections import Counter
 
 
 class UfwContractError(RuntimeError):

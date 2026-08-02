@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import stat
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, BinaryIO
 
 DEFAULT_LOCK_PATH = Path("/run/lock/dockerswarm-iac.lock")

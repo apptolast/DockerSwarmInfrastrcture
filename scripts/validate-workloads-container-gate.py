@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path, PurePosixPath
 import sys
+from pathlib import Path, PurePosixPath
 from typing import Any
-
 
 RESTORE_COMPOSE_PROJECT = "apptolast-restore"
 SWARM_SERVICE_LABEL = "com.docker.swarm.service.name"

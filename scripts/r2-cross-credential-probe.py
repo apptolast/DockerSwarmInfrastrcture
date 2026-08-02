@@ -4,19 +4,19 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import re
 import sys
+import xml.etree.ElementTree as ElementTree
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
-import xml.etree.ElementTree as ElementTree
 
 
 class ProbeError(RuntimeError):
@@ -32,7 +32,7 @@ def sign(key: bytes, value: str) -> bytes:
 
 
 def signature_key(secret: str, date: str) -> bytes:
-    date_key = sign(f"AWS4{secret}".encode("utf-8"), date)
+    date_key = sign(f"AWS4{secret}".encode(), date)
     region_key = sign(date_key, "auto")
     service_key = sign(region_key, "s3")
     return sign(service_key, "aws4_request")
@@ -226,7 +226,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, bool | None]:
     # misconfiguration -- only the negative-control (expected 403) checks
     # are skipped, since there is nothing left to disprove.
     shared_credential = other_access == primary_access and other_secret == primary_secret
-    marker = (f"apptolast-r2-credential-isolation:{args.probe_key}\n").encode("utf-8")
+    marker = (f"apptolast-r2-credential-isolation:{args.probe_key}\n").encode()
     other_key = f"{args.probe_key}.other-write"
     positive_key = f"{args.probe_key}.positive-control"
     now = datetime.now(timezone.utc)

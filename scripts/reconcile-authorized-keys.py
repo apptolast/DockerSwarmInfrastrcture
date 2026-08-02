@@ -7,10 +7,10 @@ import argparse
 import hashlib
 import importlib.util
 import os
-from pathlib import Path
 import stat
 import sys
 import tempfile
+from pathlib import Path
 from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent

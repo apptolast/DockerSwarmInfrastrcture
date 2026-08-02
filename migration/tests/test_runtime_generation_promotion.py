@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

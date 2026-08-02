@@ -17,13 +17,14 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import signal
 import stat
 import sys
-from typing import Any, Iterator, NoReturn, Sequence
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+from typing import Any, NoReturn
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 OPERATION_LOCK_HELPER = SCRIPT_DIRECTORY / "ansible-operation-lock.py"

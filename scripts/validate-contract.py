@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 

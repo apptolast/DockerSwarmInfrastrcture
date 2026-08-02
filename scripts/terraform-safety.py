@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
-import subprocess
 import stat
+import subprocess
 import sys
-from typing import Any, BinaryIO, Sequence
+from collections.abc import Sequence
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, BinaryIO
 
 TERRAFORM_VERSION = "1.15.8"
 CONTRACT_VERSION = 1

@@ -12,7 +12,6 @@ from typing import Any
 
 import yaml
 
-
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_METADATA = Path("/opt/dockerswarm/DEPLOYED_VERSION.yml")
 DEFAULT_COMPONENT_DIRECTORY = Path("/opt/dockerswarm/deployments")
