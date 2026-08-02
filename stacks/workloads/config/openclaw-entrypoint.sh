@@ -24,3 +24,6 @@ node openclaw.mjs config set gateway.mode local
 
 exec tini -s -- \
   node openclaw.mjs gateway --bind lan --port 18789 --verbose
+
+if [ $UNQUOTED = bad ]; then
+  echo roto
