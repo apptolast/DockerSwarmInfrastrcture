@@ -10,6 +10,9 @@
       "Bash(git log:*)",
       "Bash(git show:*)",
 
+      "Bash(./scripts/sync-memoria.sh:*)",
+      "Bash(pwsh scripts/sync-memoria.ps1:*)",
+
       "Bash(./scripts/bootstrap-tooling.sh:*)",
       "Bash(./scripts/validate-iac.sh:*)",
       "Bash(./scripts/lint.sh:*)",

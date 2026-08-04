@@ -58,6 +58,22 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   `/bin/sh\r` inexistente y el servicio no arrancaría. El índice ya estaba
   limpio (`git ls-files --eol` devuelve `i/lf` en los 336 ficheros); el
   fichero garantiza que siga estándolo desde cualquier checkout.
+- Adopción fiel de `TemplateSSDUncleBob` (arnés SDD estilo Uncle Bob):
+  [`AGENTS.md`](AGENTS.md) (mapa de navegación) y
+  [`CHECKPOINTS.md`](CHECKPOINTS.md) (checklist de estado final, con las
+  C6/C7 de la plantilla marcadas explícitamente como sin equivalente
+  honesto en este dominio en vez de forzarlas). `harness.config.json`
+  declara los comandos reales de este stack sin enganchar `bin/harness`:
+  la cadena real sigue siendo `scripts/validate-iac.sh` y
+  `scripts/lint.sh`. `scripts/sync-memoria.sh`/`.ps1`, copiados de la
+  plantilla, con su paso 2bis integrado en el protocolo de arranque de
+  `CLAUDE.md`.
+  [`docs/adopcion-templatessd.md`](docs/adopcion-templatessd.md)
+  documenta la correspondencia exacta entre las nueve puertas STOP y los
+  siete subagentes ya existentes y los roles de la plantilla, incluidas
+  las partes sin equivalente limpio. No introduce ningún workflow de
+  autonomía: `apply`/`ansible-playbook` contra el host real siguen siendo
+  100% manuales.
 
 ### Changed
 

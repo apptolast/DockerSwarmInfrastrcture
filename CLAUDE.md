@@ -17,6 +17,27 @@ secrets/backups only. No manual host configuration is valid state unless it
 is codified or documented in this repository. Every action you take here
 should be judged against that rule.
 
+## Session startup
+
+Read, in order, before touching anything:
+
+- **1.** This file (`CLAUDE.md`) in full.
+- **2.** [`AGENTS.md`](AGENTS.md) for the repository map: what to read
+  next, and when, instead of reading everything up front.
+- **2bis.** Sync the organization-wide memory (optional, non-blocking):
+  `scripts/sync-memoria.sh` (POSIX) or `pwsh scripts/sync-memoria.ps1`
+  (Windows). If `.memoria-cache/patterns/<category>/` holds patterns
+  relevant to the task, review them before designing from scratch, but
+  read each pattern's "when NOT to apply" section first. This step never
+  blocks the session: no network, no `git`/`gh`, or no access to the
+  private `Cenit-Digital/SistemaDeMemoriaUncleBob` repository (the normal
+  case outside Cénit Digital) just prints a warning and exits 0. Adapted
+  from `TemplateSSDUncleBob`; see
+  [`docs/adopcion-templatessd.md`](docs/adopcion-templatessd.md).
+- **3.** The "Open STOP gates" section below, this repository's closest
+  equivalent to a live session-state file.
+- **4.** The validation workflow below, before changing anything else.
+
 ## Fail-closed philosophy
 
 The cluster has zero high availability. It is a single manager/worker node;

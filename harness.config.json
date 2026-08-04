@@ -1,0 +1,33 @@
+{
+  "notes": "Cross-repo consistency artifact only, per Cenit Digital's TemplateSSDUncleBob convention (docs/configuration.md in that template). This file is NOT wired to bin/harness or .harness/harness.mjs: this adoption deliberately does not introduce that engine into this repository. The real, CI-enforced verification chain is scripts/validate-iac.sh plus scripts/lint.sh (see .github/workflows/validate.yml). Full rationale and the mapping to this repo's own agents and gates: docs/adopcion-templatessd.md.",
+  "project": "DockerSwarmInfrastrcture",
+  "language": "terraform+ansible",
+  "commands": {
+    "install": "./scripts/bootstrap-tooling.sh",
+    "lint": "./scripts/lint.sh",
+    "test": "./scripts/validate-iac.sh",
+    "mutate": "",
+    "build": ""
+  },
+  "commands_notes": {
+    "mutate": "Deliberately empty: no mutation-testing tool fits this stack (unittest only, Python 3.14 required, several tests are purely static). See mutation.not_applicable_reason below and .claude/agents/guardrail-adversary.md.",
+    "build": "Deliberately empty: there is no single production build step. The closest analogue -- rendering Jinja templates into their Ansible-managed output -- already runs as part of commands.test, via validate-iac.sh's render-platform-assets/render-edge playbooks."
+  },
+  "paths": {
+    "tests": "tests",
+    "migration_tests": "migration/tests"
+  },
+  "paths_notes": "No paths.src, paths.features, paths.spec, or paths.feature_list: this repo has no single src/ directory (ansible/, infra/terraform/, stacks/, scripts/, and config/ are all production code), no Gherkin contract layer, and no feature_list.json. Its spec is CLAUDE.md plus docs/*.md plus the config/*.yml contracts; its 'progress' is CHANGELOG.md plus the Open STOP gates section of CLAUDE.md. See docs/adopcion-templatessd.md.",
+  "mutation": {
+    "threshold": null,
+    "targets": [],
+    "not_applicable_reason": "Verified by grep: zero occurrences of pytest, mutmut, or cosmic-ray in this repository. The suite is unittest, some of it purely static (parses rendered YAML/templates and asserts on structure; mutating production Python would move none of those assertions and would produce a misleading score). Adopted substitute: .claude/agents/guardrail-adversary.md's per-gate negative-test discipline, reported as PASS or SUPERVIVIENTES(N), not a numeric mutation score. See CHECKPOINTS.md C7 and docs/adopcion-templatessd.md."
+  },
+  "rules": {
+    "one_writer_at_a_time_against_real_host": true,
+    "require_reviewed_plan_or_check_before_apply": true,
+    "require_tests_to_close": true,
+    "require_mutation_to_close": false
+  },
+  "rules_notes": "Key names were deliberately renamed from the template's one_feature_at_a_time / require_approved_spec_to_implement / require_mutation_to_close: reusing those exact names with a different real-world meaning underneath would be less honest than naming what this repo actually enforces. See docs/adopcion-templatessd.md."
+}
