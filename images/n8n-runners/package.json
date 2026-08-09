@@ -4,7 +4,7 @@
   "private": true,
   "description": "Exact external modules used by the restored n8n Code nodes.",
   "dependencies": {
-    "ioredis": "5.11.1",
+    "ioredis": "6.0.0",
     "pdf-lib": "1.17.1",
     "uuid": "11.1.1"
   }
