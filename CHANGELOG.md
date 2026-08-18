@@ -77,6 +77,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `personal-website-alberto` queda fijado al artefacto inmutable
+  `sha256:34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d`
+  publicado desde el commit `6878ff6` de `PersonalWebsite`, sin depender de
+  la etiqueta mutable `latest` en producción.
 - Este repositorio pasa a ser el único propietario de toda la IaC, incluidos
   stacks, rutas, migración, observabilidad y backup.
 - El daemon Docker declara `no-new-privileges`, `userland-proxy: false` y
