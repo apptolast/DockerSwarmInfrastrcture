@@ -190,6 +190,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `personal-website-alberto` vuelve a conservar en `config/services.yml` el
+  digest histórico que fue atestado durante la restauración. El digest nuevo
+  aprobado queda exclusivamente en `approved_runtime_reference`, que es el
+  contrato operativo que consume el renderer. Así, una actualización normal
+  no invalida el marker de restore ni exige reemitir evidencia de datos que no
+  ha cambiado.
 - La verificación posterior al despliegue normaliza correctamente el prefijo
   `docker.io/` que Swarm omite en su especificación. La expresión Jinja
   anterior escapaba el punto con una barra adicional y no eliminaba el

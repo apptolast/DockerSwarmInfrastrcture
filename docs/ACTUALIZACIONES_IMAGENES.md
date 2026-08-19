@@ -151,6 +151,7 @@ despliegue debe comprobar que ambas cosas coinciden.
 | Señal | Significado | Acción correcta |
 | --- | --- | --- |
 | El digest remoto no coincide | `latest` cambió tras la revisión | Detén el despliegue y repite la aprobación. |
+| El marker de restore no coincide con el catálogo | Se alteró el baseline histórico durante una actualización | Restaura el baseline y actualiza solo `approved_runtime_reference`; nunca edites ni reemitas el marker para una actualización de imagen. |
 | Falta `docker buildx` | Falta el plugin fijado por el host | Revisa el contrato de paquetes; no sustituyas el comando. |
 | Falla el SLO del snapshot Ubuntu | La revisión de paquetes está vencida | Promueve un snapshot real tras verificar índices y pins. |
 | Hay un marker en `/run/lock` | Una operación previa no cerró limpiamente | Sigue el recovery documentado y conserva evidencia. |
