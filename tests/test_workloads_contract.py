@@ -144,6 +144,22 @@ class TrackedImageResolutionTests(unittest.TestCase):
                 self.valid_descriptor(),
             )
 
+        for unapproved_reference in (
+            "docker.io/example/other:latest@sha256:" + ("d" * 64),
+            "docker.io/hgarciaalberto/personal-website:canary@sha256:"
+            + ("e" * 64),
+        ):
+            with self.subTest(unapproved_reference=unapproved_reference):
+                with self.assertRaisesRegex(
+                    tracked_image_resolver.TrackedImageError,
+                    "approved runtime reference is invalid",
+                ):
+                    tracked_image_resolver.resolve_tracked_reference(
+                        self.REFERENCE,
+                        unapproved_reference,
+                        self.valid_descriptor(),
+                    )
+
     def test_local_image_matches_the_resolved_digest(self) -> None:
         tracked_image_resolver.verify_tracked_image(
             self.RESOLVED_REFERENCE,
@@ -935,6 +951,15 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             (
                 "approved_runtime_reference",
                 "docker.io/hgarciaalberto/personal-website:latest@sha256:invalid",
+            ),
+            (
+                "approved_runtime_reference",
+                "docker.io/example/other:latest@sha256:" + ("f" * 64),
+            ),
+            (
+                "approved_runtime_reference",
+                "docker.io/hgarciaalberto/personal-website:canary@sha256:"
+                + ("f" * 64),
             ),
             ("update_policy", "floating-tag"),
         ):
@@ -1866,6 +1891,25 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "internal_platform": {"observability": {"components": []}},
                 "workload_image_update_schema_version": 1,
                 "workload_image_updates": [],
+            },
+            "The reviewed image catalog is missing or unsupported.",
+        )
+        invalid_runtime_approval = copy.deepcopy(self.UPDATE)
+        invalid_runtime_approval["approved_runtime_reference"] = (
+            "docker.io/hgarciaalberto/personal-website:canary@sha256:"
+            + ("b" * 64)
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Verify the image catalog is available",
+            {
+                "approved_services": [],
+                "internal_platform": {"observability": {"components": []}},
+                "image_preflight_expected_os": "linux",
+                "image_preflight_expected_architecture": "amd64",
+                "image_preflight_include_tracked_updates": True,
+                "workload_image_update_schema_version": 1,
+                "workload_image_updates": [invalid_runtime_approval],
             },
             "The reviewed image catalog is missing or unsupported.",
         )

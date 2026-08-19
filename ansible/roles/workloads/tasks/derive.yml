@@ -54,8 +54,8 @@
       - >-
         (workload_image_updates | first).catalog_reference
         == "docker.io/hgarciaalberto/personal-website@sha256:"
-        ~ "34c6854a3d7ff179e8fee8207696b194"
-        ~ "0747e84e9782d2133417f17b60602f8d"
+        ~ "b0ce681920843501df35793def9fedd1"
+        ~ "011b44626c5e8b543ef76209f911e2c3"
       - >-
         (workload_image_updates | first).tracked_reference
         == "docker.io/hgarciaalberto/personal-website:latest"

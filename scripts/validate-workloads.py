@@ -128,7 +128,7 @@ IMAGE_CONTRACT = {
 }
 ALBERTO_CATALOG_REFERENCE = (
     "docker.io/hgarciaalberto/personal-website@sha256:"
-    "34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+    "b0ce681920843501df35793def9fedd1011b44626c5e8b543ef76209f911e2c3"
 )
 ALBERTO_TRACKED_REFERENCE = (
     "docker.io/hgarciaalberto/personal-website:latest"
