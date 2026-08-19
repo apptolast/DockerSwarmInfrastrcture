@@ -281,7 +281,7 @@ class HostBootstrapContractTests(unittest.TestCase):
 
     def test_snapshot_promotion_policy_is_age_bounded(self) -> None:
         contract = yaml.safe_load(HOST_SECURITY_CONTRACT.read_text(encoding="utf-8"))
-        now = datetime(2026, 7, 26, 12, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 19, 12, tzinfo=timezone.utc)
         host_security_validator.validate(contract, now)
 
         stale = copy.deepcopy(contract)

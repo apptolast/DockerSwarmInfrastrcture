@@ -834,8 +834,8 @@
         Spec.TaskTemplate.ContainerSpec.Image
         == (
           item.item.value
-          | regex_replace("^docker\\.io/library/", "")
-          | regex_replace("^docker\\.io/", "")
+          | regex_replace("^docker[.]io/library/", "")
+          | regex_replace("^docker[.]io/", "")
         )
       - >-
         "node.labels.platform.workloads == true" in

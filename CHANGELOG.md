@@ -26,8 +26,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   markers fail-closed, recuperación con evidencia y supervisor de procesos.
 - Catálogo cerrado de servicios y denylist, stacks de workloads, restore
   markers, secrets por identidad, preflight de imágenes y capacidad.
-- Kropia, Minecraft Stats, Minecraft, n8n, OpenClaw limpio, Passbolt, webs de
-  Alberto/Pablo y Shlink fijados por digest.
+- Todas las imágenes externas quedan fijadas por digest en el catálogo de
+  restauración; un contrato operativo separado limita a Alberto la única
+  excepción `tracked-tag` exacta.
 - Traefik file-provider sin socket Docker, rutas explícitas y redes aisladas
   por workload.
 - Stack interno de Prometheus, Alertmanager, Loki, Grafana, Alloy, exporters,
@@ -77,6 +78,21 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `personal-website-alberto` conserva su digest verificado en
+  `config/services.yml`, mientras `config/workload-image-updates.yml` declara
+  la referencia operativa exacta
+  `docker.io/hgarciaalberto/personal-website:latest` con
+  `update_policy: tracked-tag`. Esta separación mantiene válido el marcador de
+  restauración ligado al catálogo. Los validadores y el preflight rechazan
+  cualquier otra etiqueta o ampliación a otro servicio. Además, el digest de
+  runtime queda versionado en `approved_runtime_reference`: el dry-run lo
+  consulta sin mutar y tanto este como el apply fallan si Docker Hub ya apunta
+  a otro contenido. Este cambio no instala un disparador autónomo: el apply de
+  Ansible permanece manual conforme a la política vigente del repositorio.
+- Se promueve el snapshot APT de Ubuntu a `20260819T000000Z` después de
+  verificar que el snapshot existe y mantiene disponibles todos los pins de
+  paquetes Ubuntu. Así se restablece el SLO de promoción de 14 días sin
+  relajar ni silenciar la compuerta.
 - Este repositorio pasa a ser el único propietario de toda la IaC, incluidos
   stacks, rutas, migración, observabilidad y backup.
 - El daemon Docker declara `no-new-privileges`, `userland-proxy: false` y
@@ -174,6 +190,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La verificación posterior al despliegue normaliza correctamente el prefijo
+  `docker.io/` que Swarm omite en su especificación. La expresión Jinja
+  anterior escapaba el punto con una barra adicional y no eliminaba el
+  prefijo, por lo que podía declarar divergencia aunque el digest desplegado
+  fuese exactamente el esperado.
 - `backup/backupctl.py` deja de tragarse en silencio el fallo de la única
   escritura del estado y de las métricas del backup. `record_failure()`
   envolvía esa escritura en `except Exception: pass`, de modo que un

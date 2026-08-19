@@ -136,7 +136,7 @@ host_security_crowdsec_hub_dependency_lock:
     sha256: c8d3fdf1c02a60ff58b9a49592f09f67ac50321af98d620c529e3dc35773d6e4
 
 # The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
-host_security_ubuntu_snapshot: 20260726T000000Z
+host_security_ubuntu_snapshot: 20260819T000000Z
 host_security_apt_update_policy: promoted-snapshot-only
 host_security_snapshot_max_age_days: 14
 host_security_repository_bootstrap_package_lock:

@@ -7,14 +7,73 @@
       - internal_platform.observability.components is sequence
       - image_preflight_expected_os == "linux"
       - image_preflight_expected_architecture == "amd64"
-    fail_msg: "The immutable image catalog is missing or unsupported."
+      - image_preflight_include_tracked_updates is boolean
+      - workload_image_update_schema_version is integer
+      - workload_image_update_schema_version == 1
+      - workload_image_updates is sequence
+      - workload_image_updates is not string
+      - >-
+        workload_image_updates | length == 1
+      - (workload_image_updates | first) is mapping
+      - >-
+        (workload_image_updates | first).keys() | list | sort
+        == [
+          "approved_runtime_reference",
+          "catalog_reference",
+          "catalog_service",
+          "component",
+          "swarm_service",
+          "tracked_reference",
+          "update_policy"
+        ]
+      - >-
+        (workload_image_updates | first).catalog_service
+        == "personal-website-alberto"
+      - (workload_image_updates | first).component == "app"
+      - (workload_image_updates | first).swarm_service == "portfolio-alberto"
+      - >-
+        (workload_image_updates | first).catalog_reference
+        == "docker.io/hgarciaalberto/personal-website@sha256:"
+        ~ "34c6854a3d7ff179e8fee8207696b194"
+        ~ "0747e84e9782d2133417f17b60602f8d"
+      - >-
+        (workload_image_updates | first).tracked_reference
+        == "docker.io/hgarciaalberto/personal-website:latest"
+      - >-
+        (workload_image_updates | first).approved_runtime_reference
+        is match(
+          "^docker[.]io/hgarciaalberto/personal-website:latest"
+          ~ "@sha256:[a-f0-9]{64}$"
+        )
+      - (workload_image_updates | first).update_policy == "tracked-tag"
+    fail_msg: "The reviewed image catalog is missing or unsupported."
     quiet: true
 
-- name: Start the immutable runtime image inventory
+- name: Bind the tracked image policy to its immutable catalog baseline
+  ansible.builtin.assert:
+    that:
+      - >-
+        (approved_services
+        | selectattr("id", "equalto", item.catalog_service)
+        | first).images
+        | selectattr("component", "equalto", item.component)
+        | map(attribute="reference")
+        | list
+        == [item.catalog_reference]
+    fail_msg: >-
+      {{ item.catalog_service }}/{{ item.component }} does not match the
+      immutable catalog baseline reviewed for tracked updates.
+    quiet: true
+  loop: "{{ workload_image_updates }}"
+  loop_control:
+    label: "{{ item.catalog_service }}/{{ item.component }}"
+
+- name: Start the reviewed runtime image inventories
   ansible.builtin.set_fact:
     image_preflight_catalog_references: []
+    image_preflight_tracked_runtime_references: {}
 
-- name: Collect approved remote runtime images
+- name: Collect approved immutable remote runtime images
   ansible.builtin.set_fact:
     image_preflight_catalog_references: >-
       {{
@@ -30,6 +89,29 @@
         "service": item.0.id,
         "component": item.1.component
       } not in image_preflight_excluded_catalog_images
+    - >-
+      not
+      (
+        image_preflight_include_tracked_updates | bool
+        and
+        workload_image_updates
+        | selectattr("catalog_service", "equalto", item.0.id)
+        | selectattr("component", "equalto", item.1.component)
+        | list | length == 1
+      )
+
+- name: Derive the exact tracked runtime image references
+  ansible.builtin.set_fact:
+    image_preflight_tracked_references: >-
+      {{
+        (
+          workload_image_updates
+          | map(attribute="tracked_reference")
+          | list
+        )
+        if image_preflight_include_tracked_updates | bool
+        else []
+      }}
 
 - name: Collect internal observability runtime images
   ansible.builtin.set_fact:
@@ -105,14 +187,148 @@
     - item.rc != 0
   changed_when: true
 
-- name: Read the complete immutable runtime image cache
+- name: Read the exact tracked tag descriptor from its registry
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - buildx
+      - imagetools
+      - inspect
+      - --format
+      - "{{ '{{json .Manifest}}' }}"
+      - "{{ item }}"
+  loop: "{{ image_preflight_tracked_references }}"
+  loop_control:
+    label: "{{ item }}"
+  register: image_preflight_tracked_descriptors
+  changed_when: false
+  check_mode: false
+  when:
+    - image_preflight_include_tracked_updates | bool
+
+- name: Resolve the tracked registry descriptor to an immutable reference
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/../../scripts/resolve-tracked-image.py"
+      - resolve
+      - --reference
+      - "{{ item.item }}"
+      - --approved-reference
+      - >-
+        {{
+          (workload_image_updates
+          | selectattr("tracked_reference", "equalto", item.item)
+          | first).approved_runtime_reference
+        }}
+    stdin: "{{ item.stdout }}"
+    stdin_add_newline: false
+  delegate_to: localhost
+  become: false
+  register: image_preflight_tracked_resolution
+  changed_when: false
+  check_mode: false
+  loop: "{{ image_preflight_tracked_descriptors.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.item in image_preflight_tracked_references
+
+- name: Record the immutable runtime reference for the tracked image
+  ansible.builtin.set_fact:
+    image_preflight_tracked_runtime_references: >-
+      {{
+        image_preflight_tracked_runtime_references
+        | combine({item.item.item: item.stdout | trim})
+      }}
+  loop: "{{ image_preflight_tracked_resolution.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  when:
+    - item.item.item in image_preflight_tracked_references
+
+- name: Enforce the complete tracked runtime reference map
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_preflight_tracked_runtime_references.keys() | list | sort
+        == image_preflight_tracked_references | sort
+      - >-
+        image_preflight_tracked_runtime_references[
+          "docker.io/hgarciaalberto/personal-website:latest"]
+        == (workload_image_updates | first).approved_runtime_reference
+    fail_msg: "The tracked runtime image did not resolve fail-closed."
+    quiet: true
+  when:
+    - image_preflight_include_tracked_updates | bool
+
+- name: Report the reviewed tracked runtime reference
+  ansible.builtin.debug:
+    msg: >-
+      Alberto runtime image approved for this operation:
+      {{ image_preflight_tracked_runtime_references[
+        "docker.io/hgarciaalberto/personal-website:latest"] }}
+  changed_when: false
+  when: image_preflight_include_tracked_updates | bool
+
+- name: Keep the tracked runtime map empty outside workload operations
+  ansible.builtin.assert:
+    that:
+      - image_preflight_tracked_runtime_references == {}
+    fail_msg: "A tracked runtime image escaped its workload operation scope."
+    quiet: true
+  when: not (image_preflight_include_tracked_updates | bool)
+
+- name: Derive immutable tracked image references for the current operation
+  ansible.builtin.set_fact:
+    image_preflight_tracked_resolved_references: >-
+      {{
+        image_preflight_tracked_runtime_references.values()
+        | list
+        | sort
+      }}
+
+- name: Combine immutable and tracked runtime references
+  ansible.builtin.set_fact:
+    image_preflight_runtime_references: >-
+      {{
+        (
+          image_preflight_references
+          + image_preflight_tracked_resolved_references
+        )
+        | unique
+        | sort
+      }}
+
+- name: Pull the resolved tracked image before any stack mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - pull
+      - --platform
+      - >-
+        {{ image_preflight_expected_os
+           }}/{{ image_preflight_expected_architecture }}
+      - "{{ item }}"
+  loop: "{{ image_preflight_tracked_resolved_references }}"
+  loop_control:
+    label: "{{ item }}"
+  register: image_preflight_tracked_pull
+  changed_when: >-
+    'Downloaded newer image' in image_preflight_tracked_pull.stdout
+  when:
+    - not ansible_check_mode
+    - image_preflight_include_tracked_updates | bool
+
+- name: Read the complete reviewed runtime image cache
   ansible.builtin.command:
     argv:
       - /usr/bin/docker
       - image
       - inspect
       - "{{ item }}"
-  loop: "{{ image_preflight_references }}"
+  loop: "{{ image_preflight_runtime_references }}"
   loop_control:
     label: "{{ item }}"
   register: image_preflight_final_inspect
@@ -120,7 +336,7 @@
   check_mode: false
   when: not ansible_check_mode
 
-- name: Enforce runtime image platform and immutable identity
+- name: Enforce runtime image platform and content identity
   ansible.builtin.assert:
     that:
       - (item.stdout | from_json | first).Os
@@ -138,3 +354,23 @@
   loop_control:
     label: "{{ item.item }}"
   when: not ansible_check_mode
+
+- name: Verify the tracked local image against its resolved registry digest
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/../../scripts/resolve-tracked-image.py"
+      - verify
+      - --resolved-reference
+      - "{{ item.item }}"
+    stdin: "{{ item.stdout }}"
+    stdin_add_newline: false
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  loop: "{{ image_preflight_final_inspect.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not ansible_check_mode
+    - item.item in image_preflight_tracked_resolved_references

@@ -1,0 +1,14 @@
+---
+workload_image_update_schema_version: 1
+
+workload_image_updates:
+  - catalog_service: personal-website-alberto
+    component: app
+    swarm_service: portfolio-alberto
+    catalog_reference: "docker.io/hgarciaalberto/personal-website@sha256:\
+      34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+    tracked_reference: docker.io/hgarciaalberto/personal-website:latest
+    approved_runtime_reference: "\
+      docker.io/hgarciaalberto/personal-website:latest@sha256:\
+      34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+    update_policy: tracked-tag

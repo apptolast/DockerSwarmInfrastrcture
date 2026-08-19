@@ -48,6 +48,7 @@ docker stack config \
   --stack "${PROJECT_DIR}/.build/workloads/stack.yml" \
   --platform "${PROJECT_DIR}/config/platform.yml" \
   --services "${PROJECT_DIR}/config/services.yml" \
+  --image-updates "${PROJECT_DIR}/config/workload-image-updates.yml" \
   --secrets "${PROJECT_DIR}/stacks/workloads/secrets.yml" \
   --config-dir "${PROJECT_DIR}/.build/workloads/config" \
   --runner-context "${PROJECT_DIR}/images/n8n-runners"

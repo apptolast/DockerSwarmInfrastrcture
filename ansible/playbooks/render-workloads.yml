@@ -8,6 +8,7 @@
   vars_files:
     - ../../config/platform.yml
     - ../../config/services.yml
+    - ../../config/workload-image-updates.yml
     - ../../stacks/workloads/secrets.yml
     - ../group_vars/all.yml
 

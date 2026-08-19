@@ -110,7 +110,13 @@ helper del mismo commit registrado. Un reboot mata procesos pero elimina
 
 ## Secuencia de cambio
 
-1. Actualizar contratos/digests en una rama.
+1. Actualizar contratos/digests en una rama. La única etiqueta mutable
+   permitida es la excepción `tracked-tag` exacta de Alberto declarada en
+   `config/workload-image-updates.yml`; `config/services.yml` conserva el
+   digest ligado al marcador de restauración. El preflight de una ejecución
+   real consulta el descriptor de la etiqueta en Docker Hub, exige que sea el
+   `approved_runtime_reference` versionado y solo entonces descarga ese digest
+   exacto antes de renderizar el stack.
 2. Ejecutar validación, lint y escaneo de secretos.
 3. Revisar y hacer commit; ningún writer acepta worktree sucio.
 4. Crear el plan Terraform firmado con locking/state proof válidos.
@@ -120,6 +126,13 @@ helper del mismo commit registrado. Un reboot mata procesos pero elimina
 7. Repetir Ansible y exigir `changed=0`.
 8. Validar firewall, servicios, TLS, DNS, logs, backups y unidades fallidas.
 9. Registrar aceptación y rollback.
+
+La política `tracked-tag` no instala un watcher, un webhook ni un temporizador.
+El `--check` consulta y muestra el digest aprobado sin descargarlo; el apply
+solo continúa si la etiqueta sigue apuntando a ese contenido versionado.
+Conforme al límite de seguridad vigente, `ansible-playbook` contra el clúster
+real sigue siendo una acción humana y ningún push a Docker Hub puede iniciarlo
+por sí solo.
 
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.

@@ -73,8 +73,10 @@ checksums y procedimientos.
 
 ## Validación
 
-Las versiones de Terraform, providers, Ansible, colecciones, Python, acciones
-CI e imágenes se fijan y verifican. La validación completa es:
+Las versiones de Terraform, providers, Ansible, colecciones, Python y acciones
+CI se fijan y verifican. El catálogo conserva todas las imágenes fijadas por
+digest; la única excepción operativa `tracked-tag` de Alberto exige además un
+digest de runtime versionado y revisado. La validación completa es:
 
 ```bash
 ./scripts/bootstrap-tooling.sh
@@ -175,6 +177,7 @@ quorum impar y un nuevo diseño probado.
 - [Observabilidad](docs/OBSERVABILITY.md)
 - [Repositorios y mantenimiento](docs/REPOSITORIES.md)
 - [Capacidad](docs/CAPACITY.md)
+- [Guía para actualizar imágenes](docs/ACTUALIZACIONES_IMAGENES.md)
 - [Changelog](CHANGELOG.md)
 
 ## Referencias oficiales

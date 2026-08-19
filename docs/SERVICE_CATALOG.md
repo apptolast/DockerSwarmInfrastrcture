@@ -12,8 +12,17 @@ en un formato estable y la separa del estado objetivo de este repositorio.
 
 ## Semántica del contrato
 
-- `images[].reference`, `ports[].target` y `datasets[].target_path` describen
-  siempre el objetivo Docker Swarm.
+- `ports[].target` y `datasets[].target_path` describen el objetivo Docker
+  Swarm; `images[].reference` conserva la imagen base auditada de cada
+  componente.
+- Cada `images[].reference` permanece fijada por digest porque el hash completo
+  de este catálogo forma parte del marcador de restauración.
+- `config/workload-image-updates.yml` es un contrato operativo separado. Solo
+  autoriza `personal-website-alberto/app` con
+  `docker.io/hgarciaalberto/personal-website:latest`, y además liga esa
+  excepción al servicio Swarm, al digest base del catálogo y al
+  `approved_runtime_reference` revisado. El preflight de producción solo
+  entrega a Swarm el `latest@sha256:...` que coincida con esa aprobación.
 - `source_reference`, `source_target` y `source_path`, cuando aparecen,
   describen exclusivamente la evidencia de origen.
 - `published: null` significa que el puerto no se publica en el host.
@@ -155,3 +164,8 @@ El validador rechaza:
 
 `scripts/validate-iac.sh` ejecuta el lint del catálogo y sus casos negativos
 como parte de la compuerta normal del repositorio.
+
+El validador de workloads comprueba por separado que el contrato de
+actualización contenga exactamente una entrada, que coincida con el digest de
+Alberto conservado aquí y que no amplíe la excepción a otro servicio,
+componente, repositorio o etiqueta.

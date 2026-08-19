@@ -127,6 +127,7 @@ yamllint \
   config/minecraft.yml \
   config/platform.yml \
   config/services.yml \
+  config/workload-image-updates.yml \
   migration/compose \
   stacks \
   tests/fixtures

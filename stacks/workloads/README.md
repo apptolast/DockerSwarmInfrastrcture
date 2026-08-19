@@ -9,7 +9,16 @@ OpenClaw, Kubernetes workloads and observability.
 The deployment role fails closed unless all of these conditions hold:
 
 1. Every external image and bind path is derived from
-   `config/services.yml`. The private historical n8n runner digest is retained
+   `config/services.yml`, where every remote source remains digest-pinned.
+   `config/workload-image-updates.yml` defines the sole runtime override:
+   `personal-website-alberto/app` may track its exact `latest` tag. During a
+   real image preflight, Ansible reads that tag's registry descriptor and
+   requires an exact match with the reviewed `approved_runtime_reference`.
+   It then pulls that exact `latest@sha256:...` reference and proves that the
+   local image exposes the same repository digest before rendering production.
+   Each deployment therefore uses an immutable, versioned content identity.
+   Keeping the override separate also preserves the service-catalog hash bound
+   to the restore marker. The private historical n8n runner digest is retained
    as audited provenance, while its runtime image is built locally from the
    repository context described below.
 2. Every external, versioned Docker Secret in `secrets.yml` exists with the
@@ -89,6 +98,17 @@ After restore finalization and secret installation:
 ```bash
 scripts/deploy-ansible.sh --playbook workloads
 ```
+
+The tracked tag does not monitor Docker Hub by itself. Docker Swarm resolves a
+tag only when a service image update is requested and otherwise keeps running
+the previously selected image. A separate, explicitly reviewed trigger is
+therefore required before this policy could provide automatic deployment, but
+the repository's current governance explicitly forbids such a production
+trigger and keeps every apply manual.
+Render-only runs keep the declared `:latest` reference. `--check` queries the
+registry but neither pulls nor mutates; it fails unless the result matches the
+versioned runtime approval. A real apply reuses that exact digest before its
+first possible stack mutation.
 
 Minecraft TCP port `25565` is absent from the rendered stack while
 `platform_minecraft_public_enabled=false`. Enabling it is a single reviewed
