@@ -7,3 +7,4 @@ image_preflight_digest_replacement: "\\g<1>"
 image_preflight_excluded_catalog_images:
   - service: n8n
     component: runner
+image_preflight_include_tracked_updates: false

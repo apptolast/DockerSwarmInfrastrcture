@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the rendered Swarm workloads against both declarative catalogs."""
+"""Validate the rendered Swarm workloads against declarative contracts."""
 
 from __future__ import annotations
 
@@ -126,6 +126,22 @@ IMAGE_CONTRACT = {
     "shlink": ("shlink", "app"),
     "shlink-db": ("shlink", "database"),
 }
+ALBERTO_CATALOG_REFERENCE = (
+    "docker.io/hgarciaalberto/personal-website@sha256:"
+    "34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+)
+ALBERTO_TRACKED_REFERENCE = (
+    "docker.io/hgarciaalberto/personal-website:latest"
+)
+EXPECTED_IMAGE_UPDATE = {
+    "catalog_service": "personal-website-alberto",
+    "component": "app",
+    "swarm_service": "portfolio-alberto",
+    "catalog_reference": ALBERTO_CATALOG_REFERENCE,
+    "tracked_reference": ALBERTO_TRACKED_REFERENCE,
+    "update_policy": "tracked-tag",
+}
+IMAGE_UPDATE_KEYS = set(EXPECTED_IMAGE_UPDATE) | {"approved_runtime_reference"}
 CONFIG_SOURCE_BY_KEY = {
     "n8n_entrypoint": "n8n-entrypoint.sh",
     "n8n_runners_entrypoint": "n8n-runners-entrypoint.sh",
@@ -140,6 +156,45 @@ CONFIG_SOURCE_BY_KEY = {
 
 class ContractError(RuntimeError):
     """The rendered workloads stack differs from its catalogs."""
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader which rejects duplicate mapping keys."""
+
+
+def construct_unique_mapping(
+    loader: UniqueKeyLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found an unhashable key: {exc}",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
+)
 
 
 def load_runner_manager() -> Any:
@@ -162,19 +217,96 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return document
 
 
+def load_unique_yaml(path: Path) -> dict[str, Any]:
+    try:
+        document = yaml.load(
+            path.read_text(encoding="utf-8"),
+            Loader=UniqueKeyLoader,
+        )
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ContractError(f"cannot load YAML: {path}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ContractError(f"YAML document is not a mapping: {path}")
+    return document
+
+
+def find_image_entry(
+    services_by_id: dict[str, dict[str, Any]],
+    service_id: str,
+    component: str,
+) -> dict[str, Any]:
+    matches = [
+        item
+        for item in services_by_id[service_id].get("images", [])
+        if item.get("component") == component
+    ]
+    if len(matches) != 1 or not isinstance(matches[0].get("reference"), str):
+        raise ContractError(f"ambiguous image {service_id}/{component}")
+    return matches[0]
+
+
 def find_image(
     services_by_id: dict[str, dict[str, Any]],
     service_id: str,
     component: str,
 ) -> str:
-    matches = [
-        item.get("reference")
-        for item in services_by_id[service_id].get("images", [])
-        if item.get("component") == component
+    return find_image_entry(services_by_id, service_id, component)["reference"]
+
+
+def validate_image_updates(
+    image_update_contract: dict[str, Any],
+    services_by_id: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    if set(image_update_contract) != {
+        "workload_image_update_schema_version",
+        "workload_image_updates",
+    }:
+        raise ContractError("workload image update contract keys changed")
+    schema_version = image_update_contract[
+        "workload_image_update_schema_version"
     ]
-    if len(matches) != 1 or not isinstance(matches[0], str):
-        raise ContractError(f"ambiguous image {service_id}/{component}")
-    return matches[0]
+    if type(schema_version) is not int or schema_version != 1:
+        raise ContractError("workload image update schema version changed")
+    updates = image_update_contract["workload_image_updates"]
+    if (
+        not isinstance(updates, list)
+        or len(updates) != 1
+        or not isinstance(updates[0], dict)
+    ):
+        raise ContractError("workload image update allowlist changed")
+    update = updates[0]
+    if set(update) != IMAGE_UPDATE_KEYS or any(
+        update.get(key) != value for key, value in EXPECTED_IMAGE_UPDATE.items()
+    ):
+        raise ContractError("workload image update allowlist changed")
+    approved_runtime_reference = update.get("approved_runtime_reference")
+    if not isinstance(approved_runtime_reference, str) or re.fullmatch(
+        re.escape(ALBERTO_TRACKED_REFERENCE) + r"@sha256:[a-f0-9]{64}",
+        approved_runtime_reference,
+    ) is None:
+        raise ContractError("tracked image runtime approval is invalid")
+    if IMAGE_CONTRACT.get(EXPECTED_IMAGE_UPDATE["swarm_service"]) != (
+        EXPECTED_IMAGE_UPDATE["catalog_service"],
+        EXPECTED_IMAGE_UPDATE["component"],
+    ):
+        raise ContractError("tracked image stack-to-catalog mapping changed")
+
+    catalog_image = find_image_entry(
+        services_by_id,
+        EXPECTED_IMAGE_UPDATE["catalog_service"],
+        EXPECTED_IMAGE_UPDATE["component"],
+    )
+    if catalog_image["reference"] != EXPECTED_IMAGE_UPDATE["catalog_reference"]:
+        raise ContractError("tracked image catalog baseline changed")
+    if (
+        re.fullmatch(
+            r".+@sha256:[a-f0-9]{64}",
+            EXPECTED_IMAGE_UPDATE["catalog_reference"],
+        )
+        is None
+    ):
+        raise ContractError("tracked image catalog baseline is not immutable")
+    return {EXPECTED_IMAGE_UPDATE["swarm_service"]: update}
 
 
 def secret_sources(service: dict[str, Any]) -> set[str]:
@@ -205,6 +337,7 @@ def bind_sources(service: dict[str, Any]) -> list[str]:
 def validate_stack(
     stack: dict[str, Any],
     service_catalog: dict[str, Any],
+    image_update_contract: dict[str, Any],
     secret_catalog: dict[str, Any],
     runner_metadata: dict[str, Any],
     platform: dict[str, Any],
@@ -216,13 +349,23 @@ def validate_stack(
     services_by_id = {item["id"]: item for item in approved}
     if set(services_by_id) != EXPECTED_APPROVED_IDS:
         raise ContractError("approved service scope changed")
+    updates_by_stack = validate_image_updates(
+        image_update_contract,
+        services_by_id,
+    )
     services = stack.get("services")
     if not isinstance(services, dict) or set(services) != EXPECTED_STACK_SERVICES:
         raise ContractError("rendered Swarm service set changed")
 
     for stack_service, (catalog_id, component) in IMAGE_CONTRACT.items():
-        catalog_reference = find_image(services_by_id, catalog_id, component)
-        expected = catalog_reference
+        catalog_image = find_image_entry(services_by_id, catalog_id, component)
+        catalog_reference = catalog_image["reference"]
+        image_update = updates_by_stack.get(stack_service)
+        expected = (
+            image_update["tracked_reference"]
+            if image_update is not None
+            else catalog_reference
+        )
         if stack_service == "n8n-runners":
             if runner_metadata.get("source_reference") != catalog_reference:
                 raise ContractError("n8n runner audited source reference drift")
@@ -239,11 +382,12 @@ def validate_stack(
         service = services[stack_service]
         if service.get("image") != expected:
             raise ContractError(f"image drift for {stack_service}")
-        if stack_service != "n8n-runners" and not re.fullmatch(
-            r".+@sha256:[a-f0-9]{64}",
-            expected,
-        ):
-            raise ContractError(f"unpinned image for {stack_service}")
+        if stack_service != "n8n-runners":
+            if image_update is None and re.fullmatch(
+                r".+@sha256:[a-f0-9]{64}",
+                expected,
+            ) is None:
+                raise ContractError(f"unpinned image for {stack_service}")
         if "env_file" in service:
             raise ContractError(f"env_file is forbidden for {stack_service}")
         if service.get("privileged") is True:
@@ -501,6 +645,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stack", type=Path, required=True)
     parser.add_argument("--services", type=Path, required=True)
+    parser.add_argument("--image-updates", type=Path, required=True)
     parser.add_argument("--secrets", type=Path, required=True)
     parser.add_argument("--platform", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
@@ -513,6 +658,7 @@ def main() -> int:
     try:
         stack = load_yaml(args.stack)
         services = load_yaml(args.services)
+        image_updates = load_unique_yaml(args.image_updates)
         secrets = load_yaml(args.secrets)
         platform = load_yaml(args.platform)
         approved = {item["id"]: item for item in services.get("approved_services", [])}
@@ -525,7 +671,14 @@ def main() -> int:
             )
         except runner_manager.RunnerImageError as exc:
             raise ContractError(str(exc)) from exc
-        validate_stack(stack, services, secrets, runner_metadata, platform)
+        validate_stack(
+            stack,
+            services,
+            image_updates,
+            secrets,
+            runner_metadata,
+            platform,
+        )
         validate_configs(stack, args.config_dir)
     except ContractError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

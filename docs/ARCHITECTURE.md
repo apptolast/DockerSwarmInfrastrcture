@@ -81,7 +81,19 @@ Minecraft no pasa por Traefik y su publicación TCP sigue desactivada.
 
 [`config/services.yml`](../config/services.yml) es la allowlist. Fija imágenes
 por digest, datasets, puertos, origen de evidencia y método de migración. La
-denylist completa se valida en CI y no puede aparecer en stacks.
+política operativa separada
+[`config/workload-image-updates.yml`](../config/workload-image-updates.yml)
+autoriza una única excepción mutable para `personal-website-alberto/app`: la
+referencia exacta de Docker Hub con `update_policy: tracked-tag`. El preflight
+la compara con `approved_runtime_reference`, un `latest@sha256:...` versionado
+y revisado, antes de renderizar un stack de producción. El servicio desplegado
+conserva así una identidad de contenido exacta. Separar ambos contratos
+preserva sin cambios el hash del catálogo ligado al marcador de restauración.
+La denylist completa se valida en CI y no puede aparecer en stacks.
+
+El render offline conserva `:latest` como representación declarativa. El modo
+`--check` sí consulta el registro de forma no mutante y exige el digest
+versionado, por lo que anticipa exactamente la identidad de un apply posterior.
 
 `stacks/workloads` contiene bases, caches, runners y aplicaciones. Los
 instaladores de secrets comparan nombres e identidades HMAC contra manifests

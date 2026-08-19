@@ -10,6 +10,7 @@
     - ../../config/capacity.yml
     - ../../config/platform.yml
     - ../../config/services.yml
+    - ../../config/workload-image-updates.yml
     - ../group_vars/all.yml
 
   roles:

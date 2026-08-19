@@ -126,6 +126,7 @@ contract_paths = [
     PROJECT_DIR / "config/minecraft.yml",
     PROJECT_DIR / "config/platform.yml",
     PROJECT_DIR / "config/services.yml",
+    PROJECT_DIR / "config/workload-image-updates.yml",
     PROJECT_DIR / "stacks/observability/secrets.yml",
     PROJECT_DIR / "stacks/workloads/secrets.yml",
 ]

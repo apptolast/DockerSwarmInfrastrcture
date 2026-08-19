@@ -5,6 +5,7 @@ import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,256 @@ runner_manager = load_script(
     "manage_n8n_runner_image",
     "scripts/manage-n8n-runner-image.py",
 )
+tracked_image_resolver = load_script(
+    "resolve_tracked_image",
+    "scripts/resolve-tracked-image.py",
+)
+
+
+class TrackedImageResolutionTests(unittest.TestCase):
+    REFERENCE = "docker.io/hgarciaalberto/personal-website:latest"
+    DIGEST = "sha256:" + ("a" * 64)
+    RESOLVED_REFERENCE = f"{REFERENCE}@{DIGEST}"
+    APPROVED_REFERENCE = RESOLVED_REFERENCE
+
+    def valid_descriptor(self) -> dict[str, object]:
+        return {
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "digest": self.DIGEST,
+            "size": 2623,
+        }
+
+    def valid_inspect(self) -> list[dict[str, object]]:
+        return [
+            {
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Id": "sha256:" + ("b" * 64),
+                "RepoDigests": [
+                    "docker.io/hgarciaalberto/personal-website@" + self.DIGEST
+                ],
+            }
+        ]
+
+    def test_exact_tracked_repository_digest_is_resolved(self) -> None:
+        for media_type in tracked_image_resolver.ALLOWED_MEDIA_TYPES:
+            with self.subTest(media_type=media_type):
+                descriptor = self.valid_descriptor()
+                descriptor["mediaType"] = media_type
+                self.assertEqual(
+                    tracked_image_resolver.resolve_tracked_reference(
+                        self.REFERENCE,
+                        self.APPROVED_REFERENCE,
+                        descriptor,
+                    ),
+                    self.RESOLVED_REFERENCE,
+                )
+
+    def test_invalid_registry_descriptors_are_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "not approved",
+        ):
+            tracked_image_resolver.resolve_tracked_reference(
+                "docker.io/example/other:latest",
+                self.APPROVED_REFERENCE,
+                self.valid_descriptor(),
+            )
+
+        invalid_descriptors = [
+            None,
+            [],
+            {},
+            {**self.valid_descriptor(), "mediaType": "text/plain"},
+            {**self.valid_descriptor(), "digest": "sha256:invalid"},
+            {**self.valid_descriptor(), "size": 0},
+            {**self.valid_descriptor(), "size": True},
+        ]
+        for descriptor in invalid_descriptors:
+            with self.subTest(descriptor=descriptor):
+                with self.assertRaises(tracked_image_resolver.TrackedImageError):
+                    tracked_image_resolver.resolve_tracked_reference(
+                        self.REFERENCE,
+                        self.APPROVED_REFERENCE,
+                        descriptor,
+                    )
+
+    def test_unreviewed_registry_digest_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "differs from the reviewed runtime approval",
+        ):
+            tracked_image_resolver.resolve_tracked_reference(
+                self.REFERENCE,
+                self.REFERENCE + "@sha256:" + ("c" * 64),
+                self.valid_descriptor(),
+            )
+
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "approved runtime reference is invalid",
+        ):
+            tracked_image_resolver.resolve_tracked_reference(
+                self.REFERENCE,
+                self.REFERENCE,
+                self.valid_descriptor(),
+            )
+
+    def test_local_image_matches_the_resolved_digest(self) -> None:
+        tracked_image_resolver.verify_tracked_image(
+            self.RESOLVED_REFERENCE,
+            self.valid_inspect(),
+        )
+        inspect_with_multiple_digests = self.valid_inspect()
+        inspect_with_multiple_digests[0]["RepoDigests"] = [
+            "hgarciaalberto/personal-website@sha256:" + ("c" * 64),
+            "hgarciaalberto/personal-website@" + self.DIGEST,
+            "docker.io/example/other@sha256:" + ("d" * 64),
+        ]
+        tracked_image_resolver.verify_tracked_image(
+            self.RESOLVED_REFERENCE,
+            inspect_with_multiple_digests,
+        )
+
+    def test_invalid_local_image_identities_are_rejected(self) -> None:
+        invalid_resolved_references = [
+            "docker.io/example/other:latest@" + self.DIGEST,
+            self.REFERENCE + "@sha256:invalid",
+        ]
+        for reference in invalid_resolved_references:
+            with self.subTest(reference=reference):
+                with self.assertRaises(tracked_image_resolver.TrackedImageError):
+                    tracked_image_resolver.verify_tracked_image(
+                        reference,
+                        self.valid_inspect(),
+                    )
+
+        malformed_documents = [
+            {},
+            [],
+            [self.valid_inspect()[0], self.valid_inspect()[0]],
+            ["not-an-object"],
+        ]
+        for document in malformed_documents:
+            with self.subTest(document=document):
+                with self.assertRaises(tracked_image_resolver.TrackedImageError):
+                    tracked_image_resolver.verify_tracked_image(
+                        self.RESOLVED_REFERENCE,
+                        document,
+                    )
+
+        wrong_platform = self.valid_inspect()
+        wrong_platform[0]["Architecture"] = "arm64"
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "linux/amd64",
+        ):
+            tracked_image_resolver.verify_tracked_image(
+                self.RESOLVED_REFERENCE,
+                wrong_platform,
+            )
+
+        wrong_os = self.valid_inspect()
+        wrong_os[0]["Os"] = "windows"
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "linux/amd64",
+        ):
+            tracked_image_resolver.verify_tracked_image(
+                self.RESOLVED_REFERENCE,
+                wrong_os,
+            )
+
+        invalid_id = self.valid_inspect()
+        invalid_id[0]["Id"] = "not-a-content-id"
+        with self.assertRaisesRegex(
+            tracked_image_resolver.TrackedImageError,
+            "content ID",
+        ):
+            tracked_image_resolver.verify_tracked_image(
+                self.RESOLVED_REFERENCE,
+                invalid_id,
+            )
+
+        for repo_digests in (
+            None,
+            [],
+            [123],
+            ["docker.io/example/other@" + self.DIGEST],
+        ):
+            with self.subTest(repo_digests=repo_digests):
+                inspected = self.valid_inspect()
+                inspected[0]["RepoDigests"] = repo_digests
+                with self.assertRaises(tracked_image_resolver.TrackedImageError):
+                    tracked_image_resolver.verify_tracked_image(
+                        self.RESOLVED_REFERENCE,
+                        inspected,
+                    )
+
+    def test_cli_resolves_verifies_and_rejects_invalid_input(self) -> None:
+        resolve_command = [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/resolve-tracked-image.py"),
+            "resolve",
+            "--reference",
+            self.REFERENCE,
+            "--approved-reference",
+            self.APPROVED_REFERENCE,
+        ]
+        valid = subprocess.run(
+            resolve_command,
+            input=json.dumps(self.valid_descriptor()).encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr.decode("utf-8"))
+        self.assertEqual(
+            valid.stdout.decode("utf-8").strip(),
+            self.RESOLVED_REFERENCE,
+        )
+
+        verify_command = [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/resolve-tracked-image.py"),
+            "verify",
+            "--resolved-reference",
+            self.RESOLVED_REFERENCE,
+        ]
+        verified = subprocess.run(
+            verify_command,
+            input=json.dumps(self.valid_inspect()).encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr.decode("utf-8"))
+        self.assertEqual(verified.stdout, b"")
+
+        invalid = subprocess.run(
+            resolve_command,
+            input=b"not-json",
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn(b"not valid JSON", invalid.stderr)
+
+        invalid_utf8 = subprocess.run(
+            resolve_command,
+            input=b"\xff",
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(invalid_utf8.returncode, 0)
+        self.assertIn(b"not valid JSON", invalid_utf8.stderr)
+
+        oversized = subprocess.run(
+            resolve_command,
+            input=b" " * (tracked_image_resolver.MAX_JSON_BYTES + 1),
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(oversized.returncode, 0)
+        self.assertIn(b"exceeds the size limit", oversized.stderr)
 
 
 class WorkloadSecretContractTests(unittest.TestCase):
@@ -545,6 +796,9 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         cls.services = workload_validator.load_yaml(
             REPOSITORY_ROOT / "config/services.yml"
         )
+        cls.image_updates = workload_validator.load_yaml(
+            REPOSITORY_ROOT / "config/workload-image-updates.yml"
+        )
         cls.secrets = workload_validator.load_yaml(
             REPOSITORY_ROOT / "stacks/workloads/secrets.yml"
         )
@@ -566,6 +820,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             workload_validator.validate_stack(
                 candidate,
                 self.services,
+                self.image_updates,
                 self.secrets,
                 self.runner_metadata,
                 self.platform,
@@ -575,6 +830,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             self.stack,
             self.services,
+            self.image_updates,
             self.secrets,
             self.runner_metadata,
             self.platform,
@@ -618,6 +874,279 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
                 "driver_opts": {"encrypted": ""},
             },
         )
+
+    def test_only_alberto_uses_the_exact_reviewed_tracked_tag(self) -> None:
+        import copy
+
+        alberto_reference = workload_validator.ALBERTO_TRACKED_REFERENCE
+        alberto_catalog = next(
+            item
+            for item in self.services["approved_services"]
+            if item["id"] == "personal-website-alberto"
+        )
+        self.assertEqual(
+            alberto_catalog["images"][0]["reference"],
+            workload_validator.ALBERTO_CATALOG_REFERENCE,
+        )
+        self.assertEqual(
+            self.stack["services"]["portfolio-alberto"]["image"],
+            alberto_reference,
+        )
+        workload_validator.validate_stack(
+            self.stack,
+            self.services,
+            self.image_updates,
+            self.secrets,
+            self.runner_metadata,
+            self.platform,
+        )
+
+        wrong_tag_stack = copy.deepcopy(self.stack)
+        wrong_tag_stack["services"]["portfolio-alberto"]["image"] = (
+            "docker.io/hgarciaalberto/personal-website:canary"
+        )
+        with self.assertRaisesRegex(
+            workload_validator.ContractError,
+            "image drift for portfolio-alberto",
+        ):
+            workload_validator.validate_stack(
+                wrong_tag_stack,
+                self.services,
+                self.image_updates,
+                self.secrets,
+                self.runner_metadata,
+                self.platform,
+            )
+
+        invalid_contracts = []
+        for key, value in (
+            ("catalog_service", "kropia"),
+            ("component", "database"),
+            ("swarm_service", "kropia"),
+            (
+                "catalog_reference",
+                "docker.io/hgarciaalberto/personal-website@sha256:"
+                + ("f" * 64),
+            ),
+            (
+                "tracked_reference",
+                "docker.io/hgarciaalberto/personal-website:canary",
+            ),
+            (
+                "approved_runtime_reference",
+                "docker.io/hgarciaalberto/personal-website:latest@sha256:invalid",
+            ),
+            ("update_policy", "floating-tag"),
+        ):
+            candidate = copy.deepcopy(self.image_updates)
+            candidate["workload_image_updates"][0][key] = value
+            invalid_contracts.append(candidate)
+
+        missing_update = copy.deepcopy(self.image_updates)
+        missing_update["workload_image_updates"] = []
+        invalid_contracts.append(missing_update)
+
+        extra_update = copy.deepcopy(self.image_updates)
+        extra_update["workload_image_updates"].append(
+            copy.deepcopy(extra_update["workload_image_updates"][0])
+        )
+        invalid_contracts.append(extra_update)
+
+        wrong_schema = copy.deepcopy(self.image_updates)
+        wrong_schema["workload_image_update_schema_version"] = 2
+        invalid_contracts.append(wrong_schema)
+
+        boolean_schema = copy.deepcopy(self.image_updates)
+        boolean_schema["workload_image_update_schema_version"] = True
+        invalid_contracts.append(boolean_schema)
+
+        extra_key = copy.deepcopy(self.image_updates)
+        extra_key["unexpected"] = True
+        invalid_contracts.append(extra_key)
+
+        missing_approved_reference = copy.deepcopy(self.image_updates)
+        del missing_approved_reference["workload_image_updates"][0][
+            "approved_runtime_reference"
+        ]
+        invalid_contracts.append(missing_approved_reference)
+
+        unexpected_update_key = copy.deepcopy(self.image_updates)
+        unexpected_update_key["workload_image_updates"][0]["unexpected"] = True
+        invalid_contracts.append(unexpected_update_key)
+
+        for candidate in invalid_contracts:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(workload_validator.ContractError):
+                    workload_validator.validate_stack(
+                        self.stack,
+                        self.services,
+                        candidate,
+                        self.secrets,
+                        self.runner_metadata,
+                        self.platform,
+                    )
+
+        renewed_approval = copy.deepcopy(self.image_updates)
+        renewed_approval["workload_image_updates"][0][
+            "approved_runtime_reference"
+        ] = (
+            workload_validator.ALBERTO_TRACKED_REFERENCE
+            + "@sha256:"
+            + ("f" * 64)
+        )
+        workload_validator.validate_stack(
+            self.stack,
+            self.services,
+            renewed_approval,
+            self.secrets,
+            self.runner_metadata,
+            self.platform,
+        )
+
+        changed_catalog = copy.deepcopy(self.services)
+        alberto = next(
+            item
+            for item in changed_catalog["approved_services"]
+            if item["id"] == "personal-website-alberto"
+        )
+        alberto["images"][0]["reference"] = (
+            "docker.io/hgarciaalberto/personal-website@sha256:" + ("f" * 64)
+        )
+        with self.assertRaisesRegex(
+            workload_validator.ContractError,
+            "catalog baseline changed",
+        ):
+            workload_validator.validate_stack(
+                self.stack,
+                changed_catalog,
+                self.image_updates,
+                self.secrets,
+                self.runner_metadata,
+                self.platform,
+            )
+
+        missing_image = copy.deepcopy(self.services)
+        alberto = next(
+            item
+            for item in missing_image["approved_services"]
+            if item["id"] == "personal-website-alberto"
+        )
+        alberto["images"] = []
+        with self.assertRaisesRegex(
+            workload_validator.ContractError,
+            "ambiguous image",
+        ):
+            workload_validator.validate_stack(
+                self.stack,
+                missing_image,
+                self.image_updates,
+                self.secrets,
+                self.runner_metadata,
+                self.platform,
+            )
+
+        with mock.patch.dict(
+            workload_validator.IMAGE_CONTRACT,
+            {"portfolio-alberto": ("kropia", "app")},
+        ):
+            with self.assertRaisesRegex(
+                workload_validator.ContractError,
+                "stack-to-catalog mapping changed",
+            ):
+                workload_validator.validate_stack(
+                    self.stack,
+                    self.services,
+                    self.image_updates,
+                    self.secrets,
+                    self.runner_metadata,
+                    self.platform,
+                )
+
+        mutable_expected = copy.deepcopy(
+            workload_validator.EXPECTED_IMAGE_UPDATE
+        )
+        mutable_expected["catalog_reference"] = alberto_reference
+        mutable_expected["approved_runtime_reference"] = (
+            workload_validator.ALBERTO_TRACKED_REFERENCE
+            + "@sha256:"
+            + ("f" * 64)
+        )
+        mutable_contract = {
+            "workload_image_update_schema_version": 1,
+            "workload_image_updates": [mutable_expected],
+        }
+        mutable_catalog = copy.deepcopy(self.services)
+        alberto = next(
+            item
+            for item in mutable_catalog["approved_services"]
+            if item["id"] == "personal-website-alberto"
+        )
+        alberto["images"][0]["reference"] = alberto_reference
+        with mock.patch.object(
+            workload_validator,
+            "EXPECTED_IMAGE_UPDATE",
+            mutable_expected,
+        ):
+            with self.assertRaisesRegex(
+                workload_validator.ContractError,
+                "baseline is not immutable",
+            ):
+                workload_validator.validate_stack(
+                    self.stack,
+                    mutable_catalog,
+                    mutable_contract,
+                    self.secrets,
+                    self.runner_metadata,
+                    self.platform,
+                )
+
+    def test_workload_image_update_yaml_rejects_duplicate_keys(self) -> None:
+        invalid_documents = {
+            "duplicate-top-level": (
+                "---\n"
+                "workload_image_update_schema_version: 1\n"
+                "workload_image_update_schema_version: 1\n"
+                "workload_image_updates: []\n"
+            ),
+            "duplicate-nested": (
+                "---\n"
+                "workload_image_update_schema_version: 1\n"
+                "workload_image_updates:\n"
+                "  - tracked_reference: first\n"
+                "    tracked_reference: second\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "updates.yml"
+            for name, document in invalid_documents.items():
+                with self.subTest(name=name):
+                    candidate.write_text(document, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        workload_validator.ContractError,
+                        "duplicate key",
+                    ):
+                        workload_validator.load_unique_yaml(candidate)
+
+    def test_workload_image_update_yaml_rejects_invalid_documents(self) -> None:
+        invalid_documents = {
+            "malformed": "---\nkey: [\n",
+            "not-a-mapping": "---\n- item\n",
+            "unhashable-key": "---\n? [one, two]\n: value\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "updates.yml"
+            for name, document in invalid_documents.items():
+                with self.subTest(name=name):
+                    candidate.write_text(document, encoding="utf-8")
+                    with self.assertRaises(workload_validator.ContractError):
+                        workload_validator.load_unique_yaml(candidate)
+
+            missing = Path(temporary) / "missing.yml"
+            with self.assertRaisesRegex(
+                workload_validator.ContractError,
+                "cannot load YAML",
+            ):
+                workload_validator.load_unique_yaml(missing)
 
     def test_exact_public_http_backend_edge_matrix(self) -> None:
         observed = set().union(
@@ -732,6 +1261,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             self.stack,
             self.services,
+            self.image_updates,
             self.secrets,
             self.runner_metadata,
             self.platform,
@@ -746,6 +1276,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             disabled_stack,
             self.services,
+            self.image_updates,
             self.secrets,
             self.runner_metadata,
             disabled_platform,
@@ -757,6 +1288,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             workload_validator.validate_stack(
                 copy.deepcopy(self.stack),
                 self.services,
+                self.image_updates,
                 self.secrets,
                 self.runner_metadata,
                 disabled_platform,
@@ -1261,6 +1793,203 @@ class N8nRunnerImageContractTests(unittest.TestCase):
 
 
 class WorkloadAnsibleIntegrationTests(unittest.TestCase):
+    UPDATE = {
+        "catalog_service": "personal-website-alberto",
+        "component": "app",
+        "swarm_service": "portfolio-alberto",
+        "catalog_reference": workload_validator.ALBERTO_CATALOG_REFERENCE,
+        "tracked_reference": workload_validator.ALBERTO_TRACKED_REFERENCE,
+        "approved_runtime_reference": (
+            workload_validator.ALBERTO_TRACKED_REFERENCE
+            + "@sha256:"
+            + ("a" * 64)
+        ),
+        "update_policy": "tracked-tag",
+    }
+
+    def assert_ansible_role_gate_rejects(
+        self,
+        role: str,
+        task_name: str,
+        variables: dict[str, object],
+        expected_message: str,
+    ) -> None:
+        """Run one real fail-closed role task with no Docker-side effects."""
+        ansible_playbook = REPOSITORY_ROOT / ".venv/bin/ansible-playbook"
+        self.assertTrue(ansible_playbook.is_file(), "locked Ansible is required")
+        with tempfile.TemporaryDirectory() as temporary:
+            playbook = Path(temporary) / "gate.yml"
+            playbook.write_text(
+                yaml.safe_dump(
+                    [
+                        {
+                            "name": "Exercise one fail-closed Ansible gate",
+                            "hosts": "localhost",
+                            "connection": "local",
+                            "gather_facts": False,
+                            "become": False,
+                            "vars": variables,
+                            "roles": [{"role": role}],
+                        }
+                    ],
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [
+                    str(ansible_playbook),
+                    "-i",
+                    "localhost,",
+                    "--start-at-task",
+                    task_name,
+                    str(playbook),
+                ],
+                cwd=REPOSITORY_ROOT / "ansible",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        output = completed.stdout + completed.stderr
+        self.assertNotEqual(completed.returncode, 0, output)
+        self.assertIn(expected_message, output)
+
+    def test_real_ansible_gates_reject_invalid_tracked_image_state(self) -> None:
+        import copy
+
+        image_updates = [copy.deepcopy(self.UPDATE)]
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Verify the image catalog is available",
+            {
+                "approved_services": [],
+                "internal_platform": {"observability": {"components": []}},
+                "workload_image_update_schema_version": 1,
+                "workload_image_updates": [],
+            },
+            "The reviewed image catalog is missing or unsupported.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Bind the tracked image policy to its immutable catalog baseline",
+            {
+                "approved_services": [
+                    {
+                        "id": "personal-website-alberto",
+                        "images": [
+                            {
+                                "component": "app",
+                                "reference": self.UPDATE["catalog_reference"],
+                            },
+                            {
+                                "component": "app",
+                                "reference": "docker.io/example@sha256:"
+                                + ("b" * 64),
+                            },
+                        ],
+                    }
+                ],
+                "workload_image_updates": image_updates,
+            },
+            "does not match the immutable catalog baseline",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Enforce the complete tracked runtime reference map",
+            {
+                "image_preflight_include_tracked_updates": True,
+                "image_preflight_tracked_references": [
+                    self.UPDATE["tracked_reference"]
+                ],
+                "image_preflight_tracked_runtime_references": {
+                    self.UPDATE["tracked_reference"]: (
+                        workload_validator.ALBERTO_TRACKED_REFERENCE
+                        + "@sha256:"
+                        + ("b" * 64)
+                    )
+                },
+                "workload_image_updates": image_updates,
+            },
+            "The tracked runtime image did not resolve fail-closed.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Keep the tracked runtime map empty outside workload operations",
+            {
+                "image_preflight_include_tracked_updates": False,
+                "image_preflight_tracked_runtime_references": {
+                    self.UPDATE["tracked_reference"]: self.UPDATE[
+                        "approved_runtime_reference"
+                    ]
+                },
+            },
+            "A tracked runtime image escaped its workload operation scope.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "workloads",
+            "Validate top-level workload inputs",
+            {
+                "schema_version": 1,
+                "catalog_version": "1.0.0",
+                "target": {"services_root": "/services"},
+                "workloads_state_root": "/services",
+                "workloads_stack_name": "workloads",
+                "platform_minecraft_public_enabled": True,
+                "platform_dns_cutover": {"minecraft": True},
+                "platform_public_tcp_ports": [80, 443, 25565],
+                "workloads_edge_networks": {
+                    "kropia": "apptolast-edge-kropia",
+                    "minecraft-stats": "apptolast-edge-minecraft-stats",
+                    "n8n": "apptolast-edge-n8n",
+                    "openclaw": "apptolast-edge-openclaw",
+                    "passbolt": "apptolast-edge-passbolt",
+                    "portfolio-alberto": "apptolast-edge-portfolio-alberto",
+                    "portfolio-pablo": "apptolast-edge-portfolio-pablo",
+                    "shlink": "apptolast-edge-shlink",
+                },
+                "workloads_secret_catalog_version": 1,
+                "workloads_secret_version": "v1",
+                "approved_services": [
+                    {"id": service}
+                    for service in [
+                        "kropia",
+                        "minecraft",
+                        "minecraft-stats",
+                        "n8n",
+                        "openclaw-clean",
+                        "passbolt",
+                        "personal-website-alberto",
+                        "personal-website-pablo",
+                        "shlink",
+                        "traefik-edge",
+                    ]
+                ],
+                "denied_services": [],
+                "workload_image_update_schema_version": 1,
+                "workload_image_updates": [],
+            },
+            "outside the approved workloads contract.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "workloads",
+            "Enforce the preflighted Alberto runtime identity",
+            {
+                "workloads_portfolio_alberto_catalog_image": self.UPDATE[
+                    "catalog_reference"
+                ],
+                "workloads_portfolio_alberto_image_update": self.UPDATE,
+                "workloads_render_only": False,
+                "image_preflight_tracked_runtime_references": {
+                    self.UPDATE["tracked_reference"]: (
+                        workload_validator.ALBERTO_TRACKED_REFERENCE
+                        + "@sha256:"
+                        + ("b" * 64)
+                    )
+                },
+            },
+            "Alberto's mutable runtime tag was not resolved to one preflighted digest.",
+        )
+
     def test_image_preflight_normalizes_tagged_digests_exactly(self) -> None:
         import re
 
@@ -1279,6 +2008,273 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             ),
             expected,
         )
+
+    def test_image_preflight_tracks_only_albertos_exact_latest_tag(self) -> None:
+        image_updates = workload_validator.load_unique_yaml(
+            REPOSITORY_ROOT / "config/workload-image-updates.yml"
+        )
+        self.assertEqual(
+            image_updates["workload_image_updates"],
+            [
+                {
+                    "catalog_service": "personal-website-alberto",
+                    "component": "app",
+                    "swarm_service": "portfolio-alberto",
+                    "catalog_reference": (
+                        workload_validator.ALBERTO_CATALOG_REFERENCE
+                    ),
+                    "tracked_reference": (
+                        "docker.io/hgarciaalberto/personal-website:latest"
+                    ),
+                    "approved_runtime_reference": (
+                        "docker.io/hgarciaalberto/personal-website:latest@"
+                        "sha256:34c6854a3d7ff179e8fee8207696b1940747e84e9782d"
+                        "2133417f17b60602f8d"
+                    ),
+                    "update_policy": "tracked-tag",
+                }
+            ],
+        )
+        tasks_path = (
+            REPOSITORY_ROOT / "ansible/roles/image_preflight/tasks/main.yml"
+        )
+        tasks_text = tasks_path.read_text(encoding="utf-8")
+        tasks = yaml.safe_load(tasks_text)
+        catalog_digest = workload_validator.ALBERTO_CATALOG_REFERENCE.split(
+            "@sha256:"
+        )[1]
+        self.assertIn(catalog_digest[:32], tasks_text)
+        self.assertIn(catalog_digest[32:], tasks_text)
+        self.assertIn(workload_validator.ALBERTO_TRACKED_REFERENCE, tasks_text)
+        self.assertIn("approved_runtime_reference", tasks_text)
+        policy_gate = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Bind the tracked image policy to its immutable catalog baseline"
+        )
+        self.assertIn(
+            "immutable catalog baseline",
+            policy_gate["ansible.builtin.assert"]["fail_msg"],
+        )
+        catalog_collector = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Collect approved immutable remote runtime images"
+        )
+        tracked_exclusion = catalog_collector["when"][1]
+        self.assertIn(
+            "image_preflight_include_tracked_updates",
+            tracked_exclusion,
+        )
+        self.assertIn("catalog_service", tracked_exclusion)
+        self.assertIn("component", tracked_exclusion)
+        descriptor = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Read the exact tracked tag descriptor from its registry"
+        )
+        self.assertEqual(
+            descriptor["ansible.builtin.command"]["argv"][1:4],
+            ["buildx", "imagetools", "inspect"],
+        )
+        self.assertEqual(
+            descriptor["ansible.builtin.command"]["argv"][5],
+            "{{ '{{json .Manifest}}' }}",
+        )
+        self.assertEqual(
+            descriptor["loop"],
+            "{{ image_preflight_tracked_references }}",
+        )
+        self.assertEqual(
+            descriptor["when"],
+            [
+                "image_preflight_include_tracked_updates | bool",
+            ],
+        )
+        self.assertFalse(descriptor["check_mode"])
+        resolver = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Resolve the tracked registry descriptor to an immutable reference"
+        )
+        self.assertEqual(
+            resolver["ansible.builtin.command"]["argv"][1],
+            "{{ playbook_dir }}/../../scripts/resolve-tracked-image.py",
+        )
+        self.assertEqual(resolver["ansible.builtin.command"]["argv"][2], "resolve")
+        self.assertIn(
+            "--approved-reference",
+            resolver["ansible.builtin.command"]["argv"],
+        )
+        self.assertEqual(resolver["delegate_to"], "localhost")
+        self.assertFalse(resolver["become"])
+        self.assertFalse(resolver["check_mode"])
+        self.assertEqual(
+            resolver["when"],
+            ["item.item in image_preflight_tracked_references"],
+        )
+        recorder = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Record the immutable runtime reference for the tracked image"
+        )
+        self.assertIn(
+            "image_preflight_tracked_runtime_references",
+            recorder["ansible.builtin.set_fact"],
+        )
+        resolution_gate = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Enforce the complete tracked runtime reference map"
+        )
+        self.assertIn(
+            "fail_msg",
+            resolution_gate["ansible.builtin.assert"],
+        )
+        self.assertNotIn("fail_msg", resolution_gate)
+        self.assertNotIn("not ansible_check_mode", resolution_gate.get("when", []))
+        runtime_report = next(
+            item
+            for item in tasks
+            if item["name"] == "Report the reviewed tracked runtime reference"
+        )
+        self.assertIn(
+            "approved for this operation",
+            runtime_report["ansible.builtin.debug"]["msg"],
+        )
+        pull = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Pull the resolved tracked image before any stack mutation"
+        )
+        self.assertEqual(
+            pull["loop"],
+            "{{ image_preflight_tracked_resolved_references }}",
+        )
+        self.assertEqual(
+            pull["when"],
+            [
+                "not ansible_check_mode",
+                "image_preflight_include_tracked_updates | bool",
+            ],
+        )
+        self.assertEqual(
+            pull["ansible.builtin.command"]["argv"][3:5],
+            [
+                "--platform",
+                (
+                    "{{ image_preflight_expected_os\n"
+                    "   }}/{{ image_preflight_expected_architecture }}"
+                ),
+            ],
+        )
+        self.assertIn("Downloaded newer image", pull["changed_when"])
+        verifier = next(
+            item
+            for item in tasks
+            if item["name"]
+            == "Verify the tracked local image against its resolved registry digest"
+        )
+        self.assertEqual(
+            verifier["ansible.builtin.command"]["argv"][2],
+            "verify",
+        )
+        self.assertEqual(verifier["delegate_to"], "localhost")
+        self.assertFalse(verifier["become"])
+        self.assertEqual(
+            verifier["when"],
+            [
+                "not ansible_check_mode",
+                "item.item in image_preflight_tracked_resolved_references",
+            ],
+        )
+        for playbook_name in (
+            "edge",
+            "observability",
+            "preflight-images",
+            "render-workloads",
+            "site",
+            "workloads",
+        ):
+            with self.subTest(playbook=playbook_name):
+                play = yaml.safe_load(
+                    (
+                        REPOSITORY_ROOT
+                        / f"ansible/playbooks/{playbook_name}.yml"
+                    ).read_text(encoding="utf-8")
+                )[0]
+                self.assertIn(
+                    "../../config/workload-image-updates.yml",
+                    play["vars_files"],
+                )
+        for playbook_name, expected in (
+            ("edge", False),
+            ("observability", False),
+            ("preflight-images", True),
+            ("site", True),
+            ("workloads", True),
+        ):
+            with self.subTest(tracked_scope=playbook_name):
+                play = yaml.safe_load(
+                    (
+                        REPOSITORY_ROOT
+                        / f"ansible/playbooks/{playbook_name}.yml"
+                    ).read_text(encoding="utf-8")
+                )[0]
+                role = next(
+                    item for item in play["roles"] if item["role"] == "image_preflight"
+                )
+                self.assertIs(
+                    role.get("image_preflight_include_tracked_updates", False),
+                    expected,
+                )
+
+    def test_workloads_deploys_the_preflighted_tracked_digest_exactly(
+        self,
+    ) -> None:
+        derive = yaml.safe_load(
+            (
+                REPOSITORY_ROOT / "ansible/roles/workloads/tasks/derive.yml"
+            ).read_text(encoding="utf-8")
+        )
+        image_derivation = next(
+            item
+            for item in derive
+            if item["name"]
+            == "Derive workload images from the catalog and reviewed update policy"
+        )
+        alberto_image = image_derivation["ansible.builtin.set_fact"][
+            "workloads_images"
+        ]["portfolio_alberto"]
+        self.assertIn(
+            "image_preflight_tracked_runtime_references",
+            alberto_image,
+        )
+        self.assertNotIn("ansible_check_mode", alberto_image)
+        self.assertIn("workloads_render_only", alberto_image)
+
+        deploy = yaml.safe_load(
+            (
+                REPOSITORY_ROOT / "ansible/roles/workloads/tasks/deploy.yml"
+            ).read_text(encoding="utf-8")
+        )
+        identity_gate = next(
+            item
+            for item in deploy
+            if item["name"]
+            == "Verify deployed workload image and placement identities"
+        )
+        image_assertion = identity_gate["ansible.builtin.assert"]["that"][0]
+        self.assertIn("item.item.value", image_assertion)
+        self.assertIn("^docker[.]io/", image_assertion)
+        self.assertNotIn("portfolio-alberto", image_assertion)
 
     def test_site_role_order_is_safe_and_backup_is_explicitly_separate(self) -> None:
         site = yaml.safe_load(
@@ -1310,6 +2306,10 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         )
         self.assertIn(
             "../../stacks/observability/secrets.yml",
+            site["vars_files"],
+        )
+        self.assertIn(
+            "../../config/workload-image-updates.yml",
             site["vars_files"],
         )
 
@@ -1371,6 +2371,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "config/minecraft.yml",
             "config/platform.yml",
             "config/services.yml",
+            "config/workload-image-updates.yml",
             "stacks/observability/secrets.yml",
             "stacks/workloads/secrets.yml",
         ):

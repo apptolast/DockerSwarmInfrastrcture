@@ -30,6 +30,42 @@
         workloads_edge_networks.values() | list | unique | length == 8
       - workloads_secret_catalog_version | int == 1
       - workloads_secret_version is match("^v[1-9][0-9]*$")
+      - workload_image_update_schema_version is integer
+      - workload_image_update_schema_version == 1
+      - >-
+        workload_image_updates | length == 1
+      - (workload_image_updates | first) is mapping
+      - >-
+        (workload_image_updates | first).keys() | list | sort
+        == [
+          "approved_runtime_reference",
+          "catalog_reference",
+          "catalog_service",
+          "component",
+          "swarm_service",
+          "tracked_reference",
+          "update_policy"
+        ]
+      - >-
+        (workload_image_updates | first).catalog_service
+        == "personal-website-alberto"
+      - (workload_image_updates | first).component == "app"
+      - (workload_image_updates | first).swarm_service == "portfolio-alberto"
+      - >-
+        (workload_image_updates | first).catalog_reference
+        == "docker.io/hgarciaalberto/personal-website@sha256:"
+        ~ "34c6854a3d7ff179e8fee8207696b194"
+        ~ "0747e84e9782d2133417f17b60602f8d"
+      - >-
+        (workload_image_updates | first).tracked_reference
+        == "docker.io/hgarciaalberto/personal-website:latest"
+      - >-
+        (workload_image_updates | first).approved_runtime_reference
+        is match(
+          "^docker[.]io/hgarciaalberto/personal-website:latest"
+          ~ "@sha256:[a-f0-9]{64}$"
+        )
+      - (workload_image_updates | first).update_policy == "tracked-tag"
       - >-
         approved_services | map(attribute="id") | list | sort
         ==
@@ -103,7 +139,58 @@
     workloads_n8n_runner: >-
       {{ workloads_n8n_runner_description_raw.stdout | from_json }}
 
-- name: Derive immutable images only from the service catalog
+- name: Derive the exact Alberto tracked-tag contract
+  ansible.builtin.set_fact:
+    workloads_portfolio_alberto_catalog_image: >-
+      {{
+        (workloads_approved_by_id["personal-website-alberto"].images
+        | selectattr("component", "equalto", "app") | first).reference
+      }}
+    workloads_portfolio_alberto_image_update: >-
+      {{ workload_image_updates | first }}
+
+- name: Enforce the preflighted Alberto runtime identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        workloads_portfolio_alberto_catalog_image
+        == workloads_portfolio_alberto_image_update.catalog_reference
+      - >-
+        workloads_portfolio_alberto_image_update.catalog_service
+        == "personal-website-alberto"
+      - workloads_portfolio_alberto_image_update.component == "app"
+      - >-
+        workloads_portfolio_alberto_image_update.swarm_service
+        == "portfolio-alberto"
+      - >-
+        workloads_portfolio_alberto_image_update.tracked_reference
+        == "docker.io/hgarciaalberto/personal-website:latest"
+      - >-
+        workloads_portfolio_alberto_image_update.approved_runtime_reference
+        is match(
+          "^docker[.]io/hgarciaalberto/personal-website:latest"
+          ~ "@sha256:[a-f0-9]{64}$"
+        )
+      - >-
+        workloads_portfolio_alberto_image_update.update_policy
+        == "tracked-tag"
+      - >-
+        (workloads_render_only | bool)
+        or
+        (
+          image_preflight_tracked_runtime_references is mapping
+          and
+          image_preflight_tracked_runtime_references.keys() | list
+          == [workloads_portfolio_alberto_image_update.tracked_reference]
+          and
+          image_preflight_tracked_runtime_references[
+            workloads_portfolio_alberto_image_update.tracked_reference]
+          == workloads_portfolio_alberto_image_update.approved_runtime_reference
+        )
+    fail_msg: >-
+      Alberto's mutable runtime tag was not resolved to one preflighted digest.
+
+- name: Derive workload images from the catalog and reviewed update policy
   ansible.builtin.set_fact:
     workloads_images:
       kropia: >-
@@ -161,8 +248,10 @@
         }}
       portfolio_alberto: >-
         {{
-          (workloads_approved_by_id["personal-website-alberto"].images
-          | selectattr("component", "equalto", "app") | first).reference
+          workloads_portfolio_alberto_image_update.tracked_reference
+          if workloads_render_only | bool
+          else image_preflight_tracked_runtime_references[
+            workloads_portfolio_alberto_image_update.tracked_reference]
         }}
       portfolio_pablo: >-
         {{
@@ -294,11 +383,27 @@
       - >-
         workloads_images.values() | list
         | reject("equalto", workloads_images.n8n_runner)
+        | reject("equalto", workloads_images.portfolio_alberto)
         | select("match", "^.+@sha256:[a-f0-9]{64}$")
-        | list | length == 14
+        | list | length == 13
       - >-
         workloads_images.n8n_runner
         is match("^apptolast/n8n-runners:src-[a-f0-9]{64}$")
+      - >-
+        workloads_portfolio_alberto_catalog_image
+        == workloads_portfolio_alberto_image_update.catalog_reference
+      - >-
+        (
+          (workloads_render_only | bool)
+          and workloads_images.portfolio_alberto
+          == workloads_portfolio_alberto_image_update.tracked_reference
+        )
+        or
+        (
+          not (workloads_render_only | bool)
+          and workloads_images.portfolio_alberto
+          == workloads_portfolio_alberto_image_update.approved_runtime_reference
+        )
       - workloads_paths | length == 9
       - >-
         workloads_paths.values() | list
