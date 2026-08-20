@@ -6,7 +6,7 @@ workload_image_updates:
     component: app
     swarm_service: portfolio-alberto
     catalog_reference: "docker.io/hgarciaalberto/personal-website@sha256:\
-      34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+      b0ce681920843501df35793def9fedd1011b44626c5e8b543ef76209f911e2c3"
     tracked_reference: docker.io/hgarciaalberto/personal-website:latest
     approved_runtime_reference: "\
       docker.io/hgarciaalberto/personal-website:latest@sha256:\
