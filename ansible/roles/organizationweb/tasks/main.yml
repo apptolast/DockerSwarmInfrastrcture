@@ -1,0 +1,152 @@
+---
+- name: Reject overrides of the reviewed application catalog
+  ansible.builtin.assert:
+    that:
+      - >-
+        organizationweb == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/organizationweb.yml')
+          | from_yaml
+        ).organizationweb
+    fail_msg: OrganizationWeb inputs differ from the versioned catalog.
+
+- name: Validate the independent catalog and exact Docker format locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-organizationweb.py"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Read the actual Swarm node inventory
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, ls, --quiet]
+  register: organizationweb_node_ids
+  changed_when: false
+  check_mode: false
+
+- name: Inspect this manager and its placement identity
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, inspect, self]
+  register: organizationweb_local_node
+  changed_when: false
+  check_mode: false
+
+- name: Require the single eligible node to be this active manager
+  ansible.builtin.assert:
+    that:
+      - organizationweb_node_ids.stdout_lines | length == 1
+      - >-
+        (organizationweb_local_node.stdout | from_json | first).ID
+        == organizationweb_node_ids.stdout_lines[0]
+      - >-
+        (organizationweb_local_node.stdout | from_json | first)
+        .Spec.Role == 'manager'
+      - >-
+        (organizationweb_local_node.stdout | from_json | first)
+        .Spec.Availability == 'active'
+      - >-
+        (organizationweb_local_node.stdout | from_json | first)
+        .Status.State == 'ready'
+      - >-
+        (organizationweb_local_node.stdout | from_json | first)
+        .Spec.Labels['platform.workloads'] == 'true'
+    fail_msg: Local health checks require the reviewed single-node placement.
+
+- name: Inspect every required external secret without retrieving its value
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, secret, inspect, "{{ item.value }}"]
+  loop: "{{ organizationweb.secrets | dict2items }}"
+  register: organizationweb_secret_inspections
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require versioned secret provenance for this application
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Spec.Name == item.item.value
+      - >-
+        (item.stdout | from_json | first)
+        .Spec.Labels['com.apptolast.managed-by']
+        == 'manual-bootstrap'
+      - >-
+        (item.stdout | from_json | first).Spec.Labels['com.apptolast.purpose']
+        == 'organizationweb'
+    fail_msg: External OrganizationWeb secrets need the reviewed provenance.
+    quiet: true
+  loop: "{{ organizationweb_secret_inspections.results }}"
+  no_log: true
+
+- name: Inspect the dedicated edge network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ organizationweb.edge_network }}"
+  register: organizationweb_edge_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Require the encrypted isolated Swarm edge network
+  ansible.builtin.assert:
+    that:
+      - >-
+        (organizationweb_edge_inspect.stdout | from_json | first)
+        .Driver == 'overlay'
+      - >-
+        (organizationweb_edge_inspect.stdout | from_json | first)
+        .Scope == 'swarm'
+      - not (organizationweb_edge_inspect.stdout | from_json | first).Attachable
+      - not (organizationweb_edge_inspect.stdout | from_json | first).Internal
+      - >-
+        (organizationweb_edge_inspect.stdout | from_json | first)
+        .Options.encrypted
+        | default(None) == ''
+    fail_msg: Run the reviewed edge deployment before the application stack.
+
+- name: Inspect application storage paths without following links
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - {path: /srv, uid: 0, gid: 0, directory: true}
+    - {path: /srv/organizationweb, uid: 0, gid: 0, directory: true}
+    - {path: /srv/organizationweb/postgres, uid: 70, gid: 70, directory: true}
+    - {path: /srv/organizationweb/rabbitmq, uid: 100, gid: 101, directory: true}
+    - {path: /opt, uid: 0, gid: 0, directory: true}
+    - {path: /opt/dockerswarm, uid: 0, gid: 0, directory: true}
+    - {path: /opt/dockerswarm/organizationweb, uid: 0, gid: 0, directory: true}
+    - path: /opt/dockerswarm/organizationweb/stack.yml
+      uid: 0
+      gid: 0
+      directory: false
+    - path: /opt/dockerswarm/organizationweb/validate-swarm-deployment.py
+      uid: 0
+      gid: 0
+      directory: false
+  register: organizationweb_storage_paths
+
+- name: Reject unsafe types ownership and permissions in application paths
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - >-
+        not item.stat.exists or (
+          item.stat.isdir if item.item.directory else item.stat.isreg
+        )
+      - not item.stat.exists or item.stat.uid == item.item.uid
+      - not item.stat.exists or item.stat.gid == item.item.gid
+      - not item.stat.exists or item.stat.mode[-1] | int not in [2, 3, 6, 7]
+      - not item.stat.exists or item.stat.mode[-2] | int not in [2, 3, 6, 7]
+    fail_msg: Refusing to place application data through an unsafe path.
+  loop: "{{ organizationweb_storage_paths.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Deploy only after the complete preflight and outside check mode
+  ansible.builtin.import_tasks: deploy.yml
+  when: not ansible_check_mode

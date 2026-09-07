@@ -23,7 +23,17 @@
           "shlink": "apptolast-edge-shlink"
         }
       - edge_networks.values() | list | unique | length == 8
+      - >-
+        edge_application_networks == {
+          'organizationweb': 'apptolast-edge-organizationweb'
+        }
+      - >-
+        edge_application_networks.values() | list
+        | intersect(edge_networks.values() | list) | length == 0
+      - organizationweb.hostname == 'organizacion.apptolast.com'
+      - organizationweb.edge_network == 'apptolast-edge-organizationweb'
       - edge_monitoring_network not in edge_networks.values()
+      - edge_monitoring_network not in edge_application_networks.values()
       - edge_deployment_profile in ["production", "acme-staging"]
       - >-
         (

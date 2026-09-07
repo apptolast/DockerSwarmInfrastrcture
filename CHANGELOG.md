@@ -8,6 +8,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Stack OrganizationWeb independiente, catálogo de imágenes y secrets,
+  perfiles de capacidad excluyentes, ruta edge aislada y runbook de operación.
+  Incluye pruebas de health, persistencia y usuarios sin privilegios;
+  el despliegue real y su verificación TLS siguen pendientes del operador.
 - [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real
   del host tras el primer despliegue productivo de este árbol: lo aplicado y
   verificado, los servicios que aún no convergen con su diagnóstico, el bloqueo
@@ -142,6 +146,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Promueve el snapshot Ubuntu a `20260906T000000Z`, con sus cuatro índices
+  InRelease verificados mediante la clave de archivo Ubuntu y simulación APT
+  de los trece paquetes Ubuntu fijados. Actualiza curl, gpg, AppArmor y
+  OpenSSH a los pins disponibles revisados; conserva el SLO de 14 días y
+  los pins externos de CrowdSec. No aplica cambios al host ni modifica el
+  catálogo de restauración legacy. Evidencia: `docs/SNAPSHOT_20260906.md`.
 - Se retira formalmente el MFA de SSH por `pam_google_authenticator`
   (`host_security_ssh_mfa_policy: retired`). Estaba instalado desde el
   2026-07-21 pero era inerte: ningún usuario tenía `~/.google_authenticator`
@@ -190,6 +200,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Los tmpfs de OrganizationWeb usan mounts largos compatibles con Swarm;
+  el test convierte el stack y comprueba escritura y flags efectivos con
+  usuarios sin privilegios. La imagen web prepara los permisos temporales.
+- El playbook OrganizationWeb carga la versión de plataforma y registra su
+  componente en el role de metadatos. Una prueba Ansible real de check/diff
+  cubre sus inputs y el rechazo de identidades desconocidas.
 - `personal-website-alberto` vuelve a conservar en `config/services.yml` el
   digest histórico que fue atestado durante la restauración. El digest nuevo
   aprobado queda exclusivamente en `approved_runtime_reference`, que es el

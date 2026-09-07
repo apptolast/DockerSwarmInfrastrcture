@@ -123,6 +123,8 @@ yamllint \
   .github \
   ansible \
   config/capacity.yml \
+  config/capacity-profiles.yml \
+  config/organizationweb.yml \
   config/host-security.yml \
   config/minecraft.yml \
   config/platform.yml \
@@ -171,6 +173,9 @@ PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
 scripts/validate-workloads.sh
 scripts/validate-observability.sh
 scripts/validate-capacity.sh --reuse-rendered
+"${VENV_DIR}/bin/python" scripts/validate-organizationweb.py \
+  --output .build/organizationweb/stack.yml
+"${VENV_DIR}/bin/python" scripts/validate-capacity-profiles.py
 scripts/backup-self-test.sh
 PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
   "${VENV_DIR}/bin/python" -m unittest discover \

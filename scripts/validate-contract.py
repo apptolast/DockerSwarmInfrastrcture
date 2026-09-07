@@ -271,6 +271,10 @@ expected_stack_networks["edge-monitoring"] = {
     "external": True,
     "name": contract["platform_edge_monitoring_network"],
 }
+expected_stack_networks["edge-organizationweb"] = {
+    "external": True,
+    "name": "apptolast-edge-organizationweb",
+}
 if stack["networks"] != expected_stack_networks:
     fail("the rendered edge networks differ from the isolation contract")
 if set(traefik_service["networks"]) != set(expected_stack_networks):
@@ -313,11 +317,32 @@ edge_routes = {
 if set(dynamic["http"]["routers"]) != {
     "edge-health",
     "edge-ping-internal",
+    "organizationweb",
     *edge_routes,
 }:
     fail("the rendered edge router allowlist differs from the service catalog")
-if set(dynamic["http"]["services"]) != set(edge_routes):
+if set(dynamic["http"]["services"]) != {*edge_routes, "organizationweb"}:
     fail("the rendered edge backend allowlist differs from the service catalog")
+organizationweb_route = dynamic["http"]["routers"]["organizationweb"]
+if organizationweb_route != {
+    "rule": "Host(`organizacion.apptolast.com`)",
+    "entryPoints": ["websecure"],
+    "middlewares": ["edge-security", "edge-rate-limit"],
+    "service": "organizationweb",
+    "tls": {"certResolver": "letsencrypt"},
+}:
+    fail("the OrganizationWeb router differs from its independent contract")
+if dynamic["http"]["services"]["organizationweb"] != {
+    "loadBalancer": {
+        "passHostHeader": True,
+        "servers": [{"url": "http://organizationweb_web:8080"}],
+        "healthCheck": {
+            "path": "/healthz", "hostname": "organizacion.apptolast.com",
+            "interval": "15s", "timeout": "3s",
+        },
+    },
+}:
+    fail("the OrganizationWeb upstream differs from its independent contract")
 for route, (service_id, upstream) in edge_routes.items():
     expected_hostnames = approved_by_id[service_id]["hostnames"]
     if len(expected_hostnames) != 1:

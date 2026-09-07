@@ -1,0 +1,155 @@
+---
+- name: Pull the four immutable reviewed images
+  community.docker.docker_image:
+    name: "{{ item.value }}"
+    source: pull
+    force_source: false
+  loop: "{{ organizationweb.images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Inspect the pulled image architecture
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, image, inspect, "{{ item.value }}"]
+  loop: "{{ organizationweb.images | dict2items }}"
+  register: organizationweb_image_inspections
+  changed_when: false
+
+- name: Require the published Linux amd64 images
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Os == 'linux'
+      - (item.stdout | from_json | first).Architecture == 'amd64'
+      - item.item.value in (item.stdout | from_json | first).RepoDigests
+      - >-
+        item.item.key not in ['backend', 'web'] or (
+          (item.stdout | from_json | first)
+          .Config.Labels['org.opencontainers.image.revision']
+          == organizationweb.release
+        )
+    fail_msg: Image identity or architecture differs from the reviewed release.
+  loop: "{{ organizationweb_image_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Create application directories outside legacy state
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+    state: directory
+  loop:
+    - {path: /srv/organizationweb, owner: 'root', group: 'root', mode: '0755'}
+    - path: /srv/organizationweb/postgres
+      owner: '70'
+      group: '70'
+      mode: '0700'
+    - path: /srv/organizationweb/rabbitmq
+      owner: '100'
+      group: '101'
+      mode: '0700'
+    - path: /opt/dockerswarm/organizationweb
+      owner: root
+      group: root
+      mode: '0750'
+
+- name: Render the exact reviewed stack
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../stacks/organizationweb/stack.yml.j2"
+    dest: /opt/dockerswarm/organizationweb/stack.yml
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Install the existing exact live-reference validator
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../scripts/validate-swarm-deployment.py"
+    dest: /opt/dockerswarm/organizationweb/validate-swarm-deployment.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Deploy only the independent application stack
+  community.docker.docker_stack:
+    name: organizationweb
+    state: present
+    compose: [/opt/dockerswarm/organizationweb/stack.yml]
+    detach: true
+    prune: true
+    resolve_image: never
+
+- name: Require all four replicas and no extra service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - organizationweb
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: organizationweb_replicas
+  changed_when: false
+  until: >-
+    organizationweb_replicas.stdout_lines | sort == [
+      'organizationweb_backend=1/1', 'organizationweb_postgres=1/1',
+      'organizationweb_rabbitmq=1/1', 'organizationweb_web=1/1'
+    ]
+  retries: 36
+  delay: 10
+
+- name: Index the exact external secret identities
+  ansible.builtin.set_fact:
+    organizationweb_verified_secrets: >-
+      {{
+        organizationweb_verified_secrets | default({}) | combine({
+          item.item.key: {
+            'id': (item.stdout | from_json | first).ID,
+            'name': (item.stdout | from_json | first).Spec.Name
+          }
+        })
+      }}
+  loop: "{{ organizationweb_secret_inspections.results }}"
+  no_log: true
+
+- name: Verify exact deployed config secret and network references
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /opt/dockerswarm/organizationweb/validate-swarm-deployment.py
+      - --stack
+      - /opt/dockerswarm/organizationweb/stack.yml
+      - --stack-name
+      - organizationweb
+      - --verified-configs
+      - '{}'
+      - --verified-secrets
+      - "{{ organizationweb_verified_secrets | to_json }}"
+      - --verified-external-networks
+      - >-
+        {{ {'edge': {
+          'id': (organizationweb_edge_inspect.stdout | from_json | first).Id,
+          'name': organizationweb.edge_network,
+          'internal': false
+        }} | to_json }}
+  changed_when: false
+
+- name: Require a healthy running container for every application service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --filter
+      - "label=com.docker.swarm.service.name=organizationweb_{{ item }}"
+      - --filter
+      - status=running
+      - --format
+      - "{% raw %}{{.Status}}{% endraw %}"
+  loop: [backend, postgres, rabbitmq, web]
+  register: organizationweb_health
+  changed_when: false
+  until:
+    - organizationweb_health.stdout_lines | length == 1
+    - organizationweb_health.stdout is search('\(healthy\)$')
+  retries: 36
+  delay: 10

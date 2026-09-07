@@ -179,3 +179,6 @@
       No infrastructure mutation is allowed.
     success_msg: >-
       Full-platform capacity fits the reviewed swapless single-node budget.
+
+- name: Enforce the explicit active profile against live services
+  ansible.builtin.import_tasks: profiles.yml

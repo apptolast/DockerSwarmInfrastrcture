@@ -1,0 +1,20 @@
+---
+capacity_profiles:
+  schema_version: 1
+  active: organizationweb
+  profiles:
+    observability:
+      stacks: [edge, workloads, observability]
+      aggregate:
+        reservations: {cpu_millicores: 3470, memory_mib: 7232}
+        limits: {cpu_millicores: 17200, memory_mib: 12352}
+    organizationweb:
+      stacks: [edge, workloads, organizationweb]
+      aggregate:
+        reservations: {cpu_millicores: 2900, memory_mib: 6784}
+        limits: {cpu_millicores: 14350, memory_mib: 11456}
+  organizationweb:
+    expected_services: [backend, postgres, rabbitmq, web]
+    aggregate:
+      reservations: {cpu_millicores: 500, memory_mib: 800}
+      limits: {cpu_millicores: 2250, memory_mib: 1600}

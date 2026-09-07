@@ -1,0 +1,192 @@
+---
+version: "3.8"
+
+x-defaults: &defaults
+  init: true
+  logging:
+    driver: local
+    options:
+      max-file: "5"
+      max-size: 20m
+
+x-deploy: &deploy
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.labels.platform.workloads == true
+  restart_policy:
+    condition: any
+    delay: 5s
+    window: 60s
+  update_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: rollback
+    monitor: 120s
+    max_failure_ratio: 0
+  rollback_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: pause
+    monitor: 120s
+    max_failure_ratio: 0
+
+services:
+  web:
+    <<: *defaults
+    image: "{{ organizationweb.images.web }}"
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    volumes:
+      - type: tmpfs
+        target: /run
+        tmpfs: {size: 16777216}
+      - type: tmpfs
+        target: /var/cache/nginx
+        tmpfs: {size: 16777216}
+    networks: [edge, application]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      <<: *deploy
+      resources:
+        reservations: {cpus: "0.05", memory: 32M}
+        limits: {cpus: "0.25", memory: 64M}
+
+  backend:
+    <<: *defaults
+    image: "{{ organizationweb.images.backend }}"
+    user: "999:999"
+    read_only: true
+    cap_drop: [ALL]
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 67108864}
+    environment:
+      SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
+      APP_PUBLIC_ORIGIN: "https://{{ organizationweb.hostname }}"
+      DB_URL: "jdbc:postgresql://postgres:5432/organization"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_VHOST: organization
+      OUTBOX_PUBLISHER_ENABLED: "true"
+    secrets:
+      - {source: db_username, target: DB_USERNAME, uid: "999", gid: "999", mode: 0400}
+      - {source: db_password, target: DB_PASSWORD, uid: "999", gid: "999", mode: 0400}
+      - {source: auth_username, target: APP_AUTH_USERNAME, uid: "999", gid: "999", mode: 0400}
+      - {source: auth_password, target: APP_AUTH_PASSWORD, uid: "999", gid: "999", mode: 0400}
+      - {source: rabbitmq_username, target: RABBITMQ_USERNAME, uid: "999", gid: "999", mode: 0400}
+      - {source: rabbitmq_password, target: RABBITMQ_PASSWORD, uid: "999", gid: "999", mode: 0400}
+    networks: [application, database, messaging]
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080;
+          printf 'GET /api/session HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          IFS= read -r status <&3;
+          [[ "$$status" == HTTP/1.1\ 200* ]]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      <<: *deploy
+      resources:
+        reservations: {cpus: "0.25", memory: 384M}
+        limits: {cpus: "1.00", memory: 768M}
+
+  postgres:
+    <<: *defaults
+    image: "{{ organizationweb.images.postgres }}"
+    user: "70:70"
+    cap_drop: [ALL]
+    environment:
+      POSTGRES_DB: organization
+      POSTGRES_USER_FILE: /run/secrets/db_username
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - {source: db_username, target: db_username, uid: "70", gid: "70", mode: 0400}
+      - {source: db_password, target: db_password, uid: "70", gid: "70", mode: 0400}
+    volumes:
+      - type: bind
+        source: "{{ organizationweb.data_root }}/postgres"
+        target: /var/lib/postgresql/data
+    networks: [database]
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -d, organization]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      <<: *deploy
+      resources:
+        reservations: {cpus: "0.10", memory: 192M}
+        limits: {cpus: "0.50", memory: 384M}
+
+  rabbitmq:
+    <<: *defaults
+    image: "{{ organizationweb.images.rabbitmq }}"
+    user: "100:101"
+    hostname: organizationweb-rabbitmq
+    cap_drop: [ALL]
+    environment:
+      RABBITMQ_CONFIG_FILE: /run/secrets/rabbitmq
+      RABBITMQ_NODENAME: rabbit@organizationweb-rabbitmq
+    secrets:
+      - {source: rabbitmq_config, target: rabbitmq.conf, uid: "100", gid: "101", mode: 0400}
+    volumes:
+      - type: bind
+        source: "{{ organizationweb.data_root }}/rabbitmq"
+        target: /var/lib/rabbitmq
+    networks: [messaging]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_running]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      <<: *deploy
+      resources:
+        reservations: {cpus: "0.10", memory: 192M}
+        limits: {cpus: "0.50", memory: 384M}
+
+networks:
+  edge:
+    external: true
+    name: "{{ organizationweb.edge_network }}"
+  application:
+    driver: overlay
+    driver_opts: {encrypted: ""}
+    attachable: false
+    internal: true
+  database:
+    driver: overlay
+    driver_opts: {encrypted: ""}
+    attachable: false
+    internal: true
+  messaging:
+    driver: overlay
+    driver_opts: {encrypted: ""}
+    attachable: false
+    internal: true
+
+configs: {}
+
+secrets:
+{% for key, name in organizationweb.secrets.items() %}
+  {{ key }}:
+    external: true
+    name: "{{ name }}"
+{% endfor %}

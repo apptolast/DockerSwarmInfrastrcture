@@ -5,6 +5,7 @@
       {{
         [edge_monitoring_network]
         + edge_networks.values() | list
+        + edge_application_networks.values() | list
       }}
 
 - name: Read the isolated edge networks

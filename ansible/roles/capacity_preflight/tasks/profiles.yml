@@ -1,0 +1,42 @@
+---
+- name: Read all live Swarm service identities under the operation lock
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, ls, --quiet]
+  register: capacity_preflight_live_ids
+  changed_when: false
+  check_mode: false
+
+- name: Read only the name and stack label of each live service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - --format
+      - >-
+        {% raw %}{"name":{{json .Spec.Name}},
+        "stack":
+        {{json (index .Spec.Labels "com.docker.stack.namespace")}}}{% endraw %}
+      - "{{ item }}"
+  loop: "{{ capacity_preflight_live_ids.stdout_lines }}"
+  register: capacity_preflight_live_specs
+  changed_when: false
+  check_mode: false
+
+- name: Validate the requested profile without mutating the host
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-capacity-profiles.py"
+      - --live
+      - --requested-stack
+      - "{{ deployment_metadata_playbook }}"
+    stdin: >-
+      {{
+        capacity_preflight_live_specs.results | default([])
+        | map(attribute='stdout') | map('from_json') | list | to_json
+      }}
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false

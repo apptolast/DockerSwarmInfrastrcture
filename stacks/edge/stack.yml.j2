@@ -39,7 +39,7 @@ services:
         gid: "{{ edge_traefik_runtime_gid }}"
         mode: 0400
     networks:
-{% for network_key in edge_networks %}
+{% for network_key in edge_networks | combine(edge_application_networks) %}
       - edge-{{ network_key }}
 {% endfor %}
       - edge-monitoring
@@ -98,7 +98,7 @@ services:
         max_failure_ratio: 0
 
 networks:
-{% for network_key, network_name in edge_networks.items() %}
+{% for network_key, network_name in (edge_networks | combine(edge_application_networks)).items() %}
   edge-{{ network_key }}:
     external: true
     name: "{{ network_name }}"

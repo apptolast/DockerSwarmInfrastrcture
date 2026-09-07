@@ -35,6 +35,7 @@ SAFE_PLAYBOOKS = {
     "edge",
     "workloads",
     "observability",
+    "organizationweb",
     "backup",
     "bootstrap-host",
     "site",
