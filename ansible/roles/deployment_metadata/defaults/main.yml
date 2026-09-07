@@ -33,6 +33,8 @@ deployment_metadata_components_by_playbook:
     - observability
   backup:
     - backup
+  organizationweb:
+    - organizationweb
   site:
     - host-security
     - platform

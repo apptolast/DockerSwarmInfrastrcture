@@ -97,3 +97,24 @@ Seguridad independiente: revisión estática de A favorable, con límites
 operativos explícitos. Tras formato cambian hashes de los tasks, por lo que
 el manifiesto final debe ratificarse. Datos, secrets, TLS real y convergencia
 del host siguen siendo evidencia del operador posterior al check/apply.
+
+## Corrección del check remoto de metadatos
+
+El check remoto del corte f15c651 falló antes de aplicar OrganizationWeb:
+platform_release_version indefinida. El guard también carecía del nuevo
+playbook y del mapa de su componente. No se omite el role ni la procedencia.
+
+Test nuevo ejecuta Ansible real con los vars_files del playbook de producto,
+el role deployment_metadata y --check --diff; sólo redirige los destinos a
+un directorio temporal. RED 96e1b1 reproduce la misma variable indefinida.
+Se añade config/platform.yml y organizationweb a allowlist/mapa, con su único
+componente. GREEN 497e07 valida el render público esperado y ausencia de
+archivos escritos. No atribuye al test el resto del despliegue Swarm.
+
+Oráculo de identidad desconocida inicialmente GREEN, sin falso RED;
+foco final 840531: 2/2. Rechaza antes de renderizar metadatos. Los logs
+organizationweb-metadata-red/green/final.log se conservan fuera del repo.
+Regresión de operation lock 15/15 y workloads 58/58, Ansible-lint production
+y lint completos EXIT 0 (54bdf9). El escaneo git del clon portable sigue
+limitado a un commit; la evidencia histórica completa anterior y CI son
+separadas. No se ha repetido el check remoto ni aplicado la aplicación.

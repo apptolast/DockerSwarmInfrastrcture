@@ -200,6 +200,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El playbook OrganizationWeb carga la versión de plataforma y registra su
+  componente en el role de metadatos. Una prueba Ansible real de check/diff
+  cubre sus inputs y el rechazo de identidades desconocidas.
 - `personal-website-alberto` vuelve a conservar en `config/services.yml` el
   digest histórico que fue atestado durante la restauración. El digest nuevo
   aprobado queda exclusivamente en `approved_runtime_reference`, que es el

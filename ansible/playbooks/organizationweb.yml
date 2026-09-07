@@ -7,6 +7,7 @@
   any_errors_fatal: true
   vars_files:
     - ../../config/capacity.yml
+    - ../../config/platform.yml
     - ../../config/organizationweb.yml
     - ../group_vars/all.yml
   roles:
