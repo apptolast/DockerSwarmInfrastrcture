@@ -179,23 +179,48 @@ Swarm ni RPO/RTO. Esas obligaciones conservan sus puertas operativas propias.
 La mejora posterior de DNS de Nginx se valida y despliega por separado; este
 apartado registra el corte aceptado, no un despliegue futuro del catálogo.
 
-## Candidato Apariencia 20: pendiente de aplicar
+## Apariencia 20 desplegada y aceptada
 
-El catalogo propone la revision OCI
-`ed00ad426842b4a85f2a0f849de014a8615ba76d`. Las imagenes API/web se
-publicaron y el operador verifico sus indices OCI con plataforma linux/amd64
-mas attestation; se fijan los digests de indice, no los de configuracion.
-Esta preparacion no acredita despliegue. CI de aplicacion 34152171279
-termino con dos fallos de fixtures E2E y 141 casos correctos. Esos fixtures
-se corrigieron y su foco paso; la repeticion CI final y el replay siguen
-pendientes. Antes de check/apply se exige su cierre y la revision del
-catalogo limpio.
+El 7 de septiembre de 2026 se desplegó el catálogo `8aec158`, incorporado a
+main mediante PR31 (`f89a014`), con la revisión OCI de producto
+`ed00ad426842b4a85f2a0f849de014a8615ba76d`. Los índices API/web publicados
+y verificados para linux/amd64, con attestation, coinciden con el catálogo:
 
-Se conservan DNS dinamico de Nginx, usuarios, tmpfs, PostgreSQL, RabbitMQ,
-secrets, red y recursos. El unico cambio operativo son release y dos digests.
-No es necesario repetir bootstrap de secretos ni modificar edge para esta
-actualizacion. Aplicar el procedimiento existente de OrganizationWeb y
-verificar salud, digests exactos y aceptacion autenticada de Apariencia.
+```text
+API sha256:fae45cecc45c8a3feed715524dd0cbfba6ecfac9eabd1ef50be740f84332ceb6
+web sha256:3b939af19b1d66b05c8adef5649b9e5ecd3d8778aea0a3905c86e0c206be4d23
+```
+
+La CI inicial de aplicación 34152171279 dejó 141 casos correctos y dos
+fallos de fixtures E2E; esa evidencia se conserva. Tras corregir los fixtures,
+la CI de aplicación 34154520811 sobre `1f36315` y la CI de infraestructura
+34154628641 terminaron SUCCESS. El replay dirigido de frontend terminó con
+72 Killed de 79, separado del original y con sus siete residuos documentados.
+
+El wrapper oficial terminó check con 27 tareas correctas, dos cambios y cero
+fallos; apply con 38 correctas, cinco cambios y cero fallos, ambos EXIT 0.
+Después, `UpdateStatus.State` de backend y web mostró `completed` y
+`update completed`; no se dedujo convergencia sólo del retorno del wrapper.
+
+La aceptación autenticada por HTTPS verificó defaults sin configurar,
+PUT 200 y preferencia exacta tras recarga y nueva sesión. Los datos de trabajo
+anteriores siguieron disponibles y las ocho rutas legacy conservaron sus
+respuestas. PostgreSQL y RabbitMQ mantuvieron sus contenedores. No se
+modificaron DNS, edge, usuarios, tmpfs, secrets, redes ni recursos para esta
+actualización; el cambio operativo fue release y los dos digests.
+
+Evidencia operativa fuera de Git:
+`deployment-preparation/organizationweb-appearance-acceptance.json`, junto
+a los logs check/apply del operador. SHA256 del JSON:
+
+```text
+581fbd7a32b5ef04d5020ab6fb29ae84926a762d4e234f1bc63ec2be2a458621
+```
+
+Las capturas de aceptación usan viewports emulados, no dispositivos físicos.
+El primer cierre de sesión de UI no quedó acreditado por timeout de la
+herramienta; se verificaron después un nuevo login y logout HTTP explícito
+204 con sesión anónima. No se presenta el primer intento como éxito.
 
 El backup fresco del 7 de septiembre de 2026 a las 18:40:34 UTC tiene
 49.534 bytes y SHA256:
