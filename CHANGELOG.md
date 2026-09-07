@@ -6,6 +6,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Security
+
+- Promueve el snapshot Ubuntu a `20260906T000000Z`, con sus cuatro índices
+  InRelease verificados mediante la clave de archivo Ubuntu y simulación APT
+  de los trece paquetes Ubuntu fijados. Actualiza curl, gpg, AppArmor y
+  OpenSSH a los pins disponibles revisados; conserva el SLO de 14 días y
+  los pins externos de CrowdSec. No aplica cambios al host ni modifica el
+  catálogo de restauración legacy. Evidencia: `docs/SNAPSHOT_20260906.md`.
+
 ### Added
 
 - [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real

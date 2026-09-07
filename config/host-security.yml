@@ -136,13 +136,13 @@ host_security_crowdsec_hub_dependency_lock:
     sha256: c8d3fdf1c02a60ff58b9a49592f09f67ac50321af98d620c529e3dc35773d6e4
 
 # The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
-host_security_ubuntu_snapshot: 20260819T000000Z
+host_security_ubuntu_snapshot: 20260906T000000Z
 host_security_apt_update_policy: promoted-snapshot-only
 host_security_snapshot_max_age_days: 14
 host_security_repository_bootstrap_package_lock:
   - ca-certificates=20260601~26.04.1
-  - curl=8.18.0-1ubuntu2.3
-  - gpg=2.4.8-4ubuntu3
+  - curl=8.18.0-1ubuntu2.4
+  - gpg=2.4.8-4ubuntu3.1
   - python3-debian=1.0.1ubuntu2
 host_security_required_packages:
   - apparmor
@@ -157,13 +157,13 @@ host_security_required_packages:
   - sudo
   - ufw
 host_security_package_lock:
-  - apparmor=5.0.0~beta1-0ubuntu7
+  - apparmor=5.0.2-0ubuntu1~26.04.1
   - chrony=4.8-2ubuntu1
   - crowdsec=1.7.8
   - crowdsec-firewall-bouncer-iptables=0.0.34
   - fail2ban=1.1.0-9
   - logrotate=3.22.0-1build1
-  - openssh-server=1:10.2p1-2ubuntu3.5
+  - openssh-server=1:10.2p1-2ubuntu3.6
   - psad=2.4.6-3build1
   - rsyslog=8.2512.0-1ubuntu4.1
   - sudo=1.9.17p2-1ubuntu3
