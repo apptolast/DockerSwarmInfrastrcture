@@ -1,25 +1,16 @@
 ---
-- name: Deploy the Traefik edge stack
+- name: Reconcile the independent OrganizationWeb MVP stack
   hosts: swarm_managers
   become: true
-  gather_facts: true
+  gather_facts: false
   serial: 1
   any_errors_fatal: true
-
   vars_files:
     - ../../config/capacity.yml
-    - ../../config/platform.yml
-    - ../../config/services.yml
     - ../../config/organizationweb.yml
-    - ../../config/workload-image-updates.yml
     - ../group_vars/all.yml
-
   roles:
     - role: operation_lock_guard
     - role: capacity_preflight
-      tags:
-        - capacity
-    - role: image_preflight
-    - role: workloads_runner_image
-    - role: edge
+    - role: organizationweb
     - role: deployment_metadata

@@ -100,6 +100,16 @@ http:
       tls:
         certResolver: letsencrypt
 
+    organizationweb:
+      rule: "Host(`{{ organizationweb.hostname }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+        - edge-rate-limit
+      service: organizationweb
+      tls:
+        certResolver: letsencrypt
   middlewares:
     edge-security:
       headers:
@@ -135,6 +145,16 @@ http:
           - edge-security
 
   services:
+    organizationweb:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://organizationweb_web:8080
+        healthCheck:
+          path: /healthz
+          hostname: "{{ organizationweb.hostname }}"
+          interval: 15s
+          timeout: 3s
     kropia:
       loadBalancer:
         servers:

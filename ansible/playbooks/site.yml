@@ -11,6 +11,7 @@
     - ../../config/host-security.yml
     - ../../config/platform.yml
     - ../../config/services.yml
+    - ../../config/organizationweb.yml
     - ../../config/workload-image-updates.yml
     - ../../config/minecraft.yml
     - ../../stacks/workloads/secrets.yml

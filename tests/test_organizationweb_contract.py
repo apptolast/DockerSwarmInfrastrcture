@@ -1,0 +1,385 @@
+"""Deployment boundaries of the additive OrganizationWeb stack."""
+
+from pathlib import Path
+import importlib.util
+import json
+import secrets
+import subprocess
+import tempfile
+import time
+import unittest
+import uuid
+import sys
+
+import jinja2
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class OrganizationWebContractTests(unittest.TestCase):
+    def test_preflight_covers_installation_parents_and_file_targets_without_following_links(self):
+        tasks = yaml.safe_load((ROOT / "ansible/roles/organizationweb/tasks/main.yml").read_text())
+        stats = [task for task in tasks if "ansible.builtin.stat" in task]
+        paths = {
+            item["path"]
+            for task in stats for item in task.get("loop", [])
+            if isinstance(item, dict)
+        }
+        self.assertTrue({
+            "/opt", "/opt/dockerswarm", "/opt/dockerswarm/organizationweb",
+            "/opt/dockerswarm/organizationweb/stack.yml",
+            "/opt/dockerswarm/organizationweb/validate-swarm-deployment.py",
+        }.issubset(paths))
+        self.assertTrue(all(task["ansible.builtin.stat"]["follow"] is False for task in stats))
+
+    def test_postgres_runs_as_70_without_capabilities_and_preserves_its_database(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        service = yaml.safe_load(template.render(**variables))["services"]["postgres"]
+        name = "organizationweb-postgres-test-" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="organizationweb-pg-", dir=ROOT / ".build") as temporary:
+            directory = Path(temporary)
+            data = directory / "data"
+            data.mkdir(mode=0o700)
+            for key, value in {"db_username": "organization", "db_password": secrets.token_hex(32)}.items():
+                path = directory / key
+                path.write_text(value)
+                path.chmod(0o400)
+            self.fixture_helper(directory, service["image"], "chown", [
+                "70:70", "/fixture/data", "/fixture/db_username", "/fixture/db_password",
+            ])
+            command = [
+                "docker", "run", "--detach", "--name", name,
+                "--user", service["user"], "--cap-drop", "ALL",
+                "--memory", "384m", "--memory-reservation", "192m",
+                "--volume", f"{data}:/var/lib/postgresql/data",
+            ]
+            for secret in service["secrets"]:
+                command.extend(["--volume", f"{directory / secret['source']}:/run/secrets/{secret['target']}:ro"])
+            for key, value in service["environment"].items():
+                command.extend(["--env", f"{key}={value}"])
+            command.append(service["image"])
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+                self.wait_for_health(name, service)
+                query = ["docker", "exec", name, "psql", "-U", "organization", "-d", "organization", "-Atc"]
+                created = subprocess.run(query + ["CREATE TABLE retained(id integer); INSERT INTO retained VALUES (19)"], capture_output=True, text=True)
+                self.assertEqual(created.returncode, 0, created.stderr)
+                subprocess.run(["docker", "restart", name], check=True, capture_output=True, text=True)
+                self.wait_for_health(name, service)
+                read = subprocess.run(query + ["SELECT id FROM retained"], capture_output=True, text=True)
+                self.assertEqual(read.returncode, 0, read.stderr)
+                self.assertEqual(read.stdout.strip(), "19")
+            finally:
+                subprocess.run(["docker", "rm", "--force", name], capture_output=True, text=True, check=True)
+                self.fixture_helper(directory, service["image"], "rm", ["-rf", "/fixture/data"])
+
+    def fixture_helper(self, directory, image, executable, arguments):
+        self.assertEqual(directory.parent.resolve(), (ROOT / ".build").resolve())
+        self.assertFalse(directory.is_symlink())
+        self.assertTrue(directory.name.startswith(("organizationweb-pg-", "organizationweb-rabbit-")))
+        self.assertFalse((directory / "data").is_symlink())
+        subprocess.run(
+            ["docker", "run", "--rm", "--network", "none", "--read-only",
+             "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN",
+             "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+             "--volume", f"{directory}:/fixture", "--entrypoint", executable,
+             image, *arguments],
+            capture_output=True, text=True, check=True,
+        )
+
+    def wait_for_health(self, name, service):
+        deadline = time.monotonic() + 90
+        while True:
+            result = subprocess.run(
+                ["docker", "exec", name, *service["healthcheck"]["test"][1:]],
+                capture_output=True, text=True, check=False, timeout=15,
+            )
+            if result.returncode == 0 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rabbit_runs_as_100_without_capabilities_and_preserves_its_vhost(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        service = yaml.safe_load(template.render(**variables))["services"]["rabbitmq"]
+        name = "organizationweb-rabbit-test-" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="organizationweb-rabbit-", dir=ROOT / ".build") as temporary:
+            directory = Path(temporary)
+            data = directory / "data"
+            data.mkdir(mode=0o700)
+            config = directory / "rabbitmq.conf"
+            config.write_text(
+                "default_user = organization\n"
+                f"default_pass = {secrets.token_hex(32)}\n"
+                "default_vhost = organization\n"
+            )
+            config.chmod(0o400)
+            self.fixture_helper(directory, service["image"], "chown", [
+                "100:101", "/fixture/data", "/fixture/rabbitmq.conf",
+            ])
+            command = [
+                "docker", "run", "--detach", "--name", name,
+                "--hostname", service["hostname"],
+                "--user", service["user"], "--cap-drop", "ALL",
+                "--memory", "384m", "--memory-reservation", "192m",
+                "--volume", f"{data}:/var/lib/rabbitmq",
+                "--volume", f"{config}:/run/secrets/rabbitmq.conf:ro",
+            ]
+            for key, value in service["environment"].items():
+                command.extend(["--env", f"{key}={value}"])
+            command.append(service["image"])
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+                self.wait_for_health(name, service)
+                control = ["docker", "exec", name, "rabbitmqctl", "-q"]
+                configured = subprocess.run(control + ["list_vhosts", "name"], capture_output=True, text=True)
+                self.assertEqual(configured.returncode, 0, configured.stderr)
+                self.assertIn("organization", configured.stdout.splitlines())
+                created = subprocess.run(control + ["add_vhost", "retained-fixture"], capture_output=True, text=True)
+                self.assertEqual(created.returncode, 0, created.stderr)
+                subprocess.run(["docker", "restart", name], check=True, capture_output=True, text=True)
+                self.wait_for_health(name, service)
+                read = subprocess.run(control + ["list_vhosts", "name"], capture_output=True, text=True)
+                self.assertEqual(read.returncode, 0, read.stderr)
+                self.assertIn("retained-fixture", read.stdout.splitlines())
+            finally:
+                subprocess.run(["docker", "rm", "--force", name], capture_output=True, text=True, check=True)
+                self.fixture_helper(directory, service["image"], "rm", ["-rf", "/fixture/data"])
+
+    def test_published_application_images_identify_the_catalog_release(self):
+        app = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())["organizationweb"]
+        for name in ("backend", "web"):
+            with self.subTest(image=name):
+                subprocess.run(
+                    ["docker", "pull", app["images"][name]],
+                    text=True, capture_output=True, check=True,
+                )
+                completed = subprocess.run(
+                    ["docker", "image", "inspect", app["images"][name]],
+                    text=True, capture_output=True, check=True,
+                )
+                inspected = json.loads(completed.stdout)[0]
+                self.assertEqual(
+                    inspected["Config"]["Labels"]["org.opencontainers.image.revision"],
+                    app["release"],
+                )
+
+    def test_edge_adds_one_router_and_network_preserving_all_legacy_routes(self):
+        subprocess.run(
+            [str(Path(sys.executable).parent / "ansible-playbook"),
+             "--inventory", "ansible/inventory/local/hosts.yml",
+             "ansible/playbooks/render-edge.yml"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        )
+        dynamic = yaml.safe_load((ROOT / ".build/edge/dynamic.yml").read_text())
+        edge = yaml.safe_load((ROOT / ".build/edge/stack.yml").read_text())
+        legacy = yaml.safe_load((ROOT / "config/platform.yml").read_text())["platform_edge_networks"]
+        self.assertEqual(len(legacy), 8)
+        self.assertEqual(
+            set(dynamic["http"]["routers"]),
+            {*legacy, "edge-health", "edge-ping-internal", "organizationweb"},
+        )
+        router = dynamic["http"]["routers"]["organizationweb"]
+        self.assertEqual(router["rule"], "Host(`organizacion.apptolast.com`)")
+        self.assertEqual(router["entryPoints"], ["websecure"])
+        self.assertEqual(router["tls"]["certResolver"], "letsencrypt")
+        self.assertEqual(
+            dynamic["http"]["services"]["organizationweb"]["loadBalancer"]["servers"],
+            [{"url": "http://organizationweb_web:8080"}],
+        )
+        self.assertEqual(
+            set(edge["networks"]),
+            {*("edge-" + name for name in legacy), "edge-monitoring", "edge-organizationweb"},
+        )
+
+    def test_operation_lock_accepts_only_the_new_versioned_playbook_identity(self):
+        spec = importlib.util.spec_from_file_location(
+            "operation_lock", ROOT / "scripts/ansible-operation-lock.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.require_metadata(
+            "a" * 64, "b" * 40, "c" * 64,
+            "organizationweb", "production", "check", "review-controller",
+        )
+        wrapper = (ROOT / "scripts/deploy-ansible.sh").read_text()
+        self.assertIn("|organizationweb|", wrapper)
+        self.assertIn('"${PROJECT_DIR}/config/capacity-profiles.yml"', wrapper)
+        self.assertIn('"${PROJECT_DIR}/config/organizationweb.yml"', wrapper)
+        gate = (ROOT / "scripts/validate-iac.sh").read_text()
+        self.assertIn("scripts/validate-organizationweb.py", gate)
+        self.assertIn("scripts/validate-capacity-profiles.py", gate)
+        with self.assertRaises(module.OperationLockError):
+            module.require_metadata(
+                "a" * 64, "b" * 40, "c" * 64,
+                "organizationweb-extra", "production", "check", "review-controller",
+            )
+
+    def test_deployment_is_locked_and_capacity_checked_before_application_role(self):
+        play = yaml.safe_load((ROOT / "ansible/playbooks/organizationweb.yml").read_text())[0]
+        self.assertEqual(
+            [item["role"] for item in play["roles"]],
+            ["operation_lock_guard", "capacity_preflight", "organizationweb", "deployment_metadata"],
+        )
+        role = yaml.safe_load((ROOT / "ansible/roles/organizationweb/tasks/main.yml").read_text())
+        deploy = next(task for task in role if task.get("ansible.builtin.import_tasks") == "deploy.yml")
+        self.assertEqual(deploy["when"], "not ansible_check_mode")
+        deployed = (ROOT / "ansible/roles/organizationweb/tasks/deploy.yml").read_text()
+        self.assertIn("org.opencontainers.image.revision", deployed)
+        self.assertIn("organizationweb.release", deployed)
+        preflight = (ROOT / "ansible/roles/organizationweb/tasks/main.yml").read_text()
+        self.assertIn("organizationweb_node_ids.stdout_lines | length == 1", preflight)
+        self.assertIn(".Spec.Labels['platform.workloads'] == 'true'", preflight)
+
+    def test_catalog_rejects_a_data_root_inside_the_legacy_generation(self):
+        spec = importlib.util.spec_from_file_location(
+            "organizationweb_validator", ROOT / "scripts/validate-organizationweb.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        variables["organizationweb"]["data_root"] = "/srv/dockerswarm/runtime"
+        with self.assertRaisesRegex(ValueError, "data_root"):
+            module.validate_catalog(variables)
+
+    def test_render_keeps_data_services_private_and_legacy_catalog_separate(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        stack = yaml.safe_load(template.render(**variables))
+        services = stack["services"]
+        self.assertEqual(set(services), {"web", "backend", "postgres", "rabbitmq"})
+        self.assertEqual(set(services["web"]["networks"]), {"edge", "application"})
+        self.assertEqual(
+            set(services["backend"]["networks"]),
+            {"application", "database", "messaging"},
+        )
+        self.assertEqual(set(services["postgres"]["networks"]), {"database"})
+        self.assertEqual(set(services["rabbitmq"]["networks"]), {"messaging"})
+        self.assertEqual(stack["networks"]["edge"]["name"], "apptolast-edge-organizationweb")
+        self.assertTrue(stack["networks"]["edge"]["external"])
+        for service in services.values():
+            self.assertNotIn("ports", service)
+            self.assertRegex(service["image"], r"@sha256:[a-f0-9]{64}$")
+            self.assertEqual(service["deploy"]["replicas"], 1)
+        self.assertEqual(
+            services["backend"]["environment"]["SPRING_CONFIG_IMPORT"],
+            "configtree:/run/secrets/",
+        )
+        self.assertEqual(
+            {secret["target"] for secret in services["backend"]["secrets"]},
+            {
+                "DB_USERNAME", "DB_PASSWORD", "APP_AUTH_USERNAME",
+                "APP_AUTH_PASSWORD", "RABBITMQ_USERNAME", "RABBITMQ_PASSWORD",
+            },
+        )
+        self.assertNotIn("approved_services", variables)
+        self.assertEqual(stack.get("configs"), {})
+
+    def test_publisher_uses_the_application_vhost_property(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        stack = yaml.safe_load(template.render(**variables))
+        self.assertEqual(
+            stack["services"]["backend"]["environment"].get("RABBITMQ_VHOST"),
+            "organization",
+        )
+
+    def test_web_healthcheck_uses_the_published_unprivileged_port(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        stack = yaml.safe_load(template.render(**variables))
+        self.assertEqual(
+            stack["services"]["web"]["healthcheck"]["test"][-1],
+            "http://127.0.0.1:8080/healthz",
+        )
+
+    def test_backend_binds_secure_session_policy_to_the_public_origin(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        stack = yaml.safe_load(template.render(**variables))
+        self.assertEqual(
+            stack["services"]["backend"]["environment"].get("APP_PUBLIC_ORIGIN"),
+            "https://organizacion.apptolast.com",
+        )
+
+    def test_published_web_executes_its_actual_healthcheck_with_hardening(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        web = yaml.safe_load(template.render(**variables))["services"]["web"]
+        name = "organizationweb-health-test-" + uuid.uuid4().hex
+        command = [
+            "docker", "run", "--detach", "--name", name,
+            "--user", web["user"], "--read-only", "--cap-drop", "ALL",
+            "--add-host", "backend:127.0.0.1",
+        ]
+        for mount in web["tmpfs"]:
+            command.extend(["--tmpfs", mount])
+        command.append(web["image"])
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            deadline = time.monotonic() + 20
+            while True:
+                probe = subprocess.run(
+                    ["docker", "exec", name, *web["healthcheck"]["test"][1:]],
+                    capture_output=True, text=True, check=False,
+                )
+                if probe.returncode == 0 or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.25)
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+        finally:
+            subprocess.run(
+                ["docker", "rm", "--force", name],
+                capture_output=True, text=True, check=False,
+            )
+
+    def test_docker_accepts_the_stack_without_ignored_options(self):
+        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
+        template = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+            undefined=jinja2.StrictUndefined,
+        ).get_template("stack.yml.j2")
+        completed = subprocess.run(
+            ["docker", "stack", "config", "--compose-file", "-"],
+            input=template.render(**variables),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("Ignoring", completed.stderr)
+        normalized = yaml.safe_load(completed.stdout)
+        self.assertTrue(normalized["services"]["backend"]["read_only"])
+        self.assertEqual(
+            normalized["services"]["backend"]["deploy"]["resources"]["limits"]["memory"],
+            "805306368",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

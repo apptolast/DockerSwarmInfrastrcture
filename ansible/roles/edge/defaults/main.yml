@@ -3,6 +3,7 @@ edge_install_root: /opt/dockerswarm
 edge_state_root: /srv/dockerswarm
 edge_monitoring_network: apptolast-edge-monitoring
 edge_networks: {}
+edge_application_networks: {}
 edge_traefik_image: ""
 edge_traefik_version: ""
 edge_traefik_runtime_uid: 65532

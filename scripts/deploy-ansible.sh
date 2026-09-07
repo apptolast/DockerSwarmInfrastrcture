@@ -35,7 +35,7 @@ Usage:
       [--local | --ask-become-pass] [--check | --confirm-production]
 
 NAME is one of: platform, host-baseline, preflight-images, edge, workloads,
-observability, backup, site.
+observability, organizationweb, backup, site.
 PROFILE is production (default) or acme-staging. The staging profile is valid
 only with the edge playbook and uses a separate ACME storage file.
 
@@ -126,7 +126,7 @@ while (( $# > 0 )); do
 done
 
 case "${playbook_name}" in
-  platform|host-baseline|preflight-images|edge|workloads|observability|backup|site)
+  platform|host-baseline|preflight-images|edge|workloads|observability|organizationweb|backup|site)
     ;;
   *)
     fail "--playbook is missing or invalid"
@@ -188,6 +188,8 @@ source_revision="$(
 contract_sha256="$(
   for contract_path in \
     "${PROJECT_DIR}/config/capacity.yml" \
+    "${PROJECT_DIR}/config/capacity-profiles.yml" \
+    "${PROJECT_DIR}/config/organizationweb.yml" \
     "${PROJECT_DIR}/config/host-security.yml" \
     "${PROJECT_DIR}/config/minecraft.yml" \
     "${PROJECT_DIR}/config/platform.yml" \

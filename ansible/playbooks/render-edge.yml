@@ -8,6 +8,7 @@
   vars_files:
     - ../../config/platform.yml
     - ../../config/services.yml
+    - ../../config/organizationweb.yml
     - ../group_vars/all.yml
 
   vars:

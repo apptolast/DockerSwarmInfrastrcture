@@ -8,6 +8,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Stack OrganizationWeb independiente, catálogo de imágenes y secrets,
+  perfiles de capacidad excluyentes, ruta edge aislada y runbook de operación.
+  Incluye pruebas de health, persistencia y usuarios sin privilegios;
+  el despliegue real y su verificación TLS siguen pendientes del operador.
 - [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md) recoge el estado real
   del host tras el primer despliegue productivo de este árbol: lo aplicado y
   verificado, los servicios que aún no convergen con su diagnóstico, el bloqueo
