@@ -82,6 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Candidato OrganizationWeb20 `ed00ad4`: actualiza solamente la revision y
+  los digests de API/web para Apariencia. Documenta backup fresco restaurado
+  y ensayo local de retroceso V19; CI final, check/apply y aceptacion del
+  candidato siguen pendientes. No acredita despliegue productivo.
+
 - Catálogo OrganizationWeb actualizado a la revisión `4d9469a`, con imágenes
   API/web fijadas por digest. La web incorpora recuperación DNS nativa al
   arrancar sin backend; el ensayo Docker local pasó antes de la publicación.

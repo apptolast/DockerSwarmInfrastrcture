@@ -178,3 +178,49 @@ respaldo externo programado, restauración RabbitMQ, custodia de la clave de
 Swarm ni RPO/RTO. Esas obligaciones conservan sus puertas operativas propias.
 La mejora posterior de DNS de Nginx se valida y despliega por separado; este
 apartado registra el corte aceptado, no un despliegue futuro del catálogo.
+
+## Candidato Apariencia 20: pendiente de aplicar
+
+El catalogo propone la revision OCI
+`ed00ad426842b4a85f2a0f849de014a8615ba76d`. Las imagenes API/web se
+publicaron y el operador verifico sus indices OCI con plataforma linux/amd64
+mas attestation; se fijan los digests de indice, no los de configuracion.
+Esta preparacion no acredita despliegue. CI de aplicacion 34152171279
+termino con dos fallos de fixtures E2E y 141 casos correctos. Esos fixtures
+se corrigieron y su foco paso; la repeticion CI final y el replay siguen
+pendientes. Antes de check/apply se exige su cierre y la revision del
+catalogo limpio.
+
+Se conservan DNS dinamico de Nginx, usuarios, tmpfs, PostgreSQL, RabbitMQ,
+secrets, red y recursos. El unico cambio operativo son release y dos digests.
+No es necesario repetir bootstrap de secretos ni modificar edge para esta
+actualizacion. Aplicar el procedimiento existente de OrganizationWeb y
+verificar salud, digests exactos y aceptacion autenticada de Apariencia.
+
+El backup fresco del 7 de septiembre de 2026 a las 18:40:34 UTC tiene
+49.534 bytes y SHA256:
+
+```text
+6f1a141d7ed70667ac1f3271ab0ad939aacfcff774ecdc7fb945c9a0884a639e
+```
+
+El operador registro modo 0600, transferencia con hash identico y restore
+completo EXIT 0 sobre destino vacio: 18 migraciones, proyecto, tarea, sesion
+y nueve eventos; la tabla de apariencia aun no existia. El ensayo aislado
+retiro sus recursos. Evidencia externa conservada:
+`deployment-preparation/organizationweb-appearance-backup-restore.json`.
+No incluye escrituras posteriores al instante de la copia.
+
+Ademas, un ensayo local real arranco API20, migro V19 y guardo una preferencia;
+luego arranco la API anterior `4d9469a` sobre esa misma base, con login y
+lectura de proyectos correctos; finalmente API20 recupero la preferencia
+exacta. Fila, tabla y toda la historia Flyway permanecieron identicas.
+No se borraron migraciones ni se relajaron sus validaciones. Informe externo:
+`deployment-preparation/organizationweb-v19-rollback-review.md` (EXIT 0).
+
+Ese ensayo acredita compatibilidad API/Flyway local con V19, no rollback
+Swarm/TLS/web ni recuperacion de escrituras concurrentes. Para retroceder,
+restablecer los dos digests anteriores mediante nuevo catalogo revisado,
+conservando datos, V19 y secrets; no restaurar automaticamente una copia
+vieja encima de escrituras posteriores. RabbitMQ, respaldo externo
+programado, escrow y RPO/RTO conservan sus limites y gates independientes.
