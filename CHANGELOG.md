@@ -82,6 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Catálogo OrganizationWeb actualizado a la revisión `4d9469a`, con imágenes
+  API/web fijadas por digest. La web incorpora recuperación DNS nativa al
+  arrancar sin backend; el ensayo Docker local pasó antes de la publicación.
+  Esta actualización del catálogo no acredita su despliegue en el host.
+
 - `personal-website-alberto` conserva su digest verificado en
   `config/services.yml`, mientras `config/workload-image-updates.yml` declara
   la referencia operativa exacta

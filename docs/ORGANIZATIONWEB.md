@@ -139,3 +139,42 @@ revisado compatible con los ocho legacy y ejecutar edge check/apply por el
 wrapper; no editar dinámicamente el file-provider ni degradar todo el checkout
 a un snapshot de seguridad obsoleto. Una ruta de aplicación sin backend puede
 devolver 503 durante esta retirada; el edge compartido debe seguir sano.
+
+## Aceptación productiva del 7 de septiembre de 2026
+
+El catálogo `491e2c2`, con imágenes de aplicación `4d34b9c`, convergió
+con cuatro servicios saludables. La aplicación real terminó con 38 tareas
+correctas, tres cambios y ningún fallo. La repetición terminó con 38 tareas
+correctas, cero cambios y los mismos cuatro contenedores. Los 16 servicios
+anteriores conservaron una réplica disponible y ocho rutas mantuvieron sus
+códigos HTTP previos. PR29 incorporó este catálogo a main como `5607afc`.
+
+La aceptación autenticada por HTTPS creó datos sintéticos identificados:
+proyecto, tarea, reserva cancelada y sesión iniciada, pausada, reanudada y
+cerrada. El cierre idempotente recuperó el mismo recibo; historial y revisión
+semanal conservaron el tiempo neto. No quedó una sesión activa ni una reserva
+futura de la aceptación. Nueve eventos figuraban publicados en outbox; las
+colas mostraron los recuentos esperados, sin consumir sus mensajes.
+
+Se ejecutó `pg_dump` en formato custom bajo el bloqueo de operación del host.
+El archivo se creó con exclusividad, sin seguir enlaces, y se sincronizó a
+disco. El directorio `/var/backups/organizationweb` es root:root 0700; el
+archivo es root:root 0600. La copia del 7 de septiembre a las 17:02:34 UTC
+ocupa 46.689 bytes. Su SHA256 es:
+
+```text
+c0a92ee91b5ceb2bbac738a5d8fd749cf9a9497667c9a2cdf29044fef196299a
+```
+
+Se restauró esa copia real, transferida por SSH, en PostgreSQL local aislado,
+sin red ni puertos publicados. `pg_restore` terminó correctamente sobre un
+esquema inicialmente vacío: 18 migraciones, proyecto, tarea, sesión y nueve
+eventos recuperados. Las huellas de sesión, cambios e intervalos coincidieron
+con el origen. El contenedor y su volumen de prueba se retiraron; el archivo
+original protegido se conserva en el servidor.
+
+Esta prueba acredita restauración PostgreSQL de esa copia. No acredita
+respaldo externo programado, restauración RabbitMQ, custodia de la clave de
+Swarm ni RPO/RTO. Esas obligaciones conservan sus puertas operativas propias.
+La mejora posterior de DNS de Nginx se valida y despliega por separado; este
+apartado registra el corte aceptado, no un despliegue futuro del catálogo.
