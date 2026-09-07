@@ -200,6 +200,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Los tmpfs de OrganizationWeb usan mounts largos compatibles con Swarm;
+  el test convierte el stack y comprueba escritura y flags efectivos con
+  usuarios sin privilegios. La imagen web prepara los permisos temporales.
 - El playbook OrganizationWeb carga la versión de plataforma y registra su
   componente en el role de metadatos. Una prueba Ansible real de check/diff
   cubre sus inputs y el rechazo de identidades desconocidas.

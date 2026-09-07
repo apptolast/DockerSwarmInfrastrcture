@@ -118,3 +118,34 @@ Regresión de operation lock 15/15 y workloads 58/58, Ansible-lint production
 y lint completos EXIT 0 (54bdf9). El escaneo git del clon portable sigue
 limitado a un commit; la evidencia histórica completa anterior y CI son
 separadas. No se ha repetido el check remoto ni aplicado la aplicación.
+
+## Mounts tmpfs reales en Swarm
+
+Primer apply: PG/Rabbit arrancaron, pero service inspect mostró mounts null
+en backend/web; API falló por /tmp read-only. La sintaxis tmpfs de servicio
+no se convirtió en mounts Swarm. RED 1f951d del nuevo test verifica la salida
+real de docker stack config: faltaban los tres mounts. Se sustituyen por
+volumes de type tmpfs y size, conservando usuarios, read_only y cap_drop ALL.
+PG/Rabbit no utilizaban esa sintaxis y no se modifican.
+
+El [convertidor CLI29.7.2](https://raw.githubusercontent.com/docker/cli/v29.7.2/cli/compose/convert/volume.go)
+sólo transmite SizeBytes en handleTmpfsToMount.
+El intento mode1777 se descarta en la conversión (a5ae28); no se conserva una
+opción ineficaz. Test ejecuta los mounts convertidos con las imágenes reales,
+comprueba escritura, permisos y /proc/mounts, sin afirmar que desplegó Swarm.
+
+La imagen web anterior tenía /run y cache0755 root. Long syntax mantiene ese
+modo; RED009350. Ensayo imagen derivada: chown101 no conserva propietario
+en tmpfs (a59083). chmod1777 en ambos directorios sí pasa (a2f50d), incluidos
+rw/nosuid/nodev/noexec observados, sin cambiar usuario de runtime ni caps.
+Dockerfile release19 recibe sólo esa línea; root revisa/publica y actualiza
+el catálogo antes del GREEN final. El test de health existente usa ahora
+mounts largos, preservando su oráculo. No se toca configuración Nginx.
+
+Root publicó ambas imágenes desde 4d34b9c66cc024d40e163672819934fa38ebaf09,
+que incluye revisión semanal y el chmod. El catálogo fija sus nuevos digests;
+PG/Rabbit conservan versiones. Foco real 97443: tmpfs1/1 y contrato14/14
+GREEN, incluidos OCI/reinicio/health. Lint detectó sólo URL sin Markdown en
+esta bitácora, corregida; no repetir las pruebas por ese cambio documental.
+Lint final EXIT0 634b74. El historial del clon portable sigue limitado;
+la comprobación histórica completa y CI se mantienen como evidencias aparte.

@@ -39,9 +39,13 @@ services:
     user: "101:101"
     read_only: true
     cap_drop: [ALL]
-    tmpfs:
-      - /run:rw,noexec,nosuid,nodev,size=16777216,mode=1777
-      - /var/cache/nginx:rw,noexec,nosuid,nodev,size=16777216,mode=1777
+    volumes:
+      - type: tmpfs
+        target: /run
+        tmpfs: {size: 16777216}
+      - type: tmpfs
+        target: /var/cache/nginx
+        tmpfs: {size: 16777216}
     networks: [edge, application]
     healthcheck:
       test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
@@ -61,8 +65,10 @@ services:
     user: "999:999"
     read_only: true
     cap_drop: [ALL]
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 67108864}
     environment:
       SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
       APP_PUBLIC_ORIGIN: "https://{{ organizationweb.hostname }}"

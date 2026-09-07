@@ -337,8 +337,11 @@ class OrganizationWebContractTests(unittest.TestCase):
             "--user", web["user"], "--read-only", "--cap-drop", "ALL",
             "--add-host", "backend:127.0.0.1",
         ]
-        for mount in web["tmpfs"]:
-            command.extend(["--tmpfs", mount])
+        for mount in web["volumes"]:
+            command.extend([
+                "--mount", "type=tmpfs,destination=" + mount["target"]
+                + ",tmpfs-size=" + str(mount["tmpfs"]["size"]),
+            ])
         command.append(web["image"])
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
