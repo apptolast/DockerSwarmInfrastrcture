@@ -2,15 +2,15 @@
 organizationweb:
   schema_version: 1
   stack_name: organizationweb
-  release: dfac90edcabdf04e442b906f0ab6db8894cbc4b2
+  release: 0030513fa402502b5db87efa87d97fb979171b4e
   hostname: organizacion.apptolast.com
   edge_network: apptolast-edge-organizationweb
   data_root: /srv/organizationweb
   images:
     backend: "ocholoko888/organizationweb-api@sha256:\
-      83e75c196f05054fde4370c9d7f30605acd12995e63fbbc85ca118d3084472fd"
+      1276d6e618f5ab6aadfa816244f5022a2393cd46d2c8c09a6d5bde1e8ec9f49b"
     web: "ocholoko888/organizationweb-web@sha256:\
-      9fd69f52549c7c764fcc36d9fa8eaa658f50e73f3465d22094352a29e2a79cb9"
+      2568a6bf4c2347171df4433f50d5127ac1e4537385ad4b067c595c889eaf8d92"
     postgres: "postgres@sha256:\
       9ae4e8f8d0284836a505f0b2e825144e32e20499856e7dc5f7b99e19d10eedd6"
     rabbitmq: "rabbitmq@sha256:\

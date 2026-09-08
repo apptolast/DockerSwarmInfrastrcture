@@ -335,3 +335,48 @@ SHA256:
 ```
 
 No acredita rollback del servidor, Swarm/TLS/web, RabbitMQ ni copia externa.
+
+## Candidato de exportación22 pendiente de despliegue
+
+El catálogo propone `0030513fa402502b5db87efa87d97fb979171b4e`.
+Sólo cambian release e índices de API/web. PG/Rabbit, secrets, edge, redes,
+recursos y el esquema Flyway20 permanecen. No se ha aplicado este candidato.
+La aceptación real21 anterior conserva su alcance y sus evidencias.
+
+```text
+backend sha256:1276d6e618f5ab6aadfa816244f5022a2393cd46d2c8c09a6d5bde1e8ec9f49b
+web sha256:2568a6bf4c2347171df4433f50d5127ac1e4537385ad4b067c595c889eaf8d92
+```
+
+Publicación desde checkout limpio, ambos EXIT 0 y 1932 inputs idénticos
+antes/después. Auditoría de los artefactos remotos: índices coinciden con
+metadatos; cada índice enlaza Linux/amd64 y su attestation; config y
+provenance declaran la revisión exacta. Los cuatro materiales base quedan
+registrados por digest, sin inferir reproducibilidad sólo de sus tags.
+
+Evidencia externa en `deployment-preparation/release22-0030513-*`:
+metadatos, logs, EXIT, tag, manifiesto, config, provenance y snapshots de
+inputs. La comprobación independiente se conserva en
+`deployment-preparation/release22-image-independent-audit.json`.
+No se guardan credenciales ni datos exportados de producción en Git.
+
+La CI de aplicación 34187626169 sigue pendiente de cierre en este corte.
+El preflight oficial previo sobre fuente `0bb939b` confirmó validate/lint;
+el main de partida `8b48854` sólo añade documentación de aceptación21.
+Ese preflight no acredita los tres valores nuevos: requieren revisión,
+gate oficial del candidato y check/apply por el wrapper antes de aceptación.
+No repetir edge, rotar secrets ni cambiar timeouts por esta preparación.
+
+La aceptación posterior usará la cuenta existente en `/exportacion`:
+un GET autenticado `/api/v1/me/export`, JSON UTF-8 cerrado con catorce
+colecciones y counts concordantes, longitud/nombre/cabeceras exactos y
+privacidad. Dos descargas del mismo enlace conservarán bytes sin otro GET;
+salir o logout retira el enlace y revoca su Blob URL. Comparar hechos,
+versiones y outbox antes/después, sin crear proyectos ni campos QA.
+Registrar sólo hashes, tamaños y resultados, no el payload personal.
+
+La vuelta al release21 debe usar los digests conservados arriba en su
+sección de aceptación, mediante cambio revisado y wrapper oficial.
+Feature22 no añade migraciones; no ejecutar repair/ignore ni restaurar
+copias antiguas sobre escrituras posteriores. Backup, RabbitMQ, offhost,
+escrow y RPO/RTO conservan sus límites y gates independientes.
