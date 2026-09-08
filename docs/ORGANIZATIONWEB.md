@@ -533,3 +533,55 @@ con snapshots `import23-live-*-before/after`. SHA256 de la aceptación:
 ```text
 1f91bac7248a7f1a7d10003fb2b32b58bdfbefe31f9db146e97f561fe1177142
 ```
+
+## API para integraciones 24: candidata, no desplegada
+
+Se propone la revisión OCI de aplicación
+`fe6f87fb013c34973214788f589375121dbad4bd` y los índices:
+
+```text
+API sha256:1e67de8d415835d9f55debf043b51d24e0aa64ada7184238eef0436ed55f1ed7
+web sha256:2c3b840e99ca802ec5389b129a2da15bafe2229efcf49580ee23c7bc96140e58
+```
+
+Publicación por digest, revisión OCI y linux/amd64 comprobados. Los 580
+inputs seleccionados de construcción conservaron sus huellas; V14 quedó
+excluido antes de su lectura. Las pruebas de mutación y CI final siguen
+pendientes; la publicación no acredita despliegue ni cierre de feature.
+
+El cambio operativo comprende release y las dos imágenes. PostgreSQL,
+RabbitMQ, secrets, redes, edge y recursos conservan sus valores. V22 añade
+credenciales y dos contadores de cuota; no elimina tablas anteriores.
+No habilita webhooks, calendarios externos ni otros proveedores.
+
+El ensayo aislado API24 → API23 → API24 terminó PASS el 8 de septiembre
+a las 15:51:07 UTC. Las 20 tablas y las definiciones de columnas/constraints
+conservaron huellas físicas antes de nuevas admisiones. Un token revocado
+siguió rechazado y otro activo funcionó después, modificando sólo cuotas.
+Tres auditorías privadas de logs no encontraron los valores secretos
+comprobados; se retiraron todos los recursos propios. El fixture pobló
+proyecto/outbox y credenciales/cuotas; otras familias quedaron vacías.
+
+Resultado original versionado en la aplicación:
+`progress/integration24_image_rollback_original.json`. SHA256:
+
+```text
+7ac10638f098baf1ba0a4dd523100fb7271bda4a665195a73e3edbb3bf7d14f8
+```
+
+Para retroceder, preparar catálogo revisado con la revisión 23
+`4c74e183e49afa6d280115b399dbaffedc7bfe7f` y los índices conservados
+en la sección anterior. Ejecutar gates y check/apply oficiales; conservar
+V22 y sus filas. No usar Flyway repair/ignore, borrar credenciales ni
+restaurar automáticamente backups antiguos sobre datos posteriores.
+
+Antes del apply se exige backup reciente y check oficial. Después:
+servicios y salud, HTTPS privado, OpenAPI, aislamiento Bearer/Cookie,
+interfaz 320/768/1280, conservación de tablas y ocho rutas legacy. No crear
+credenciales ni datos QA en producción: los flujos de escritura están
+acreditados en el E2E y ensayo efímeros. Rollback si la API no converge,
+falla la autenticación esperada o se observa una regresión de datos.
+
+Este ensayo acredita API/PostgreSQL local, no recuperación completa de
+Swarm/TLS/web/RabbitMQ. Backup externo, escrow y RPO/RTO mantienen sus
+gates separados. No se afirma aceptación productiva 24 todavía.

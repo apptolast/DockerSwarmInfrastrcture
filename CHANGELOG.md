@@ -82,6 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Candidata OrganizationWeb 24: credenciales personales para integraciones,
+  permisos y cuotas, mediante nuevas imágenes API/web por digest. V22 es
+  aditiva; ensayo API24 → API23 → API24 aprobado. El despliegue y su
+  aceptación siguen pendientes; PostgreSQL, RabbitMQ y secrets no cambian.
+
 - Importación OrganizationWeb 23 `4c74e18` desplegada con IaC `7712fc8`
   y PR38 fusionada. Apply EXIT 0, 38/4/0/0 y operación liberada; veinte
   servicios a 1/1, dieciocho contenedores y ocho rutas legacy preservados.
