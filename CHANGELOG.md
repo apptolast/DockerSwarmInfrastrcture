@@ -82,10 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
-- Candidato de exportación OrganizationWeb22 `0030513`: revisión y dos
-  digests publicados de API/web, con plataforma y provenance contrastadas.
-  Conserva PG/Rabbit, secrets, edge, redes, recursos y esquema Flyway20.
-  No desplegado: CI final, check/apply y aceptación siguen pendientes.
+- Exportación OrganizationWeb22 `0030513` desplegada con IaC `5a2b860`
+  y PR35 fusionada. CI de aplicación verde; check27/2/11/0 y apply38/4/0/0,
+  operación liberada, cuatro contenedores healthy y veinte servicios a 1/1.
+  Descargas idénticas con un GET, datos y ocho rutas legacy conservados.
+  Sin migración ni cambios PG/Rabbit; restore probado sólo sobre esquema19.
 
 - Personalización OrganizationWeb21 `dfac90e` desplegada y aceptada con
   infraestructura `0bb939b` (PR33, main `5add5b8`). CI34173869406 SUCCESS,
