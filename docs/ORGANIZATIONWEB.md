@@ -249,3 +249,51 @@ restablecer los dos digests anteriores mediante nuevo catalogo revisado,
 conservando datos, V19 y secrets; no restaurar automaticamente una copia
 vieja encima de escrituras posteriores. RabbitMQ, respaldo externo
 programado, escrow y RPO/RTO conservan sus limites y gates independientes.
+
+## Candidato de personalización21 pendiente de aceptación
+
+El catálogo propone `dfac90edcabdf04e442b906f0ab6db8894cbc4b2`.
+Sólo cambian release e imágenes API/web; no cambia PostgreSQL, RabbitMQ,
+edge, secrets, redes ni recursos. Publicación revisada por el operador en
+`deployment-preparation/release21-dfac90e-publish-results.json`, fuera de Git.
+Índices publicados para las referencias ocholoko888/organizationweb-api y
+ocholoko888/organizationweb-web, respectivamente:
+
+```text
+backend sha256:83e75c196f05054fde4370c9d7f30605acd12995e63fbbc85ca118d3084472fd
+web sha256:9fd69f52549c7c764fcc36d9fa8eaa658f50e73f3465d22094352a29e2a79cb9
+```
+
+Este candidato no está aceptado ni aplicado por esta preparación. CI de
+aplicación y mutación siguen en curso. Rollback local verificado debajo.
+El operador conserva check previo, apply y aceptación HTTPS autenticada,
+con comprobación de convergencia real y de los servicios anteriores.
+
+Referencia de retroceso20: release
+`ed00ad426842b4a85f2a0f849de014a8615ba76d` y ambos índices anteriores:
+
+```text
+API sha256:fae45cecc45c8a3feed715524dd0cbfba6ecfac9eabd1ef50be740f84332ceb6
+web sha256:3b939af19b1d66b05c8adef5649b9e5ecd3d8778aea0a3905c86e0c206be4d23
+```
+
+Retroceder requiere un catálogo revisado y el wrapper oficial, conservando
+base, historial Flyway y secrets. No borrar V20 ni las preferencias nuevas;
+no restaurar automáticamente una copia antigua sobre escrituras posteriores.
+El ensayo anterior con V19 no acredita compatibilidad con V20. Un ensayo
+local tampoco acredita rollback Swarm/TLS ni escrituras concurrentes.
+Backup fresco y restauración, RabbitMQ, copia externa programada, escrow y
+RPO/RTO conservan los límites y gates documentados arriba.
+
+Ensayo local21/20/21 EXIT 0 `9b43ce`, revisado por root: ambos ámbitos,
+cuatro tipos, inactivos y vistas conservan DTO/ETag exactos. Datos, esquema
+y Flyway permanecen idénticos; los recursos propios se retiraron (cero
+restantes). Resultado externo en deployment-preparation:
+`ow-v20-rollback-f5e857f8-785c-4c22-8975-cf8de24f16d6-result.json`.
+SHA256:
+
+```text
+276E5FE54899D5B651479EBC7AF6D4A704B21863785A7A11F733F0BFED7ED80D
+```
+
+No acredita rollback del servidor, Swarm/TLS/web, RabbitMQ ni copia externa.
