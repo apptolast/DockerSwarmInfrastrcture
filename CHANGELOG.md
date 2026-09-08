@@ -82,6 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Nueva copia PostgreSQL de OrganizationWeb y restauración aislada real
+  del 8 de septiembre: dieciséis tablas coincidentes, incluido esquema 20.
+  Evidencia y límites en `docs/ORGANIZATIONWEB.md`; no cambia catálogo,
+  servicios, escrituras productivas ni gates de custodia externa.
+
 - Exportación OrganizationWeb22 `0030513` desplegada con IaC `5a2b860`
   y PR35 fusionada. CI de aplicación verde; check27/2/11/0 y apply38/4/0/0,
   operación liberada, cuatro contenedores healthy y veinte servicios a 1/1.
