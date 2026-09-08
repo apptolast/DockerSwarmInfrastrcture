@@ -82,6 +82,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Catálogo candidato de importación OrganizationWeb 23, revisión `4c74e18`,
+  con índices API/web verificados. Conserva PostgreSQL, RabbitMQ, secrets,
+  edge, redes y recursos. Runbook con V21 aditiva, rollback API23/22/23
+  aislado PASS y referencias exactas de retroceso a22. Despliegue,
+  aceptación y gates finales pendientes; no se modifica estado productivo.
+
 - Nueva copia PostgreSQL de OrganizationWeb y restauración aislada real
   del 8 de septiembre: dieciséis tablas coincidentes, incluido esquema 20.
   Evidencia y límites en `docs/ORGANIZATIONWEB.md`; no cambia catálogo,

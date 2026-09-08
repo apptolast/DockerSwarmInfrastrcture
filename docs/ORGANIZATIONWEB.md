@@ -438,3 +438,58 @@ esquema 20; la limitación histórica de aceptación22 anterior sigue siendo
 correcta para su momento. No acredita escrituras posteriores, migraciones
 futuras, recuperación de API/RabbitMQ/Swarm, copias externas programadas,
 escrow ni RPO/RTO. No se importaron ni alteraron datos productivos.
+
+## Importación 23: candidato pendiente de despliegue
+
+El catálogo candidato fija la revisión OCI de aplicación
+`4c74e183e49afa6d280115b399dbaffedc7bfe7f` y los índices publicados:
+
+```text
+API sha256:313446ebc241ec2812c2d5dcbfb5618a3bc398253e9b4e78b55b6730c650216d
+web sha256:4ebd36d9a2e57f647f4ed72798ebe4039b46756659765913cc67c9b71ddf0186
+```
+
+El operador verificó registro, revisión OCI y provenance SLSA; los 677
+inputs de publicación permanecieron idénticos. Metadatos, logs y pruebas
+remotas se conservan fuera de Git en
+`deployment-preparation/release23-4c74e18-*`. El cambio del catálogo
+comprende release y los dos índices; PostgreSQL, RabbitMQ, secrets, redes,
+edge y recursos mantienen los valores anteriores.
+
+La base de infraestructura `42eb63f` superó bootstrap, validate-iac y lint,
+en ese orden. Evidencia externa: `import23-infra-baseline-gates.json`.
+Estos resultados acreditan la base, no validación posterior de este diff.
+Quedan pendientes los gates finales del candidato, CI, revisión,
+check/apply del wrapper y aceptación productiva. No se declara desplegado.
+
+La API incorpora V21, aditiva, para recibos durables de importación.
+El ensayo aislado API23 → API22 → API23 terminó PASS: importó un proyecto,
+recuperó el mismo recibo al volver y conservó datos, esquema, Flyway y
+outbox. Retiró únicamente sus contenedores, red y volumen. Resultado
+externo en deployment-preparation:
+`ow-v21-rollback-2f7fc1be-3d37-4d2b-9c78-3dbb7251aa38-result.json`.
+SHA256:
+
+```text
+cb87cb7c8ca4432321480d24ff19a3102ae9d1f81149fb5722520ca33a7fdb28
+```
+
+Para retroceder a exportación 22, usar un nuevo catálogo revisado con
+release `0030513fa402502b5db87efa87d97fb979171b4e` y estos índices:
+
+```text
+API sha256:1276d6e618f5ab6aadfa816244f5022a2393cd46d2c8c09a6d5bde1e8ec9f49b
+web sha256:2568a6bf4c2347171df4433f50d5127ac1e4537385ad4b067c595c889eaf8d92
+```
+
+Ejecutar gates y check/apply oficiales conservando V21, recibos, datos y
+secrets. No usar Flyway repair/ignore ni restaurar automáticamente una
+copia anterior sobre escrituras posteriores. El ensayo acredita API/PG
+local, no rollback Swarm/TLS/web ni RabbitMQ. El restore de esquema 20
+anterior conserva su alcance; offhost, escrow y RPO/RTO siguen pendientes.
+
+La aceptación productiva debe usar el archivo exportado del propio usuario
+para una vista previa sin escrituras y comprobar identidad, hash, counts,
+plan y filas previas. No crear datos QA ni confirmar una importación como
+parte de esa comprobación de sólo lectura. La aceptación HTTPS y de los
+servicios legacy se registra después del apply, con sus límites reales.
