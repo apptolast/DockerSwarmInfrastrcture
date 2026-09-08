@@ -336,11 +336,11 @@ SHA256:
 
 No acredita rollback del servidor, Swarm/TLS/web, RabbitMQ ni copia externa.
 
-## Candidato de exportación22 pendiente de despliegue
+## Exportación22 desplegada y aceptada
 
-El catálogo propone `0030513fa402502b5db87efa87d97fb979171b4e`.
+Release desplegado: `0030513fa402502b5db87efa87d97fb979171b4e`.
 Sólo cambian release e índices de API/web. PG/Rabbit, secrets, edge, redes,
-recursos y el esquema Flyway20 permanecen. No se ha aplicado este candidato.
+recursos y el esquema Flyway20 permanecen. Aplicado con IaC `5a2b860`.
 La aceptación real21 anterior conserva su alcance y sus evidencias.
 
 ```text
@@ -360,20 +360,43 @@ inputs. La comprobación independiente se conserva en
 `deployment-preparation/release22-image-independent-audit.json`.
 No se guardan credenciales ni datos exportados de producción en Git.
 
-La CI de aplicación 34187626169 sigue pendiente de cierre en este corte.
-El preflight oficial previo sobre fuente `0bb939b` confirmó validate/lint;
-el main de partida `8b48854` sólo añade documentación de aceptación21.
-Ese preflight no acredita los tres valores nuevos: requieren revisión,
-gate oficial del candidato y check/apply por el wrapper antes de aceptación.
-No repetir edge, rotar secrets ni cambiar timeouts por esta preparación.
+CI de aplicación 34187626169 SUCCESS: 156 E2E y un skip explícito.
+PR35 de infraestructura fusionada en `fba78f4`; aplicación main `83b0275`.
+Bootstrap/validate/lint del candidato exacto terminaron EXIT 0. El wrapper
+check UTF-8 terminó 27 ok, 2 changed previstos, 11 skipped y 0 failed;
+el apply, 38 ok, 4 changed, 0 skipped y 0 failed, con operación liberada:
 
-La aceptación posterior usará la cuenta existente en `/exportacion`:
-un GET autenticado `/api/v1/me/export`, JSON UTF-8 cerrado con catorce
-colecciones y counts concordantes, longitud/nombre/cabeceras exactos y
-privacidad. Dos descargas del mismo enlace conservarán bytes sin otro GET;
-salir o logout retira el enlace y revoca su Blob URL. Comparar hechos,
-versiones y outbox antes/después, sin crear proyectos ni campos QA.
-Registrar sólo hashes, tamaños y resultados, no el payload personal.
+```text
+b8bec73cfd3a21c3aea01c9d414b82e4c7ea1d5c39fbf8a88d937acc5f19fcee
+```
+
+Aceptación HTTPS del 8 de septiembre de 2026 a las 05:53:38 UTC:
+GET autenticado 200, JSON UTF-8 de 8568 bytes y catorce colecciones con
+counts concordantes. Dos descargas tuvieron idéntico nombre, tamaño y hash,
+con una sola preparación y ningún GET al abrir la pantalla. Cabeceras de
+no almacenamiento y descarga verificadas; Blob revocado, logout 204 y
+acceso anónimo 401. Chromium headless, anchos 320/768/1280 sin desborde,
+axe sin violaciones en la comprobación registrada.
+
+Veinte servicios a 1/1; cuatro contenedores de OrganizationWeb healthy.
+Sólo se sustituyeron API/web; dieciocho contenedores conservaron identidad,
+incluidos PostgreSQL y RabbitMQ. Las dieciséis tablas comparadas mantienen
+conteos y checksums, incluido Flyway20 y nueve eventos outbox. Las ocho
+rutas legacy conservaron su estado HTTP previo, incluido el 404 conocido
+de generadorcodigosqr. No se crearon datos de negocio QA.
+
+Evidencia externa: `export22-candidate-apply.log`, snapshots
+`export22-live-*-before/after` y `export22-live-acceptance.json`.
+SHA256 del JSON de aceptación:
+
+```text
+750ba94d94fc5aebe36889b41a30c03cc1fe7a74f90df6232559660572b0f137
+```
+
+El fixture de producción es pequeño; límites masivos se probaron localmente.
+No acredita dispositivos físicos ni estudio humano de UX. El restore previo
+probado corresponde al esquema19, no a V20 ni a escrituras posteriores;
+no se ejecutó otro restore para este despliegue sin migración.
 
 La vuelta al release21 debe usar los digests conservados arriba en su
 sección de aceptación, mediante cambio revisado y wrapper oficial.
