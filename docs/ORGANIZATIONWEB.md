@@ -439,9 +439,9 @@ correcta para su momento. No acredita escrituras posteriores, migraciones
 futuras, recuperación de API/RabbitMQ/Swarm, copias externas programadas,
 escrow ni RPO/RTO. No se importaron ni alteraron datos productivos.
 
-## Importación 23: candidato pendiente de despliegue
+## Importación 23 desplegada y aceptada
 
-El catálogo candidato fija la revisión OCI de aplicación
+El catálogo desplegado fija la revisión OCI de aplicación
 `4c74e183e49afa6d280115b399dbaffedc7bfe7f` y los índices publicados:
 
 ```text
@@ -456,11 +456,32 @@ remotas se conservan fuera de Git en
 comprende release y los dos índices; PostgreSQL, RabbitMQ, secrets, redes,
 edge y recursos mantienen los valores anteriores.
 
-La base de infraestructura `42eb63f` superó bootstrap, validate-iac y lint,
-en ese orden. Evidencia externa: `import23-infra-baseline-gates.json`.
-Estos resultados acreditan la base, no validación posterior de este diff.
-Quedan pendientes los gates finales del candidato, CI, revisión,
-check/apply del wrapper y aceptación productiva. No se declara desplegado.
+El 8 de septiembre de 2026 se aplicó oficialmente la fuente IaC
+`7712fc87c531f120396a8c8cb80bb0495d78ef5a`, fusionada mediante PR38 en
+`183293b7d779fc7576387eaa23ecff345b646776`. El wrapper terminó EXIT 0:
+38 tareas correctas, 4 cambiadas, 0 fallidas y 0 omitidas. La operación
+quedó liberada:
+
+```text
+bea426b2bf0cfe1b96ef5b95f9c7962449dcb5e251d6075b4fcaa0f3db5157d0
+```
+
+Los veinte servicios permanecieron a 1/1 y se conservaron dieciocho
+contenedores; sólo se reemplazaron API y web. Las ocho rutas legacy
+mantuvieron sus estados HTTP, incluido el 404 previo del generador QR.
+
+Antes del despliegue se obtuvo una copia PostgreSQL real de 58373 bytes,
+root:root 0600, el 8 de septiembre a las 12:14:30 UTC. Su SHA256 es:
+
+```text
+df8c876d9c2684ce8bd62160cd104502402ae25b8c46c22f05f65595b3f63b15
+```
+
+`deployment-preparation/import23-fresh-backup.json` y
+`import23-fresh-predeploy-backup.log` registran el archivo privado y la
+validación satisfactoria con `pg_restore --list`. No se ejecutó un restore
+completo de esta copia: el ensayo anterior de esquema 20 conserva su
+alcance, sin acreditar recuperación completa de V21 ni custodia externa.
 
 La API incorpora V21, aditiva, para recibos durables de importación.
 El ensayo aislado API23 → API22 → API23 terminó PASS: importó un proyecto,
@@ -488,8 +509,27 @@ copia anterior sobre escrituras posteriores. El ensayo acredita API/PG
 local, no rollback Swarm/TLS/web ni RabbitMQ. El restore de esquema 20
 anterior conserva su alcance; offhost, escrow y RPO/RTO siguen pendientes.
 
-La aceptación productiva debe usar el archivo exportado del propio usuario
-para una vista previa sin escrituras y comprobar identidad, hash, counts,
-plan y filas previas. No crear datos QA ni confirmar una importación como
-parte de esa comprobación de sólo lectura. La aceptación HTTPS y de los
-servicios legacy se registra después del apply, con sus límites reales.
+La aceptación HTTPS a las 13:14 UTC utilizó el archivo exportado del propio
+usuario: una vista previa 200 de 8568 bytes y catorce colecciones, sin altas
+QA, intención de confirmación ni importaciones confirmadas. Owner, SHA256,
+longitud, counts y plan coincidieron; todas las inserciones previstas eran
+cero. Diecisiete tablas conservaron recuentos y contenido ordenado exactos,
+incluidos Flyway y recibos; esta comparación excluye tablas de autenticación
+y no afirma identidad física xmin/ctid.
+
+Chromium verificó 320, 768 y 1280 px sin desbordamiento y con cero hallazgos
+axe en cada ancho, foco de teclado y cancelación de preparación. Se
+comprobaron no-store y nosniff, logout 204 y acceso anónimo 401 tanto a
+exportación como a preview. Las capturas enmascaran el texto privado.
+La evidencia de bytes compara hash y longitud devueltos por el servidor
+con el archivo original en memoria; no hubo captura postDataBuffer del
+navegador. No acredita importación productiva, límites masivos, otros
+motores, dispositivos físicos ni una certificación humana de accesibilidad.
+La confirmación y el rollback siguen acreditados por ensayos aislados.
+
+Evidencia externa: `deployment-preparation/import23-live-acceptance.json`,
+con snapshots `import23-live-*-before/after`. SHA256 de la aceptación:
+
+```text
+1f91bac7248a7f1a7d10003fb2b32b58bdfbefe31f9db146e97f561fe1177142
+```
