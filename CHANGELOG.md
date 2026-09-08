@@ -82,9 +82,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
-- Candidato OrganizationWeb21 `dfac90e`: revisión y digests publicados
-  de API/web; conserva PG/Rabbit, edge, secrets, redes y recursos. Rollback
-  local API21/20/21 verificado; CI, mutación y aceptación aún pendientes.
+- Personalización OrganizationWeb21 `dfac90e` desplegada y aceptada con
+  infraestructura `0bb939b` (PR33, main `5add5b8`). CI34173869406 SUCCESS,
+  151 E2E; apply38/5/0 EXIT0 y operación liberada. API/web healthy con
+  digests revisados; PG/Rabbit y datos previos preservados, Flyway20 válida.
+  Lecturas HTTPS/defaults, cinco observaciones Chromium, ocho rutas legacy
+  y logout verificados, sin consumir plazas con campos QA. Evidencia y
+  límites de mutación/rollback en `docs/ORGANIZATIONWEB.md`.
 
 - Apariencia de OrganizationWeb20 desplegada y aceptada con catálogo
   `8aec158` (PR31, main `f89a014`) y producto `ed00ad4`. CI de aplicación

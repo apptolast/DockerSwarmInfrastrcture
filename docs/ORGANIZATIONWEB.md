@@ -250,9 +250,9 @@ conservando datos, V19 y secrets; no restaurar automaticamente una copia
 vieja encima de escrituras posteriores. RabbitMQ, respaldo externo
 programado, escrow y RPO/RTO conservan sus limites y gates independientes.
 
-## Candidato de personalización21 pendiente de aceptación
+## Personalización21 desplegada y aceptada
 
-El catálogo propone `dfac90edcabdf04e442b906f0ab6db8894cbc4b2`.
+El catálogo aplicado usa `dfac90edcabdf04e442b906f0ab6db8894cbc4b2`.
 Sólo cambian release e imágenes API/web; no cambia PostgreSQL, RabbitMQ,
 edge, secrets, redes ni recursos. Publicación revisada por el operador en
 `deployment-preparation/release21-dfac90e-publish-results.json`, fuera de Git.
@@ -264,10 +264,48 @@ backend sha256:83e75c196f05054fde4370c9d7f30605acd12995e63fbbc85ca118d3084472fd
 web sha256:9fd69f52549c7c764fcc36d9fa8eaa658f50e73f3465d22094352a29e2a79cb9
 ```
 
-Este candidato no está aceptado ni aplicado por esta preparación. CI de
-aplicación y mutación siguen en curso. Rollback local verificado debajo.
-El operador conserva check previo, apply y aceptación HTTPS autenticada,
-con comprobación de convergencia real y de los servicios anteriores.
+Aceptación real del 8 de septiembre de 2026 a las 01:10:29 UTC. PR24 y PR33
+fusionadas, CI de aplicación 34173869406 SUCCESS (151 E2E); mutación
+incremental con las mismas 1824 firmas y score conservador 81,9079%.
+Persisten 318 supervivientes, 7 sin cobertura y 5 errores del ejecutor;
+no se presentan como eliminados.
+
+El wrapper oficial aplicó infraestructura `0bb939b` (main `5add5b8`):
+38 ok, 5 changed, 0 failed/unreachable, EXIT 0. Operación completada y lock
+liberado limpiamente:
+
+```text
+c92fef1adddbebfecda4b396c9285dc699695398b023c46bc81f581efc36c60d
+```
+
+API/web ejecutan los índices anteriores, ambos healthy y 1/1. PostgreSQL y
+RabbitMQ permanecen healthy, sin sustituir sus contenedores; los demás
+servicios conservan 1/1. Flyway20 está aplicada correctamente. Las tres
+tablas de personalización siguen vacías; se conservan un proyecto, una
+tarea, una sesión, una apariencia y nueve eventos outbox.
+
+La aceptación HTTPS autenticada comprobó GET de configuración PROJECT/TASK
+y valores de las entidades existentes, DTO/defaults, ETag y no-store.
+Se preservaron hashes de proyectos, tarea, estado de sesión y apariencia,
+excluyendo únicamente serverNow dinámico del estado. No se crearon
+campos QA ni valores en producción: las doce plazas incluyen inactivos.
+Altas, cambios y rollback siguen acreditados mediante ensayos aislados.
+
+Chromium verificó cinco superficies/anchos entre 320 y 1280 píxeles,
+sin desbordamiento horizontal ni incidencias axe en esas observaciones.
+Incluye recarga del detalle de tarea; no atribuye otros motores ni
+sustituye la matriz UX previa. Las ocho rutas legacy conservaron su
+respuesta esperada. Logout HTTP204, sesión anónima, acceso protegido401
+y cierre de sesión del navegador verificados.
+
+Evidencia externa, sin credenciales, en deployment-preparation:
+`organizationweb-customization-acceptance.json` y
+`organizationweb-customization-apply.log`. SHA256 respectivos:
+
+```text
+57449BC710183E77A7BC9DE04A586BDAE9968F38E15A850D0307A885295BD55A
+54E7A0BEC2525CB59489E20D26AEA48596DE722B9EDD4D9D44032B898DBFBB71
+```
 
 Referencia de retroceso20: release
 `ed00ad426842b4a85f2a0f849de014a8615ba76d` y ambos índices anteriores:
