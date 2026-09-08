@@ -403,3 +403,38 @@ sección de aceptación, mediante cambio revisado y wrapper oficial.
 Feature22 no añade migraciones; no ejecutar repair/ignore ni restaurar
 copias antiguas sobre escrituras posteriores. Backup, RabbitMQ, offhost,
 escrow y RPO/RTO conservan sus límites y gates independientes.
+
+## Prueba posterior de recuperación PostgreSQL, esquema 20
+
+El 8 de septiembre de 2026 a las 06:40:09 UTC se creó una copia nueva,
+con fuente operativa limpia `5a2b860` y el bloqueo host-global oficial.
+Un helper revisado abrió directorio y archivo sin seguir enlaces,
+comprobó identidad, permisos y contenedor, y conservó el mismo descriptor
+durante creación, validación y cálculo de SHA256. Operación EXIT 0.
+
+Copia privada remota, 58237 bytes, root:root y modo 0600:
+
+```text
+/var/backups/organizationweb/organization-20260908T064009Z-08ead20dd5f64153803dd361ffba0257.dump
+SHA256 857ea9dace71ee5366061f2fd05893c0d2fe45804c058aa9c11fbdf0b9551dae
+```
+
+Se transfirió por SSH a memoria y se restauró completamente en PostgreSQL
+17 con el digest del catálogo, sin red ni puertos publicados y sobre un
+volumen vacío independiente. `pg_restore --exit-on-error` terminó con EXIT 0.
+Las dieciséis tablas contrastadas coinciden por cantidades y huellas con
+el snapshot productivo, incluida Flyway 20. Se retiraron el contenedor y
+volumen temporales y se borró el búfer privado. La copia remota se conserva.
+
+Evidencia pública en el repositorio de aplicación:
+`progress/import_backup_restore.json`, SHA256:
+
+```text
+d485e919e6e18ead1691a8f6a4a52af7cb01e23a1f02334b8eb216204ffe2e75
+```
+
+Esta prueba posterior amplía la recuperación demostrada al snapshot del
+esquema 20; la limitación histórica de aceptación22 anterior sigue siendo
+correcta para su momento. No acredita escrituras posteriores, migraciones
+futuras, recuperación de API/RabbitMQ/Swarm, copias externas programadas,
+escrow ni RPO/RTO. No se importaron ni alteraron datos productivos.
