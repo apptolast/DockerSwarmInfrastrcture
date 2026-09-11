@@ -1,0 +1,53 @@
+---
+# Shared by image_preflight, edge, workloads, organizationweb and
+# observability. The controller-side validator is the only parser of
+# config/image-channels.yml: it rejects duplicate keys, binds every entry to
+# its reviewed baseline and emits the per-stack map every role consumes.
+- name: Derive the reviewed image channel map on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      # playbook_dir, not role_path: render-edge.yml imports this file
+      # directly so it also works without the repository ansible.cfg.
+      - "{{ playbook_dir }}/../../scripts/validate-image-channels.py"
+      - derive
+  delegate_to: localhost
+  become: false
+  register: image_channels_derivation
+  changed_when: false
+  check_mode: false
+
+- name: Record the reviewed image channel map
+  ansible.builtin.set_fact:
+    image_channels_map: >-
+      {{ (image_channels_derivation.stdout | from_json).services }}
+    image_channels_exclusions: >-
+      {{ (image_channels_derivation.stdout | from_json).exclusions }}
+    image_channels_autoupdate_label: >-
+      {{ (image_channels_derivation.stdout | from_json).autoupdate_label }}
+
+- name: Reject overrides of the reviewed image channel map
+  ansible.builtin.assert:
+    that:
+      - (image_channels_derivation.stdout | from_json).schema_version == 1
+      - >-
+        image_channels_map
+        == (image_channels_derivation.stdout | from_json).services
+      - >-
+        image_channels_exclusions
+        == (image_channels_derivation.stdout | from_json).exclusions
+      - image_channels_autoupdate_label == "apptolast.autoupdate"
+      - >-
+        image_channels_map.keys() | list
+        | difference([
+          "autoupdater",
+          "edge",
+          "observability",
+          "organizationweb",
+          "workloads"
+        ])
+        | length == 0
+    fail_msg: >-
+      The image channel map differs from config/image-channels.yml or was
+      overridden outside the reviewed file.
+    quiet: true

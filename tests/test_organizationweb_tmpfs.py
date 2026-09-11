@@ -6,11 +6,23 @@ import subprocess
 import unittest
 import uuid
 
+import importlib.util
+
 import jinja2
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_image_channels_map():
+    """Return the reviewed per-stack channel map the stack templates render."""
+    spec = importlib.util.spec_from_file_location(
+        "validate_image_channels", ROOT / "scripts/validate-image-channels.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_channel_map(ROOT)["services"]
 
 
 class OrganizationWebTmpfsTests(unittest.TestCase):
@@ -22,7 +34,7 @@ class OrganizationWebTmpfsTests(unittest.TestCase):
         ).get_template("stack.yml.j2")
         converted = subprocess.run(
             ["docker", "stack", "config", "--compose-file", "-"],
-            input=template.render(**variables), text=True, capture_output=True,
+            input=template.render(**variables, image_channels_map=load_image_channels_map()), text=True, capture_output=True,
             check=True, timeout=30,
         )
         services = yaml.safe_load(converted.stdout)["services"]

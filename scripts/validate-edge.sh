@@ -39,6 +39,7 @@ done
 
 mapfile -t edge_contract < <(
   "${PYTHON_BIN}" - "${PROJECT_DIR}" <<'PY'
+import importlib.util
 import json
 import pathlib
 import sys
@@ -47,22 +48,34 @@ import yaml
 root = pathlib.Path(sys.argv[1])
 contract = yaml.safe_load((root / "config/platform.yml").read_text())
 group_vars = yaml.safe_load((root / "ansible/group_vars/all.yml").read_text())
+spec = importlib.util.spec_from_file_location(
+    "validate_image_channels", root / "scripts/validate-image-channels.py"
+)
+channels = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(channels)
+traefik = channels.load_channel_map(root)["services"]["edge"]["traefik"]
 print(contract["platform_public_ipv4"])
 print(contract["edge_traefik_hostname"])
 print(contract["platform_edge_monitoring_network"])
 print(json.dumps(contract["platform_edge_networks"], sort_keys=True))
-print(group_vars["edge_traefik_image"])
+print(traefik["mode"])
+print(traefik["spec_exact"] or "")
+print(traefik["spec_pattern"])
 print(group_vars["edge_traefik_cloudflare_secret_name"])
 PY
 )
-(( ${#edge_contract[@]} == 6 )) ||
+(( ${#edge_contract[@]} == 8 )) ||
   fail "cannot read the edge contract"
 public_ipv4="${edge_contract[0]}"
 hostname="${edge_contract[1]}"
 monitoring_network_name="${edge_contract[2]}"
 edge_network_map_json="${edge_contract[3]}"
-traefik_image="${edge_contract[4]}"
-secret_name="${edge_contract[5]}"
+traefik_image_mode="${edge_contract[4]}"
+traefik_image_exact="${edge_contract[5]}"
+traefik_image_pattern="${edge_contract[6]}"
+secret_name="${edge_contract[7]}"
+[[ "${traefik_image_mode}" == hold || "${traefik_image_mode}" == channel ]] ||
+  fail "the Traefik image channel mode is invalid"
 
 mapfile -t expected_network_names < <(
   jq --raw-output 'to_entries | sort_by(.key) | .[].value' \
@@ -93,12 +106,19 @@ expected_network_ids_json="$(
 
 service_json="$(docker service inspect edge_traefik)"
 jq --exit-status \
-  --arg image "${traefik_image}" \
+  --arg image_mode "${traefik_image_mode}" \
+  --arg image_exact "${traefik_image_exact}" \
+  --arg image_pattern "${traefik_image_pattern}" \
   --arg secret "${secret_name}" \
   --argjson network_ids "${expected_network_ids_json}" \
   '
     length == 1 and
-    .[0].Spec.TaskTemplate.ContainerSpec.Image == $image and
+    (
+      if $image_mode == "hold"
+      then .[0].Spec.TaskTemplate.ContainerSpec.Image == $image_exact
+      else (.[0].Spec.TaskTemplate.ContainerSpec.Image | test($image_pattern))
+      end
+    ) and
     .[0].Spec.TaskTemplate.ContainerSpec.User == "65532:65532" and
     .[0].Spec.TaskTemplate.ContainerSpec.ReadonlyRootfs == true and
     .[0].Spec.TaskTemplate.ContainerSpec.Privileges.NoNewPrivileges == true and

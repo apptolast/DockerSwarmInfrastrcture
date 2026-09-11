@@ -66,6 +66,7 @@ services:
       labels:
         com.apptolast.catalog-service: kropia
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['kropia'].label }}"
       resources:
         limits:
           cpus: "0.25"
@@ -134,6 +135,7 @@ services:
       labels:
         com.apptolast.catalog-service: minecraft
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['minecraft'].label }}"
       resources:
         limits:
           cpus: "2.50"
@@ -190,6 +192,7 @@ services:
       labels:
         com.apptolast.catalog-service: minecraft-stats
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['minecraft-stats'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -229,6 +232,7 @@ services:
       labels:
         com.apptolast.catalog-service: n8n
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['n8n-db'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -363,6 +367,7 @@ services:
       labels:
         com.apptolast.catalog-service: n8n
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['n8n'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -420,6 +425,7 @@ services:
       labels:
         com.apptolast.catalog-service: n8n
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "false"
       resources:
         limits:
           cpus: "1.00"
@@ -454,6 +460,7 @@ services:
       labels:
         com.apptolast.catalog-service: n8n
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['redis-coordinator'].label }}"
       resources:
         limits:
           cpus: "0.25"
@@ -492,6 +499,7 @@ services:
       labels:
         com.apptolast.catalog-service: n8n
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['selenium'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -531,6 +539,7 @@ services:
       labels:
         com.apptolast.catalog-service: passbolt
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['passbolt-db'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -619,6 +628,7 @@ services:
       labels:
         com.apptolast.catalog-service: passbolt
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['passbolt'].label }}"
       resources:
         limits:
           cpus: "0.75"
@@ -658,6 +668,7 @@ services:
       labels:
         com.apptolast.catalog-service: shlink
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['shlink-db'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -750,6 +761,7 @@ services:
       labels:
         com.apptolast.catalog-service: shlink
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['shlink'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -824,6 +836,7 @@ services:
       labels:
         com.apptolast.catalog-service: personal-website-pablo
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['portfolio-pablo'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -858,6 +871,7 @@ services:
       labels:
         com.apptolast.catalog-service: personal-website-alberto
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['portfolio-alberto'].label }}"
       resources:
         limits:
           cpus: "0.35"
@@ -915,6 +929,7 @@ services:
       labels:
         com.apptolast.catalog-service: openclaw-clean
         com.apptolast.managed-by: ansible
+        apptolast.autoupdate: "{{ image_channels_map.workloads['openclaw'].label }}"
       resources:
         limits:
           cpus: "1.00"

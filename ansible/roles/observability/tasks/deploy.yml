@@ -369,7 +369,8 @@
     # siguiente exige el inventario exacto de servicios en 1/1.
     detach: true
     prune: true
-    resolve_image: never
+    # Channel semantics: an unchanged rendered image keeps the live digest.
+    resolve_image: changed
 
 - name: Wait for every observability replica to converge
   ansible.builtin.command:
@@ -449,9 +450,23 @@
 - name: Verify deployed observability image and placement identities
   ansible.builtin.assert:
     that:
+      # Hold: exact normalized identity. Channel: a digest of its own tag.
       - >-
-        (item.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Image == item.item.value
+        (
+          image_channels_map.observability[item.item.key].mode == "hold"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          == image_channels_map.observability[item.item.key].spec_exact
+        )
+        or
+        (
+          image_channels_map.observability[item.item.key].mode == "channel"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          is match(image_channels_map.observability[item.item.key].spec_pattern)
+        )
       - >-
         "node.labels.platform.observability == true" in
         (item.stdout | from_json | first).

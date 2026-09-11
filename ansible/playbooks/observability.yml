@@ -10,7 +10,6 @@
     - ../../config/capacity.yml
     - ../../config/platform.yml
     - ../../config/services.yml
-    - ../../config/workload-image-updates.yml
     - ../../stacks/observability/secrets.yml
     - ../group_vars/all.yml
 
@@ -20,6 +19,7 @@
       tags:
         - capacity
     - role: image_preflight
+      image_preflight_channel_stacks: [observability]
     - role: workloads_runner_image
     - role: observability
     - role: deployment_metadata

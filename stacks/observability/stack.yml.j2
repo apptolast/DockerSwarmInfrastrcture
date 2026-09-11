@@ -90,6 +90,7 @@ services:
         com.apptolast.component: prometheus
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['prometheus'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -140,6 +141,7 @@ services:
         com.apptolast.component: alertmanager
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['alertmanager'].label }}"
       resources:
         limits:
           cpus: "0.25"
@@ -186,6 +188,7 @@ services:
         com.apptolast.component: blackbox-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['blackbox-exporter'].label }}"
       resources:
         limits:
           cpus: "0.25"
@@ -234,6 +237,7 @@ services:
         com.apptolast.component: loki
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['loki'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -290,6 +294,7 @@ services:
         com.apptolast.component: alloy
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['alloy'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -384,6 +389,7 @@ services:
         com.apptolast.component: grafana
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['grafana'].label }}"
       resources:
         limits:
           cpus: "0.75"
@@ -434,6 +440,7 @@ services:
         com.apptolast.component: node-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['node-exporter'].label }}"
       resources:
         limits:
           cpus: "0.25"
@@ -488,6 +495,7 @@ services:
         com.apptolast.component: cadvisor
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['cadvisor'].label }}"
       resources:
         limits:
           cpus: "0.50"
@@ -537,6 +545,7 @@ services:
         com.apptolast.component: postgres-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['postgres-exporter-n8n'].label }}"
       resources:
         limits:
           cpus: "0.15"
@@ -586,6 +595,7 @@ services:
         com.apptolast.component: postgres-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['postgres-exporter-passbolt'].label }}"
       resources:
         limits:
           cpus: "0.15"
@@ -635,6 +645,7 @@ services:
         com.apptolast.component: postgres-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['postgres-exporter-shlink'].label }}"
       resources:
         limits:
           cpus: "0.15"
@@ -674,6 +685,7 @@ services:
         com.apptolast.component: redis-exporter
         com.apptolast.managed-by: ansible
         com.apptolast.platform-class: internal-platform
+        apptolast.autoupdate: "{{ image_channels_map.observability['redis-exporter'].label }}"
       resources:
         limits:
           cpus: "0.15"

@@ -280,10 +280,41 @@ if stack["networks"] != expected_stack_networks:
 if set(traefik_service["networks"]) != set(expected_stack_networks):
     fail("Traefik is not attached to every and only reviewed edge network")
 
-if not re.fullmatch(
-    r"traefik@sha256:[a-f0-9]{64}", traefik_service["image"]
+def load_image_channels() -> dict[str, Any]:
+    import importlib.util
+
+    path = PROJECT_DIR / "scripts/validate-image-channels.py"
+    spec = importlib.util.spec_from_file_location("validate_image_channels", path)
+    if spec is None or spec.loader is None:
+        fail("cannot load the image channel validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.load_channel_map(PROJECT_DIR)
+    except module.ChannelError as error:
+        fail(f"image channel map: {error}")
+    raise AssertionError("unreachable")
+
+
+traefik_channel = load_image_channels()["services"].get("edge", {}).get("traefik")
+if not isinstance(traefik_channel, dict):
+    fail("the Traefik image channel entry is missing")
+if traefik_service["image"] != traefik_channel["reference"]:
+    fail("the rendered Traefik image differs from its image channel entry")
+if traefik_channel["reference"] != group_vars["edge_traefik_image"] and not (
+    re.fullmatch(
+        r"(docker\.io/library/)?traefik:v3(@sha256:[a-f0-9]{64})?",
+        traefik_channel["reference"],
+    )
 ):
-    fail("the rendered Traefik image is not pinned by digest")
+    fail("the Traefik image channel is neither the pin nor traefik:v3")
+if not re.fullmatch(
+    r"traefik@sha256:[a-f0-9]{64}", group_vars["edge_traefik_image"]
+):
+    fail("the reviewed Traefik baseline is not pinned by digest")
+traefik_labels = traefik_service.get("deploy", {}).get("labels", {})
+if traefik_labels.get("apptolast.autoupdate") != traefik_channel["label"]:
+    fail("the rendered Traefik autoupdate label differs from its channel entry")
 
 dynamic = load_yaml(".build/edge/dynamic.yml")
 health_router = dynamic["http"]["routers"]["edge-health"]

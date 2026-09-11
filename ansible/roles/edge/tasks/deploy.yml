@@ -353,7 +353,9 @@
     # en 1/1, de modo que la verificacion no se pierde.
     detach: true
     prune: true
-    resolve_image: never
+    # Same channel semantics as workloads: an unchanged rendered image keeps
+    # the live digest; a changed one is resolved against the registry.
+    resolve_image: changed
 
 - name: Wait for the exact edge service inventory to converge
   ansible.builtin.command:
@@ -423,9 +425,24 @@
 - name: Verify the deployed Traefik service identity
   ansible.builtin.assert:
     that:
+      # A hold keeps its exact reviewed identity; a channel runs a digest of
+      # its own `traefik:<tag>` (resolved by the CLI or by the watcher).
       - >-
-        (edge_deployed_traefik_service.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Image == edge_traefik_image
+        (
+          image_channels_map.edge.traefik.mode == "hold"
+          and
+          (edge_deployed_traefik_service.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          == image_channels_map.edge.traefik.spec_exact
+        )
+        or
+        (
+          image_channels_map.edge.traefik.mode == "channel"
+          and
+          (edge_deployed_traefik_service.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          is match(image_channels_map.edge.traefik.spec_pattern)
+        )
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
         Spec.Mode.Replicated.Replicas == 1
@@ -473,6 +490,29 @@
         (edge_deployed_traefik_service.stdout | from_json | first).
         Spec.EndpointSpec.Ports | length == 2
     fail_msg: "The deployed Traefik service differs from the reviewed spec."
+
+# Auditoria de lo que ejecuto este apply: con canales, el commit ya no fija
+# los bytes de la imagen.
+- name: Record the live Traefik image observed by this apply
+  ansible.builtin.copy:
+    dest: "{{ edge_install_root }}/edge/observed-images.yml"
+    content: |
+      {{
+        {
+          "schema_version": 1,
+          "stack": edge_traefik_stack_name,
+          "source_revision":
+            deployment_metadata_source_revision | default(""),
+          "images": {
+            "traefik":
+              (edge_deployed_traefik_service.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+          },
+        } | to_nice_yaml(indent=2, sort_keys=true)
+      }}
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Verify the deployed immutable Docker Config references
   ansible.builtin.assert:

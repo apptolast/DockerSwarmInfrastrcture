@@ -14,6 +14,16 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_image_channels_map():
+    """Return the reviewed per-stack channel map the stack templates render."""
+    spec = importlib.util.spec_from_file_location(
+        "validate_image_channels", ROOT / "scripts/validate-image-channels.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_channel_map(ROOT)["services"]
+
+
 class CapacityProfileTests(unittest.TestCase):
     def setUp(self):
         spec = importlib.util.spec_from_file_location(
@@ -33,7 +43,7 @@ class CapacityProfileTests(unittest.TestCase):
                     name: yaml.safe_load((ROOT / f".build/{name}/stack.yml").read_text())
                     for name in ("edge", "workloads", "observability")
                 },
-                "organizationweb": yaml.safe_load(template.render(**variables)),
+                "organizationweb": yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map())),
             }
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):

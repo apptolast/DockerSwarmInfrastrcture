@@ -18,6 +18,16 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_image_channels_map():
+    """Return the reviewed per-stack channel map the stack templates render."""
+    spec = importlib.util.spec_from_file_location(
+        "validate_image_channels", ROOT / "scripts/validate-image-channels.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_channel_map(ROOT)["services"]
+
+
 class OrganizationWebContractTests(unittest.TestCase):
     def test_preflight_covers_installation_parents_and_file_targets_without_following_links(self):
         tasks = yaml.safe_load((ROOT / "ansible/roles/organizationweb/tasks/main.yml").read_text())
@@ -40,7 +50,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        service = yaml.safe_load(template.render(**variables))["services"]["postgres"]
+        service = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))["services"]["postgres"]
         name = "organizationweb-postgres-test-" + uuid.uuid4().hex
         with tempfile.TemporaryDirectory(prefix="organizationweb-pg-", dir=ROOT / ".build") as temporary:
             directory = Path(temporary)
@@ -111,7 +121,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        service = yaml.safe_load(template.render(**variables))["services"]["rabbitmq"]
+        service = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))["services"]["rabbitmq"]
         name = "organizationweb-rabbit-test-" + uuid.uuid4().hex
         with tempfile.TemporaryDirectory(prefix="organizationweb-rabbit-", dir=ROOT / ".build") as temporary:
             directory = Path(temporary)
@@ -258,7 +268,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        stack = yaml.safe_load(template.render(**variables))
+        stack = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))
         services = stack["services"]
         self.assertEqual(set(services), {"web", "backend", "postgres", "rabbitmq"})
         self.assertEqual(set(services["web"]["networks"]), {"edge", "application"})
@@ -270,9 +280,22 @@ class OrganizationWebContractTests(unittest.TestCase):
         self.assertEqual(set(services["rabbitmq"]["networks"]), {"messaging"})
         self.assertEqual(stack["networks"]["edge"]["name"], "apptolast-edge-organizationweb")
         self.assertTrue(stack["networks"]["edge"]["external"])
-        for service in services.values():
+        channel_map = load_image_channels_map()["organizationweb"]
+        for name, service in services.items():
             self.assertNotIn("ports", service)
-            self.assertRegex(service["image"], r"@sha256:[a-f0-9]{64}$")
+            # The rendered image is the reviewed channel entry: a channel
+            # `repo:tag` or a hold `repo[:tag]@sha256:...`, never a bare repo.
+            self.assertEqual(service["image"], channel_map[name]["reference"])
+            self.assertRegex(
+                service["image"],
+                r"^[a-z0-9][a-z0-9._/-]*"
+                r"(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?(@sha256:[a-f0-9]{64})?$",
+            )
+            self.assertRegex(service["image"], r"[:@]")
+            self.assertEqual(
+                service["deploy"]["labels"]["apptolast.autoupdate"],
+                channel_map[name]["label"],
+            )
             self.assertEqual(service["deploy"]["replicas"], 1)
         self.assertEqual(
             services["backend"]["environment"]["SPRING_CONFIG_IMPORT"],
@@ -294,7 +317,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        stack = yaml.safe_load(template.render(**variables))
+        stack = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))
         self.assertEqual(
             stack["services"]["backend"]["environment"].get("RABBITMQ_VHOST"),
             "organization",
@@ -306,7 +329,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        stack = yaml.safe_load(template.render(**variables))
+        stack = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))
         self.assertEqual(
             stack["services"]["web"]["healthcheck"]["test"][-1],
             "http://127.0.0.1:8080/healthz",
@@ -318,7 +341,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        stack = yaml.safe_load(template.render(**variables))
+        stack = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))
         self.assertEqual(
             stack["services"]["backend"]["environment"].get("APP_PUBLIC_ORIGIN"),
             "https://organizacion.apptolast.com",
@@ -330,7 +353,7 @@ class OrganizationWebContractTests(unittest.TestCase):
             loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
             undefined=jinja2.StrictUndefined,
         ).get_template("stack.yml.j2")
-        web = yaml.safe_load(template.render(**variables))["services"]["web"]
+        web = yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map()))["services"]["web"]
         name = "organizationweb-health-test-" + uuid.uuid4().hex
         command = [
             "docker", "run", "--detach", "--name", name,
@@ -369,7 +392,7 @@ class OrganizationWebContractTests(unittest.TestCase):
         ).get_template("stack.yml.j2")
         completed = subprocess.run(
             ["docker", "stack", "config", "--compose-file", "-"],
-            input=template.render(**variables),
+            input=template.render(**variables, image_channels_map=load_image_channels_map()),
             text=True,
             capture_output=True,
             check=False,

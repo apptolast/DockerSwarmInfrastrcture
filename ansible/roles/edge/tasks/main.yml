@@ -1,8 +1,21 @@
 ---
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
 - name: Verify the edge deployment inputs
   ansible.builtin.assert:
     that:
+      # The pinned digest stays the reviewed baseline; the image rendered is
+      # the channel entry, either that exact hold or the Traefik v3 channel.
       - edge_traefik_image is match("^traefik@sha256:[a-f0-9]{64}$")
+      - image_channels_map.edge.keys() | list == ["traefik"]
+      - >-
+        image_channels_map.edge.traefik.reference == edge_traefik_image
+        or
+        image_channels_map.edge.traefik.reference is match(
+          "^(docker[.]io/library/)?traefik:v3(@sha256:[a-f0-9]{64})?$"
+        )
       - edge_traefik_version is match("^[0-9]+\\.[0-9]+\\.[0-9]+$")
       - edge_traefik_hostname is match("^[a-z0-9.-]+$")
       - edge_traefik_acme_email is match("^[^@ ]+@[^@ ]+$")

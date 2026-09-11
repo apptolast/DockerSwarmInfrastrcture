@@ -468,7 +468,13 @@
     # valor por defecto del modulo es `true`; aqui se declara explicito.
     detach: true
     prune: true
-    resolve_image: never
+    # `changed` asks the registry only when the rendered image differs from
+    # the service label `com.docker.stack.image`, and always on create. When
+    # the string is unchanged the CLI keeps the live digest, so a re-run keeps
+    # whatever digest the channel watcher last applied and still reports
+    # changed=0. A new channel entry resolves its head to a digest; a hold is
+    # already a digest.
+    resolve_image: changed
     with_registry_auth: false
 
 - name: Wait for every workload replica to converge
@@ -822,20 +828,26 @@
       # Docker normaliza el registro por defecto al guardar la referencia en
       # el spec del servicio: `docker.io/library/postgres@sha256:X` se guarda
       # como `postgres@sha256:X` y `docker.io/apptolast/kropia-web@sha256:X`
-      # como `apptolast/kropia-web@sha256:X`. El contrato fija el registro de
-      # forma explicita a proposito, asi que la comparacion normaliza el lado
-      # esperado en lugar de relajar el contrato. Sin esto la comprobacion no
-      # podia pasar para ninguna imagen de Docker Hub: solo la superaban
-      # n8n-runners, declarada sin prefijo, y openclaw, alojada en ghcr.io.
-      # El digest es identico en ambos lados, de modo que la identidad
-      # verificada sigue siendo exacta.
+      # como `apptolast/kropia-web@sha256:X`. El validador del mapa de canales
+      # ya deriva esa forma normalizada (`spec_exact`/`spec_pattern`), de modo
+      # que el contrato no se relaja. Una entrada `hold` exige la identidad
+      # exacta revisada; una entrada de canal exige un digest de su propio
+      # `repo:tag`, el que resolvio el CLI o el que aplico despues el vigilante.
       - >-
-        (item.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Image
-        == (
-          item.item.value
-          | regex_replace("^docker[.]io/library/", "")
-          | regex_replace("^docker[.]io/", "")
+        (
+          workloads_expected_spec_images[item.item.key].mode == "hold"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          == workloads_expected_spec_images[item.item.key].spec_exact
+        )
+        or
+        (
+          workloads_expected_spec_images[item.item.key].mode == "channel"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          is match(workloads_expected_spec_images[item.item.key].spec_pattern)
         )
       - >-
         "node.labels.platform.workloads == true" in
@@ -854,6 +866,41 @@
   loop: "{{ workloads_deployed_services.results }}"
   loop_control:
     label: "{{ item.item.key }}"
+
+- name: Collect the live image of every verified workload service
+  ansible.builtin.set_fact:
+    workloads_observed_images: >-
+      {{
+        workloads_observed_images | default({})
+        | combine({
+          item.item.key:
+            (item.stdout | from_json | first).
+            Spec.TaskTemplate.ContainerSpec.Image
+        })
+      }}
+  loop: "{{ workloads_deployed_services.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+# Auditoria de lo que ejecuto este apply: con canales, el commit ya no fija
+# los bytes. Los digests que el vigilante aplique entre dos applies no quedan
+# aqui; el siguiente apply los registra.
+- name: Record the live workload images observed by this apply
+  ansible.builtin.copy:
+    dest: "{{ workloads_install_root }}/observed-images.yml"
+    content: |
+      {{
+        {
+          "schema_version": 1,
+          "stack": workloads_stack_name,
+          "source_revision":
+            deployment_metadata_source_revision | default(""),
+          "images": workloads_observed_images,
+        } | to_nice_yaml(indent=2, sort_keys=true)
+      }}
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Verify exact live Config, Secret and network references
   ansible.builtin.command:

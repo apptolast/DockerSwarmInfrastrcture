@@ -49,272 +49,10 @@ runner_manager = load_script(
     "manage_n8n_runner_image",
     "scripts/manage-n8n-runner-image.py",
 )
-tracked_image_resolver = load_script(
-    "resolve_tracked_image",
-    "scripts/resolve-tracked-image.py",
+channel_validator = load_script(
+    "validate_image_channels",
+    "scripts/validate-image-channels.py",
 )
-
-
-class TrackedImageResolutionTests(unittest.TestCase):
-    REFERENCE = "docker.io/hgarciaalberto/personal-website:latest"
-    DIGEST = "sha256:" + ("a" * 64)
-    RESOLVED_REFERENCE = f"{REFERENCE}@{DIGEST}"
-    APPROVED_REFERENCE = RESOLVED_REFERENCE
-
-    def valid_descriptor(self) -> dict[str, object]:
-        return {
-            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-            "digest": self.DIGEST,
-            "size": 2623,
-        }
-
-    def valid_inspect(self) -> list[dict[str, object]]:
-        return [
-            {
-                "Os": "linux",
-                "Architecture": "amd64",
-                "Id": "sha256:" + ("b" * 64),
-                "RepoDigests": [
-                    "docker.io/hgarciaalberto/personal-website@" + self.DIGEST
-                ],
-            }
-        ]
-
-    def test_exact_tracked_repository_digest_is_resolved(self) -> None:
-        for media_type in tracked_image_resolver.ALLOWED_MEDIA_TYPES:
-            with self.subTest(media_type=media_type):
-                descriptor = self.valid_descriptor()
-                descriptor["mediaType"] = media_type
-                self.assertEqual(
-                    tracked_image_resolver.resolve_tracked_reference(
-                        self.REFERENCE,
-                        self.APPROVED_REFERENCE,
-                        descriptor,
-                    ),
-                    self.RESOLVED_REFERENCE,
-                )
-
-    def test_invalid_registry_descriptors_are_rejected(self) -> None:
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "not approved",
-        ):
-            tracked_image_resolver.resolve_tracked_reference(
-                "docker.io/example/other:latest",
-                self.APPROVED_REFERENCE,
-                self.valid_descriptor(),
-            )
-
-        invalid_descriptors = [
-            None,
-            [],
-            {},
-            {**self.valid_descriptor(), "mediaType": "text/plain"},
-            {**self.valid_descriptor(), "digest": "sha256:invalid"},
-            {**self.valid_descriptor(), "size": 0},
-            {**self.valid_descriptor(), "size": True},
-        ]
-        for descriptor in invalid_descriptors:
-            with self.subTest(descriptor=descriptor):
-                with self.assertRaises(tracked_image_resolver.TrackedImageError):
-                    tracked_image_resolver.resolve_tracked_reference(
-                        self.REFERENCE,
-                        self.APPROVED_REFERENCE,
-                        descriptor,
-                    )
-
-    def test_unreviewed_registry_digest_is_rejected(self) -> None:
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "differs from the reviewed runtime approval",
-        ):
-            tracked_image_resolver.resolve_tracked_reference(
-                self.REFERENCE,
-                self.REFERENCE + "@sha256:" + ("c" * 64),
-                self.valid_descriptor(),
-            )
-
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "approved runtime reference is invalid",
-        ):
-            tracked_image_resolver.resolve_tracked_reference(
-                self.REFERENCE,
-                self.REFERENCE,
-                self.valid_descriptor(),
-            )
-
-        for unapproved_reference in (
-            "docker.io/example/other:latest@sha256:" + ("d" * 64),
-            "docker.io/hgarciaalberto/personal-website:canary@sha256:"
-            + ("e" * 64),
-        ):
-            with self.subTest(unapproved_reference=unapproved_reference):
-                with self.assertRaisesRegex(
-                    tracked_image_resolver.TrackedImageError,
-                    "approved runtime reference is invalid",
-                ):
-                    tracked_image_resolver.resolve_tracked_reference(
-                        self.REFERENCE,
-                        unapproved_reference,
-                        self.valid_descriptor(),
-                    )
-
-    def test_local_image_matches_the_resolved_digest(self) -> None:
-        tracked_image_resolver.verify_tracked_image(
-            self.RESOLVED_REFERENCE,
-            self.valid_inspect(),
-        )
-        inspect_with_multiple_digests = self.valid_inspect()
-        inspect_with_multiple_digests[0]["RepoDigests"] = [
-            "hgarciaalberto/personal-website@sha256:" + ("c" * 64),
-            "hgarciaalberto/personal-website@" + self.DIGEST,
-            "docker.io/example/other@sha256:" + ("d" * 64),
-        ]
-        tracked_image_resolver.verify_tracked_image(
-            self.RESOLVED_REFERENCE,
-            inspect_with_multiple_digests,
-        )
-
-    def test_invalid_local_image_identities_are_rejected(self) -> None:
-        invalid_resolved_references = [
-            "docker.io/example/other:latest@" + self.DIGEST,
-            self.REFERENCE + "@sha256:invalid",
-        ]
-        for reference in invalid_resolved_references:
-            with self.subTest(reference=reference):
-                with self.assertRaises(tracked_image_resolver.TrackedImageError):
-                    tracked_image_resolver.verify_tracked_image(
-                        reference,
-                        self.valid_inspect(),
-                    )
-
-        malformed_documents = [
-            {},
-            [],
-            [self.valid_inspect()[0], self.valid_inspect()[0]],
-            ["not-an-object"],
-        ]
-        for document in malformed_documents:
-            with self.subTest(document=document):
-                with self.assertRaises(tracked_image_resolver.TrackedImageError):
-                    tracked_image_resolver.verify_tracked_image(
-                        self.RESOLVED_REFERENCE,
-                        document,
-                    )
-
-        wrong_platform = self.valid_inspect()
-        wrong_platform[0]["Architecture"] = "arm64"
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "linux/amd64",
-        ):
-            tracked_image_resolver.verify_tracked_image(
-                self.RESOLVED_REFERENCE,
-                wrong_platform,
-            )
-
-        wrong_os = self.valid_inspect()
-        wrong_os[0]["Os"] = "windows"
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "linux/amd64",
-        ):
-            tracked_image_resolver.verify_tracked_image(
-                self.RESOLVED_REFERENCE,
-                wrong_os,
-            )
-
-        invalid_id = self.valid_inspect()
-        invalid_id[0]["Id"] = "not-a-content-id"
-        with self.assertRaisesRegex(
-            tracked_image_resolver.TrackedImageError,
-            "content ID",
-        ):
-            tracked_image_resolver.verify_tracked_image(
-                self.RESOLVED_REFERENCE,
-                invalid_id,
-            )
-
-        for repo_digests in (
-            None,
-            [],
-            [123],
-            ["docker.io/example/other@" + self.DIGEST],
-        ):
-            with self.subTest(repo_digests=repo_digests):
-                inspected = self.valid_inspect()
-                inspected[0]["RepoDigests"] = repo_digests
-                with self.assertRaises(tracked_image_resolver.TrackedImageError):
-                    tracked_image_resolver.verify_tracked_image(
-                        self.RESOLVED_REFERENCE,
-                        inspected,
-                    )
-
-    def test_cli_resolves_verifies_and_rejects_invalid_input(self) -> None:
-        resolve_command = [
-            sys.executable,
-            str(REPOSITORY_ROOT / "scripts/resolve-tracked-image.py"),
-            "resolve",
-            "--reference",
-            self.REFERENCE,
-            "--approved-reference",
-            self.APPROVED_REFERENCE,
-        ]
-        valid = subprocess.run(
-            resolve_command,
-            input=json.dumps(self.valid_descriptor()).encode("utf-8"),
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(valid.returncode, 0, valid.stderr.decode("utf-8"))
-        self.assertEqual(
-            valid.stdout.decode("utf-8").strip(),
-            self.RESOLVED_REFERENCE,
-        )
-
-        verify_command = [
-            sys.executable,
-            str(REPOSITORY_ROOT / "scripts/resolve-tracked-image.py"),
-            "verify",
-            "--resolved-reference",
-            self.RESOLVED_REFERENCE,
-        ]
-        verified = subprocess.run(
-            verify_command,
-            input=json.dumps(self.valid_inspect()).encode("utf-8"),
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(verified.returncode, 0, verified.stderr.decode("utf-8"))
-        self.assertEqual(verified.stdout, b"")
-
-        invalid = subprocess.run(
-            resolve_command,
-            input=b"not-json",
-            capture_output=True,
-            check=False,
-        )
-        self.assertNotEqual(invalid.returncode, 0)
-        self.assertIn(b"not valid JSON", invalid.stderr)
-
-        invalid_utf8 = subprocess.run(
-            resolve_command,
-            input=b"\xff",
-            capture_output=True,
-            check=False,
-        )
-        self.assertNotEqual(invalid_utf8.returncode, 0)
-        self.assertIn(b"not valid JSON", invalid_utf8.stderr)
-
-        oversized = subprocess.run(
-            resolve_command,
-            input=b" " * (tracked_image_resolver.MAX_JSON_BYTES + 1),
-            capture_output=True,
-            check=False,
-        )
-        self.assertNotEqual(oversized.returncode, 0)
-        self.assertIn(b"exceeds the size limit", oversized.stderr)
 
 
 class WorkloadSecretContractTests(unittest.TestCase):
@@ -812,8 +550,8 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         cls.services = workload_validator.load_yaml(
             REPOSITORY_ROOT / "config/services.yml"
         )
-        cls.image_updates = workload_validator.load_yaml(
-            REPOSITORY_ROOT / "config/workload-image-updates.yml"
+        cls.image_channels = workload_validator.load_unique_yaml(
+            REPOSITORY_ROOT / "config/image-channels.yml"
         )
         cls.secrets = workload_validator.load_yaml(
             REPOSITORY_ROOT / "stacks/workloads/secrets.yml"
@@ -836,7 +574,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             workload_validator.validate_stack(
                 candidate,
                 self.services,
-                self.image_updates,
+                self.image_channels,
                 self.secrets,
                 self.runner_metadata,
                 self.platform,
@@ -846,7 +584,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             self.stack,
             self.services,
-            self.image_updates,
+            self.image_channels,
             self.secrets,
             self.runner_metadata,
             self.platform,
@@ -891,115 +629,133 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             },
         )
 
-    def test_only_alberto_uses_the_exact_reviewed_tracked_tag(self) -> None:
+    def channel_entry(
+        self,
+        document: dict[str, object],
+        service: str,
+    ) -> dict[str, object]:
+        return next(
+            item
+            for item in document["image_channel_services"]
+            if item["stack"] == "workloads" and item["service"] == service
+        )
+
+    def test_every_workload_renders_its_reviewed_channel_entry(self) -> None:
         import copy
 
-        alberto_reference = workload_validator.ALBERTO_TRACKED_REFERENCE
-        alberto_catalog = next(
-            item
-            for item in self.services["approved_services"]
-            if item["id"] == "personal-website-alberto"
+        channel_map = channel_validator.derive_channels(
+            self.image_channels,
+            channel_validator.load_baselines(REPOSITORY_ROOT),
         )
+        entries = channel_map["services"]["workloads"]
         self.assertEqual(
-            alberto_catalog["images"][0]["reference"],
-            workload_validator.ALBERTO_CATALOG_REFERENCE,
+            set(entries) | {"n8n-runners"},
+            workload_validator.EXPECTED_STACK_SERVICES,
         )
+        for name, entry in entries.items():
+            with self.subTest(service=name):
+                rendered = self.stack["services"][name]
+                self.assertEqual(rendered["image"], entry["reference"])
+                self.assertEqual(
+                    rendered["deploy"]["labels"]["apptolast.autoupdate"],
+                    entry["label"],
+                )
         self.assertEqual(
-            self.stack["services"]["portfolio-alberto"]["image"],
-            alberto_reference,
+            self.stack["services"]["n8n-runners"]["deploy"]["labels"][
+                "apptolast.autoupdate"
+            ],
+            "false",
         )
         workload_validator.validate_stack(
             self.stack,
             self.services,
-            self.image_updates,
+            self.image_channels,
             self.secrets,
             self.runner_metadata,
             self.platform,
         )
 
+        rejected_stacks = []
         wrong_tag_stack = copy.deepcopy(self.stack)
         wrong_tag_stack["services"]["portfolio-alberto"]["image"] = (
             "docker.io/hgarciaalberto/personal-website:canary"
         )
-        with self.assertRaisesRegex(
-            workload_validator.ContractError,
-            "image drift for portfolio-alberto",
-        ):
-            workload_validator.validate_stack(
-                wrong_tag_stack,
-                self.services,
-                self.image_updates,
-                self.secrets,
-                self.runner_metadata,
-                self.platform,
-            )
-
-        invalid_contracts = []
-        for key, value in (
-            ("catalog_service", "kropia"),
-            ("component", "database"),
-            ("swarm_service", "kropia"),
-            (
-                "catalog_reference",
-                "docker.io/hgarciaalberto/personal-website@sha256:"
-                + ("f" * 64),
-            ),
-            (
-                "tracked_reference",
-                "docker.io/hgarciaalberto/personal-website:canary",
-            ),
-            (
-                "approved_runtime_reference",
-                "docker.io/hgarciaalberto/personal-website:latest@sha256:invalid",
-            ),
-            (
-                "approved_runtime_reference",
-                "docker.io/example/other:latest@sha256:" + ("f" * 64),
-            ),
-            (
-                "approved_runtime_reference",
-                "docker.io/hgarciaalberto/personal-website:canary@sha256:"
-                + ("f" * 64),
-            ),
-            ("update_policy", "floating-tag"),
-        ):
-            candidate = copy.deepcopy(self.image_updates)
-            candidate["workload_image_updates"][0][key] = value
-            invalid_contracts.append(candidate)
-
-        missing_update = copy.deepcopy(self.image_updates)
-        missing_update["workload_image_updates"] = []
-        invalid_contracts.append(missing_update)
-
-        extra_update = copy.deepcopy(self.image_updates)
-        extra_update["workload_image_updates"].append(
-            copy.deepcopy(extra_update["workload_image_updates"][0])
+        rejected_stacks.append((wrong_tag_stack, "image drift for portfolio-alberto"))
+        baseline_stack = copy.deepcopy(self.stack)
+        baseline_stack["services"]["kropia"]["image"] = next(
+            item["images"][0]["reference"]
+            for item in self.services["approved_services"]
+            if item["id"] == "kropia"
         )
-        invalid_contracts.append(extra_update)
-
-        wrong_schema = copy.deepcopy(self.image_updates)
-        wrong_schema["workload_image_update_schema_version"] = 2
-        invalid_contracts.append(wrong_schema)
-
-        boolean_schema = copy.deepcopy(self.image_updates)
-        boolean_schema["workload_image_update_schema_version"] = True
-        invalid_contracts.append(boolean_schema)
-
-        extra_key = copy.deepcopy(self.image_updates)
-        extra_key["unexpected"] = True
-        invalid_contracts.append(extra_key)
-
-        missing_approved_reference = copy.deepcopy(self.image_updates)
-        del missing_approved_reference["workload_image_updates"][0][
-            "approved_runtime_reference"
+        rejected_stacks.append((baseline_stack, "image drift for kropia"))
+        label_stack = copy.deepcopy(self.stack)
+        label_stack["services"]["kropia"]["deploy"]["labels"][
+            "apptolast.autoupdate"
+        ] = "true"
+        rejected_stacks.append((label_stack, "autoupdate label drift for kropia"))
+        unlabeled_stack = copy.deepcopy(self.stack)
+        del unlabeled_stack["services"]["shlink-db"]["deploy"]["labels"][
+            "apptolast.autoupdate"
         ]
-        invalid_contracts.append(missing_approved_reference)
+        rejected_stacks.append(
+            (unlabeled_stack, "autoupdate label drift for shlink-db")
+        )
+        runner_stack = copy.deepcopy(self.stack)
+        runner_stack["services"]["n8n-runners"]["deploy"]["labels"][
+            "apptolast.autoupdate"
+        ] = "true"
+        rejected_stacks.append((runner_stack, "excluded service opts in"))
+        for candidate, message in rejected_stacks:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(
+                    workload_validator.ContractError,
+                    message,
+                ):
+                    workload_validator.validate_stack(
+                        candidate,
+                        self.services,
+                        self.image_channels,
+                        self.secrets,
+                        self.runner_metadata,
+                        self.platform,
+                    )
 
-        unexpected_update_key = copy.deepcopy(self.image_updates)
-        unexpected_update_key["workload_image_updates"][0]["unexpected"] = True
-        invalid_contracts.append(unexpected_update_key)
-
-        for candidate in invalid_contracts:
+        invalid_documents = []
+        for service, changes in (
+            ("kropia", {"reference": "docker.io/example/kropia-web:latest"}),
+            ("kropia", {"reference": "docker.io/apptolast/kropia-web:canary"}),
+            ("shlink-db", {"reference": "docker.io/library/postgres:16"}),
+            ("portfolio-alberto", {"autoupdate": True}),
+            ("kropia", {"baseline": {"catalog": "shlink", "component": "app"}}),
+            ("kropia", {"unexpected": True}),
+        ):
+            document = copy.deepcopy(self.image_channels)
+            self.channel_entry(document, service).update(changes)
+            invalid_documents.append(document)
+        missing_entry = copy.deepcopy(self.image_channels)
+        missing_entry["image_channel_services"].remove(
+            self.channel_entry(missing_entry, "selenium")
+        )
+        invalid_documents.append(missing_entry)
+        extra_entry = copy.deepcopy(self.image_channels)
+        extra_entry["image_channel_services"].append(
+            {
+                **self.channel_entry(extra_entry, "kropia"),
+                "service": "kropia-canary",
+            }
+        )
+        invalid_documents.append(extra_entry)
+        runner_entry = copy.deepcopy(self.image_channels)
+        runner_entry["image_channel_exclusions"] = [
+            item
+            for item in runner_entry["image_channel_exclusions"]
+            if item["service"] != "n8n-runners"
+        ]
+        invalid_documents.append(runner_entry)
+        wrong_schema = copy.deepcopy(self.image_channels)
+        wrong_schema["image_channel_schema_version"] = 2
+        invalid_documents.append(wrong_schema)
+        for candidate in invalid_documents:
             with self.subTest(candidate=candidate):
                 with self.assertRaises(workload_validator.ContractError):
                     workload_validator.validate_stack(
@@ -1011,40 +767,23 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
                         self.platform,
                     )
 
-        renewed_approval = copy.deepcopy(self.image_updates)
-        renewed_approval["workload_image_updates"][0][
-            "approved_runtime_reference"
-        ] = (
-            workload_validator.ALBERTO_TRACKED_REFERENCE
-            + "@sha256:"
-            + ("f" * 64)
-        )
-        workload_validator.validate_stack(
-            self.stack,
-            self.services,
-            renewed_approval,
-            self.secrets,
-            self.runner_metadata,
-            self.platform,
-        )
-
         changed_catalog = copy.deepcopy(self.services)
-        alberto = next(
+        kropia = next(
             item
             for item in changed_catalog["approved_services"]
-            if item["id"] == "personal-website-alberto"
+            if item["id"] == "kropia"
         )
-        alberto["images"][0]["reference"] = (
-            "docker.io/hgarciaalberto/personal-website@sha256:" + ("f" * 64)
+        kropia["images"][0]["reference"] = (
+            "docker.io/example/kropia-web@sha256:" + ("f" * 64)
         )
         with self.assertRaisesRegex(
             workload_validator.ContractError,
-            "catalog baseline changed",
+            "repository differs from its baseline",
         ):
             workload_validator.validate_stack(
                 self.stack,
                 changed_catalog,
-                self.image_updates,
+                self.image_channels,
                 self.secrets,
                 self.runner_metadata,
                 self.platform,
@@ -1059,12 +798,12 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         alberto["images"] = []
         with self.assertRaisesRegex(
             workload_validator.ContractError,
-            "ambiguous image",
+            "not in the reviewed catalogs",
         ):
             workload_validator.validate_stack(
                 self.stack,
                 missing_image,
-                self.image_updates,
+                self.image_channels,
                 self.secrets,
                 self.runner_metadata,
                 self.platform,
@@ -1076,69 +815,31 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 workload_validator.ContractError,
-                "stack-to-catalog mapping changed",
+                "channel-to-catalog mapping changed",
             ):
                 workload_validator.validate_stack(
                     self.stack,
                     self.services,
-                    self.image_updates,
+                    self.image_channels,
                     self.secrets,
                     self.runner_metadata,
                     self.platform,
                 )
 
-        mutable_expected = copy.deepcopy(
-            workload_validator.EXPECTED_IMAGE_UPDATE
-        )
-        mutable_expected["catalog_reference"] = alberto_reference
-        mutable_expected["approved_runtime_reference"] = (
-            workload_validator.ALBERTO_TRACKED_REFERENCE
-            + "@sha256:"
-            + ("f" * 64)
-        )
-        mutable_contract = {
-            "workload_image_update_schema_version": 1,
-            "workload_image_updates": [mutable_expected],
-        }
-        mutable_catalog = copy.deepcopy(self.services)
-        alberto = next(
-            item
-            for item in mutable_catalog["approved_services"]
-            if item["id"] == "personal-website-alberto"
-        )
-        alberto["images"][0]["reference"] = alberto_reference
-        with mock.patch.object(
-            workload_validator,
-            "EXPECTED_IMAGE_UPDATE",
-            mutable_expected,
-        ):
-            with self.assertRaisesRegex(
-                workload_validator.ContractError,
-                "baseline is not immutable",
-            ):
-                workload_validator.validate_stack(
-                    self.stack,
-                    mutable_catalog,
-                    mutable_contract,
-                    self.secrets,
-                    self.runner_metadata,
-                    self.platform,
-                )
-
-    def test_workload_image_update_yaml_rejects_duplicate_keys(self) -> None:
+    def test_image_channel_yaml_rejects_duplicate_keys(self) -> None:
         invalid_documents = {
             "duplicate-top-level": (
                 "---\n"
-                "workload_image_update_schema_version: 1\n"
-                "workload_image_update_schema_version: 1\n"
-                "workload_image_updates: []\n"
+                "image_channel_schema_version: 1\n"
+                "image_channel_schema_version: 1\n"
+                "image_channel_services: []\n"
             ),
             "duplicate-nested": (
                 "---\n"
-                "workload_image_update_schema_version: 1\n"
-                "workload_image_updates:\n"
-                "  - tracked_reference: first\n"
-                "    tracked_reference: second\n"
+                "image_channel_schema_version: 1\n"
+                "image_channel_services:\n"
+                "  - reference: first\n"
+                "    reference: second\n"
             ),
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -1152,7 +853,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
                     ):
                         workload_validator.load_unique_yaml(candidate)
 
-    def test_workload_image_update_yaml_rejects_invalid_documents(self) -> None:
+    def test_image_channel_yaml_rejects_invalid_documents(self) -> None:
         invalid_documents = {
             "malformed": "---\nkey: [\n",
             "not-a-mapping": "---\n- item\n",
@@ -1286,7 +987,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             self.stack,
             self.services,
-            self.image_updates,
+            self.image_channels,
             self.secrets,
             self.runner_metadata,
             self.platform,
@@ -1301,7 +1002,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
         workload_validator.validate_stack(
             disabled_stack,
             self.services,
-            self.image_updates,
+            self.image_channels,
             self.secrets,
             self.runner_metadata,
             disabled_platform,
@@ -1313,7 +1014,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             workload_validator.validate_stack(
                 copy.deepcopy(self.stack),
                 self.services,
-                self.image_updates,
+                self.image_channels,
                 self.secrets,
                 self.runner_metadata,
                 disabled_platform,
@@ -1818,18 +1519,12 @@ class N8nRunnerImageContractTests(unittest.TestCase):
 
 
 class WorkloadAnsibleIntegrationTests(unittest.TestCase):
-    UPDATE = {
-        "catalog_service": "personal-website-alberto",
-        "component": "app",
-        "swarm_service": "portfolio-alberto",
-        "catalog_reference": workload_validator.ALBERTO_CATALOG_REFERENCE,
-        "tracked_reference": workload_validator.ALBERTO_TRACKED_REFERENCE,
-        "approved_runtime_reference": (
-            workload_validator.ALBERTO_TRACKED_REFERENCE
-            + "@sha256:"
-            + ("a" * 64)
-        ),
-        "update_policy": "tracked-tag",
+    CHANNEL = "docker.io/apptolast/kropia-web:latest"
+    CHANNEL_ENTRY = {
+        "mode": "channel",
+        "reference": CHANNEL,
+        "autoupdate": False,
+        "label": "false",
     }
 
     def assert_ansible_role_gate_rejects(
@@ -1879,95 +1574,77 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0, output)
         self.assertIn(expected_message, output)
 
-    def test_real_ansible_gates_reject_invalid_tracked_image_state(self) -> None:
-        import copy
-
-        image_updates = [copy.deepcopy(self.UPDATE)]
+    def test_real_ansible_gates_reject_invalid_channel_state(self) -> None:
         self.assert_ansible_role_gate_rejects(
             "image_preflight",
-            "Verify the image catalog is available",
-            {
-                "approved_services": [],
-                "internal_platform": {"observability": {"components": []}},
-                "workload_image_update_schema_version": 1,
-                "workload_image_updates": [],
-            },
+            "Verify the image preflight scope",
+            {"image_channels_map": {"edge": {}, "workloads": {}}},
             "The reviewed image catalog is missing or unsupported.",
         )
-        invalid_runtime_approval = copy.deepcopy(self.UPDATE)
-        invalid_runtime_approval["approved_runtime_reference"] = (
-            "docker.io/hgarciaalberto/personal-website:canary@sha256:"
-            + ("b" * 64)
-        )
         self.assert_ansible_role_gate_rejects(
             "image_preflight",
-            "Verify the image catalog is available",
+            "Verify the image preflight scope",
             {
-                "approved_services": [],
-                "internal_platform": {"observability": {"components": []}},
-                "image_preflight_expected_os": "linux",
-                "image_preflight_expected_architecture": "amd64",
-                "image_preflight_include_tracked_updates": True,
-                "workload_image_update_schema_version": 1,
-                "workload_image_updates": [invalid_runtime_approval],
+                "image_channels_map": {
+                    "edge": {},
+                    "observability": {},
+                    "workloads": {},
+                },
+                "image_preflight_channel_stacks": ["organizationweb"],
             },
             "The reviewed image catalog is missing or unsupported.",
         )
         self.assert_ansible_role_gate_rejects(
             "image_preflight",
-            "Bind the tracked image policy to its immutable catalog baseline",
+            "Enforce the complete channel resolution map",
             {
-                "approved_services": [
-                    {
-                        "id": "personal-website-alberto",
-                        "images": [
-                            {
-                                "component": "app",
-                                "reference": self.UPDATE["catalog_reference"],
-                            },
-                            {
-                                "component": "app",
-                                "reference": "docker.io/example@sha256:"
-                                + ("b" * 64),
-                            },
-                        ],
-                    }
-                ],
-                "workload_image_updates": image_updates,
+                "image_preflight_channel_references": [self.CHANNEL],
+                "image_preflight_channel_resolutions": {},
             },
-            "does not match the immutable catalog baseline",
+            "A channel head did not resolve fail-closed to one digest.",
         )
         self.assert_ansible_role_gate_rejects(
             "image_preflight",
-            "Enforce the complete tracked runtime reference map",
+            "Enforce that every channel resolved to its own repository digest",
             {
-                "image_preflight_include_tracked_updates": True,
-                "image_preflight_tracked_references": [
-                    self.UPDATE["tracked_reference"]
-                ],
-                "image_preflight_tracked_runtime_references": {
-                    self.UPDATE["tracked_reference"]: (
-                        workload_validator.ALBERTO_TRACKED_REFERENCE
-                        + "@sha256:"
-                        + ("b" * 64)
+                "image_preflight_channel_resolutions": {
+                    self.CHANNEL: "docker.io/example/other:latest@sha256:"
+                    + ("b" * 64)
+                },
+            },
+            "A channel head did not resolve fail-closed to one digest.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_preflight",
+            "Keep the channel map empty outside channel operations",
+            {
+                "image_preflight_channel_stacks": [],
+                "image_preflight_channel_references": [],
+                "image_preflight_channel_resolutions": {
+                    self.CHANNEL: self.CHANNEL + "@sha256:" + ("b" * 64)
+                },
+            },
+            "A channel resolution escaped its operation scope.",
+        )
+        self.assert_ansible_role_gate_rejects(
+            "image_channels",
+            "Reject overrides of the reviewed image channel map",
+            {
+                "image_channels_derivation": {
+                    "stdout": json.dumps(
+                        {
+                            "schema_version": 1,
+                            "autoupdate_label": "apptolast.autoupdate",
+                            "services": {"workloads": {"kropia": self.CHANNEL_ENTRY}},
+                            "exclusions": {"workloads": ["n8n-runners"]},
+                        }
                     )
                 },
-                "workload_image_updates": image_updates,
+                "image_channels_map": {"workloads": {}},
+                "image_channels_exclusions": {"workloads": ["n8n-runners"]},
+                "image_channels_autoupdate_label": "apptolast.autoupdate",
             },
-            "The tracked runtime image did not resolve fail-closed.",
-        )
-        self.assert_ansible_role_gate_rejects(
-            "image_preflight",
-            "Keep the tracked runtime map empty outside workload operations",
-            {
-                "image_preflight_include_tracked_updates": False,
-                "image_preflight_tracked_runtime_references": {
-                    self.UPDATE["tracked_reference"]: self.UPDATE[
-                        "approved_runtime_reference"
-                    ]
-                },
-            },
-            "A tracked runtime image escaped its workload operation scope.",
+            "overridden outside the reviewed file",
         )
         self.assert_ansible_role_gate_rejects(
             "workloads",
@@ -2009,116 +1686,70 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                     ]
                 ],
                 "denied_services": [],
-                "workload_image_update_schema_version": 1,
-                "workload_image_updates": [],
+                "image_channels_map": {"workloads": {"kropia": self.CHANNEL_ENTRY}},
+                "image_channels_exclusions": {"workloads": ["n8n-runners"]},
             },
             "outside the approved workloads contract.",
         )
         self.assert_ansible_role_gate_rejects(
             "workloads",
-            "Enforce the preflighted Alberto runtime identity",
+            "Require a preflighted head for every workload channel",
             {
-                "workloads_portfolio_alberto_catalog_image": self.UPDATE[
-                    "catalog_reference"
-                ],
-                "workloads_portfolio_alberto_image_update": self.UPDATE,
+                "image_channels_map": {"workloads": {"kropia": self.CHANNEL_ENTRY}},
                 "workloads_render_only": False,
-                "image_preflight_tracked_runtime_references": {
-                    self.UPDATE["tracked_reference"]: (
-                        workload_validator.ALBERTO_TRACKED_REFERENCE
-                        + "@sha256:"
-                        + ("b" * 64)
-                    )
-                },
+                "image_preflight_channel_resolutions": {},
             },
-            "Alberto's mutable runtime tag was not resolved to one preflighted digest.",
+            "A workload image channel was not resolved by the image preflight.",
         )
 
-    def test_image_preflight_normalizes_tagged_digests_exactly(self) -> None:
-        import re
-
-        defaults = yaml.safe_load(
-            (
-                REPOSITORY_ROOT / "ansible/roles/image_preflight/defaults/main.yml"
-            ).read_text(encoding="utf-8")
-        )
-        source = "docker.io/grafana/alloy:v1.11.0@sha256:" + ("a" * 64)
-        expected = "docker.io/grafana/alloy@sha256:" + ("a" * 64)
+    def test_image_preflight_pulls_holds_by_their_repository_digest(self) -> None:
+        channel_map = channel_validator.load_channel_map(REPOSITORY_ROOT)
+        for stack, entries in channel_map["services"].items():
+            for name, entry in entries.items():
+                with self.subTest(service=f"{stack}/{name}"):
+                    if entry["mode"] == "hold":
+                        self.assertRegex(
+                            entry["preflight_reference"],
+                            r"^[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$",
+                        )
+                        self.assertTrue(
+                            entry["reference"].endswith(
+                                entry["preflight_reference"].split("@")[1]
+                            )
+                        )
+                    else:
+                        self.assertEqual(
+                            entry["preflight_reference"],
+                            entry["reference"],
+                        )
         self.assertEqual(
-            re.sub(
-                defaults["image_preflight_tag_digest_pattern"],
-                defaults["image_preflight_digest_replacement"],
-                source,
-            ),
-            expected,
-        )
-
-    def test_image_preflight_tracks_only_albertos_exact_latest_tag(self) -> None:
-        image_updates = workload_validator.load_unique_yaml(
-            REPOSITORY_ROOT / "config/workload-image-updates.yml"
-        )
-        self.assertEqual(
-            image_updates["workload_image_updates"],
-            [
-                {
-                    "catalog_service": "personal-website-alberto",
-                    "component": "app",
-                    "swarm_service": "portfolio-alberto",
-                    "catalog_reference": (
-                        workload_validator.ALBERTO_CATALOG_REFERENCE
-                    ),
-                    "tracked_reference": (
-                        "docker.io/hgarciaalberto/personal-website:latest"
-                    ),
-                    "approved_runtime_reference": (
-                        "docker.io/hgarciaalberto/personal-website:latest@"
-                        "sha256:34c6854a3d7ff179e8fee8207696b1940747e84e9782d"
-                        "2133417f17b60602f8d"
-                    ),
-                    "update_policy": "tracked-tag",
-                }
+            channel_map["services"]["observability"]["alloy"][
+                "preflight_reference"
             ],
+            "docker.io/grafana/alloy@sha256:"
+            "579582bce40049f2e27bd1e445000689c907a41f0495cb0d0c7f65609316ba7c",
         )
+
+    def test_image_preflight_resolves_only_reviewed_channels(self) -> None:
         tasks_path = (
             REPOSITORY_ROOT / "ansible/roles/image_preflight/tasks/main.yml"
         )
         tasks_text = tasks_path.read_text(encoding="utf-8")
         tasks = yaml.safe_load(tasks_text)
-        catalog_digest = workload_validator.ALBERTO_CATALOG_REFERENCE.split(
-            "@sha256:"
-        )[1]
-        self.assertIn(catalog_digest[:32], tasks_text)
-        self.assertIn(catalog_digest[32:], tasks_text)
-        self.assertIn(workload_validator.ALBERTO_TRACKED_REFERENCE, tasks_text)
-        self.assertIn("approved_runtime_reference", tasks_text)
-        policy_gate = next(
-            item
-            for item in tasks
-            if item["name"]
-            == "Bind the tracked image policy to its immutable catalog baseline"
+        self.assertEqual(
+            tasks[0],
+            {
+                "name": "Load the reviewed image channel map",
+                "ansible.builtin.import_role": {"name": "image_channels"},
+            },
         )
-        self.assertIn(
-            "immutable catalog baseline",
-            policy_gate["ansible.builtin.assert"]["fail_msg"],
-        )
-        catalog_collector = next(
-            item
-            for item in tasks
-            if item["name"]
-            == "Collect approved immutable remote runtime images"
-        )
-        tracked_exclusion = catalog_collector["when"][1]
-        self.assertIn(
-            "image_preflight_include_tracked_updates",
-            tracked_exclusion,
-        )
-        self.assertIn("catalog_service", tracked_exclusion)
-        self.assertIn("component", tracked_exclusion)
+        self.assertNotIn("approved_runtime_reference", tasks_text)
+        self.assertNotIn("resolve-tracked-image.py", tasks_text)
+        self.assertNotIn("workload_image_updates", tasks_text)
         descriptor = next(
             item
             for item in tasks
-            if item["name"]
-            == "Read the exact tracked tag descriptor from its registry"
+            if item["name"] == "Read the channel head descriptor from its registry"
         )
         self.assertEqual(
             descriptor["ansible.builtin.command"]["argv"][1:4],
@@ -2130,113 +1761,51 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             descriptor["loop"],
-            "{{ image_preflight_tracked_references }}",
-        )
-        self.assertEqual(
-            descriptor["when"],
-            [
-                "image_preflight_include_tracked_updates | bool",
-            ],
+            "{{ image_preflight_channel_references }}",
         )
         self.assertFalse(descriptor["check_mode"])
         resolver = next(
             item
             for item in tasks
             if item["name"]
-            == "Resolve the tracked registry descriptor to an immutable reference"
+            == "Resolve every channel head to an immutable reference"
         )
         self.assertEqual(
             resolver["ansible.builtin.command"]["argv"][1],
-            "{{ playbook_dir }}/../../scripts/resolve-tracked-image.py",
+            "{{ role_path }}/../../../scripts/resolve-image-channel.py",
         )
         self.assertEqual(resolver["ansible.builtin.command"]["argv"][2], "resolve")
-        self.assertIn(
+        self.assertNotIn(
             "--approved-reference",
             resolver["ansible.builtin.command"]["argv"],
         )
         self.assertEqual(resolver["delegate_to"], "localhost")
         self.assertFalse(resolver["become"])
         self.assertFalse(resolver["check_mode"])
-        self.assertEqual(
-            resolver["when"],
-            ["item.item in image_preflight_tracked_references"],
-        )
-        recorder = next(
-            item
-            for item in tasks
-            if item["name"]
-            == "Record the immutable runtime reference for the tracked image"
-        )
-        self.assertIn(
-            "image_preflight_tracked_runtime_references",
-            recorder["ansible.builtin.set_fact"],
-        )
-        resolution_gate = next(
-            item
-            for item in tasks
-            if item["name"]
-            == "Enforce the complete tracked runtime reference map"
-        )
-        self.assertIn(
-            "fail_msg",
-            resolution_gate["ansible.builtin.assert"],
-        )
-        self.assertNotIn("fail_msg", resolution_gate)
-        self.assertNotIn("not ansible_check_mode", resolution_gate.get("when", []))
-        runtime_report = next(
-            item
-            for item in tasks
-            if item["name"] == "Report the reviewed tracked runtime reference"
-        )
-        self.assertIn(
-            "approved for this operation",
-            runtime_report["ansible.builtin.debug"]["msg"],
-        )
         pull = next(
             item
             for item in tasks
             if item["name"]
-            == "Pull the resolved tracked image before any stack mutation"
+            == "Pull the resolved channel heads before any stack mutation"
         )
         self.assertEqual(
             pull["loop"],
-            "{{ image_preflight_tracked_resolved_references }}",
+            "{{ image_preflight_channel_resolved_references }}",
         )
-        self.assertEqual(
-            pull["when"],
-            [
-                "not ansible_check_mode",
-                "image_preflight_include_tracked_updates | bool",
-            ],
-        )
-        self.assertEqual(
-            pull["ansible.builtin.command"]["argv"][3:5],
-            [
-                "--platform",
-                (
-                    "{{ image_preflight_expected_os\n"
-                    "   }}/{{ image_preflight_expected_architecture }}"
-                ),
-            ],
-        )
+        self.assertEqual(pull["when"], ["not ansible_check_mode"])
         self.assertIn("Downloaded newer image", pull["changed_when"])
         verifier = next(
             item
             for item in tasks
             if item["name"]
-            == "Verify the tracked local image against its resolved registry digest"
+            == "Verify each channel image against its resolved registry digest"
         )
-        self.assertEqual(
-            verifier["ansible.builtin.command"]["argv"][2],
-            "verify",
-        )
-        self.assertEqual(verifier["delegate_to"], "localhost")
-        self.assertFalse(verifier["become"])
+        self.assertEqual(verifier["ansible.builtin.command"]["argv"][2], "verify")
         self.assertEqual(
             verifier["when"],
             [
                 "not ansible_check_mode",
-                "item.item in image_preflight_tracked_resolved_references",
+                "item.item in image_preflight_channel_resolved_references",
             ],
         )
         for playbook_name in (
@@ -2254,18 +1823,18 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                         / f"ansible/playbooks/{playbook_name}.yml"
                     ).read_text(encoding="utf-8")
                 )[0]
-                self.assertIn(
+                self.assertNotIn(
                     "../../config/workload-image-updates.yml",
                     play["vars_files"],
                 )
         for playbook_name, expected in (
-            ("edge", False),
-            ("observability", False),
-            ("preflight-images", True),
-            ("site", True),
-            ("workloads", True),
+            ("edge", ["edge"]),
+            ("observability", ["observability"]),
+            ("preflight-images", ["edge", "observability", "workloads"]),
+            ("site", ["edge", "observability", "workloads"]),
+            ("workloads", ["workloads"]),
         ):
-            with self.subTest(tracked_scope=playbook_name):
+            with self.subTest(channel_scope=playbook_name):
                 play = yaml.safe_load(
                     (
                         REPOSITORY_ROOT
@@ -2275,12 +1844,9 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 role = next(
                     item for item in play["roles"] if item["role"] == "image_preflight"
                 )
-                self.assertIs(
-                    role.get("image_preflight_include_tracked_updates", False),
-                    expected,
-                )
+                self.assertEqual(role["image_preflight_channel_stacks"], expected)
 
-    def test_workloads_deploys_the_preflighted_tracked_digest_exactly(
+    def test_workloads_deploys_channel_entries_and_verifies_live_digests(
         self,
     ) -> None:
         derive = yaml.safe_load(
@@ -2288,26 +1854,35 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 REPOSITORY_ROOT / "ansible/roles/workloads/tasks/derive.yml"
             ).read_text(encoding="utf-8")
         )
+        self.assertEqual(
+            derive[0]["ansible.builtin.import_role"],
+            {"name": "image_channels"},
+        )
         image_derivation = next(
             item
             for item in derive
             if item["name"]
-            == "Derive workload images from the catalog and reviewed update policy"
+            == "Derive workload images from the reviewed image channel map"
         )
         alberto_image = image_derivation["ansible.builtin.set_fact"][
             "workloads_images"
         ]["portfolio_alberto"]
-        self.assertIn(
-            "image_preflight_tracked_runtime_references",
-            alberto_image,
-        )
-        self.assertNotIn("ansible_check_mode", alberto_image)
-        self.assertIn("workloads_render_only", alberto_image)
+        self.assertIn("image_channels_map.workloads", alberto_image)
+        self.assertNotIn("image_preflight", alberto_image)
 
         deploy = yaml.safe_load(
             (
                 REPOSITORY_ROOT / "ansible/roles/workloads/tasks/deploy.yml"
             ).read_text(encoding="utf-8")
+        )
+        stack_deploy = next(
+            item
+            for item in deploy
+            if item["name"] == "Deploy the exact reviewed workloads stack"
+        )
+        self.assertEqual(
+            stack_deploy["community.docker.docker_stack"]["resolve_image"],
+            "changed",
         )
         identity_gate = next(
             item
@@ -2316,9 +1891,20 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             == "Verify deployed workload image and placement identities"
         )
         image_assertion = identity_gate["ansible.builtin.assert"]["that"][0]
-        self.assertIn("item.item.value", image_assertion)
-        self.assertIn("^docker[.]io/", image_assertion)
+        self.assertIn("workloads_expected_spec_images[item.item.key]", image_assertion)
+        self.assertIn(".spec_exact", image_assertion)
+        self.assertIn("is match(", image_assertion)
+        self.assertIn(".spec_pattern", image_assertion)
         self.assertNotIn("portfolio-alberto", image_assertion)
+        audit = next(
+            item
+            for item in deploy
+            if item["name"] == "Record the live workload images observed by this apply"
+        )
+        self.assertEqual(
+            audit["ansible.builtin.copy"]["dest"],
+            "{{ workloads_install_root }}/observed-images.yml",
+        )
 
     def test_site_role_order_is_safe_and_backup_is_explicitly_separate(self) -> None:
         site = yaml.safe_load(
@@ -2352,7 +1938,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "../../stacks/observability/secrets.yml",
             site["vars_files"],
         )
-        self.assertIn(
+        self.assertNotIn(
             "../../config/workload-image-updates.yml",
             site["vars_files"],
         )
@@ -2415,7 +2001,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "config/minecraft.yml",
             "config/platform.yml",
             "config/services.yml",
-            "config/workload-image-updates.yml",
+            "config/image-channels.yml",
             "stacks/observability/secrets.yml",
             "stacks/workloads/secrets.yml",
         ):

@@ -1,0 +1,286 @@
+---
+# Single source of what every rendered Docker Swarm service runs.
+#
+# - `repo:tag` is a channel. The Docker CLI resolves it to a digest when the
+#   stack is deployed (`resolve_image: changed`), and the watcher re-pins it
+#   between deploys only when `autoupdate: true`.
+# - `repo:tag@sha256:...` is a hold: never updated automatically. A
+#   digest-only reference is accepted only as the byte-exact baseline hold.
+# - `baseline` names the reviewed catalog entry (config/services.yml,
+#   config/organizationweb.yml or the observability components). Those files
+#   stay untouched as restore evidence; the repository must match.
+#
+# scripts/validate-image-channels.py enforces the contract, including the
+# major channel table for stateful services. See docs/AUTOUPDATE.md.
+image_channel_schema_version: 1
+image_channel_autoupdate_label: apptolast.autoupdate
+
+image_channel_services:
+  # --- edge ---------------------------------------------------------------
+  - stack: edge
+    service: traefik
+    baseline: {catalog: traefik-edge, component: proxy}
+    reference: "traefik@sha256:\
+      652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8"
+    class: stateful-major
+    autoupdate: false
+
+  # --- workloads ----------------------------------------------------------
+  # kropia, minecraft-stats, portfolio-pablo and minecraft already run their
+  # :latest head in production; these entries adopt that drift into Git.
+  - stack: workloads
+    service: kropia
+    baseline: {catalog: kropia, component: app}
+    reference: docker.io/apptolast/kropia-web:latest
+    class: owner
+    autoupdate: false
+
+  - stack: workloads
+    service: minecraft
+    baseline: {catalog: minecraft, component: server}
+    reference: docker.io/itzg/minecraft-server:latest
+    class: third-party
+    autoupdate: false
+
+  - stack: workloads
+    service: minecraft-stats
+    baseline: {catalog: minecraft-stats, component: app}
+    reference: docker.io/ocholoko888/minecraft-stats-web:latest
+    class: owner
+    autoupdate: false
+
+  - stack: workloads
+    service: n8n
+    baseline: {catalog: n8n, component: app}
+    reference: "docker.io/n8nio/n8n:2.31.5@sha256:\
+      cda6bafc7bb4873533e7affb82d1bd47282a7614bdf83242c2293f8ff281261a"
+    class: third-party
+    autoupdate: false
+
+  - stack: workloads
+    service: n8n-db
+    baseline: {catalog: n8n, component: database}
+    reference: "docker.io/pgvector/pgvector@sha256:\
+      7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff"
+    class: stateful-major
+    autoupdate: false
+
+  - stack: workloads
+    service: redis-coordinator
+    baseline: {catalog: n8n, component: workflow-cache}
+    reference: "docker.io/library/redis@sha256:\
+      1a34bdba051ecd8a58ec8a3cc460acef697a1605e918149cc53d920673c1a0a7"
+    class: stateful-major
+    autoupdate: false
+
+  - stack: workloads
+    service: selenium
+    baseline: {catalog: n8n, component: browser}
+    reference: "docker.io/selenium/standalone-chrome@sha256:\
+      b4d4e3f64280c4cd69198c8eb2c1daa74b3d206ff87a647728fc070affee94b0"
+    class: third-party
+    autoupdate: false
+
+  - stack: workloads
+    service: openclaw
+    baseline: {catalog: openclaw-clean, component: app}
+    reference: "ghcr.io/openclaw/openclaw:2026.7.1@sha256:\
+      6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c"
+    class: third-party
+    autoupdate: false
+
+  - stack: workloads
+    service: passbolt
+    baseline: {catalog: passbolt, component: app}
+    reference: "docker.io/passbolt/passbolt@sha256:\
+      f5ac218f5155e9cb026edc1d8152af788ea420fac61b205d7d80262fd64359c1"
+    class: third-party
+    autoupdate: false
+
+  - stack: workloads
+    service: passbolt-db
+    baseline: {catalog: passbolt, component: database}
+    reference: "docker.io/library/postgres@sha256:\
+      fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c"
+    class: stateful-major
+    autoupdate: false
+
+  # Held at the runtime digest previously approved in
+  # config/workload-image-updates.yml (removed); same rendered string.
+  - stack: workloads
+    service: portfolio-alberto
+    baseline: {catalog: personal-website-alberto, component: app}
+    reference: "\
+      docker.io/hgarciaalberto/personal-website:latest@sha256:\
+      34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+    class: owner
+    autoupdate: false
+
+  - stack: workloads
+    service: portfolio-pablo
+    baseline: {catalog: personal-website-pablo, component: app}
+    reference: docker.io/ocholoko888/personal-website:latest
+    class: owner
+    autoupdate: false
+
+  - stack: workloads
+    service: shlink
+    baseline: {catalog: shlink, component: app}
+    reference: "docker.io/apptolast/shlink-apptolast@sha256:\
+      5655db8e5fe9ecd292c87412f3f9c15095501ea5a7aae85aa3198e08a51d0914"
+    class: owner
+    autoupdate: false
+
+  - stack: workloads
+    service: shlink-db
+    baseline: {catalog: shlink, component: database}
+    reference: "docker.io/library/postgres@sha256:\
+      66266770619a23ab310c7fa60043b6d1fa041038cb232ced59d2c509fecd297b"
+    class: stateful-major
+    autoupdate: false
+
+  # --- organizationweb ----------------------------------------------------
+  - stack: organizationweb
+    service: web
+    baseline: {catalog: organizationweb, component: web}
+    reference: "ocholoko888/organizationweb-web@sha256:\
+      072ccbf2146a5784166837851fbbf3431959e04bcd00cd9a9471533cce51aff4"
+    class: owner
+    autoupdate: false
+
+  - stack: organizationweb
+    service: backend
+    baseline: {catalog: organizationweb, component: backend}
+    reference: "ocholoko888/organizationweb-api@sha256:\
+      c26850b24a3d926619cfb8451f2ddb090047082cca4c01afa39d399d17ab8324"
+    class: owner
+    autoupdate: false
+
+  - stack: organizationweb
+    service: postgres
+    baseline: {catalog: organizationweb, component: postgres}
+    reference: "postgres@sha256:\
+      9ae4e8f8d0284836a505f0b2e825144e32e20499856e7dc5f7b99e19d10eedd6"
+    class: stateful-major
+    autoupdate: false
+
+  - stack: organizationweb
+    service: rabbitmq
+    baseline: {catalog: organizationweb, component: rabbitmq}
+    reference: "rabbitmq@sha256:\
+      ac1201d1dc227779d93c607f976e7f9156fd5b551ee5ff7946cab6c242091bf3"
+    class: stateful-major
+    autoupdate: false
+
+  # --- observability (not in the active profile; holds only) -------------
+  - stack: observability
+    service: prometheus
+    baseline: {catalog: observability, component: prometheus}
+    reference: "docker.io/prom/prometheus:v3.12.0@sha256:\
+      69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: alertmanager
+    baseline: {catalog: observability, component: alertmanager}
+    reference: "docker.io/prom/alertmanager:v0.32.1@sha256:\
+      51a825c2a40acc3e338fdd00d622e01ec090f72be2b3ea46be0839cd47a4d286"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: blackbox-exporter
+    baseline: {catalog: observability, component: blackbox-exporter}
+    reference: "docker.io/prom/blackbox-exporter:v0.28.0@sha256:\
+      e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: loki
+    baseline: {catalog: observability, component: loki}
+    reference: "docker.io/grafana/loki:3.7.2@sha256:\
+      191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: alloy
+    baseline: {catalog: observability, component: alloy}
+    reference: "docker.io/grafana/alloy:v1.15.0@sha256:\
+      579582bce40049f2e27bd1e445000689c907a41f0495cb0d0c7f65609316ba7c"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: grafana
+    baseline: {catalog: observability, component: grafana}
+    reference: "docker.io/grafana/grafana:13.1.0@sha256:\
+      121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: node-exporter
+    baseline: {catalog: observability, component: node-exporter}
+    reference: "docker.io/prom/node-exporter:v1.11.1@sha256:\
+      e9cff4fc67b1818f8c97adb115b9f12c9a54b533de86765d4a0effc01b357205"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: cadvisor
+    baseline: {catalog: observability, component: cadvisor}
+    reference: "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:\
+      3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: postgres-exporter-n8n
+    baseline: {catalog: observability, component: postgres-exporter}
+    reference: "\
+      docker.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:\
+      e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: postgres-exporter-passbolt
+    baseline: {catalog: observability, component: postgres-exporter}
+    reference: "\
+      docker.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:\
+      e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: postgres-exporter-shlink
+    baseline: {catalog: observability, component: postgres-exporter}
+    reference: "\
+      docker.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:\
+      e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f"
+    class: third-party
+    autoupdate: false
+
+  - stack: observability
+    service: redis-exporter
+    baseline: {catalog: observability, component: redis-exporter}
+    reference: "docker.io/oliver006/redis_exporter:v1.84.0@sha256:\
+      7ef8e9c26638158fa4e7ad60df8c7e53d1919986753d6c1d2d1876b6ec38d87b"
+    class: third-party
+    autoupdate: false
+
+image_channel_exclusions:
+  - stack: workloads
+    service: n8n-runners
+    reason: >-
+      Built locally from images/n8n-runners with a content-addressed
+      src-<sha256> tag; it has no registry channel and must stay in lock-step
+      with the n8n version.
+  - stack: autoupdater
+    service: shepherd
+    reason: >-
+      The watcher never updates itself; its pinned digest is bumped only by a
+      reviewed pull request.

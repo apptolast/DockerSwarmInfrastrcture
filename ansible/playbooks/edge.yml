@@ -11,7 +11,6 @@
     - ../../config/platform.yml
     - ../../config/services.yml
     - ../../config/organizationweb.yml
-    - ../../config/workload-image-updates.yml
     - ../group_vars/all.yml
 
   roles:
@@ -20,6 +19,7 @@
       tags:
         - capacity
     - role: image_preflight
+      image_preflight_channel_stacks: [edge]
     - role: workloads_runner_image
     - role: edge
     - role: deployment_metadata

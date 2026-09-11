@@ -35,7 +35,7 @@ x-deploy: &deploy
 services:
   web:
     <<: *defaults
-    image: "{{ organizationweb.images.web }}"
+    image: "{{ image_channels_map.organizationweb['web'].reference }}"
     user: "101:101"
     read_only: true
     cap_drop: [ALL]
@@ -55,13 +55,16 @@ services:
       start_period: 20s
     deploy:
       <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.organizationweb['web'].label }}
       resources:
         reservations: {cpus: "0.05", memory: 32M}
         limits: {cpus: "0.25", memory: 64M}
 
   backend:
     <<: *defaults
-    image: "{{ organizationweb.images.backend }}"
+    image: "{{ image_channels_map.organizationweb['backend'].reference }}"
     user: "999:999"
     read_only: true
     cap_drop: [ALL]
@@ -101,13 +104,16 @@ services:
       start_period: 120s
     deploy:
       <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.organizationweb['backend'].label }}
       resources:
         reservations: {cpus: "0.25", memory: 384M}
         limits: {cpus: "1.00", memory: 768M}
 
   postgres:
     <<: *defaults
-    image: "{{ organizationweb.images.postgres }}"
+    image: "{{ image_channels_map.organizationweb['postgres'].reference }}"
     user: "70:70"
     cap_drop: [ALL]
     environment:
@@ -130,13 +136,16 @@ services:
       start_period: 30s
     deploy:
       <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.organizationweb['postgres'].label }}
       resources:
         reservations: {cpus: "0.10", memory: 192M}
         limits: {cpus: "0.50", memory: 384M}
 
   rabbitmq:
     <<: *defaults
-    image: "{{ organizationweb.images.rabbitmq }}"
+    image: "{{ image_channels_map.organizationweb['rabbitmq'].reference }}"
     user: "100:101"
     hostname: organizationweb-rabbitmq
     cap_drop: [ALL]
@@ -158,6 +167,9 @@ services:
       start_period: 60s
     deploy:
       <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.organizationweb['rabbitmq'].label }}
       resources:
         reservations: {cpus: "0.10", memory: 192M}
         limits: {cpus: "0.50", memory: 384M}

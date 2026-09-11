@@ -61,29 +61,66 @@
   loop_control:
     label: "{{ item.key }}"
 
-- name: Derive immutable images only from the service catalog
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
+- name: Bind every observability channel to its catalog component
+  ansible.builtin.assert:
+    that:
+      - item.value.baseline.catalog == "observability"
+      - item.value.baseline.component in observability_components_by_id
+      - >-
+        item.key == item.value.baseline.component
+        or item.key is match("^" ~ item.value.baseline.component ~ "-")
+    fail_msg: >-
+      The image channel of {{ item.key }} is not bound to its reviewed
+      observability component.
+    quiet: true
+  loop: "{{ image_channels_map.observability | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Require one shared image for the three PostgreSQL exporters
+  ansible.builtin.assert:
+    that:
+      - >-
+        [
+          "postgres-exporter-n8n",
+          "postgres-exporter-passbolt",
+          "postgres-exporter-shlink"
+        ]
+        | map("extract", image_channels_map.observability)
+        | map(attribute="reference")
+        | unique | length == 1
+    fail_msg: The PostgreSQL exporters must share one reviewed channel entry.
+    quiet: true
+
+- name: Derive images only from the reviewed image channel map
   ansible.builtin.set_fact:
     observability_images:
       prometheus: >-
-        {{ observability_components_by_id.prometheus.image }}
+        {{ image_channels_map.observability["prometheus"].reference }}
       alertmanager: >-
-        {{ observability_components_by_id.alertmanager.image }}
+        {{ image_channels_map.observability["alertmanager"].reference }}
       blackbox_exporter: >-
-        {{ observability_components_by_id["blackbox-exporter"].image }}
+        {{ image_channels_map.observability["blackbox-exporter"].reference }}
       loki: >-
-        {{ observability_components_by_id.loki.image }}
+        {{ image_channels_map.observability["loki"].reference }}
       alloy: >-
-        {{ observability_components_by_id.alloy.image }}
+        {{ image_channels_map.observability["alloy"].reference }}
       grafana: >-
-        {{ observability_components_by_id.grafana.image }}
+        {{ image_channels_map.observability["grafana"].reference }}
       node_exporter: >-
-        {{ observability_components_by_id["node-exporter"].image }}
+        {{ image_channels_map.observability["node-exporter"].reference }}
       cadvisor: >-
-        {{ observability_components_by_id.cadvisor.image }}
+        {{ image_channels_map.observability["cadvisor"].reference }}
       postgres_exporter: >-
-        {{ observability_components_by_id["postgres-exporter"].image }}
+        {{
+          image_channels_map.observability["postgres-exporter-n8n"].reference
+        }}
       redis_exporter: >-
-        {{ observability_components_by_id["redis-exporter"].image }}
+        {{ image_channels_map.observability["redis-exporter"].reference }}
 
 - name: Initialize the public HTTPS probe target list
   ansible.builtin.set_fact:
