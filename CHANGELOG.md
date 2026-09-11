@@ -82,6 +82,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Catálogo OrganizationWeb a la revisión de aplicación `2ac34cd`, con
+  índices API/web publicados desde este host y verificados en el registro.
+  Añade las migraciones Flyway V22–V32 sobre V21; conserva PostgreSQL,
+  RabbitMQ, secrets, edge, redes y recursos. Backup previo obligatorio.
+
 - Importación OrganizationWeb 23 `4c74e18` desplegada con IaC `7712fc8`
   y PR38 fusionada. Apply EXIT 0, 38/4/0/0 y operación liberada; veinte
   servicios a 1/1, dieciocho contenedores y ocho rutas legacy preservados.

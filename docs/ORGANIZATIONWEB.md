@@ -533,3 +533,50 @@ con snapshots `import23-live-*-before/after`. SHA256 de la aceptación:
 ```text
 1f91bac7248a7f1a7d10003fb2b32b58bdfbefe31f9db146e97f561fe1177142
 ```
+
+## Release de aplicación 2ac34cd
+
+Catálogo candidato con la revisión de producto
+`2ac34cd64d40c744215f5775d0cbd1b382791db0` (main de la aplicación, CI
+34545218309 SUCCESS). Sólo cambian release e índices API/web; PostgreSQL,
+RabbitMQ, secrets, edge, redes y recursos no cambian. Live previo: import23
+(`4c74e18`) con Flyway V21; el candidato integration24 (PR40) nunca se aplicó.
+
+Imágenes construidas en este host el 11 de septiembre de 2026 con un builder
+`docker-container` aislado (3 GiB, cuatro CPU) para que un OOM no alcance a
+producción, desde un clon limpio con inputs idénticos antes y después, y
+publicadas con provenance `mode=max`. El clon se hace con `umask 022`: un primer
+intento con el umask 0007 del host dejó `nginx.conf` en 0660 y el healthcheck
+endurecido de validate-iac lo rechazó; esos digests no se usan. En el registro,
+el digest de cada tag coincide con el índice, que enlaza linux/amd64 y su
+attestation, y la configuración declara la revisión exacta. Índices del
+catálogo:
+
+```text
+API sha256:c26850b24a3d926619cfb8451f2ddb090047082cca4c01afa39d399d17ab8324
+web sha256:072ccbf2146a5784166837851fbbf3431959e04bcd00cd9a9471533cce51aff4
+```
+
+El salto aplica diez migraciones, V22 a V32 (no existe V27). Ninguna altera
+tablas anteriores a V22: crean tablas nuevas, y V29–V31 sólo renombran
+columnas o cambian constraints e índices de tablas creadas por V23 y V25.
+V32 elimina sólo tablas de conectores y automatizaciones creadas
+por V25, V28 y V29 dentro de este mismo salto, por lo que no borra datos
+previos. Sin `APP_CONNECTOR_KEY` los conectores quedan deshabilitados y sus
+rutas responden 503; este catálogo no la provisiona. Webhooks y calendario
+externo requieren egreso según `deploy/EGRESS.md` de la aplicación.
+
+Antes del apply se exige un `pg_dump` fresco en
+`/var/backups/organizationweb`, root:root 0600. Swarm rollback no revierte
+Flyway: retroceder a import23 exige restaurar esa copia o validar que la API
+anterior tolera V32. Referencia de retroceso, release
+`4c74e183e49afa6d280115b399dbaffedc7bfe7f`:
+
+```text
+API sha256:313446ebc241ec2812c2d5dcbfb5618a3bc398253e9b4e78b55b6730c650216d
+web sha256:4ebd36d9a2e57f647f4ed72798ebe4039b46756659765913cc67c9b71ddf0186
+```
+
+Evidencia externa, sin credenciales:
+`~/deployment-preparation/release-2ac34cd/` (metadatos, logs de build y
+push, huellas de inputs y verificación del registro).
