@@ -13,12 +13,14 @@ paths = [
 ]
 
 [[allowlists]]
-description = "Verified public API 23 and rollback API 22 image digests, not credentials."
+description = "Verified public API 2ac34cd, API 24 (PR40 history), API 23 and rollback API 22 image digests, not credentials."
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
 paths = ['''^(?:/repo/)?docs/ORGANIZATIONWEB\.md$''']
 regexes = [
+  '''(?m)^API sha256:c26850b24a3d926619cfb8451f2ddb090047082cca4c01afa39d399d17ab8324\r?$''',
+  '''(?m)^API sha256:1e67de8d415835d9f55debf043b51d24e0aa64ada7184238eef0436ed55f1ed7\r?$''',
   '''(?m)^API sha256:313446ebc241ec2812c2d5dcbfb5618a3bc398253e9b4e78b55b6730c650216d\r?$''',
   '''(?m)^API sha256:1276d6e618f5ab6aadfa816244f5022a2393cd46d2c8c09a6d5bde1e8ec9f49b\r?$''',
 ]
