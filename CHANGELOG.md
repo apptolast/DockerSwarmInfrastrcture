@@ -247,6 +247,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El escaneo gitleaks del historial completo (`--log-opts=--all`) vuelve a
+  pasar: allowlist exacta del digest público API24 que contiene la rama de
+  PR40 (`e1751bc`). Fallaba en la ejecución diaria de `main` desde el 9 de
+  septiembre de 2026.
+
 - Los tmpfs de OrganizationWeb usan mounts largos compatibles con Swarm;
   el test convierte el stack y comprueba escritura y flags efectivos con
   usuarios sin privilegios. La imagen web prepara los permisos temporales.
