@@ -8,17 +8,17 @@ ansible-compat==26.6.0 \
     --hash=sha256:739c4d10c791000c4b353f5e725e9ebafb6384dbeb00b94c7c8ac3ee2c172337 \
     --hash=sha256:ad00d3cff84a961165a7dd90f175fd9a4584e2e602e9d8af2062ce7c479dd350
     # via ansible-lint
-ansible-core==2.21.2 \
-    --hash=sha256:c6139e662eda1bfb5af16029f12afa5edfc7f95f8cd44281b1bdb434a6d9dc70 \
-    --hash=sha256:c7d696c717da03109a32a569a5fe57925812a86734344eab775cba169bf57cf8
+ansible-core==2.21.3 \
+    --hash=sha256:4194fbd82273cbacfd06d86d74d2d7168c3c4b8426c03e93562cd7217f811ae1 \
+    --hash=sha256:9e7dd367f7dc5d5e9fc5ae1baf8af9c4edc09e916a73a40108a3f32e3ad93f10
     # via
-    #   -r ansible/requirements-dev.in
+    #   -r requirements-dev.in
     #   ansible-compat
     #   ansible-lint
 ansible-lint==26.6.0 \
     --hash=sha256:162939615eae3b59f38bd829542642b586ccee17eefb0df8718ea4b092eee222 \
     --hash=sha256:790d08ff6ee56525244677411c90a17b374245d3913bc6a462b5d913ece6d615
-    # via -r ansible/requirements-dev.in
+    # via -r requirements-dev.in
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309 \
     --hash=sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32
@@ -231,7 +231,7 @@ jinja2==3.1.6 \
 jsondiff==2.2.1 \
     --hash=sha256:658d162c8a86ba86de26303cd86a7b37e1b2c1ec98b569a60e2ca6180545f7fe \
     --hash=sha256:b1f0f7e2421881848b1d556d541ac01a91680cfcc14f51a9b62cdf4da0e56722
-    # via -r ansible/requirements-dev.in
+    # via -r requirements-dev.in
 jsonschema==4.26.0 \
     --hash=sha256:0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326 \
     --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
@@ -479,7 +479,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
-    #   -r ansible/requirements-dev.in
+    #   -r requirements-dev.in
     #   ansible-compat
     #   ansible-core
     #   ansible-lint
@@ -634,5 +634,5 @@ yamllint==1.38.0 \
     --hash=sha256:09e5f29531daab93366bb061e76019d5e91691ef0a40328f04c927387d1d364d \
     --hash=sha256:fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220
     # via
-    #   -r ansible/requirements-dev.in
+    #   -r requirements-dev.in
     #   ansible-lint
