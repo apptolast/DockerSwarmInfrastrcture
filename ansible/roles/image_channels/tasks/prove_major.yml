@@ -1,0 +1,72 @@
+---
+# Shared by image_preflight and organizationweb. A hold pins bytes by digest,
+# so its tag is only text: `postgres:16-alpine@sha256:<a 17.x digest>` would
+# cross a data major silently. Every stateful hold that is not the exact
+# reviewed baseline must prove its upstream major from the pulled image
+# itself before any stack mutation. `major_proof` (derived by
+# scripts/validate-image-channels.py from its major table) names where the
+# image states that major, an env variable or an OCI label, and the exact
+# value allowed. Inputs: image_channels_major_proof_entries and
+# image_channels_major_proof_pull.
+- name: Pull every stateful hold that must prove its major
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - pull
+      - --platform
+      - linux/amd64
+      - "{{ item.preflight_reference }}"
+  loop: "{{ image_channels_major_proof_entries }}"
+  loop_control:
+    label: "{{ item.stack }}/{{ item.service }}"
+  register: image_channels_major_proof_pulls
+  changed_when: >-
+    'Downloaded newer image' in image_channels_major_proof_pulls.stdout
+  when: image_channels_major_proof_pull | bool
+
+- name: Read the configuration of every stateful hold that must prove its major
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - "{{ item.preflight_reference }}"
+  loop: "{{ image_channels_major_proof_entries }}"
+  loop_control:
+    label: "{{ item.stack }}/{{ item.service }}"
+  register: image_channels_major_proof_inspections
+  changed_when: false
+  check_mode: false
+
+- name: Require every stateful hold to run its reviewed upstream major
+  ansible.builtin.assert:
+    that:
+      - item.item.major_proof_required
+      - item.item.major_proof.source in ["env", "label"]
+      - >-
+        (
+          (
+            (item.stdout | from_json | first).Config.Env | default([], true)
+            | select(
+              "match",
+              "^" ~ (item.item.major_proof.key | regex_escape) ~ "="
+            )
+            | map("regex_replace", "^[^=]*=", "")
+            | first
+            | default("", true)
+          )
+          if item.item.major_proof.source == "env"
+          else
+          (
+            (item.stdout | from_json | first).Config.Labels | default({}, true)
+          ).get(item.item.major_proof.key, "")
+        )
+        is match(item.item.major_proof.pattern)
+    fail_msg: >-
+      The hold of {{ item.item.stack }}/{{ item.item.service }} does not run
+      its reviewed upstream major; fix its entry in config/image-channels.yml.
+    quiet: true
+  loop: "{{ image_channels_major_proof_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.stack }}/{{ item.item.service }}"

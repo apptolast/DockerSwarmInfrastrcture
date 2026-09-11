@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from ansible_task_harness import AnsibleTaskAssertions
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -962,6 +964,179 @@ class ChannelWiringTests(unittest.TestCase):
                 self.assertNotIn("workload-image-updates", text)
         gate = (REPOSITORY_ROOT / "scripts/validate-iac.sh").read_text(encoding="utf-8")
         self.assertIn("scripts/validate-image-channels.py validate", gate)
+
+
+def derive_services(**references: str) -> dict[str, Any]:
+    """Derive the reviewed map with `stack/service` references replaced."""
+    document = channels.load_unique_yaml(REPOSITORY_ROOT / "config/image-channels.yml")
+    for item in document["image_channel_services"]:
+        key = f"{item['stack']}/{item['service']}"
+        if key in references:
+            item["reference"] = references.pop(key)
+    if references:
+        raise AssertionError(f"unknown entries: {sorted(references)}")
+    return channels.derive_channels(
+        document, channels.load_baselines(REPOSITORY_ROOT)
+    )["services"]
+
+
+class MajorProofTests(unittest.TestCase):
+    def test_every_major_channel_has_a_proof(self) -> None:
+        self.assertEqual(
+            set(channels.MAJOR_PROOFS), set(channels.STATEFUL_MAJOR_CHANNELS)
+        )
+        for stack, entries in derive_services().items():
+            for name, entry in entries.items():
+                with self.subTest(service=f"{stack}/{name}"):
+                    if entry["class"] == "stateful-major":
+                        self.assertIn(entry["major_proof"]["source"], {"env", "label"})
+                    else:
+                        self.assertIsNone(entry["major_proof"])
+                    # Every reviewed entry today is a baseline or a channel.
+                    self.assertIs(entry["major_proof_required"], False)
+
+    def test_proof_patterns_accept_only_the_baseline_major(self) -> None:
+        cases = {
+            ("workloads", "n8n-db"): ("PG_MAJOR", ["16"], ["17", "160", "1", "16.1"]),
+            ("workloads", "passbolt-db"): ("PG_MAJOR", ["15"], ["16", "5"]),
+            ("workloads", "shlink-db"): ("PG_MAJOR", ["16"], ["17", "15"]),
+            ("organizationweb", "postgres"): ("PG_MAJOR", ["17"], ["18", "16"]),
+            ("workloads", "redis-coordinator"): (
+                "REDIS_VERSION",
+                ["7.2.11", "7.2.0"],
+                ["7.4.0", "7.2", "17.2.1", "7x2.1"],
+            ),
+            ("organizationweb", "rabbitmq"): (
+                "RABBITMQ_VERSION",
+                ["4.3.5"],
+                ["4.4.0", "4.30.1", "4.3"],
+            ),
+            ("edge", "traefik"): (
+                "org.opencontainers.image.version",
+                ["v3.7.9", "v3.0.0"],
+                ["v4.0.0", "3.7.9", "v3.7"],
+            ),
+        }
+        services = derive_services()
+        for (stack, name), (key, accepted, rejected) in cases.items():
+            proof = services[stack][name]["major_proof"]
+            with self.subTest(service=f"{stack}/{name}"):
+                self.assertEqual(proof["key"], key)
+                for value in accepted:
+                    self.assertRegex(value, proof["pattern"])
+                for value in rejected:
+                    self.assertNotRegex(value, proof["pattern"])
+
+    def test_only_a_non_baseline_stateful_hold_must_prove_its_major(self) -> None:
+        services = derive_services(
+            **{
+                "workloads/shlink-db": "docker.io/library/postgres:16-alpine@" + DIGEST,
+                "workloads/passbolt-db": "docker.io/library/postgres:15-alpine",
+                "edge/traefik": "docker.io/library/traefik:v3@" + DIGEST,
+            }
+        )
+        self.assertIs(services["workloads"]["shlink-db"]["major_proof_required"], True)
+        self.assertIs(services["edge"]["traefik"]["major_proof_required"], True)
+        # A channel tag is resolved by the registry; a baseline was reviewed.
+        for stack, name in (
+            ("workloads", "passbolt-db"),
+            ("organizationweb", "postgres"),
+            ("workloads", "portfolio-alberto"),
+        ):
+            with self.subTest(service=f"{stack}/{name}"):
+                self.assertIs(services[stack][name]["major_proof_required"], False)
+
+    def test_major_is_proved_before_any_stack_mutation(self) -> None:
+        name = "Prove the upstream major of every non-baseline stateful hold"
+        preflight = yaml.safe_load(
+            (REPOSITORY_ROOT / "ansible/roles/image_preflight/tasks/main.yml").read_text()
+        )
+        deploy = yaml.safe_load(
+            (REPOSITORY_ROOT / "ansible/roles/organizationweb/tasks/deploy.yml").read_text()
+        )
+        for tasks, pull in ((preflight, False), (deploy, True)):
+            include = next(task for task in tasks if task.get("name") == name)
+            with self.subTest(pull=pull):
+                self.assertEqual(
+                    include["ansible.builtin.include_role"],
+                    {"name": "image_channels", "tasks_from": "prove_major.yml"},
+                )
+                self.assertIs(include["vars"]["image_channels_major_proof_pull"], pull)
+        mutation = next(
+            index
+            for index, task in enumerate(deploy)
+            if "community.docker.docker_stack" in task
+        )
+        proof = next(i for i, task in enumerate(deploy) if task.get("name") == name)
+        self.assertLess(proof, mutation)
+
+
+class MajorProofGateTests(AnsibleTaskAssertions, unittest.TestCase):
+    TASKS = "ansible/roles/image_channels/tasks/prove_major.yml"
+    TASK = "Require every stateful hold to run its reviewed upstream major"
+    MESSAGE = "does not run its reviewed upstream major"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        services = derive_services(
+            **{
+                "workloads/shlink-db": "docker.io/library/postgres:16-alpine@" + DIGEST,
+                "organizationweb/rabbitmq": "rabbitmq:4.3-management-alpine@" + DIGEST,
+                "edge/traefik": "docker.io/library/traefik:v3@" + DIGEST,
+            }
+        )
+        cls.shlink = services["workloads"]["shlink-db"]
+        cls.rabbitmq = services["organizationweb"]["rabbitmq"]
+        cls.traefik = services["edge"]["traefik"]
+        cls.baseline = services["workloads"]["passbolt-db"]
+
+    @staticmethod
+    def inspection(entry: dict, env: Any = None, labels: Any = None) -> dict:
+        return {
+            "item": entry,
+            "stdout": json.dumps([{"Config": {"Env": env, "Labels": labels}}]),
+        }
+
+    def gate(self, *inspections: dict) -> dict:
+        return {"image_channels_major_proof_inspections": {"results": list(inspections)}}
+
+    def test_images_that_state_their_reviewed_major_are_accepted(self) -> None:
+        self.assert_task_accepts(
+            self.TASKS,
+            self.TASK,
+            self.gate(
+                self.inspection(
+                    self.shlink, ["PATH=/usr/bin", "PG_MAJOR=16", "PG_VERSION=16.10"]
+                ),
+                self.inspection(self.rabbitmq, ["RABBITMQ_VERSION=4.3.5"]),
+                self.inspection(
+                    self.traefik, None, {"org.opencontainers.image.version": "v3.7.9"}
+                ),
+            ),
+        )
+
+    def test_images_of_another_or_unstated_major_are_rejected(self) -> None:
+        cases = {
+            "postgres 17 bytes under a 16 tag": self.inspection(
+                self.shlink, ["PG_MAJOR=17", "PG_VERSION=17.11"]
+            ),
+            "no PG_MAJOR": self.inspection(self.shlink, ["PG_VERSION=16.10"]),
+            "prefixed key": self.inspection(self.shlink, ["XPG_MAJOR=16"]),
+            "traefik v4": self.inspection(
+                self.traefik, None, {"org.opencontainers.image.version": "v4.0.0"}
+            ),
+            "env key only as a label": self.inspection(
+                self.rabbitmq, None, {"RABBITMQ_VERSION": "4.3.5"}
+            ),
+            "entry not flagged for a proof": self.inspection(
+                self.baseline, ["PG_MAJOR=15"]
+            ),
+        }
+        for case, inspection in cases.items():
+            with self.subTest(case=case):
+                self.assert_task_rejects(
+                    self.TASKS, self.TASK, self.gate(inspection), self.MESSAGE
+                )
 
 
 if __name__ == "__main__":

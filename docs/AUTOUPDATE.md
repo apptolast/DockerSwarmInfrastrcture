@@ -65,10 +65,29 @@ Reglas que el validador aplica sin excepciones:
   `update_config.failure_action: rollback`, una ventana `monitor` no nula y
   un healthcheck activo.
 - El socket Docker solo se permite en el stack `autoupdater`.
+- El tag de un hold es solo texto: manda el digest. Un hold `stateful-major`
+  que no sea byte a byte su baseline (por ejemplo
+  `postgres:16-alpine@sha256:...`) prueba su versión mayor antes de mutar
+  ningún stack. El preflight, o el rol `organizationweb`, que no pasa por él,
+  descarga la imagen y exige el valor de la tabla en `PG_MAJOR`,
+  `REDIS_VERSION`, `RABBITMQ_VERSION` o, para Traefik, en la etiqueta OCI
+  `org.opencontainers.image.version`. Así un digest de PostgreSQL 17 bajo el
+  tag `16-alpine` no cruza la mayor en silencio.
 
 Exclusiones revisadas: `workloads/n8n-runners`, que se construye en local
 desde `images/n8n-runners`, y `autoupdater/shepherd`, que nunca se actualiza
 a sí mismo.
+
+Efecto aceptado de excluir `n8n-runners`: con `resolve_image: changed`, el
+CLI también consulta Docker Hub por `apptolast/n8n-runners:src-<sha256>`
+cuando ese tag cambia (cualquier bump de Dependabot en `images/n8n-runners`
+lo cambia) y al crear el servicio. `apptolast` es un namespace del owner en
+Docker Hub: si ese tag existiera allí, Swarm fijaría y descargaría los bytes
+remotos en lugar de la build local. Por eso el rol `workloads` consulta el
+registro antes de mutar y se detiene si el tag existe. Un fallo de la
+consulta, por ejemplo sin red, deja igualmente al CLI sin resolverlo, así que
+no se trata como existencia. Tras el deploy, el runner sigue exigiendo
+igualdad exacta con su tag local.
 
 ## Por qué Ansible ya no pelea con el vigilante
 
@@ -77,15 +96,34 @@ compara la imagen renderizada con la etiqueta de servicio
 `com.docker.stack.image`:
 
 - Si son iguales, conserva el digest vivo del servicio. Un nuevo apply no
-  revierte lo que aplicó el vigilante y el segundo apply sigue en
+  revierte lo que aplicó el vigilante y `docker_stack` sigue en
   `changed=0`.
 - Si difieren, o el servicio es nuevo, consulta el registro y fija el
   digest actual del canal.
 
+Antes del despliegue, cada rol lee el spec vivo de sus servicios. Un hold cuya
+cadena renderizada no cambió debe ejecutar ya su identidad exacta: si alguien
+lo movió fuera de Git (`docker service update --image`), el CLI conservaría
+esa imagen, así que el apply se detiene antes de mutar. Primero se registra
+la imagen viva en su entrada; el apply no la repara.
+
 Tras el despliegue, una entrada hold exige la identidad exacta revisada en el
-spec vivo y una entrada de canal exige un digest de su propio `repo:tag`.
+spec vivo. Una entrada de canal exige un digest de su propio `repo:tag` y, en
+`edge`, `workloads` y `observability`, además que sea el digest que el
+preflight resolvió, descargó y verificó como `linux/amd64`, o el digest vivo
+que el servicio ya tenía antes del deploy. El CLI vuelve a resolver el canal
+durante `docker stack deploy`: si el canal avanzó entre el preflight y el
+deploy, el apply falla después de mutar y basta con repetirlo. OrganizationWeb
+no pasa por el preflight y verifica plataforma, digest y revisión de la
+imagen que cada servicio ejecuta tras el deploy.
+
 Cada apply registra la imagen observada de cada servicio en
-`observed-images.yml` junto al stack instalado (`/opt/dockerswarm/...`).
+`observed-images.yml` junto al stack instalado (`/opt/dockerswarm/...`). Ese
+fichero cambia legítimamente cuando el vigilante movió un digest desde el
+apply anterior o cuando cambia la revisión fuente, así que su tarea puede
+informar `changed` aunque `docker_stack` no cambie. Tras una actualización
+del vigilante, el primer apply registra el digest nuevo y el siguiente apply
+consecutivo desde el mismo commit vuelve a `changed=0`.
 
 ## Estado tras este cambio
 
@@ -99,8 +137,34 @@ se renderiza hoy, con dos salvedades deliberadas:
 - `portfolio-alberto` queda en hold en el digest que antes aprobaba
   `config/workload-image-updates.yml`, fichero que desaparece.
 
+El primer apply de cada stack (`edge`, `workloads`, `organizationweb` y, al
+activarse, `observability`) informa `changed` en `docker_stack` aunque no se
+adopte nada: todo servicio renderizado gana la etiqueta de servicio
+`apptolast.autoupdate`, que cambia `Spec.Labels`, y el módulo compara el
+`docker service inspect` completo antes y después. `TaskTemplate` no cambia,
+así que ninguna tarea se reinicia salvo en los cuatro servicios adoptados. El
+segundo apply consecutivo debe devolver `changed=0`.
+
 El registro del stack `autoupdater` (Shepherd, filtro exacto
 `label=apptolast.autoupdate=true`) llega en un cambio posterior y revisado.
+
+## Antes del primer apply
+
+Inventario de solo lectura, obligatorio antes de aplicar este cambio: para
+cada entrada hold, en especial `organizationweb_*` y `edge_traefik`, la
+imagen viva debe ser su `spec_exact` (`validate-image-channels.py derive`).
+
+```bash
+sudo -- docker service inspect \
+  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' \
+  organizationweb_postgres
+```
+
+Si un servicio se movió fuera de Git, se cambia antes su entrada en
+`config/image-channels.yml` a esa imagen viva, en un PR revisado. El apply lo
+rechaza antes de mutar, pero no lo repara. La investigación del 2026-09-11
+indica que `organizationweb_postgres` y `organizationweb_rabbitmq` ejecutan
+sus pins; Traefik queda por confirmar.
 
 ## Cambiar una entrada
 
@@ -113,7 +177,8 @@ El registro del stack `autoupdater` (Shepherd, filtro exacto
 3. Ejecuta `./scripts/bootstrap-tooling.sh`, `./scripts/validate-iac.sh` y
    `./scripts/lint.sh`, y registra el cambio en `CHANGELOG.md`.
 4. Tras el merge, ejecuta el playbook del stack con `--check` y después con
-   `--confirm-production`. Repite el apply y exige `changed=0`.
+   `--confirm-production`. Repite el apply y exige `changed=0` en ese segundo
+   apply consecutivo.
 
 ## Interruptor y rollback
 

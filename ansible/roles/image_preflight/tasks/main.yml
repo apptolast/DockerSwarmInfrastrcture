@@ -294,3 +294,29 @@
   when:
     - not ansible_check_mode
     - item.item in image_preflight_channel_resolved_references
+
+# Holds were pulled above by their repository digest. A stateful hold that is
+# not the exact reviewed baseline must also prove its upstream major.
+- name: Select the stateful holds that must prove their upstream major
+  ansible.builtin.set_fact:
+    image_preflight_major_proof_entries: >-
+      {{
+        image_preflight_stacks
+        | map("extract", image_channels_map)
+        | map("dict2items") | flatten
+        | map(attribute="value")
+        | selectattr("major_proof_required")
+        | list
+      }}
+
+- name: Prove the upstream major of every non-baseline stateful hold
+  ansible.builtin.include_role:
+    name: image_channels
+    tasks_from: prove_major.yml
+  vars:
+    image_channels_major_proof_entries: >-
+      {{ image_preflight_major_proof_entries }}
+    image_channels_major_proof_pull: false
+  when:
+    - not ansible_check_mode
+    - image_preflight_major_proof_entries | length > 0

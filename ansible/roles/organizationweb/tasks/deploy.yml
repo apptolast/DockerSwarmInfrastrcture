@@ -41,6 +41,55 @@
     group: root
     mode: '0755'
 
+# OrganizationWeb is not in the image preflight. A non-baseline stateful
+# hold still proves its upstream major before the stack mutation.
+- name: Prove the upstream major of every non-baseline stateful hold
+  ansible.builtin.include_role:
+    name: image_channels
+    tasks_from: prove_major.yml
+  vars:
+    image_channels_major_proof_entries: >-
+      {{
+        image_channels_map.organizationweb.values()
+        | selectattr("major_proof_required") | list
+      }}
+    image_channels_major_proof_pull: true
+
+# The CLI keeps the live digest when the rendered image equals the
+# `com.docker.stack.image` label, so a hold moved outside Git would survive
+# the deploy and only fail the identity check after it. Refuse it before.
+- name: Read every application service before the stack mutation
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "organizationweb_{{ item }}"]
+  loop: [backend, postgres, rabbitmq, web]
+  register: organizationweb_services_before_deploy
+  changed_when: false
+  failed_when: false
+
+- name: Require every live application hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or item.stderr is search('(?i)(no such service|not found)')
+      - >-
+        item.rc != 0
+        or image_channels_map.organizationweb[item.item].mode != 'hold'
+        or (
+          (item.stdout | from_json | first).Spec.Labels | default({}, true)
+        ).get('com.docker.stack.image', '')
+        != image_channels_map.organizationweb[item.item].reference
+        or (item.stdout | from_json | first)
+        .Spec.TaskTemplate.ContainerSpec.Image
+        == image_channels_map.organizationweb[item.item].spec_exact
+    fail_msg: >-
+      Service {{ item.item }} runs an image outside its unchanged hold entry,
+      or could not be read. Record the live image in
+      config/image-channels.yml before deploying.
+    quiet: true
+  loop: "{{ organizationweb_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Deploy only the independent application stack
   community.docker.docker_stack:
     name: organizationweb

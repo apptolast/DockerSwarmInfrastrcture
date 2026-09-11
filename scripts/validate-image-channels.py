@@ -156,6 +156,32 @@ STATEFUL_MAJOR_CHANNELS = {
         "4.3-management-alpine",
     ),
 }
+class MajorProof(NamedTuple):
+    """Where a pulled image states its upstream major, and its exact form."""
+
+    source: str
+    key: str
+    value_template: str
+
+
+# A hold pins bytes by digest, so its tag is only text. A hold that is not the
+# exact reviewed baseline must prove its major from the pulled image itself
+# before any stack mutation (image_channels/tasks/prove_major.yml).
+MAJOR_PROOFS = {
+    ("edge", "traefik"): MajorProof(
+        "label", "org.opencontainers.image.version", r"v{major}\.[0-9]+\.[0-9]+"
+    ),
+    ("workloads", "n8n-db"): MajorProof("env", "PG_MAJOR", r"{major}"),
+    ("workloads", "redis-coordinator"): MajorProof(
+        "env", "REDIS_VERSION", r"{major}\.[0-9]+"
+    ),
+    ("workloads", "passbolt-db"): MajorProof("env", "PG_MAJOR", r"{major}"),
+    ("workloads", "shlink-db"): MajorProof("env", "PG_MAJOR", r"{major}"),
+    ("organizationweb", "postgres"): MajorProof("env", "PG_MAJOR", r"{major}"),
+    ("organizationweb", "rabbitmq"): MajorProof(
+        "env", "RABBITMQ_VERSION", r"{major}\.[0-9]+"
+    ),
+}
 # The OrganizationWeb baselines are digest-only. Their upstream version was
 # reviewed for exactly these digests; a new digest must be re-reviewed here.
 REVIEWED_BASELINE_VERSIONS = {
@@ -379,7 +405,8 @@ def check_major_channel(
     repository: str,
     tag: str | None,
     baseline: dict[str, Any],
-) -> None:
+) -> dict[str, str]:
+    """Check the major channel and return how a pulled image proves it."""
     channel = STATEFUL_MAJOR_CHANNELS[(stack, service)]
     if repository != channel.repository:
         raise ChannelError(f"{stack}/{service}: major channel repository differs")
@@ -398,6 +425,9 @@ def check_major_channel(
             f"{stack}/{service}: tag {tag} is not the reviewed major channel "
             f"{channel.tag}"
         )
+    proof = MAJOR_PROOFS[(stack, service)]
+    value = proof.value_template.replace("{major}", re.escape(match.group("major")))
+    return {"source": proof.source, "key": proof.key, "pattern": f"^{value}$"}
 
 
 def derive_entry(
@@ -447,8 +477,9 @@ def derive_entry(
         raise ChannelError(f"{context}: class must be {klass}")
     if klass == "owner" and tag is not None and tag != OWNER_CHANNEL_TAG:
         raise ChannelError(f"{context}: owner images follow :{OWNER_CHANNEL_TAG}")
+    major_proof = None
     if klass == "stateful-major":
-        check_major_channel(stack, service, repository, tag, baseline)
+        major_proof = check_major_channel(stack, service, repository, tag, baseline)
 
     familiar = familiar_repository(repository)
     spec_base = familiar + (f":{tag}" if tag is not None else "")
@@ -477,6 +508,12 @@ def derive_entry(
         "spec_exact": spec_exact,
         "spec_pattern": spec_pattern,
         "preflight_reference": preflight_reference,
+        "major_proof": major_proof,
+        "major_proof_required": (
+            major_proof is not None
+            and mode == "hold"
+            and reference != baseline["reference"]
+        ),
     }
 
 

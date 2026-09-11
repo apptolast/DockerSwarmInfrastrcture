@@ -13,6 +13,8 @@ from unittest import mock
 
 import yaml
 
+from ansible_task_harness import AnsibleTaskAssertions
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -2094,6 +2096,266 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         self.assertIn("SecretID", validator)
         self.assertIn("SecretName", validator)
         self.assertIn('task_template.get("Networks")', validator)
+
+
+class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
+    """The live Spec image gates of the workloads role, fed synthetic inspects."""
+
+    DEPLOY = "ansible/roles/workloads/tasks/deploy.yml"
+    IDENTITY = "Verify deployed workload image and placement identities"
+    IDENTITY_MESSAGE = "differs from the reviewed contract."
+    PRECONDITION = "Require every live workload hold to run its reviewed identity"
+    PRECONDITION_MESSAGE = "runs an image outside its unchanged hold entry"
+    LOOKUP = "Look up the local n8n runner tag on its public registry"
+    RUNNER = "Refuse a local runner tag that also exists on its public registry"
+    RUNNER_IMAGE = "apptolast/n8n-runners:src-" + ("a" * 64)
+    RESOLVED = "sha256:" + ("1" * 64)
+    KEPT = "sha256:" + ("2" * 64)
+    FOREIGN = "sha256:" + ("3" * 64)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        workloads = channel_validator.load_channel_map(REPOSITORY_ROOT)["services"][
+            "workloads"
+        ]
+        cls.channel = workloads["kropia"]
+        cls.hold = workloads["shlink-db"]
+        cls.head = cls.channel["repository_familiar"] + ":" + cls.channel["tag"]
+
+    @staticmethod
+    def inspect(image: str, label: str = "") -> str:
+        return json.dumps(
+            [
+                {
+                    "Spec": {
+                        "Labels": {"com.docker.stack.image": label},
+                        "TaskTemplate": {
+                            "ContainerSpec": {"Image": image},
+                            "Placement": {
+                                "Constraints": [
+                                    "node.labels.platform.workloads == true"
+                                ]
+                            },
+                        },
+                        "Mode": {"Replicated": {"Replicas": 1}},
+                        "UpdateConfig": {"Order": "stop-first"},
+                        "RollbackConfig": {"Order": "stop-first"},
+                    }
+                }
+            ]
+        )
+
+    def identity(
+        self,
+        channel_live: str,
+        hold_live: str,
+        *,
+        before: str = "",
+        channel: dict | None = None,
+        hold: dict | None = None,
+    ) -> dict:
+        return {
+            "workloads_expected_spec_images": {
+                "kropia": channel or self.channel,
+                "shlink-db": hold or self.hold,
+            },
+            "workloads_images_before_deploy": {"kropia": before, "shlink-db": ""},
+            "image_preflight_channel_resolutions": {
+                self.channel["reference"]: self.channel["reference"]
+                + "@"
+                + self.RESOLVED
+            },
+            "workloads_deployed_services": {
+                "results": [
+                    {"item": {"key": "kropia"}, "stdout": self.inspect(channel_live)},
+                    {"item": {"key": "shlink-db"}, "stdout": self.inspect(hold_live)},
+                ]
+            },
+        }
+
+    def test_identity_gate_accepts_the_reviewed_hold_and_verified_heads(self) -> None:
+        exact = self.hold["spec_exact"]
+        # The head the preflight resolved, pulled and proved linux/amd64 ...
+        self.assert_task_accepts(
+            self.DEPLOY,
+            self.IDENTITY,
+            self.identity(self.head + "@" + self.RESOLVED, exact),
+        )
+        # ... or the live digest the CLI kept because the label is unchanged.
+        kept = self.head + "@" + self.KEPT
+        self.assert_task_accepts(
+            self.DEPLOY, self.IDENTITY, self.identity(kept, exact, before=kept)
+        )
+
+    def test_identity_gate_rejects_a_hold_on_another_digest(self) -> None:
+        wrong = self.hold["spec_exact"].split("@")[0] + "@" + self.FOREIGN
+        self.assert_task_rejects(
+            self.DEPLOY,
+            self.IDENTITY,
+            self.identity(self.head + "@" + self.RESOLVED, wrong),
+            self.IDENTITY_MESSAGE,
+        )
+
+    def test_identity_gate_anchors_the_channel_repository_and_tag(self) -> None:
+        for live in (
+            "evil/" + self.head + "@" + self.RESOLVED,
+            "docker.io/" + self.head + "@" + self.RESOLVED,
+            self.channel["repository_familiar"] + ":stable@" + self.RESOLVED,
+            self.head + "@" + self.RESOLVED + "0",
+        ):
+            with self.subTest(live=live):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(live, self.hold["spec_exact"]),
+                    self.IDENTITY_MESSAGE,
+                )
+
+    def test_identity_gate_reads_the_mode_before_choosing_the_rule(self) -> None:
+        loose_hold = dict(
+            self.channel, mode="hold", spec_exact=self.head + "@" + self.KEPT
+        )
+        unknown_mode = dict(self.channel, mode="pinned")
+        for entry in (loose_hold, unknown_mode):
+            with self.subTest(mode=entry["mode"]):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(
+                        self.head + "@" + self.RESOLVED,
+                        self.hold["spec_exact"],
+                        channel=entry,
+                    ),
+                    self.IDENTITY_MESSAGE,
+                )
+
+    def test_identity_gate_rejects_a_head_the_preflight_did_not_verify(self) -> None:
+        for before in ("", self.head + "@" + self.KEPT):
+            with self.subTest(before=before):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(
+                        self.head + "@" + self.FOREIGN,
+                        self.hold["spec_exact"],
+                        before=before,
+                    ),
+                    self.IDENTITY_MESSAGE,
+                )
+
+    def result(
+        self, key: str, rc: int, live: str = "", label: str = "", stderr: str = ""
+    ) -> dict:
+        return {
+            "item": {"key": key},
+            "rc": rc,
+            "stdout": self.inspect(live, label) if rc == 0 else "[]",
+            "stderr": stderr,
+        }
+
+    def precondition(self, *results: dict) -> dict:
+        return {
+            "workloads_expected_spec_images": {
+                "kropia": self.channel,
+                "shlink-db": self.hold,
+            },
+            "workloads_expected_images": {
+                "kropia": self.channel["reference"],
+                "shlink-db": self.hold["reference"],
+            },
+            "workloads_services_before_deploy": {"results": list(results)},
+        }
+
+    def test_precondition_accepts_reviewed_changed_channel_and_absent(self) -> None:
+        moved = self.hold["spec_exact"].split("@")[0] + "@" + self.FOREIGN
+        self.assert_task_accepts(
+            self.DEPLOY,
+            self.PRECONDITION,
+            self.precondition(
+                self.result(
+                    "shlink-db", 0, self.hold["spec_exact"], self.hold["reference"]
+                ),
+                # A changed entry is re-resolved by the CLI: nothing is kept.
+                self.result("shlink-db", 0, moved, "postgres:16.9-alpine"),
+                self.result(
+                    "kropia", 0, self.head + "@" + self.KEPT, self.channel["reference"]
+                ),
+                self.result(
+                    "shlink-db", 1, stderr="Error: No such service: workloads_x"
+                ),
+            ),
+        )
+
+    def test_precondition_rejects_a_hold_moved_outside_git(self) -> None:
+        moved = self.hold["spec_exact"].split("@")[0] + "@" + self.FOREIGN
+        self.assert_task_rejects(
+            self.DEPLOY,
+            self.PRECONDITION,
+            self.precondition(
+                self.result("shlink-db", 0, moved, self.hold["reference"])
+            ),
+            self.PRECONDITION_MESSAGE,
+        )
+
+    def test_precondition_rejects_an_unreadable_service(self) -> None:
+        self.assert_task_rejects(
+            self.DEPLOY,
+            self.PRECONDITION,
+            self.precondition(
+                self.result(
+                    "shlink-db", 1, stderr="Cannot connect to the Docker daemon"
+                )
+            ),
+            self.PRECONDITION_MESSAGE,
+        )
+
+    def runner(self, rc: int, image: str = RUNNER_IMAGE) -> dict:
+        return {
+            "workloads_images": {"n8n_runner": image},
+            "workloads_runner_registry_lookup": {"rc": rc},
+        }
+
+    def test_local_runner_tag_must_not_exist_on_its_registry(self) -> None:
+        self.assert_task_accepts(self.DEPLOY, self.RUNNER, self.runner(1))
+        self.assert_task_rejects(
+            self.DEPLOY, self.RUNNER, self.runner(0), "also exists on Docker Hub"
+        )
+        self.assert_task_rejects(
+            self.DEPLOY,
+            self.RUNNER,
+            self.runner(1, "ghcr.io/" + self.RUNNER_IMAGE),
+            "also exists on Docker Hub",
+        )
+
+    def test_pre_deploy_guards_run_before_the_stack_mutation(self) -> None:
+        tasks = yaml.safe_load((REPOSITORY_ROOT / self.DEPLOY).read_text(encoding="utf-8"))
+        names = [task.get("name") for task in tasks]
+        mutation = next(
+            index
+            for index, task in enumerate(tasks)
+            if "community.docker.docker_stack" in task
+        )
+        for name in (
+            self.LOOKUP,
+            self.RUNNER,
+            "Read every workload service before the stack mutation",
+            self.PRECONDITION,
+            "Record the live image of every workload service before the deploy",
+        ):
+            with self.subTest(task=name):
+                self.assertLess(names.index(name), mutation)
+        lookup = tasks[names.index(self.LOOKUP)]
+        self.assertEqual(
+            lookup["ansible.builtin.command"]["argv"],
+            [
+                "/usr/bin/docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                "docker.io/{{ workloads_images.n8n_runner }}",
+            ],
+        )
+        self.assertIs(lookup["failed_when"], False)
 
 
 if __name__ == "__main__":

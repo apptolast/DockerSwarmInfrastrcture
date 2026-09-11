@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
+
+from ansible_task_harness import AnsibleTaskAssertions
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = REPOSITORY_ROOT / ".build/observability"
@@ -556,6 +560,181 @@ class DockerReadonlyProxyTests(unittest.TestCase):
         self.assertIn(b"Host: docker\r\n", forwarded)
         self.assertIn(b"Connection: close\r\n", forwarded)
         self.assertNotIn(b"keep-alive", forwarded)
+
+
+class ObservabilityChannelContractTests(unittest.TestCase):
+    """Channel binding and autoupdate label checks of validate_stack."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.stack = validator.load_yaml(BUILD_ROOT / "stack.yml")
+        cls.services = validator.load_yaml(REPOSITORY_ROOT / "config/services.yml")
+        cls.secrets = validator.load_yaml(
+            REPOSITORY_ROOT / "stacks/observability/secrets.yml"
+        )
+        cls.platform = validator.load_yaml(REPOSITORY_ROOT / "config/platform.yml")
+
+    def validate(self, candidate: dict) -> None:
+        validator.validate_stack(candidate, self.services, self.secrets, self.platform)
+
+    def test_flipped_autoupdate_label_is_rejected(self) -> None:
+        candidate = copy.deepcopy(self.stack)
+        candidate["services"]["grafana"]["deploy"]["labels"][
+            "apptolast.autoupdate"
+        ] = "true"
+        with self.assertRaisesRegex(
+            validator.ContractError, "autoupdate label drift for grafana"
+        ):
+            self.validate(candidate)
+
+    def test_channel_entry_bound_to_another_component_is_rejected(self) -> None:
+        entries = copy.deepcopy(validator.load_observability_channels(self.services))
+        entries["grafana"]["baseline"] = {
+            "catalog": "observability",
+            "component": "loki",
+        }
+        with mock.patch.object(
+            validator, "load_observability_channels", return_value=entries
+        ):
+            with self.assertRaisesRegex(
+                validator.ContractError, "channel entry drift for grafana"
+            ):
+                self.validate(copy.deepcopy(self.stack))
+
+    def test_catalog_component_drift_breaks_the_channel_binding(self) -> None:
+        services = copy.deepcopy(self.services)
+        component = next(
+            item
+            for item in services["internal_platform"]["observability"]["components"]
+            if item["id"] == "grafana"
+        )
+        component["id"] = "grafana-legacy"
+        with self.assertRaisesRegex(validator.ContractError, "^image channel map: "):
+            validator.load_observability_channels(services)
+
+
+class ObservabilityLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
+    DEPLOY = "ansible/roles/observability/tasks/deploy.yml"
+    IDENTITY = "Verify deployed observability image and placement identities"
+    IDENTITY_MESSAGE = "differs from the reviewed internal"
+    PRECONDITION = "Require every live observability hold to run its reviewed identity"
+    RESOLVED = "sha256:" + ("1" * 64)
+    KEPT = "sha256:" + ("2" * 64)
+    FOREIGN = "sha256:" + ("3" * 64)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        channels = load_script(
+            "validate_image_channels_observability",
+            "scripts/validate-image-channels.py",
+        )
+        cls.hold = channels.load_channel_map(REPOSITORY_ROOT)["services"][
+            "observability"
+        ]["grafana"]
+        document = channels.load_unique_yaml(
+            REPOSITORY_ROOT / "config/image-channels.yml"
+        )
+        raw = next(
+            item
+            for item in document["image_channel_services"]
+            if (item["stack"], item["service"]) == ("observability", "grafana")
+        )
+        cls.channel = channels.derive_entry(
+            dict(raw, reference="docker.io/grafana/grafana:13.1.0"),
+            channels.load_baselines(REPOSITORY_ROOT),
+        )
+        cls.head = "grafana/grafana:13.1.0"
+
+    @staticmethod
+    def inspect(image: str, label: str = "") -> str:
+        return json.dumps(
+            [
+                {
+                    "Spec": {
+                        "Labels": {"com.docker.stack.image": label},
+                        "TaskTemplate": {
+                            "ContainerSpec": {"Image": image},
+                            "Placement": {
+                                "Constraints": [
+                                    "node.labels.platform.observability == true"
+                                ]
+                            },
+                        },
+                        "UpdateConfig": {"FailureAction": "rollback"},
+                        "RollbackConfig": {"Order": "stop-first"},
+                    },
+                    "Endpoint": {"Spec": {}},
+                }
+            ]
+        )
+
+    def identity(self, entry: dict, live: str, before: str = "") -> dict:
+        return {
+            "image_channels_map": {"observability": {"grafana": entry}},
+            "observability_images_before_deploy": {"grafana": before},
+            "image_preflight_channel_resolutions": {
+                self.channel["reference"]: self.channel["reference"]
+                + "@"
+                + self.RESOLVED
+            },
+            "observability_deployed_services": {
+                "results": [{"item": {"key": "grafana"}, "stdout": self.inspect(live)}]
+            },
+        }
+
+    def test_identity_gate_accepts_holds_and_verified_heads(self) -> None:
+        for entry, live, before in (
+            (self.hold, self.hold["spec_exact"], ""),
+            (self.channel, self.head + "@" + self.RESOLVED, ""),
+            (self.channel, self.head + "@" + self.KEPT, self.head + "@" + self.KEPT),
+        ):
+            with self.subTest(live=live):
+                self.assert_task_accepts(
+                    self.DEPLOY, self.IDENTITY, self.identity(entry, live, before)
+                )
+
+    def test_identity_gate_rejects_unreviewed_live_images(self) -> None:
+        held = self.hold["spec_exact"].split("@")[0]
+        for entry, live in (
+            (self.hold, held + "@" + self.FOREIGN),
+            (self.channel, self.head + "@" + self.FOREIGN),
+            (self.channel, "grafana/loki:13.1.0@" + self.RESOLVED),
+        ):
+            with self.subTest(live=live):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(entry, live),
+                    self.IDENTITY_MESSAGE,
+                )
+
+    def test_precondition_refuses_a_hold_moved_outside_git(self) -> None:
+        moved = self.hold["spec_exact"].split("@")[0] + "@" + self.FOREIGN
+
+        def variables(image: str) -> dict:
+            return {
+                "image_channels_map": {"observability": {"grafana": self.hold}},
+                "observability_services_before_deploy": {
+                    "results": [
+                        {
+                            "item": {"key": "grafana"},
+                            "rc": 0,
+                            "stdout": self.inspect(image, self.hold["reference"]),
+                            "stderr": "",
+                        }
+                    ]
+                },
+            }
+
+        self.assert_task_accepts(
+            self.DEPLOY, self.PRECONDITION, variables(self.hold["spec_exact"])
+        )
+        self.assert_task_rejects(
+            self.DEPLOY,
+            self.PRECONDITION,
+            variables(moved),
+            "runs an image outside its unchanged hold entry",
+        )
 
 
 if __name__ == "__main__":

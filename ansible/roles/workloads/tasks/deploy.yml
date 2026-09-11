@@ -450,6 +450,98 @@
     fail_msg: >-
       The local n8n runner image was not preflighted before stack mutation.
 
+# `resolve_image: changed` asks the registry for every image whose rendered
+# string changed, including the local runner build `apptolast/n8n-runners`.
+# apptolast is an owner namespace on Docker Hub: if that exact tag ever
+# existed there, Swarm would pin and pull the remote bytes instead of the
+# local build. A lookup that fails for any reason leaves the CLI unable to
+# resolve the tag too, so only a successful lookup is refused.
+- name: Look up the local n8n runner tag on its public registry
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - buildx
+      - imagetools
+      - inspect
+      - "docker.io/{{ workloads_images.n8n_runner }}"
+  register: workloads_runner_registry_lookup
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Refuse a local runner tag that also exists on its public registry
+  ansible.builtin.assert:
+    that:
+      - >-
+        workloads_images.n8n_runner
+        is match("^apptolast/n8n-runners:src-[a-f0-9]{64}$")
+      - workloads_runner_registry_lookup.rc != 0
+    fail_msg: >-
+      The local n8n runner tag {{ workloads_images.n8n_runner }} also exists
+      on Docker Hub; the deploy would pin the remote image instead of the
+      local build.
+    quiet: true
+
+# The CLI keeps the live digest of every service whose rendered string equals
+# its `com.docker.stack.image` label. A hold moved outside Git (for example by
+# `docker service update --image`) would therefore survive the deploy and
+# only fail the identity check after the mutation. Refuse it before.
+- name: Read every workload service before the stack mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ workloads_stack_name }}_{{ item.key }}"
+  loop: "{{ workloads_expected_spec_images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: workloads_services_before_deploy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require every live workload hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or item.stderr is search("(?i)(no such service|not found)")
+      - >-
+        item.rc != 0
+        or workloads_expected_spec_images[item.item.key].mode != "hold"
+        or (
+          (item.stdout | from_json | first).Spec.Labels | default({}, true)
+        ).get("com.docker.stack.image", "")
+        != workloads_expected_images[item.item.key]
+        or (item.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image
+        == workloads_expected_spec_images[item.item.key].spec_exact
+    fail_msg: >-
+      Service {{ item.item.key }} runs an image outside its unchanged hold
+      entry, or could not be read. Record the live image in
+      config/image-channels.yml before deploying.
+    quiet: true
+  loop: "{{ workloads_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Record the live image of every workload service before the deploy
+  ansible.builtin.set_fact:
+    workloads_images_before_deploy: >-
+      {{
+        workloads_images_before_deploy | default({})
+        | combine({
+          item.item.key:
+            (
+              (item.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+            ) if item.rc == 0 else ""
+        })
+      }}
+  loop: "{{ workloads_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
 - name: Deploy the exact reviewed workloads stack
   community.docker.docker_stack:
     name: "{{ workloads_stack_name }}"
@@ -831,8 +923,11 @@
       # como `apptolast/kropia-web@sha256:X`. El validador del mapa de canales
       # ya deriva esa forma normalizada (`spec_exact`/`spec_pattern`), de modo
       # que el contrato no se relaja. Una entrada `hold` exige la identidad
-      # exacta revisada; una entrada de canal exige un digest de su propio
-      # `repo:tag`, el que resolvio el CLI o el que aplico despues el vigilante.
+      # exacta revisada. Una entrada de canal exige un digest de su propio
+      # `repo:tag` y, ademas, que sea el digest que el preflight resolvio,
+      # descargo y verifico como linux/amd64, o el digest vivo que el servicio
+      # ya tenia antes del deploy (etiqueta sin cambios: el CLI lo conserva).
+      # Si el canal avanzo entre el preflight y el deploy, el apply falla.
       - >-
         (
           workloads_expected_spec_images[item.item.key].mode == "hold"
@@ -848,6 +943,26 @@
           (item.stdout | from_json | first).
           Spec.TaskTemplate.ContainerSpec.Image
           is match(workloads_expected_spec_images[item.item.key].spec_pattern)
+          and
+          (
+            (item.stdout | from_json | first).
+            Spec.TaskTemplate.ContainerSpec.Image
+            == (workloads_images_before_deploy | default({})).get(
+              item.item.key, ""
+            )
+            or
+            (
+              (item.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+              | regex_replace("^.*@", "")
+            )
+            == (
+              (image_preflight_channel_resolutions | default({})).get(
+                workloads_expected_spec_images[item.item.key].reference, ""
+              )
+              | regex_replace("^.*@", "")
+            )
+          )
         )
       - >-
         "node.labels.platform.workloads == true" in

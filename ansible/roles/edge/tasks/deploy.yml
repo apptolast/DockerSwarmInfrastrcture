@@ -341,6 +341,55 @@
   changed_when: false
   check_mode: false
 
+# The CLI keeps the live digest when the rendered image equals the
+# `com.docker.stack.image` label. Refuse a Traefik hold moved outside Git
+# before the mutation instead of failing the identity check after it.
+- name: Read the Traefik service before the stack mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ edge_traefik_stack_name }}_traefik"
+  register: edge_traefik_before_deploy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require a live Traefik hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        edge_traefik_before_deploy.rc == 0
+        or edge_traefik_before_deploy.stderr
+        is search("(?i)(no such service|not found)")
+      - >-
+        edge_traefik_before_deploy.rc != 0
+        or image_channels_map.edge.traefik.mode != "hold"
+        or (
+          (edge_traefik_before_deploy.stdout | from_json | first).
+          Spec.Labels | default({}, true)
+        ).get("com.docker.stack.image", "")
+        != image_channels_map.edge.traefik.reference
+        or (edge_traefik_before_deploy.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image
+        == image_channels_map.edge.traefik.spec_exact
+    fail_msg: >-
+      Traefik runs an image outside its unchanged hold entry, or could not be
+      read. Record the live image in config/image-channels.yml before
+      deploying.
+    quiet: true
+
+- name: Record the live Traefik image before the deploy
+  ansible.builtin.set_fact:
+    edge_traefik_image_before_deploy: >-
+      {{
+        (
+          (edge_traefik_before_deploy.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+        ) if edge_traefik_before_deploy.rc == 0 else ""
+      }}
+
 - name: Deploy the edge stack
   community.docker.docker_stack:
     name: "{{ edge_traefik_stack_name }}"
@@ -425,8 +474,9 @@
 - name: Verify the deployed Traefik service identity
   ansible.builtin.assert:
     that:
-      # A hold keeps its exact reviewed identity; a channel runs a digest of
-      # its own `traefik:<tag>` (resolved by the CLI or by the watcher).
+      # A hold keeps its exact reviewed identity. A channel runs a digest of
+      # its own `traefik:<tag>`: the one the preflight resolved and verified,
+      # or the live one the service already had (unchanged label).
       - >-
         (
           image_channels_map.edge.traefik.mode == "hold"
@@ -442,6 +492,24 @@
           (edge_deployed_traefik_service.stdout | from_json | first).
           Spec.TaskTemplate.ContainerSpec.Image
           is match(image_channels_map.edge.traefik.spec_pattern)
+          and
+          (
+            (edge_deployed_traefik_service.stdout | from_json | first).
+            Spec.TaskTemplate.ContainerSpec.Image
+            == edge_traefik_image_before_deploy | default("")
+            or
+            (
+              (edge_deployed_traefik_service.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+              | regex_replace("^.*@", "")
+            )
+            == (
+              (image_preflight_channel_resolutions | default({})).get(
+                image_channels_map.edge.traefik.reference, ""
+              )
+              | regex_replace("^.*@", "")
+            )
+          )
         )
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).

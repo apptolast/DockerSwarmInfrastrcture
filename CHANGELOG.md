@@ -80,6 +80,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   autonomía: `apply`/`ansible-playbook` contra el host real siguen siendo
   100% manuales.
 
+- Tests negativos con Ansible real (`tests/ansible_task_harness.py`) para las
+  comprobaciones de imagen viva de `edge`, `workloads`, `organizationweb` y
+  `observability`, la prueba de versión mayor y las entradas de canal de
+  OrganizationWeb y edge. `tests/test_edge_contract.py` ejecuta
+  `scripts/validate-contract.py` sobre copias mutadas de sus entradas, y
+  nuevos tests cubren las ramas de canal de `validate-organizationweb.py` y
+  `validate-observability.py`.
+
 ### Changed
 
 - Decisión explícita del owner (2026-09-11): todo servicio Swarm, actual o
@@ -115,6 +123,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - El preflight de imágenes recorre N entradas en lugar de la entrada única de
   Alberto, y el hash de contrato de `deploy-ansible.sh` y
   `validate-deployment-metadata.py` incluye `config/image-channels.yml`.
+- `edge`, `workloads`, `observability` y `organizationweb` leen el spec vivo
+  antes de `docker stack deploy` y se detienen si un hold sin cambios ejecuta
+  otra imagen (movida fuera de Git), en lugar de fallar tras mutar. Tras el
+  deploy, un canal de `edge`, `workloads` u `observability` debe ejecutar el
+  digest que resolvió y verificó el preflight o el que ya tenía el servicio:
+  el CLI vuelve a resolver el canal al desplegar.
+- `docs/AUTOUPDATE.md` y `docs/OPERATIONS.md` documentan el inventario previo
+  al primer apply, el `changed` esperado en `docker_stack` por la etiqueta
+  nueva `apptolast.autoupdate` y que `observed-images.yml` cambia tras una
+  actualización del vigilante; `changed=0` se exige al segundo apply
+  consecutivo.
 - `actions/checkout` pasa a v7.0.1, fijado por SHA; el comentario de versión
   va en su propia línea para respetar las 80 columnas de yamllint.
 - El runner de n8n usa `uuid` 14.0.2 (ESM, cargado con `require()` en
@@ -231,6 +250,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Un hold `stateful-major` que no sea el baseline exacto prueba su versión
+  mayor antes de mutar, leyendo `PG_MAJOR`, `REDIS_VERSION`,
+  `RABBITMQ_VERSION` o la etiqueta OCI de versión de Traefik de la imagen
+  descargada: el tag de un hold es solo texto y no liga el digest.
+- `workloads` se detiene si el tag local `apptolast/n8n-runners:src-<sha256>`
+  existe en Docker Hub, porque `resolve_image: changed` fijaría los bytes
+  remotos en lugar de la build local.
 - Registro de la decisión del owner (2026-09-11) que invierte la política
   anterior contra vigilantes de Docker Hub: un servicio con
   `autoupdate: true` podrá cambiar de digest sin un apply humano. Riesgos
