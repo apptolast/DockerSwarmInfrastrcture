@@ -82,6 +82,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- El runner de n8n usa `ioredis` 6.0.0 y el contrato del runner fija esa
+  versión. ioredis 6 negocia RESP3 por defecto: revisar los nodos Code.
+
 - Catálogo OrganizationWeb a la revisión de aplicación `2ac34cd`, con
   índices API/web publicados desde este host y verificados en el registro.
   Añade las migraciones Flyway V22–V32 sobre V21; conserva PostgreSQL,
