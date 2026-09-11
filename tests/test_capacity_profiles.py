@@ -98,6 +98,16 @@ class CapacityProfileTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("outside the active profile", completed.stderr)
 
+    def test_cli_static_profiles_render_organizationweb_from_image_channels(self):
+        # scripts/validate-iac.sh runs the static mode, which renders the
+        # OrganizationWeb template itself and must pass the channel map.
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/validate-capacity-profiles.py")],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Explicit capacity profiles", completed.stdout)
+
     def test_shared_preflight_checks_live_profiles_in_check_and_apply(self):
         tasks = yaml.safe_load(
             (ROOT / "ansible/roles/capacity_preflight/tasks/main.yml").read_text()
