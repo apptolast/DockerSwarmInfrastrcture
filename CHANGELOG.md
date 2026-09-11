@@ -82,6 +82,9 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `actions/checkout` pasa a v7.0.1, fijado por SHA; el comentario de versión
+  va en su propia línea para respetar las 80 columnas de yamllint.
+
 - Catálogo OrganizationWeb a la revisión de aplicación `2ac34cd`, con
   índices API/web publicados desde este host y verificados en el registro.
   Añade las migraciones Flyway V22–V32 sobre V21; conserva PostgreSQL,
