@@ -1578,7 +1578,7 @@ class N8nRunnerImageContractTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["dependencies"],
-            {"ioredis": "5.11.1", "pdf-lib": "1.17.1", "uuid": "11.1.1"},
+            {"ioredis": "5.11.1", "pdf-lib": "1.17.1", "uuid": "14.0.2"},
         )
 
     def test_cli_locks_reconcile_but_keeps_describe_read_only(self) -> None:

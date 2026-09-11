@@ -84,6 +84,8 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 - `actions/checkout` pasa a v7.0.1, fijado por SHA; el comentario de versión
   va en su propia línea para respetar las 80 columnas de yamllint.
+- El runner de n8n usa `uuid` 14.0.2 (ESM, cargado con `require()` en
+  Node 24) y el contrato del runner fija esa versión.
 
 - Catálogo OrganizationWeb a la revisión de aplicación `2ac34cd`, con
   índices API/web publicados desde este host y verificados en el registro.
