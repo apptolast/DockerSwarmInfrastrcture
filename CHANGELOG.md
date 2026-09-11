@@ -82,6 +82,39 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Decisión explícita del owner (2026-09-11): todo servicio Swarm, actual o
+  futuro, se actualiza desde canales revisados en Git (`:latest` para las
+  imágenes propias, canal de versión mayor para las bases de datos de
+  terceros) en lugar de un digest revisado. La regla de oro pasa a leerse
+  como «commit revisado que fija canales»; la reconstrucción descarga la
+  cabeza actual de cada canal. Modelo, interruptor y rollback en
+  [`docs/AUTOUPDATE.md`](docs/AUTOUPDATE.md).
+- Nuevo `config/image-channels.yml` (esquema v1) como única fuente de lo que
+  ejecuta cada servicio de `edge`, `workloads`, `organizationweb` y
+  `observability`. Todas las entradas quedan en hold con la misma referencia
+  renderizada hoy, salvo `kropia`, `portfolio-pablo`, `minecraft-stats` y
+  `minecraft`, que adoptan en Git la deriva viva hacia `:latest` con
+  `autoupdate: false`. Ningún servicio se actualiza solo todavía.
+- `config/workload-image-updates.yml` desaparece: `portfolio-alberto` pasa a
+  un hold en el mismo digest aprobado. `scripts/resolve-tracked-image.py`
+  pasa a `scripts/resolve-image-channel.py`, que toma el conjunto de canales
+  del fichero nuevo y ya no exige un digest aprobado en Git.
+- Nuevo `scripts/validate-image-channels.py`, ejecutado por
+  `scripts/validate-iac.sh`: esquema estricto sin claves duplicadas,
+  repositorio igual al baseline, tabla de canales mayores ligada a la mayor
+  del baseline, cobertura exacta de los stacks renderizados, etiqueta
+  `apptolast.autoupdate` coherente y rollback, `monitor` y healthcheck
+  obligatorios para quien se actualice solo.
+- Los stacks `edge`, `workloads`, `organizationweb` y `observability` se
+  despliegan con `resolve_image: changed` y renderizan imagen y etiqueta
+  desde el mapa de canales. Las comprobaciones posteriores aceptan un digest
+  del propio `repo:tag` para un canal y exigen la identidad exacta para un
+  hold; cada apply registra las imágenes vivas en `observed-images.yml`.
+  OrganizationWeb ya no descarga sus imágenes antes de desplegar: verifica
+  plataforma, digest y revisión OCI de la imagen que cada servicio ejecuta.
+- El preflight de imágenes recorre N entradas en lugar de la entrada única de
+  Alberto, y el hash de contrato de `deploy-ansible.sh` y
+  `validate-deployment-metadata.py` incluye `config/image-channels.yml`.
 - `actions/checkout` pasa a v7.0.1, fijado por SHA; el comentario de versión
   va en su propia línea para respetar las 80 columnas de yamllint.
 - El runner de n8n usa `uuid` 14.0.2 (ESM, cargado con `require()` en
@@ -198,6 +231,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Registro de la decisión del owner (2026-09-11) que invierte la política
+  anterior contra vigilantes de Docker Hub: un servicio con
+  `autoupdate: true` podrá cambiar de digest sin un apply humano. Riesgos
+  aceptados y pendientes de confirmar en el PR del vigilante: sin backups
+  fuera del host (STOP gate 5) las aplicaciones aplican migraciones de
+  esquema solas; el vigilante necesitará el socket Docker de escritura en el
+  único manager; sin protección de rama, un merge a `main` de una aplicación
+  propia llega a producción. Como contención, un digest sin tag solo se
+  acepta como hold exacto del baseline y nunca con `autoupdate: true`, las
+  bases de datos solo aceptan su canal mayor revisado y el socket Docker
+  solo se permite en el stack `autoupdater`.
 - Promueve el snapshot Ubuntu a `20260906T000000Z`, con sus cuatro índices
   InRelease verificados mediante la clave de archivo Ubuntu y simulación APT
   de los trece paquetes Ubuntu fijados. Actualiza curl, gpg, AppArmor y

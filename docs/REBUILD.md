@@ -82,7 +82,9 @@ Los datos restaurados bajo `/srv/dockerswarm` no se activan hasta que:
 
 - el marker de migración coincide con catálogo, manifests y checksums;
 - todos los secrets esperados existen con la identidad versionada;
-- las imágenes exactas están disponibles por digest;
+- cada canal de `config/image-channels.yml` resuelve a un digest
+  `linux/amd64` (una reconstrucción descarga la cabeza actual de cada canal,
+  no los bytes del último apply) y cada hold está disponible por digest;
 - no hay writers anteriores concurrentes;
 - los smoke tests específicos pasan.
 

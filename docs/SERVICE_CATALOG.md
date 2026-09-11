@@ -17,12 +17,12 @@ en un formato estable y la separa del estado objetivo de este repositorio.
   componente.
 - Cada `images[].reference` permanece fijada por digest porque el hash completo
   de este catálogo forma parte del marcador de restauración.
-- `config/workload-image-updates.yml` es un contrato operativo separado. Solo
-  autoriza `personal-website-alberto/app` con
-  `docker.io/hgarciaalberto/personal-website:latest`, y además liga esa
-  excepción al servicio Swarm, al digest base del catálogo y al
-  `approved_runtime_reference` revisado. El preflight de producción solo
-  entrega a Swarm el `latest@sha256:...` que coincida con esa aprobación.
+- `config/image-channels.yml` es un contrato operativo separado. Cada
+  servicio renderizado apunta a su baseline de este catálogo (`catalog` y
+  `component`) y declara el canal (`repo:tag`) o el hold
+  (`repo:tag@sha256:...`) que ejecuta; el repositorio debe coincidir con el
+  del baseline. Así una actualización de imagen nunca cambia el hash de este
+  catálogo. Ver [AUTOUPDATE.md](AUTOUPDATE.md).
 - `source_reference`, `source_target` y `source_path`, cuando aparecen,
   describen exclusivamente la evidencia de origen.
 - `published: null` significa que el puerto no se publica en el host.
@@ -165,7 +165,9 @@ El validador rechaza:
 `scripts/validate-iac.sh` ejecuta el lint del catálogo y sus casos negativos
 como parte de la compuerta normal del repositorio.
 
-El validador de workloads comprueba por separado que el contrato de
-actualización contenga exactamente una entrada, que coincida con el digest de
-Alberto conservado aquí y que no amplíe la excepción a otro servicio,
-componente, repositorio o etiqueta.
+`scripts/validate-image-channels.py` comprueba por separado que cada entrada
+de `config/image-channels.yml` apunte a un baseline de este catálogo con el
+mismo repositorio, que las bases de datos usen solo su canal mayor revisado y
+que los stacks renderizados cubran cada servicio exactamente una vez. El
+validador de workloads exige además que cada servicio renderice su entrada y
+su etiqueta `apptolast.autoupdate`.
