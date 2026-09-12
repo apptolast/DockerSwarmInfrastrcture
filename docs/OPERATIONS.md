@@ -33,6 +33,15 @@ usuarios humanos, incluido `admin`, de ese grupo.
 
 No se guardan contraseñas sudo en inventario, variables, shell history ni Git.
 
+Excepción aceptada por el owner: el servicio `autoupdater_shepherd` monta
+`/var/run/docker.sock` en el único manager. El bind es de solo lectura, pero
+eso no limita la API Docker: el servicio equivale a root. Es el único stack
+al que los validadores permiten el socket, su contrato está fijado en
+`config/autoupdater.yml` y solo actúa sobre servicios con la etiqueta
+`apptolast.autoupdate=true`. Se detiene con `enabled: false` y
+`--playbook autoupdater`; `docker service scale` a mano solo en emergencia y
+codificado el mismo día. Ver [AUTOUPDATE.md](AUTOUPDATE.md).
+
 ## Bloqueo de cambios Ansible
 
 El bootstrap fresco y todos los targets de `deploy-ansible.sh` usan el mismo
@@ -141,8 +150,10 @@ primer apply tras introducir los canales informa `changed` en `docker_stack`
 por la etiqueta nueva `apptolast.autoupdate`, sin reiniciar tareas. Solo un
 servicio con `autoupdate: true` puede cambiar de
 digest entre applies, y solo mediante ese vigilante revisado en este
-repositorio. `ansible-playbook` contra el clúster real sigue siendo una
-acción humana y ningún push a Docker Hub puede iniciarlo por sí solo.
+repositorio (stack `autoupdater`, playbook `autoupdater`, que se aplica
+después de los stacks de aplicación). `ansible-playbook` contra el clúster
+real sigue siendo una acción humana y ningún push a Docker Hub puede
+iniciarlo por sí solo.
 
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.

@@ -20,8 +20,12 @@ bytes; la reconstrucción descarga la cabeza actual de cada canal.
   resuelve un canal a su digest actual durante el preflight de imágenes y
   verifica la imagen descargada.
 - El rol `image_channels` deriva en el controlador el mapa por stack que
-  consumen `image_preflight`, `edge`, `workloads`, `organizationweb` y
-  `observability`.
+  consumen `image_preflight`, `edge`, `workloads`, `organizationweb`,
+  `observability` y `autoupdater`.
+- [`config/autoupdater.yml`](../config/autoupdater.yml),
+  [`stacks/autoupdater/stack.yml.j2`](../stacks/autoupdater/stack.yml.j2) y
+  [`scripts/validate-autoupdater.py`](../scripts/validate-autoupdater.py)
+  definen el vigilante (Shepherd); el playbook `autoupdater` lo despliega.
 
 `config/services.yml`, las imágenes de `config/organizationweb.yml` y el pin
 de Traefik en `ansible/group_vars/all.yml` no cambian: son el baseline
@@ -127,12 +131,13 @@ consecutivo desde el mismo commit vuelve a `changed=0`.
 
 ## Estado tras este cambio
 
-Ningún servicio tiene `autoupdate: true` en Git. En el host sí corre un
-vigilante no registrado (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
-en lugar del filtro por etiqueta) que mueve a la cabeza de su tag cada
-servicio sin estado. Hasta que el cambio posterior lo registre, el preflight
-de capacidad rechaza cualquier apply de `edge`, `workloads` u
-`organizationweb` porque ese servicio vivo queda fuera del perfil revisado.
+Ningún servicio tiene `autoupdate: true` en Git. El vigilante que corría
+en el host sin registrar (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
+en lugar del filtro por etiqueta) queda registrado en Git por el stack
+`autoupdater` (ver «Vigilante registrado»). Hasta que ese stack se aplique,
+el preflight de capacidad de un checkout anterior rechaza cualquier apply de
+`edge`, `workloads` u `organizationweb` porque ese servicio vivo queda fuera
+del perfil revisado.
 
 Las entradas iniciales parten del inventario vivo del 2026-09-12:
 
@@ -162,8 +167,103 @@ así que solo se reinician `edge_traefik` y `workloads_redis-coordinator`,
 más cualquier canal cuya cabeza haya avanzado desde el último ciclo del
 vigilante. El segundo apply consecutivo debe devolver `changed=0`.
 
-El registro del stack `autoupdater` (Shepherd, filtro exacto
-`label=apptolast.autoupdate=true`) llega en un cambio posterior y revisado.
+El stack `autoupdater` (Shepherd, filtro exacto
+`label=apptolast.autoupdate=true`) está registrado desde el cambio siguiente
+a la introducción de los canales. Como ninguna entrada tiene
+`autoupdate: true`, tras aplicarlo el vigilante **no selecciona ningún
+servicio**: la activación por servicio llega en cambios posteriores y
+revisados.
+
+## Vigilante registrado
+
+El stack `autoupdater` tiene un único servicio, `shepherd`. Todo su contrato
+está en `config/autoupdater.yml` y lo fija
+`scripts/validate-autoupdater.py`, que `scripts/validate-iac.sh` ejecuta y
+renderiza en `.build/autoupdater/stack.yml` para que
+`scripts/validate-image-channels.py` y los validadores de capacidad lo
+comprueben.
+
+- **Imagen.** `containrrr/shepherd:v1.8.1`, fijada por digest y desplegada
+  con `resolve_image: never`. Es una exclusión del mapa de canales: nunca se
+  actualiza a sí mismo y su etiqueta `apptolast.autoupdate` vale `"false"`.
+  La investigación del 2026-09-11 registró que `v1.8.1` y `latest` resolvían
+  al mismo digest de índice que el servicio vivo; este repositorio no puede
+  volver a verificarlo sin consultar Docker Hub.
+- **Entorno exacto.** `FILTER_SERVICES=label=apptolast.autoupdate=true`,
+  `SLEEP_TIME=1h`, `TIMEOUT=900`, `VERBOSE=true`, `TZ=UTC`,
+  `WITH_REGISTRY_AUTH=true` y `REGISTRY_USER=ocholoko888`. Ninguna otra
+  clave: Shepherd activa `WITH_NO_RESOLVE_IMAGE`, `RUN_ONCE_AND_EXIT`,
+  `WITH_INSECURE_REGISTRY` y `ROLLBACK_ON_FAILURE` por mera presencia, y
+  `IGNORELIST_SERVICES`, `UPDATE_OPTIONS` e `IMAGE_AUTOCLEAN_LIMIT` amplían o
+  alteran su alcance. Un filtro vacío seleccionaría todos los servicios.
+- **Credencial.** Con `REGISTRY_USER` definido, Shepherd lee la contraseña de
+  `/run/secrets/shepherd_registry_password` y solo si ese fichero no existe
+  recurre a `REGISTRY_PASSWORD`, que el validador prohíbe. El stack monta el
+  secret externo `autoupdater-dockerhub-pat-v1` en ese destino (uid 0, gid 0,
+  modo `0400`). El token nunca está en Git: el owner creó el secret a mano
+  desde un fichero solo legible por root, con las etiquetas
+  `com.apptolast.managed-by=manual-bootstrap` y
+  `com.apptolast.purpose=autoupdater`, que el rol exige antes de desplegar.
+  Rotación: crear `-v2`, cambiar el nombre en `config/autoupdater.yml`,
+  aplicar y después revocar el token anterior.
+- **Socket.** Solo este stack puede montar `/var/run/docker.sock` y solo en
+  lectura. Un bind de solo lectura no limita la API: el servicio sigue
+  siendo equivalente a root en el único manager.
+- **Ubicación.** Una réplica en `node.role == manager`, sin puertos, en una
+  red overlay propia no attachable para salir a Docker Hub.
+
+### Por qué `SLEEP_TIME=1h`
+
+En cada ciclo Shepherd ejecuta, por servicio seleccionado, un
+`docker manifest inspect` (un GET de manifiesto, que Docker Hub cuenta) y un
+`docker service update --image` que vuelve a resolver el tag; cuenta hasta
+dos peticiones por servicio, más la descarga real si el digest cambió. Una
+cuenta gratuita autenticada tiene 200 descargas cada 6 horas.
+
+<!-- markdownlint-disable MD013 -->
+
+| `SLEEP_TIME` | Ciclos / 6 h | Con 19 servicios de Docker Hub (1 petición) | Con 2 peticiones |
+| --- | --- | --- | --- |
+| `20m` (valor vivo sin revisar) | 18 | 342 | 684 |
+| `1h` | 6 | 114 | 228 |
+
+<!-- markdownlint-enable MD013 -->
+
+Con `20m` el presupuesto se agota aunque cada servicio cueste una sola
+petición. Con `1h` quedan 86 descargas para actualizaciones reales y applies
+si cuesta una; si cuesta dos, el límite es 16 servicios (200 / 12). Antes de
+activar muchos servicios, comprueba la cabecera `ratelimit-remaining`. Tras
+este cambio el vigilante no selecciona ninguno y solo inicia sesión.
+
+### Recursos y riesgo de OOM
+
+El servicio reserva 100m CPU y 18 MiB, con límites de 250m CPU y 45 MiB
+(el vivo sin revisar tenía 128 MiB). Los límites de memoria del perfil de
+plataforma completa (`edge`, `workloads`, `observability`) sumaban
+12352 MiB sobre un presupuesto de 12397 MiB (15981 − 3072 de reserva − 512
+de margen operativo); 45 MiB es todo lo que queda y la relación
+límite/reserva de 2,5 fija la reserva en 18 MiB. En el perfil activo
+(`organizationweb`) los límites suben de 11456 a 11501 MiB. Shepherd es bash
+más el CLI de Docker, y este repositorio no tiene una medida de su memoria
+real: si el contenedor muere por OOM, se reinicia sin tocar ningún servicio
+a medias (Swarm conserva la actualización ya enviada). Vigila
+`docker service ps autoupdater_shepherd` tras el primer apply y, si hay OOM,
+reequilibra el presupuesto en un PR revisado.
+
+### Aplicar el registro
+
+1. Tras el merge del cambio de canales, aplica en orden `edge`, `workloads` y
+   `organizationweb` desde su checkout (sección siguiente).
+2. Desde un checkout limpio de este cambio:
+   `./scripts/deploy-ansible.sh --playbook autoupdater --check`, y después
+   con `--confirm-production`. El apply sustituye el spec vivo sin revisar
+   por el revisado; el rol comprueba después imagen, entorno, filtro,
+   réplicas, colocación, secret y socket.
+3. `sudo -- docker service logs autoupdater_shepherd` debe mostrar el inicio
+   de sesión y la espera de una hora sin intentar actualizar ningún servicio.
+4. Repite `--playbook workloads` y exige `changed=0`.
+
+Shepherd solo se reactiva con este apply, nunca con `docker service scale`.
 
 ## Antes del primer apply
 
@@ -200,10 +300,14 @@ sus pins; Traefik queda por confirmar.
 
 ## Interruptor y rollback
 
-- **Interruptor general.** Un PR que deshabilita el vigilante y un apply de
-  su playbook. En emergencia,
-  `sudo -- docker service scale autoupdater_shepherd=0`, codificado en Git
-  el mismo día.
+- **Interruptor general.** Un PR que pone `enabled: false` en
+  `config/autoupdater.yml` (renderiza `replicas: 0`, el servicio sigue
+  registrado y su presupuesto de capacidad reservado) y
+  `--playbook autoupdater`. Reactivarlo es el mismo PR con `true`. Nunca uses
+  `docker service scale` a mano salvo emergencia:
+  `sudo -- docker service scale autoupdater_shepherd=0`, y ese mismo día un PR
+  con `enabled: false` y su apply, porque el siguiente apply devolvería la
+  réplica.
 - **Rollback de un servicio.** Un PR que cambia la entrada a hold
   (`repo:tag@sha256:<último bueno>`, `autoupdate: false`) y el playbook de
   su stack. La cadena cambia respecto a la etiqueta, así que Swarm fija ese
@@ -228,8 +332,11 @@ sus pins; Traefik queda por confirmar.
   applies no quedan registrados hasta el siguiente.
 - Sin backups externos (STOP gate 5), las aplicaciones aplican migraciones
   de esquema por sí solas.
-- El vigilante necesitará el socket Docker de lectura y escritura en el
-  único manager, equivalente a root.
+- El vigilante usa el socket Docker en el único manager, equivalente a root
+  aunque el bind sea de solo lectura. El owner acepta este consumidor.
+- Shepherd v1.8.1 apenas se mantiene (último commit 2025-11-11) y tiene
+  fallos latentes que ocultan errores en su log; el `failure_action:
+  rollback` de Swarm sigue aplicando.
 - Sin protección de rama, cualquier merge a `main` de una aplicación propia
   que pase su CI llega a producción.
 - n8n y sus runners locales deben avanzar juntos; n8n sigue en hold hasta

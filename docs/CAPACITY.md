@@ -3,9 +3,11 @@
 ## Objetivo
 
 `config/capacity.yml` es el contrato fail-closed de capacidad para la
-topología mononodo actual. Une los recursos de los tres stacks (`edge`,
-`workloads` y `observability`) con el tamaño mínimo del servidor y evita que
-un cambio aparentemente local produzca un plan global imposible.
+topología mononodo actual. Une los recursos de los cuatro stacks (`edge`,
+`workloads`, `observability` y `autoupdater`) con el tamaño mínimo del
+servidor y evita que un cambio aparentemente local produzca un plan global
+imposible. `config/capacity-profiles.yml` suma además `organizationweb` en el
+perfil alternativo; ambos perfiles incluyen `autoupdater`.
 
 Docker advierte que agotar la memoria puede activar el OOM killer contra un
 contenedor, el daemon u otros procesos importantes del host. También distingue
@@ -53,13 +55,19 @@ cuentan una vez porque el esquema v1 solo admite un nodo elegible.
 | Capa | RAM reservada | RAM límite | CPU reservada | CPU límite |
 | --- | ---: | ---: | ---: | ---: |
 | edge | 64 MiB | 128 MiB | 100m | 500m |
-| workloads | 5 760 MiB | 9 728 MiB | 2 300m | 11 600m |
+| workloads | 5 920 MiB | 9 728 MiB | 2 300m | 11 600m |
 | observability | 1 248 MiB | 2 496 MiB | 1 070m | 5 100m |
-| **Total** | **7 072 MiB** | **12 352 MiB** | **3 470m** | **17 200m** |
+| autoupdater | 18 MiB | 45 MiB | 100m | 250m |
+| **Total** | **7 250 MiB** | **12 397 MiB** | **3 570m** | **17 450m** |
 
-Quedan 45 MiB dentro del presupuesto de stacks después de preservar por
-separado 3 GiB para el host y 512 MiB de headroom operativo. Estos 45 MiB no
-son el margen total del host: el margen protegido es 3 584 MiB.
+El vigilante `autoupdater` consume los 45 MiB que quedaban dentro del
+presupuesto de stacks: la suma de límites iguala los 12 397 MiB. Ese 0 no es
+el margen total del host: se siguen preservando por separado 3 GiB para el
+host y 512 MiB de headroom operativo (3 584 MiB protegidos). Cualquier
+aumento futuro de un límite exige reducir otro en la misma revisión. Su
+interruptor `enabled: false` renderiza `replicas: 0` sin liberar el
+presupuesto. En el perfil activo `organizationweb` las sumas son 6 802 MiB
+reservados y 11 501 MiB de límite.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
@@ -131,7 +139,7 @@ swap:
 
 El validador:
 
-- exige exactamente los 28 servicios revisados en los tres renders;
+- exige exactamente los 29 servicios revisados en los cuatro renders;
 - cuenta réplicas y los tres servicios globales de observabilidad;
 - rechaza recursos ausentes, unidades ambiguas y reservas mayores que límites;
 - compara los totales renderizados con los totales revisados;
@@ -143,7 +151,8 @@ El validador:
 - ejecuta pruebas negativas de omisión, servicio inesperado, drift, host menor,
   swap inesperada y presupuesto excedido.
 
-Los playbooks `site`, `edge`, `workloads` y `observability` ejecutan
+Los playbooks `site`, `edge`, `workloads`, `observability`,
+`organizationweb` y `autoupdater` ejecutan
 `capacity_preflight` antes de cualquier rol que muta el servidor. El preflight
 recopila los facts de hardware aunque el playbook parcial desactive el
 gathering general y detiene la ejecución si el host o el plan global no

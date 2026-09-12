@@ -88,6 +88,32 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   nuevos tests cubren las ramas de canal de `validate-organizationweb.py` y
   `validate-observability.py`.
 
+- Stack `autoupdater` registrado en Git: el Shepherd que corría en el host
+  sin revisar (`IGNORELIST_SERVICES`, `SLEEP_TIME=20m`, sin filtro) pasa a
+  `config/autoupdater.yml`, `stacks/autoupdater/stack.yml.j2`, el rol y el
+  playbook `autoupdater` (preflight de capacidad y después el rol; en `site`,
+  tras los stacks de aplicación). Imagen `containrrr/shepherd:v1.8.1` fijada
+  por digest con `resolve_image: never`, entorno exacto con
+  `FILTER_SERVICES=label=apptolast.autoupdate=true` y `SLEEP_TIME=1h`, secret
+  externo `autoupdater-dockerhub-pat-v1`, una réplica en el manager y
+  250m/45 MiB de límite. Como ninguna entrada tiene `autoupdate: true`, tras
+  aplicarlo el vigilante no selecciona ningún servicio.
+- Interruptor `enabled` en `config/autoupdater.yml`: `false` renderiza
+  `replicas: 0` y conserva el servicio y su presupuesto de capacidad.
+- Nuevo `scripts/validate-autoupdater.py`, ejecutado por
+  `scripts/validate-iac.sh`, que fija digest, entorno, secret, socket de
+  solo lectura, colocación, réplicas y recursos, y renderiza
+  `.build/autoupdater/stack.yml`. `config/capacity.yml`,
+  `config/capacity-profiles.yml`, `validate-capacity.py`,
+  `validate-capacity-profiles.py` y `capacity_preflight` cuentan el cuarto
+  stack en ambos perfiles, y `deploy-ansible.sh`, el lock de operaciones y
+  los metadatos de despliegue aceptan el playbook `autoupdater`.
+- `tests/test_autoupdater_contract.py` con casos negativos (interruptor de
+  presencia a `false`, filtro vacío, `IGNORELIST_SERVICES`, socket de
+  escritura o fuera de `autoupdater`, digest o tag distintos, réplicas,
+  secret ausente, recursos fuera de presupuesto) y la comprobación del spec
+  vivo con Ansible real.
+
 ### Changed
 
 - Decisión explícita del owner (2026-09-11): todo servicio Swarm, actual o
@@ -254,6 +280,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- El owner acepta un consumidor equivalente a root del socket Docker:
+  `autoupdater_shepherd` lo monta en el único manager. El bind de solo
+  lectura no limita la API. Solo ese stack puede montarlo, siempre de solo
+  lectura, y el apply del playbook `autoupdater` sustituye el spec vivo sin
+  revisar, que actuaba sobre todo servicio no listado en
+  `IGNORELIST_SERVICES`, por uno limitado a la etiqueta
+  `apptolast.autoupdate=true`.
 - Un hold `stateful-major` que no sea el baseline exacto prueba su versión
   mayor antes de mutar, leyendo `PG_MAJOR`, `REDIS_VERSION`,
   `RABBITMQ_VERSION` o la etiqueta OCI de versión de Traefik de la imagen
@@ -325,6 +358,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
 ### Fixed
+
+- `scripts/validate-deployment-metadata.py` hashea los mismos contratos y en
+  el mismo orden que `scripts/deploy-ansible.sh` (faltaban
+  `config/capacity-profiles.yml` y `config/organizationweb.yml`) y acepta el
+  playbook `organizationweb`; antes rechazaba los metadatos que el wrapper
+  registraba.
+- `test_holder_death_retains_marker_and_requires_exact_recovery` ya no lee
+  el `/proc` real: un cliente `docker service` ajeno (el vigilante lanza uno
+  por ciclo) lo hacía fallar según el momento. El escaneo real sigue
+  cubierto por `test_recovery_rejects_a_visible_mutating_process`.
 
 - El escaneo gitleaks del historial completo (`--log-opts=--all`) vuelve a
   pasar: allowlist exacta del digest público API24 que contiene la rama de

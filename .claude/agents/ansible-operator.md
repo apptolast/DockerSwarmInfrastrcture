@@ -40,7 +40,8 @@ you is signal, not an obstacle to route around.
 
 - Playbook names accepted by `ansible-operation-lock.py`'s `SAFE_PLAYBOOKS`
   set: `platform`, `host-baseline`, `preflight-images`, `edge`, `workloads`,
-  `observability`, `backup`, `bootstrap-host`, `site`.
+  `observability`, `organizationweb`, `autoupdater`, `backup`,
+  `bootstrap-host`, `site`.
 - Valid `--profile` values: `production` (the default), `acme-staging`, and
   `fresh-host`.
 - `acme-staging` is valid only paired with the `edge` playbook.

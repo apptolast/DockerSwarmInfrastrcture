@@ -214,7 +214,8 @@ la evidencia que sostiene un `[x]` se cita.
   `dockerswarm-bootstrap.marker` con `scripts/ansible-operation-lock.py`.
   Cruzarlas es un error de revisión que debes cazar.
 - `--playbook` solo admite `platform`, `host-baseline`, `preflight-images`,
-  `edge`, `workloads`, `observability`, `backup`, `site`; `--profile` solo
+  `edge`, `workloads`, `observability`, `organizationweb`, `autoupdater`,
+  `backup`, `site`; `--profile` solo
   `production` y `acme-staging` (este último solo con `edge`); y
   `bootstrap-host`/`fresh-host` van emparejados 1:1 por
   `scripts/ansible-operation-lock.py`, a través de
