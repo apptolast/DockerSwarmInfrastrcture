@@ -192,7 +192,7 @@ class ChannelMapTests(unittest.TestCase):
         self.assert_rejected(
             self.mutated(
                 "workloads",
-                "portfolio-alberto",
+                "redis-coordinator",
                 autoupdate=True,
             ),
             "hold can never auto-update",
@@ -1006,8 +1006,12 @@ class MajorProofTests(unittest.TestCase):
                         self.assertIn(entry["major_proof"]["source"], {"env", "label"})
                     else:
                         self.assertIsNone(entry["major_proof"])
-                    # Every reviewed entry today is a baseline or a channel.
-                    self.assertIs(entry["major_proof_required"], False)
+                    # Every reviewed entry today is a baseline or a channel,
+                    # except the redis hold back on its reviewed 7.2 bytes.
+                    self.assertIs(
+                        entry["major_proof_required"],
+                        (stack, name) == ("workloads", "redis-coordinator"),
+                    )
 
     def test_proof_patterns_accept_only_the_baseline_major(self) -> None:
         cases = {

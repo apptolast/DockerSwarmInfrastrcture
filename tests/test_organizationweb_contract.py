@@ -436,19 +436,27 @@ class OrganizationWebChannelGateTests(AnsibleTaskAssertions, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         module = load_channel_module()
-        cls.entries = module.load_channel_map(ROOT)["services"]["organizationweb"]
         document = module.load_unique_yaml(ROOT / "config/image-channels.yml")
-        raw = next(
-            item for item in document["image_channel_services"]
-            if (item["stack"], item["service"]) == ("organizationweb", "backend")
-        )
-        cls.backend_channel = module.derive_entry(
-            dict(raw, reference="docker.io/ocholoko888/organizationweb-api:latest"),
-            module.load_baselines(ROOT),
-        )
+        baselines = module.load_baselines(ROOT)
         cls.catalog = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())[
             "organizationweb"
         ]
+
+        def entry(name, reference):
+            raw = next(
+                item for item in document["image_channel_services"]
+                if (item["stack"], item["service"]) == ("organizationweb", name)
+            )
+            return module.derive_entry(dict(raw, reference=reference), baselines)
+
+        # The gates are exercised on the exact baseline holds, whatever the
+        # reviewed map holds today, plus an explicit backend channel.
+        cls.entries = {
+            name: entry(name, cls.catalog["images"][name]) for name in cls.NAMES
+        }
+        cls.backend_channel = entry(
+            "backend", "docker.io/ocholoko888/organizationweb-api:latest"
+        )
 
     @staticmethod
     def inspect(image, label=""):
@@ -646,7 +654,7 @@ class OrganizationWebValidatorTests(unittest.TestCase):
     def test_render_drift_is_rejected(self):
         def foreign_image(stack):
             stack["services"]["backend"]["image"] = (
-                "docker.io/ocholoko888/organizationweb-api:latest"
+                "docker.io/ocholoko888/organizationweb-api:main"
             )
 
         def missing_web(stack):

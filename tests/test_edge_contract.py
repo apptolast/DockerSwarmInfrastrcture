@@ -67,8 +67,10 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        channel_map = channels.load_channel_map(REPOSITORY_ROOT)["services"]
-        cls.hold = channel_map["edge"]["traefik"]
+        # The gates are exercised on both modes, whatever the reviewed map
+        # holds today: the exact baseline hold and the v3 channel.
+        baseline = channels.load_baselines(REPOSITORY_ROOT)[("traefik-edge", "proxy")]
+        cls.hold = traefik_entry(baseline["reference"])
         cls.channel = traefik_entry("docker.io/library/traefik:v3")
 
     def inspect(self, image: str, label: str = "") -> str:
@@ -392,7 +394,7 @@ class EdgeStaticContractTests(unittest.TestCase):
 
     def test_rendered_image_that_drifts_from_its_entry_is_rejected(self) -> None:
         self.assert_contract_rejects(
-            lambda root: self.set_traefik_image(root, "docker.io/library/traefik:v3"),
+            lambda root: self.set_traefik_image(root, "docker.io/library/traefik:latest"),
             "the rendered Traefik image differs from its image channel entry",
         )
 
