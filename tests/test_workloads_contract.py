@@ -1999,6 +1999,8 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for relative_path in (
             "config/capacity.yml",
+            "config/capacity-profiles.yml",
+            "config/organizationweb.yml",
             "config/host-security.yml",
             "config/minecraft.yml",
             "config/platform.yml",

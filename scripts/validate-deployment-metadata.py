@@ -31,6 +31,7 @@ PLAYBOOK_COMPONENTS = {
         "runner-image",
         "observability",
     ],
+    "organizationweb": ["organizationweb"],
     "backup": ["backup"],
     "site": [
         "host-security",
@@ -120,8 +121,11 @@ playbook = metadata.get("playbook")
 if playbook not in PLAYBOOK_COMPONENTS:
     fail("deployment metadata contains an invalid playbook identity")
 
+# Same files and order as scripts/deploy-ansible.sh hashes.
 contract_paths = [
     PROJECT_DIR / "config/capacity.yml",
+    PROJECT_DIR / "config/capacity-profiles.yml",
+    PROJECT_DIR / "config/organizationweb.yml",
     PROJECT_DIR / "config/host-security.yml",
     PROJECT_DIR / "config/minecraft.yml",
     PROJECT_DIR / "config/platform.yml",
