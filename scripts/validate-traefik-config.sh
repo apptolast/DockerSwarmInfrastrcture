@@ -64,8 +64,12 @@ stack = yaml.safe_load((root / ".build/edge/stack.yml").read_text())
 print(stack["services"]["traefik"]["image"])
 '
 )"
-[[ "${traefik_image}" =~ ^traefik@sha256:[a-f0-9]{64}$ ]] ||
-  fail "rendered Traefik image is not digest-pinned"
+# A digest hold, or exactly the reviewed major channel from
+# config/image-channels.yml (validate-image-channels.py binds the render to
+# that entry). Validating the channel runs the head the deploy will resolve.
+traefik_image_re='^((docker\.io/library/)?traefik(:v3)?@sha256:[a-f0-9]{64}|docker\.io/library/traefik:v3)$'
+[[ "${traefik_image}" =~ ${traefik_image_re} ]] ||
+  fail "rendered Traefik image is neither digest-pinned nor the v3 channel"
 
 validation_name="edge-config-validation-$$"
 cleanup() {
