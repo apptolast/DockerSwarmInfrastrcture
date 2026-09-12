@@ -5,7 +5,9 @@
 image digest, the exact environment (with the label filter and without any
 setting that widens the watcher's scope), the external registry secret, the
 read-only Docker socket bind, manager placement, the kill switch and explicit
-resources, then renders `stacks/autoupdater/stack.yml.j2`.
+resources, then renders `stacks/autoupdater/stack.yml.j2`. The rendered
+service must carry exactly the reviewed keys and deploy mapping, so an
+added entrypoint, command, user or host setting is refused.
 
 The Docker socket is root-equivalent whatever its bind mode; the read-only
 bind only keeps the socket inode itself from being replaced.
@@ -56,6 +58,36 @@ REVIEWED_RESOURCES = {
     "limits": {"cpus": "0.25", "memory": "45M"},
 }
 FILTER = "label=apptolast.autoupdate=true"
+REVIEWED_STACK_KEYS = {"version", "services", "networks", "secrets"}
+REVIEWED_SERVICE_KEYS = {
+    "image",
+    "init",
+    "logging",
+    "environment",
+    "secrets",
+    "volumes",
+    "networks",
+    "deploy",
+}
+REVIEWED_LOGGING = {
+    "driver": "local",
+    "options": {"max-file": "5", "max-size": "20m"},
+}
+REVIEWED_RESTART_POLICY = {"condition": "any", "delay": "30s", "window": "60s"}
+REVIEWED_UPDATE_CONFIG = {
+    "parallelism": 1,
+    "order": "stop-first",
+    "failure_action": "rollback",
+    "monitor": "30s",
+    "max_failure_ratio": 0,
+}
+REVIEWED_ROLLBACK_CONFIG = {
+    "parallelism": 1,
+    "order": "stop-first",
+    "failure_action": "pause",
+    "monitor": "30s",
+    "max_failure_ratio": 0,
+}
 
 
 class AutoupdaterError(ValueError):
@@ -137,6 +169,10 @@ def require(condition: bool, message: str) -> None:
 def validate_render(stack: Any, catalog: dict[str, Any]) -> None:
     """Prove the rendered stack is exactly the reviewed watcher."""
     require(isinstance(stack, dict), "rendered stack is not a mapping")
+    require(
+        set(stack) == REVIEWED_STACK_KEYS and stack.get("version") == "3.8",
+        "the rendered stack top-level keys differ from the reviewed set",
+    )
     services = stack.get("services")
     require(
         isinstance(services, dict) and set(services) == {SERVICE_NAME},
@@ -149,8 +185,18 @@ def validate_render(stack: Any, catalog: dict[str, Any]) -> None:
         service.get("image") == catalog["image"],
         "shepherd image differs from the catalog",
     )
-    for key in ("ports", "cap_add", "privileged", "network_mode", "pid", "configs"):
-        require(key not in service, f"shepherd must not declare {key}")
+    # An exact key set, not a denylist: entrypoint, command, user,
+    # extra_hosts, dns, cap_add, security_opt and any future compose key
+    # would run unreviewed code next to the Docker socket.
+    extra = sorted(set(service) - REVIEWED_SERVICE_KEYS)
+    require(not extra, f"shepherd must not declare {', '.join(extra)}")
+    missing = sorted(REVIEWED_SERVICE_KEYS - set(service))
+    require(not missing, f"shepherd lacks reviewed keys: {', '.join(missing)}")
+    require(service["init"] is True, "shepherd must run with init: true")
+    require(
+        service["logging"] == REVIEWED_LOGGING,
+        "shepherd logging differs from the reviewed local driver",
+    )
 
     environment = service.get("environment")
     try:
@@ -226,6 +272,32 @@ def validate_render(stack: Any, catalog: dict[str, Any]) -> None:
     require(
         deploy.get("resources") == REVIEWED_RESOURCES,
         "shepherd resources differ from the reviewed capacity budget",
+    )
+    require(
+        deploy.get("restart_policy") == REVIEWED_RESTART_POLICY,
+        "shepherd restart_policy differs from the reviewed one",
+    )
+    require(
+        deploy.get("update_config") == REVIEWED_UPDATE_CONFIG,
+        "shepherd update_config differs from the reviewed rollback on failure",
+    )
+    require(
+        deploy.get("rollback_config") == REVIEWED_ROLLBACK_CONFIG,
+        "shepherd rollback_config differs from the reviewed one",
+    )
+    require(
+        deploy
+        == {
+            "mode": "replicated",
+            "replicas": expected_replicas,
+            "placement": {"constraints": [MANAGER_CONSTRAINT]},
+            "labels": {channels.AUTOUPDATE_LABEL: "false"},
+            "restart_policy": REVIEWED_RESTART_POLICY,
+            "update_config": REVIEWED_UPDATE_CONFIG,
+            "rollback_config": REVIEWED_ROLLBACK_CONFIG,
+            "resources": REVIEWED_RESOURCES,
+        },
+        "shepherd deploy differs from the reviewed exact mapping",
     )
     networks = stack.get("networks")
     require(

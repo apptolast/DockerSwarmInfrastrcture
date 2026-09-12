@@ -41,7 +41,16 @@ def run_task(
     task_name: str,
     variables: dict[str, Any],
 ) -> subprocess.CompletedProcess[str]:
-    task = load_task(task_file, task_name)
+    return run_task_definition(load_task(task_file, task_name), variables)
+
+
+def run_task_definition(
+    task: dict[str, Any],
+    variables: dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    """Run an already loaded task, still refusing side effects."""
+    if len(SIDE_EFFECT_FREE_MODULES.intersection(task)) != 1:
+        raise AssertionError(f"{task.get('name')!r} is not a side-effect-free task")
     with tempfile.TemporaryDirectory() as temporary:
         playbook = Path(temporary) / "task.yml"
         playbook.write_text(

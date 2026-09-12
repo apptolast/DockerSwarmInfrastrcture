@@ -15,6 +15,36 @@
     group: root
     mode: '0640'
 
+# The update gate below tells an update this apply started from a stale
+# status by comparing the service before and after the deploy. A missing
+# service (first registration) is the only accepted read failure.
+- name: Read the watcher service before the stack mutation
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "{{ autoupdater_service_name }}"]
+  register: autoupdater_service_before
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require the watcher service to be readable or absent
+  ansible.builtin.assert:
+    that:
+      - >-
+        autoupdater_service_before.rc == 0
+        or autoupdater_service_before.stderr
+        is search("(?i)(no such service|not found)")
+    fail_msg: >-
+      The watcher service exists but could not be read before the deploy.
+    quiet: true
+
+- name: Record the watcher service before the deploy
+  ansible.builtin.set_fact:
+    autoupdater_update_before: >-
+      {{
+        (autoupdater_service_before.stdout | from_json | first)
+        if autoupdater_service_before.rc == 0 else {}
+      }}
+
 # The image is pinned by digest and excluded from the channel map, so the CLI
 # never asks the registry for it. This apply replaces any unreviewed spec of
 # autoupdater_shepherd (for example IGNORELIST_SERVICES without a filter).
@@ -27,6 +57,158 @@
     prune: true
     resolve_image: never
 
+# `detach: true` returns before swarmkit closes the 30 s `monitor` window. A
+# failed task then rolls the service back to PreviousSpec (the hand-deployed
+# unfiltered watcher on the first apply) while `stack services` still shows
+# 1/1, so a single read right after the deploy proves nothing. Poll instead
+# until the update this apply started is terminal.
+#
+# - A task-affecting change (TaskTemplate without Placement, or EndpointSpec)
+#   must reach `completed` with a StartedAt other than the one recorded
+#   before the deploy. No status yet means swarmkit has not started it.
+# - No task-affecting change (an identical re-apply, a label, replicas or
+#   update_config change) starts no rolling update, so no status is final.
+#   The kill switch (0 replicas) has no task to roll back either.
+# - `rollback_completed`, `rollback_paused` and `paused` are terminal and
+#   rejected by the next task.
+#
+# 30 x 10 s covers stop-first, image start, the 30 s monitor, a 30 s restart
+# delay and a full rollback with its own 30 s monitor.
+- name: Wait for the watcher update to reach a terminal state
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "{{ autoupdater_service_name }}"]
+  register: autoupdater_update_poll
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  until: >-
+    (
+      autoupdater_update_poll.rc == 0
+      and autoupdater_update_after != {}
+      and (
+        (
+          autoupdater_update_state == 'completed'
+          and (
+            not autoupdater_update_task_changed | bool
+            or autoupdater_update_started_after
+            != autoupdater_update_started_before
+          )
+        )
+        or (
+          autoupdater_update_state == 'none'
+          and (
+            not autoupdater_update_task_changed | bool
+            or autoupdater_expected_replicas | int == 0
+          )
+        )
+      )
+    )
+    or autoupdater_update_state
+    in ['rollback_completed', 'rollback_paused', 'paused']
+  retries: 30
+  delay: 10
+  vars:
+    autoupdater_update_after: >-
+      {{
+        (autoupdater_update_poll.stdout | default('[]', true) | from_json
+         | first | default({}, true))
+        if autoupdater_update_poll.rc | default(1) == 0 else {}
+      }}
+    autoupdater_update_state: >-
+      {{
+        (autoupdater_update_after.UpdateStatus | default({}, true))
+        .State | default('none', true)
+      }}
+    autoupdater_update_started_before: >-
+      {{
+        (autoupdater_update_before.UpdateStatus | default({}, true))
+        .StartedAt | default('', true)
+      }}
+    autoupdater_update_started_after: >-
+      {{
+        (autoupdater_update_after.UpdateStatus | default({}, true))
+        .StartedAt | default('', true)
+      }}
+    autoupdater_update_task_changed: >-
+      {{
+        autoupdater_update_before != {}
+        and (
+          (autoupdater_update_before.Spec.TaskTemplate | default({}))
+          | combine({'Placement': {}})
+          != (autoupdater_update_after.Spec.TaskTemplate | default({}))
+          | combine({'Placement': {}})
+          or autoupdater_update_before.Spec.EndpointSpec | default({})
+          != autoupdater_update_after.Spec.EndpointSpec | default({})
+        )
+      }}
+
+- name: Reject a watcher update that did not complete
+  ansible.builtin.assert:
+    that:
+      - autoupdater_update_poll.rc | default(1) == 0
+      - autoupdater_update_after != {}
+      - >-
+        autoupdater_update_state
+        not in ['rollback_started', 'rollback_completed', 'rollback_paused',
+                'paused', 'updating']
+      - >-
+        (
+          autoupdater_update_state == 'completed'
+          and (
+            not autoupdater_update_task_changed | bool
+            or autoupdater_update_started_after
+            != autoupdater_update_started_before
+          )
+        )
+        or (
+          autoupdater_update_state == 'none'
+          and (
+            not autoupdater_update_task_changed | bool
+            or autoupdater_expected_replicas | int == 0
+          )
+        )
+    fail_msg: >-
+      The watcher did not keep the reviewed spec: Swarm update status
+      {{ autoupdater_update_state }}
+      ({{ (autoupdater_update_after.UpdateStatus | default({}, true))
+          .Message | default('no message', true) }}).
+      A rollback restores the previous, possibly unfiltered, watcher.
+    quiet: true
+  vars:
+    autoupdater_update_after: >-
+      {{
+        (autoupdater_update_poll.stdout | default('[]', true) | from_json
+         | first | default({}, true))
+        if autoupdater_update_poll.rc | default(1) == 0 else {}
+      }}
+    autoupdater_update_state: >-
+      {{
+        (autoupdater_update_after.UpdateStatus | default({}, true))
+        .State | default('none', true)
+      }}
+    autoupdater_update_started_before: >-
+      {{
+        (autoupdater_update_before.UpdateStatus | default({}, true))
+        .StartedAt | default('', true)
+      }}
+    autoupdater_update_started_after: >-
+      {{
+        (autoupdater_update_after.UpdateStatus | default({}, true))
+        .StartedAt | default('', true)
+      }}
+    autoupdater_update_task_changed: >-
+      {{
+        autoupdater_update_before != {}
+        and (
+          (autoupdater_update_before.Spec.TaskTemplate | default({}))
+          | combine({'Placement': {}})
+          != (autoupdater_update_after.Spec.TaskTemplate | default({}))
+          | combine({'Placement': {}})
+          or autoupdater_update_before.Spec.EndpointSpec | default({})
+          != autoupdater_update_after.Spec.EndpointSpec | default({})
+        )
+      }}
+
 - name: Require the reviewed replica count and no extra service
   ansible.builtin.command:
     argv:
@@ -38,6 +220,7 @@
       - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
   register: autoupdater_replicas
   changed_when: false
+  check_mode: false
   until: >-
     autoupdater_replicas.stdout_lines
     == [autoupdater_service_name ~ '=' ~ autoupdater_expected_replicas
@@ -50,36 +233,84 @@
     argv: [/usr/bin/docker, service, inspect, "{{ autoupdater_service_name }}"]
   register: autoupdater_service_inspection
   changed_when: false
+  check_mode: false
 
-- name: Require the live watcher spec to be exactly the reviewed one
+- name: Parse the converged watcher service
+  ansible.builtin.set_fact:
+    autoupdater_service: >-
+      {{ autoupdater_service_inspection.stdout | from_json | first }}
+    autoupdater_container: >-
+      {{
+        (autoupdater_service_inspection.stdout | from_json | first)
+        .Spec.TaskTemplate.ContainerSpec
+      }}
+
+# Each rule of the exact live spec is its own task with its own message, so a
+# failure names the rule and a test can prove each rule on its own.
+- name: Require the reviewed live watcher image and service labels
   ansible.builtin.assert:
     that:
       - >-
         autoupdater_service.Spec.Labels['com.docker.stack.namespace']
         == autoupdater.stack_name
-      - >-
-        autoupdater_service.Spec.Labels['apptolast.autoupdate'] == 'false'
-      - >-
-        autoupdater_container.Image == autoupdater.image
+      - autoupdater_service.Spec.Labels['apptolast.autoupdate'] == 'false'
+      - autoupdater_container.Image == autoupdater.image
+    fail_msg: >-
+      Live watcher image or service labels differ from config/autoupdater.yml.
+    quiet: true
+
+- name: Require the exact reviewed live watcher environment
+  ansible.builtin.assert:
+    that:
       - >-
         autoupdater_container.Env | default([]) | sort
         == autoupdater_expected_environment | sort
+    fail_msg: >-
+      Live watcher environment differs from the reviewed exact set.
+    quiet: true
+
+- name: Require the label filter in the live watcher environment
+  ansible.builtin.assert:
+    that:
       - >-
         'FILTER_SERVICES=label=apptolast.autoupdate=true'
-        in autoupdater_container.Env
+        in autoupdater_container.Env | default([])
+    fail_msg: >-
+      Live watcher runs without the apptolast.autoupdate label filter.
+    quiet: true
+
+- name: Reject scope wideners in the live watcher environment
+  ansible.builtin.assert:
+    that:
       - >-
         autoupdater_container.Env | default([])
         | select('match', '^(IGNORELIST_SERVICES|UPDATE_OPTIONS|'
         ~ 'ROLLBACK_ON_FAILURE|RUN_ONCE_AND_EXIT|WITH_NO_RESOLVE_IMAGE|'
         ~ 'WITH_INSECURE_REGISTRY|IMAGE_AUTOCLEAN_LIMIT|REGISTRY_PASSWORD)=')
         | list | length == 0
+    fail_msg: >-
+      Live watcher environment carries a scope widener or an inline password.
+    quiet: true
+
+- name: Require the reviewed live watcher replicas placement and ports
+  ansible.builtin.assert:
+    that:
       - >-
         autoupdater_service.Spec.Mode.Replicated.Replicas
         == autoupdater_expected_replicas | int
       - >-
         autoupdater_service.Spec.TaskTemplate.Placement.Constraints
         == ['node.role == manager']
-      - autoupdater_container.Secrets | length == 1
+      - autoupdater_service.Spec.EndpointSpec.Ports | default([]) | length == 0
+    fail_msg: >-
+      Live watcher replicas, placement or published ports differ from the
+      reviewed kill switch and manager placement.
+    quiet: true
+
+- name: Require the reviewed live watcher registry secret
+  ansible.builtin.assert:
+    that:
+      - autoupdater_container.Secrets | default([]) | length == 1
       - >-
         autoupdater_container.Secrets[0].SecretName
         == autoupdater.registry_password_secret
@@ -90,24 +321,86 @@
         autoupdater_container.Secrets[0].File
         == {'Name': 'shepherd_registry_password', 'UID': '0', 'GID': '0',
             'Mode': 256}
-      - autoupdater_container.Mounts | length == 1
+    fail_msg: >-
+      Live watcher registry secret differs from the reviewed external secret.
+    quiet: true
+
+- name: Require only the read-only Docker socket mount on the live watcher
+  ansible.builtin.assert:
+    that:
+      - autoupdater_container.Mounts | default([]) | length == 1
       - autoupdater_container.Mounts[0].Type == 'bind'
       - autoupdater_container.Mounts[0].Source == '/var/run/docker.sock'
       - autoupdater_container.Mounts[0].Target == '/var/run/docker.sock'
-      - autoupdater_container.Mounts[0].ReadOnly | default(false) | bool
-      - autoupdater_service.Spec.EndpointSpec.Ports | default([]) | length == 0
+      - autoupdater_container.Mounts[0].ReadOnly | default(false) is sameas true
     fail_msg: >-
-      The live watcher differs from config/autoupdater.yml: image,
-      environment, label filter, replicas, placement, secret or socket mount.
+      Live watcher mounts differ from the single read-only Docker socket bind.
+    quiet: true
+
+# The Docker CLI converts this compose service into a ContainerSpec with only
+# Image, Labels (the stack namespace), Env, Init, Mounts, Secrets and an empty
+# Privileges; the daemon reports Isolation "default". DNSConfig is tolerated
+# only empty. Any other key (Command, Args, User, Hostname, Hosts, Dir,
+# CapabilityAdd, Sysctls, Configs, ...) came from outside the reviewed
+# template, and is refused by name.
+- name: Require only the reviewed live watcher container fields
+  ansible.builtin.assert:
+    that:
+      - >-
+        autoupdater_container | list
+        | difference(['Image', 'Labels', 'Env', 'Init', 'Mounts', 'Secrets',
+                      'Isolation', 'Privileges', 'DNSConfig'])
+        | length == 0
+      - autoupdater_container.Init | default(false) is sameas true
+      - autoupdater_container.Isolation | default('default') == 'default'
+      - >-
+        autoupdater_container.Privileges | default({}, true)
+        | dict2items | selectattr('value') | list | length == 0
+      - >-
+        autoupdater_container.DNSConfig | default({}, true)
+        | dict2items | selectattr('value') | list | length == 0
+      - >-
+        autoupdater_container.Labels | default({}, true)
+        | dict2items | rejectattr('key', 'eq', 'com.docker.stack.namespace')
+        | list | length == 0
+    fail_msg: >-
+      Live watcher container fields differ from the reviewed spec (unexpected
+      keys:
+      {{ autoupdater_container | list
+         | difference(['Image', 'Labels', 'Env', 'Init', 'Mounts', 'Secrets',
+                       'Isolation', 'Privileges', 'DNSConfig']) }}).
+    quiet: true
+
+# The CLI parses compose sizes as binary units: 45M is 45 x 1024 x 1024 =
+# 47185920 bytes and 18M is 18874368; 0.25 and 0.10 CPUs are 250000000 and
+# 100000000 NanoCPUs. Other resource keys are tolerated only when unset.
+- name: Require the reviewed live watcher resources
+  ansible.builtin.assert:
+    that:
+      - autoupdater_resources.Limits.NanoCPUs | default(0) == 250000000
+      - autoupdater_resources.Limits.MemoryBytes | default(0) == 47185920
+      - autoupdater_resources.Reservations.NanoCPUs | default(0) == 100000000
+      - >-
+        autoupdater_resources.Reservations.MemoryBytes | default(0)
+        == 18874368
+      - >-
+        autoupdater_resources | dict2items
+        | rejectattr('key', 'in', ['Limits', 'Reservations'])
+        | selectattr('value') | list | length == 0
+      - >-
+        autoupdater_resources.Limits | default({}, true) | dict2items
+        | rejectattr('key', 'in', ['NanoCPUs', 'MemoryBytes'])
+        | selectattr('value') | list | length == 0
+      - >-
+        autoupdater_resources.Reservations | default({}, true) | dict2items
+        | rejectattr('key', 'in', ['NanoCPUs', 'MemoryBytes'])
+        | selectattr('value') | list | length == 0
+    fail_msg: >-
+      Live watcher resources differ from the reviewed capacity budget.
     quiet: true
   vars:
-    autoupdater_service: >-
-      {{ autoupdater_service_inspection.stdout | from_json | first }}
-    autoupdater_container: >-
-      {{
-        (autoupdater_service_inspection.stdout | from_json | first)
-        .Spec.TaskTemplate.ContainerSpec
-      }}
+    autoupdater_resources: >-
+      {{ autoupdater_service.Spec.TaskTemplate.Resources | default({}, true) }}
 
 - name: Require one running watcher container when enabled and none otherwise
   ansible.builtin.command:
@@ -122,6 +415,7 @@
       - "{% raw %}{{.ID}}{% endraw %}"
   register: autoupdater_running
   changed_when: false
+  check_mode: false
   until: >-
     autoupdater_running.stdout_lines | length
     == autoupdater_expected_replicas | int
