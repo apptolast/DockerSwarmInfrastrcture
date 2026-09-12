@@ -244,8 +244,10 @@ plataforma completa (`edge`, `workloads`, `observability`) sumaban
 de margen operativo); 45 MiB es todo lo que queda y la relación
 límite/reserva de 2,5 fija la reserva en 18 MiB. En el perfil activo
 (`organizationweb`) los límites suben de 11456 a 11501 MiB. Shepherd es bash
-más el CLI de Docker, y este repositorio no tiene una medida de su memoria
-real: si el contenedor muere por OOM, se reinicia sin tocar ningún servicio
+más el CLI de Docker. Medida del servicio vivo sin revisar el 2026-09-12,
+en pleno ciclo sobre 15 servicios: 19,4-19,8 MiB estables y un pico de
+23,8 MiB (`memory.peak` del cgroup), así que 45 MiB deja unas 1,9 veces el
+pico. Si el contenedor muere por OOM, se reinicia sin tocar ningún servicio
 a medias (Swarm conserva la actualización ya enviada). Vigila
 `docker service ps autoupdater_shepherd` tras el primer apply y, si hay OOM,
 reequilibra el presupuesto en un PR revisado.
