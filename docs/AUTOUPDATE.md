@@ -127,23 +127,40 @@ consecutivo desde el mismo commit vuelve a `changed=0`.
 
 ## Estado tras este cambio
 
-Ningún servicio tiene `autoupdate: true` y no hay vigilante desplegado, así
-que nada se actualiza solo todavía. Las entradas iniciales reproducen lo que
-se renderiza hoy, con dos salvedades deliberadas:
+Ningún servicio tiene `autoupdate: true` en Git. En el host sí corre un
+vigilante no registrado (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
+en lugar del filtro por etiqueta) que mueve a la cabeza de su tag cada
+servicio sin estado. Hasta que el cambio posterior lo registre, el preflight
+de capacidad rechaza cualquier apply de `edge`, `workloads` u
+`organizationweb` porque ese servicio vivo queda fuera del perfil revisado.
 
-- `kropia`, `portfolio-pablo`, `minecraft-stats` y `minecraft` ya ejecutan
-  la cabeza de `:latest` en producción; sus entradas adoptan ese canal con
-  `autoupdate: false`. El primer apply fija la cabeza actual.
-- `portfolio-alberto` queda en hold en el digest que antes aprobaba
-  `config/workload-image-updates.yml`, fichero que desaparece.
+Las entradas iniciales parten del inventario vivo del 2026-09-12:
+
+- Canal con `autoupdate: false`, adoptando en Git el tag que ya ejecuta cada
+  servicio: `kropia`, `minecraft`, `minecraft-stats`, `passbolt`,
+  `portfolio-alberto`, `portfolio-pablo`, `selenium`, `shlink` y
+  `organizationweb` `backend`/`web` en `:latest`, y Traefik en `v3`. Un
+  canal tolera que el vigilante mueva el digest, así que el apply solo
+  reescribe etiquetas de servicio. Traefik es la excepción: su spec vivo es
+  `traefik:latest@...` y la cadena pasa a `traefik:v3@...`. El digest es el
+  mismo (v3.7.13 en ambos tags), pero el cambio reinicia la tarea
+  (`stop-first`).
+- `redis-coordinator` vuelve en hold a los bytes revisados de 7.2.11
+  (`redis:7.2-alpine@sha256:...`). Una actualización no revisada dejó
+  `redis:latest` (8.x, sin digest) en vivo. No tiene volumen, así que ningún
+  dato cruza la versión mayor; su tarea se reinicia.
+- El resto de entradas quedan en hold con la referencia que se renderiza
+  hoy, igual a su spec vivo.
+- `config/workload-image-updates.yml` desaparece.
 
 El primer apply de cada stack (`edge`, `workloads`, `organizationweb` y, al
 activarse, `observability`) informa `changed` en `docker_stack` aunque no se
 adopte nada: todo servicio renderizado gana la etiqueta de servicio
 `apptolast.autoupdate`, que cambia `Spec.Labels`, y el módulo compara el
 `docker service inspect` completo antes y después. `TaskTemplate` no cambia,
-así que ninguna tarea se reinicia salvo en los cuatro servicios adoptados. El
-segundo apply consecutivo debe devolver `changed=0`.
+así que solo se reinician `edge_traefik` y `workloads_redis-coordinator`,
+más cualquier canal cuya cabeza haya avanzado desde el último ciclo del
+vigilante. El segundo apply consecutivo debe devolver `changed=0`.
 
 El registro del stack `autoupdater` (Shepherd, filtro exacto
 `label=apptolast.autoupdate=true`) llega en un cambio posterior y revisado.
@@ -151,8 +168,9 @@ El registro del stack `autoupdater` (Shepherd, filtro exacto
 ## Antes del primer apply
 
 Inventario de solo lectura, obligatorio antes de aplicar este cambio: para
-cada entrada hold, en especial `organizationweb_*` y `edge_traefik`, la
-imagen viva debe ser su `spec_exact` (`validate-image-channels.py derive`).
+cada entrada hold, en especial las bases de datos y `organizationweb_*`, la
+imagen viva debe ser su `spec_exact` (`validate-image-channels.py derive`),
+salvo `redis-coordinator`, cuya cadena renderizada cambia a propósito.
 
 ```bash
 sudo -- docker service inspect \

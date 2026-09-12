@@ -20,14 +20,15 @@ image_channel_services:
   - stack: edge
     service: traefik
     baseline: {catalog: traefik-edge, component: proxy}
-    reference: "traefik@sha256:\
-      652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8"
+    reference: docker.io/library/traefik:v3
     class: stateful-major
     autoupdate: false
 
   # --- workloads ----------------------------------------------------------
-  # kropia, minecraft-stats, portfolio-pablo and minecraft already run their
-  # :latest head in production; these entries adopt that drift into Git.
+  # Every stateless service below already runs its channel head in
+  # production (inventory 2026-09-12): these entries adopt that drift into
+  # Git. A channel keeps whatever digest Swarm runs, so the first apply only
+  # rewrites service labels.
   - stack: workloads
     service: kropia
     baseline: {catalog: kropia, component: app}
@@ -68,7 +69,9 @@ image_channel_services:
   - stack: workloads
     service: redis-coordinator
     baseline: {catalog: n8n, component: workflow-cache}
-    reference: "docker.io/library/redis@sha256:\
+    # Back to the reviewed 7.2.11 bytes: an unreviewed update left
+    # redis:latest (8.x, no digest) live. No volume, so no data crosses.
+    reference: "docker.io/library/redis:7.2-alpine@sha256:\
       1a34bdba051ecd8a58ec8a3cc460acef697a1605e918149cc53d920673c1a0a7"
     class: stateful-major
     autoupdate: false
@@ -76,8 +79,7 @@ image_channel_services:
   - stack: workloads
     service: selenium
     baseline: {catalog: n8n, component: browser}
-    reference: "docker.io/selenium/standalone-chrome@sha256:\
-      b4d4e3f64280c4cd69198c8eb2c1daa74b3d206ff87a647728fc070affee94b0"
+    reference: docker.io/selenium/standalone-chrome:latest
     class: third-party
     autoupdate: false
 
@@ -92,8 +94,7 @@ image_channel_services:
   - stack: workloads
     service: passbolt
     baseline: {catalog: passbolt, component: app}
-    reference: "docker.io/passbolt/passbolt@sha256:\
-      f5ac218f5155e9cb026edc1d8152af788ea420fac61b205d7d80262fd64359c1"
+    reference: docker.io/passbolt/passbolt:latest
     class: third-party
     autoupdate: false
 
@@ -105,14 +106,10 @@ image_channel_services:
     class: stateful-major
     autoupdate: false
 
-  # Held at the runtime digest previously approved in
-  # config/workload-image-updates.yml (removed); same rendered string.
   - stack: workloads
     service: portfolio-alberto
     baseline: {catalog: personal-website-alberto, component: app}
-    reference: "\
-      docker.io/hgarciaalberto/personal-website:latest@sha256:\
-      34c6854a3d7ff179e8fee8207696b1940747e84e9782d2133417f17b60602f8d"
+    reference: docker.io/hgarciaalberto/personal-website:latest
     class: owner
     autoupdate: false
 
@@ -126,8 +123,7 @@ image_channel_services:
   - stack: workloads
     service: shlink
     baseline: {catalog: shlink, component: app}
-    reference: "docker.io/apptolast/shlink-apptolast@sha256:\
-      5655db8e5fe9ecd292c87412f3f9c15095501ea5a7aae85aa3198e08a51d0914"
+    reference: docker.io/apptolast/shlink-apptolast:latest
     class: owner
     autoupdate: false
 
@@ -143,16 +139,14 @@ image_channel_services:
   - stack: organizationweb
     service: web
     baseline: {catalog: organizationweb, component: web}
-    reference: "ocholoko888/organizationweb-web@sha256:\
-      072ccbf2146a5784166837851fbbf3431959e04bcd00cd9a9471533cce51aff4"
+    reference: docker.io/ocholoko888/organizationweb-web:latest
     class: owner
     autoupdate: false
 
   - stack: organizationweb
     service: backend
     baseline: {catalog: organizationweb, component: backend}
-    reference: "ocholoko888/organizationweb-api@sha256:\
-      c26850b24a3d926619cfb8451f2ddb090047082cca4c01afa39d399d17ab8324"
+    reference: docker.io/ocholoko888/organizationweb-api:latest
     class: owner
     autoupdate: false
 

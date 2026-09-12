@@ -99,12 +99,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   [`docs/AUTOUPDATE.md`](docs/AUTOUPDATE.md).
 - Nuevo `config/image-channels.yml` (esquema v1) como única fuente de lo que
   ejecuta cada servicio de `edge`, `workloads`, `organizationweb` y
-  `observability`. Todas las entradas quedan en hold con la misma referencia
-  renderizada hoy, salvo `kropia`, `portfolio-pablo`, `minecraft-stats` y
-  `minecraft`, que adoptan en Git la deriva viva hacia `:latest` con
-  `autoupdate: false`. Ningún servicio se actualiza solo todavía.
-- `config/workload-image-updates.yml` desaparece: `portfolio-alberto` pasa a
-  un hold en el mismo digest aprobado. `scripts/resolve-tracked-image.py`
+  `observability`. Las entradas parten del inventario vivo del 2026-09-12:
+  los once servicios sin estado que ya ejecutan la cabeza de su tag
+  (`kropia`, `minecraft`, `minecraft-stats`, `passbolt`, `portfolio-alberto`,
+  `portfolio-pablo`, `selenium`, `shlink`, `organizationweb` `backend`/`web`
+  y Traefik en `v3`) adoptan ese canal con `autoupdate: false`;
+  `redis-coordinator` vuelve en hold a los bytes revisados de 7.2.11 tras una
+  actualización no revisada a `redis:latest` 8.x sin volumen; el resto queda
+  en hold con la referencia renderizada hoy.
+- `config/workload-image-updates.yml` desaparece y
+  `scripts/resolve-tracked-image.py`
   pasa a `scripts/resolve-image-channel.py`, que toma el conjunto de canales
   del fichero nuevo y ya no exige un digest aprobado en Git.
 - Nuevo `scripts/validate-image-channels.py`, ejecutado por

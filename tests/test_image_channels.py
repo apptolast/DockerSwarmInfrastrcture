@@ -40,19 +40,32 @@ resolver = load_script(
 DIGEST = "sha256:" + ("a" * 64)
 OTHER_DIGEST = "sha256:" + ("b" * 64)
 ADOPTED_CHANNELS = {
+    ("edge", "traefik"): "docker.io/library/traefik:v3",
     ("workloads", "kropia"): "docker.io/apptolast/kropia-web:latest",
     ("workloads", "minecraft"): "docker.io/itzg/minecraft-server:latest",
     ("workloads", "minecraft-stats"): (
         "docker.io/ocholoko888/minecraft-stats-web:latest"
     ),
+    ("workloads", "passbolt"): "docker.io/passbolt/passbolt:latest",
+    ("workloads", "portfolio-alberto"): (
+        "docker.io/hgarciaalberto/personal-website:latest"
+    ),
     ("workloads", "portfolio-pablo"): (
         "docker.io/ocholoko888/personal-website:latest"
     ),
+    ("workloads", "selenium"): "docker.io/selenium/standalone-chrome:latest",
+    ("workloads", "shlink"): "docker.io/apptolast/shlink-apptolast:latest",
+    ("organizationweb", "backend"): (
+        "docker.io/ocholoko888/organizationweb-api:latest"
+    ),
+    ("organizationweb", "web"): (
+        "docker.io/ocholoko888/organizationweb-web:latest"
+    ),
 }
-ALBERTO_HOLD = (
-    "docker.io/hgarciaalberto/personal-website:latest@sha256:"
-    "34c6854a3d7ff179e8fee8207696b194"
-    "0747e84e9782d2133417f17b60602f8d"
+REDIS_HOLD = (
+    "docker.io/library/redis:7.2-alpine@sha256:"
+    "1a34bdba051ecd8a58ec8a3cc460acef"
+    "697a1605e918149cc53d920673c1a0a7"
 )
 
 
@@ -118,10 +131,11 @@ class ChannelMapTests(unittest.TestCase):
                         self.assertEqual(
                             entry["reference"], ADOPTED_CHANNELS[(stack, name)]
                         )
-                    elif (stack, name) == ("workloads", "portfolio-alberto"):
-                        # The former approved runtime digest, same string.
-                        self.assertEqual(entry["reference"], ALBERTO_HOLD)
+                    elif (stack, name) == ("workloads", "redis-coordinator"):
+                        # The reviewed 7.2.11 bytes, proven by REDIS_VERSION.
+                        self.assertEqual(entry["reference"], REDIS_HOLD)
                         self.assertEqual(entry["mode"], "hold")
+                        self.assertTrue(entry["major_proof_required"])
                     else:
                         # Same string as rendered today, so Swarm keeps it.
                         self.assertEqual(entry["mode"], "hold")
@@ -129,23 +143,23 @@ class ChannelMapTests(unittest.TestCase):
 
     def test_live_spec_identity_is_normalized_like_swarm(self) -> None:
         services = self.derive(self.document)["services"]
-        alberto = services["workloads"]["portfolio-alberto"]
+        redis = services["workloads"]["redis-coordinator"]
         self.assertEqual(
-            alberto["spec_exact"],
-            ALBERTO_HOLD.removeprefix("docker.io/"),
+            redis["spec_exact"],
+            REDIS_HOLD.removeprefix("docker.io/library/"),
         )
         self.assertEqual(
-            alberto["preflight_reference"],
-            "docker.io/hgarciaalberto/personal-website@"
-            + ALBERTO_HOLD.split("@")[1],
+            redis["preflight_reference"],
+            "docker.io/library/redis@" + REDIS_HOLD.split("@")[1],
         )
         self.assertTrue(
             services["workloads"]["passbolt-db"]["spec_exact"].startswith(
                 "postgres@sha256:"
             )
         )
-        self.assertTrue(
-            services["edge"]["traefik"]["spec_exact"].startswith("traefik@sha256:")
+        self.assertEqual(
+            services["edge"]["traefik"]["spec_pattern"],
+            r"^traefik:v3@sha256:[a-f0-9]{64}$",
         )
         self.assertTrue(
             services["workloads"]["openclaw"]["spec_exact"].startswith(
