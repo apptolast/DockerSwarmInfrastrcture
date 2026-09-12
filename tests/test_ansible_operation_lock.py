@@ -244,15 +244,25 @@ class AnsibleOperationLockTests(unittest.TestCase):
             f"RECOVER_ANSIBLE_LOCK:{self.operation_id}:"
             f"{helper.hashlib.sha256(raw).hexdigest()}:CONTROLLER_STOPPED"
         )
-        with self.assertRaises(helper.OperationLockError):
+        # The host scan is covered by
+        # test_recovery_rejects_a_visible_mutating_process. Here it would read
+        # the real /proc, where unrelated `docker service` clients (the image
+        # watcher runs one per cycle) make the result depend on timing.
+        with mock.patch.object(
+            helper, "mutating_processes", return_value=[]
+        ) as scan:
+            with self.assertRaisesRegex(
+                helper.OperationLockError, "confirmation differs"
+            ):
+                helper.recover_lock(
+                    self.recovery_args(apply=True, confirm="wrong"),
+                    require_root=False,
+                )
             helper.recover_lock(
-                self.recovery_args(apply=True, confirm="wrong"),
+                self.recovery_args(apply=True, confirm=confirmation),
                 require_root=False,
             )
-        helper.recover_lock(
-            self.recovery_args(apply=True, confirm=confirmation),
-            require_root=False,
-        )
+        self.assertEqual(scan.call_count, 2)
         self.assertFalse(self.marker_path.exists())
         archives = list(self.archive_directory.iterdir())
         self.assertEqual(len(archives), 1)
