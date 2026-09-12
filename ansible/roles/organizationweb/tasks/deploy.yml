@@ -1,37 +1,8 @@
 ---
-- name: Pull the four immutable reviewed images
-  community.docker.docker_image:
-    name: "{{ item.value }}"
-    source: pull
-    force_source: false
-  loop: "{{ organizationweb.images | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-
-- name: Inspect the pulled image architecture
-  ansible.builtin.command:
-    argv: [/usr/bin/docker, image, inspect, "{{ item.value }}"]
-  loop: "{{ organizationweb.images | dict2items }}"
-  register: organizationweb_image_inspections
-  changed_when: false
-
-- name: Require the published Linux amd64 images
-  ansible.builtin.assert:
-    that:
-      - (item.stdout | from_json | first).Os == 'linux'
-      - (item.stdout | from_json | first).Architecture == 'amd64'
-      - item.item.value in (item.stdout | from_json | first).RepoDigests
-      - >-
-        item.item.key not in ['backend', 'web'] or (
-          (item.stdout | from_json | first)
-          .Config.Labels['org.opencontainers.image.revision']
-          == organizationweb.release
-        )
-    fail_msg: Image identity or architecture differs from the reviewed release.
-  loop: "{{ organizationweb_image_inspections.results }}"
-  loop_control:
-    label: "{{ item.item.key }}"
-
+# Las imagenes ya no se descargan antes del despliegue: el stack renderiza la
+# entrada de config/image-channels.yml y el CLI la resuelve con
+# `resolve_image: changed`. La identidad se comprueba despues, sobre la imagen
+# exacta que cada servicio ejecuta.
 - name: Create application directories outside legacy state
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -70,6 +41,55 @@
     group: root
     mode: '0755'
 
+# OrganizationWeb is not in the image preflight. A non-baseline stateful
+# hold still proves its upstream major before the stack mutation.
+- name: Prove the upstream major of every non-baseline stateful hold
+  ansible.builtin.include_role:
+    name: image_channels
+    tasks_from: prove_major.yml
+  vars:
+    image_channels_major_proof_entries: >-
+      {{
+        image_channels_map.organizationweb.values()
+        | selectattr("major_proof_required") | list
+      }}
+    image_channels_major_proof_pull: true
+
+# The CLI keeps the live digest when the rendered image equals the
+# `com.docker.stack.image` label, so a hold moved outside Git would survive
+# the deploy and only fail the identity check after it. Refuse it before.
+- name: Read every application service before the stack mutation
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "organizationweb_{{ item }}"]
+  loop: [backend, postgres, rabbitmq, web]
+  register: organizationweb_services_before_deploy
+  changed_when: false
+  failed_when: false
+
+- name: Require every live application hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or item.stderr is search('(?i)(no such service|not found)')
+      - >-
+        item.rc != 0
+        or image_channels_map.organizationweb[item.item].mode != 'hold'
+        or (
+          (item.stdout | from_json | first).Spec.Labels | default({}, true)
+        ).get('com.docker.stack.image', '')
+        != image_channels_map.organizationweb[item.item].reference
+        or (item.stdout | from_json | first)
+        .Spec.TaskTemplate.ContainerSpec.Image
+        == image_channels_map.organizationweb[item.item].spec_exact
+    fail_msg: >-
+      Service {{ item.item }} runs an image outside its unchanged hold entry,
+      or could not be read. Record the live image in
+      config/image-channels.yml before deploying.
+    quiet: true
+  loop: "{{ organizationweb_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Deploy only the independent application stack
   community.docker.docker_stack:
     name: organizationweb
@@ -77,7 +97,9 @@
     compose: [/opt/dockerswarm/organizationweb/stack.yml]
     detach: true
     prune: true
-    resolve_image: never
+    # Unchanged rendered image: keep the live digest. Changed or new: resolve
+    # the channel (or the hold digest) against the registry.
+    resolve_image: changed
 
 - name: Require all four replicas and no extra service
   ansible.builtin.command:
@@ -97,6 +119,128 @@
     ]
   retries: 36
   delay: 10
+
+- name: Inspect the converged application services
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "organizationweb_{{ item }}"]
+  loop: [backend, postgres, rabbitmq, web]
+  register: organizationweb_service_inspections
+  changed_when: false
+
+- name: Require every live image to match its reviewed channel entry
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          image_channels_map.organizationweb[item.item].mode == 'hold'
+          and
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+          == image_channels_map.organizationweb[item.item].spec_exact
+        )
+        or
+        (
+          image_channels_map.organizationweb[item.item].mode == 'channel'
+          and
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+          is match(image_channels_map.organizationweb[item.item].spec_pattern)
+        )
+    fail_msg: >-
+      The live image of {{ item.item }} differs from its channel entry.
+  loop: "{{ organizationweb_service_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect the exact image every application service runs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - >-
+        {{
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+        }}
+  loop: "{{ organizationweb_service_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: organizationweb_image_inspections
+  changed_when: false
+
+# Una entrada `hold` en su referencia base conserva la revision del release
+# del catalogo; una entrada de canal solo exige una revision OCI de 40 hex,
+# que queda registrada abajo como auditoria de lo desplegado.
+- name: Require the published Linux amd64 images
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Os == 'linux'
+      - (item.stdout | from_json | first).Architecture == 'amd64'
+      - >-
+        (
+          image_channels_map.organizationweb[item.item.item].repository_familiar
+          ~ '@'
+          ~ (
+            (item.item.stdout | from_json | first)
+            .Spec.TaskTemplate.ContainerSpec.Image
+            | regex_replace('^.*@', '')
+          )
+        ) in (item.stdout | from_json | first).RepoDigests
+      - >-
+        item.item.item not in ['backend', 'web'] or (
+          (item.stdout | from_json | first)
+          .Config.Labels['org.opencontainers.image.revision']
+          is match('^[a-f0-9]{40}$')
+        )
+      - >-
+        item.item.item not in ['backend', 'web']
+        or not image_channels_map.organizationweb[item.item.item].is_baseline
+        or (
+          (item.stdout | from_json | first)
+          .Config.Labels['org.opencontainers.image.revision']
+          == organizationweb.release
+        )
+    fail_msg: Image identity or architecture differs from the reviewed release.
+  loop: "{{ organizationweb_image_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Collect the live image and revision of every application service
+  ansible.builtin.set_fact:
+    organizationweb_observed_images: >-
+      {{
+        organizationweb_observed_images | default({})
+        | combine({
+          item.item.item: {
+            'image': (item.item.stdout | from_json | first)
+              .Spec.TaskTemplate.ContainerSpec.Image,
+            'revision': (item.stdout | from_json | first)
+              .Config.Labels['org.opencontainers.image.revision']
+              | default('', true)
+          }
+        })
+      }}
+  loop: "{{ organizationweb_image_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Record the live application images observed by this apply
+  ansible.builtin.copy:
+    dest: /opt/dockerswarm/organizationweb/observed-images.yml
+    content: |
+      {{
+        {
+          'schema_version': 1,
+          'stack': 'organizationweb',
+          'source_revision':
+            deployment_metadata_source_revision | default(''),
+          'images': organizationweb_observed_images,
+        } | to_nice_yaml(indent=2, sort_keys=true)
+      }}
+    owner: root
+    group: root
+    mode: '0644'
 
 - name: Index the exact external secret identities
   ansible.builtin.set_fact:

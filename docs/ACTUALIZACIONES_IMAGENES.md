@@ -1,12 +1,13 @@
 # Guía práctica para actualizar una imagen de workload
 
-Esta guía explica el camino completo para promover una imagen Docker de forma
-repetible. Está escrita para alguien que sabe programar, pero aún no conoce
-Docker Swarm, Ansible o la política de este repositorio.
+Esta guía explica cómo cambia la imagen que ejecuta un servicio. Está escrita
+para alguien que sabe programar, pero aún no conoce Docker Swarm, Ansible o la
+política de este repositorio.
 
-El objetivo no es desplegar «lo último» a ciegas. El objetivo es que el
-servidor ejecute un contenido exacto que una persona haya inspeccionado y que
-pueda reconstruirse desde un commit revisado.
+Desde la decisión del owner del 2026-09-11, el objeto revisado en Git es el
+**canal** de cada imagen, no su digest. Las imágenes propias siguen `:latest`;
+las bases de datos de terceros siguen un canal de versión mayor. El modelo
+completo, con interruptor y rollback, está en [AUTOUPDATE.md](AUTOUPDATE.md).
 
 ## Ideas mínimas
 
@@ -17,56 +18,47 @@ Una imagen Docker tiene dos identificadores que cumplen funciones distintas:
 - Un digest, como `sha256:...`, identifica exactamente el contenido. Si el
   contenido cambia, también cambia el digest.
 
-Por eso una etiqueta no es evidencia suficiente para producción. Puede apuntar
-a una imagen distinta entre la revisión y el despliegue. Un digest sí permite
-repetir y auditar el despliegue.
+Un canal es una etiqueta revisada (`repo:tag`). Swarm la convierte en un
+digest al desplegar, y el servicio conserva ese digest hasta el siguiente
+cambio. Un hold (`repo:tag@sha256:...`) fija un digest concreto y nunca se
+actualiza solo.
 
-En este repositorio hay dos contratos para Alberto:
+En este repositorio hay dos ficheros relevantes:
 
 - `config/services.yml` conserva el digest histórico de la migración. No se
   cambia para una actualización normal porque su hash está ligado a evidencia
   de restauración.
-- `config/workload-image-updates.yml` contiene la excepción operativa. Su
-  `tracked_reference` indica qué etiqueta se consulta y
-  `approved_runtime_reference` registra el digest concreto aprobado.
+- `config/image-channels.yml` declara, para cada servicio renderizado, su
+  canal o su hold, su clase y si se actualiza automáticamente.
 
-El preflight consulta Docker Hub, convierte la etiqueta en
-`latest@sha256:...` y exige que coincida byte por byte con el digest aprobado.
-Si la etiqueta se movió, el proceso se detiene antes de descargar una imagen o
-de modificar el stack.
-
-## Actualizar Alberto paso a paso
+## Actualizar un servicio paso a paso
 
 Haz todo en una rama y desde una copia limpia de este repositorio. No ejecutes
 un apply para «probar»: el dry-run es el primer control real.
 
-1. Averigua qué contenido publica actualmente la etiqueta, sin descargarlo:
+1. Comprueba que el canal existe y publica `linux/amd64`, sin descargarlo:
 
    ```bash
-   docker buildx imagetools inspect \
-     --format '{{json .Manifest}}' \
-     docker.io/hgarciaalberto/personal-website:latest
+   docker buildx imagetools inspect docker.io/apptolast/kropia-web:latest
    ```
 
-   Guarda el valor `digest` de la salida. Debe tener el formato
-   `sha256:` seguido de 64 caracteres hexadecimales.
+2. Revisa el cambio de la aplicación o de la imagen de terceros: repositorio
+   de origen, dependencias, notas de seguridad y, si tiene estado, sus
+   migraciones. Este juicio humano no lo sustituye ningún script.
 
-2. Revisa el cambio de la aplicación antes de aprobarlo. Comprueba el
-   repositorio de origen, las dependencias y las notas de seguridad. Este es
-   un juicio humano deliberado: ningún script puede determinar si una nueva
-   versión cumple la intención del servicio.
+3. En `config/image-channels.yml`, cambia solo la entrada del servicio:
+   `reference` al canal (`repo:tag`) o a un hold (`repo:tag@sha256:...`), y
+   `autoupdate` a `true` únicamente si debe seguir el canal por sí solo. El
+   validador rechaza otro repositorio, otro tag para imágenes propias, un
+   tag distinto del de la tabla de versiones mayores y un digest sin tag que
+   no sea exactamente el baseline.
 
-3. En `config/workload-image-updates.yml`, reemplaza únicamente el digest de
-   `approved_runtime_reference`. Conserva el prefijo exacto
-   `docker.io/hgarciaalberto/personal-website:latest@sha256:`. No cambies
-   `tracked_reference`, el servicio, el componente ni el digest histórico de
-   `config/services.yml` durante una actualización normal.
+4. Si el servicio tiene datos, documenta antes un volcado lógico: no hay
+   copia fuera del host (STOP gate 5).
 
-4. Describe el motivo y el digest nuevo en `CHANGELOG.md`, bajo
-   `[Unreleased]`. El diff debe permitir a otra persona saber qué se aprobó y
-   por qué.
+5. Describe el motivo en `CHANGELOG.md`, bajo `[Unreleased]`.
 
-5. Ejecuta las compuertas locales, en este orden:
+6. Ejecuta las compuertas locales, en este orden:
 
    ```bash
    ./scripts/bootstrap-tooling.sh
@@ -74,15 +66,11 @@ un apply para «probar»: el dry-run es el primer control real.
    ./scripts/lint.sh
    ```
 
-   No inventes flags para ignorar un fallo. Si el contrato de la imagen falla,
-   el digest, el tag o el alcance de la excepción ya no coinciden. Corrige el
-   cambio o vuelve a revisar la versión antes de continuar.
+   No inventes flags para ignorar un fallo.
 
-6. Revisa el diff, crea el commit y abre un PR. La revisión debe confirmar que
-   solo se autorizó el servicio previsto y que el digest aprobado es el que
-   inspeccionaste.
+7. Revisa el diff, crea el commit y abre un PR.
 
-7. Tras el merge y con el worktree limpio, ejecuta primero el dry-run humano:
+8. Tras el merge y con el worktree limpio, ejecuta primero el dry-run humano:
 
    ```bash
    ./scripts/deploy-ansible.sh \
@@ -91,13 +79,10 @@ un apply para «probar»: el dry-run es el primer control real.
      --ask-become-pass
    ```
 
-   El dry-run consulta el registro y muestra el digest aprobado. No descarga
-   imágenes ni modifica Swarm. Si Docker Hub ya movió `latest`, fallará: vuelve
-   al paso 1 y prepara una aprobación nueva; nunca despliegues el digest que
-   aparezca por sorpresa.
+   El preflight consulta el registro y muestra el digest actual de cada canal
+   del stack. No descarga imágenes ni modifica Swarm.
 
-8. Solo después de revisar ese resultado, una persona ejecuta el apply
-   manual con los demás STOP gates satisfechos:
+9. Una persona ejecuta el apply con los demás STOP gates satisfechos:
 
    ```bash
    ./scripts/deploy-ansible.sh \
@@ -106,43 +91,35 @@ un apply para «probar»: el dry-run es el primer control real.
      --ask-become-pass
    ```
 
-   El preflight descarga el digest aprobado, comprueba que la imagen local
-   expone ese mismo digest y entrega exactamente esa referencia a Swarm.
+   El stack se despliega con `resolve_image: changed`: solo los servicios
+   cuya entrada cambió consultan el registro; los demás conservan su digest.
 
-9. Comprueba el servicio, sus réplicas, la ruta HTTPS, los logs y las alertas.
-   Después repite el playbook: un segundo apply debe converger sin cambios.
+10. Comprueba el servicio, sus réplicas, la ruta HTTPS, los logs y
+    `observed-images.yml`. Después repite el playbook: un segundo apply debe
+    converger sin cambios.
 
-## Qué no automatizar
+## Qué sigue sin automatizarse
 
-No añadas un cron, webhook, watcher de Docker Hub ni un pipeline que ejecute
-Ansible automáticamente. Un push externo no debe poder iniciar un despliegue.
-La etiqueta solo sirve para detectar si el contenido aprobado sigue disponible;
-la autorización es el digest versionado y revisado en Git.
+Un push a Docker Hub puede cambiar el digest de un servicio con
+`autoupdate: true`, pero solo a través del vigilante de canales revisado en
+este repositorio, filtrado por la etiqueta `apptolast.autoupdate=true`. Nada
+externo ejecuta Ansible: `ansible-playbook` contra el clúster real sigue
+siendo una acción humana, y ningún webhook, cron o pipeline puede iniciarlo.
 
 Tampoco modifiques `config/services.yml` para esquivar el contrato. Ese
-catálogo pertenece a la evidencia de migración. La excepción operativa existe
-precisamente para mantener separados el historial y una actualización
-revisada.
+catálogo pertenece a la evidencia de migración.
 
-## Aplicar el patrón a otro servicio
+## Añadir un servicio nuevo
 
-No copies esta excepción sin diseño. Para añadir otro caso, sigue este orden:
-
-1. Decide si realmente necesita una etiqueta mutable. La respuesta normal es
-   no: un digest fijado es más sencillo y seguro.
-2. Si hay una razón revisada, añade una entrada explícita que ligue servicio,
-   componente, etiqueta permitida, digest de base y digest aprobado.
-3. Amplía los validadores para que rechacen otra clave, otro repositorio, otro
-   tag, un digest mal formado o una segunda entrada sin aprobación explícita.
-4. Haz que el dry-run consulte el descriptor y compare el resultado con el
-   digest versionado. El apply debe reutilizar exactamente esa comparación y
-   verificar la identidad de la imagen local tras el pull.
-5. Añade pruebas negativas para cada rechazo nuevo y actualiza la
-   documentación antes de pedir revisión.
-
-El principio es general: los datos que vienen de una red son observaciones,
-no autorizaciones. La autorización debe vivir en un cambio revisado y el
-despliegue debe comprobar que ambas cosas coinciden.
+1. Añade su baseline revisado al catálogo que le corresponda.
+2. Añade una entrada en `config/image-channels.yml`. Sin ella,
+   `scripts/validate-image-channels.py` falla porque el stack renderizado
+   tiene un servicio no listado.
+3. Si es una base de datos, una cola o el ingress, añade antes su canal
+   mayor a la tabla del validador, con prueba negativa.
+4. Renderiza `apptolast.autoupdate` en `deploy.labels` desde la entrada y
+   exige `failure_action: rollback`, `monitor` y healthcheck si va a
+   actualizarse solo.
 
 ## Problemas frecuentes
 
@@ -150,22 +127,22 @@ despliegue debe comprobar que ambas cosas coinciden.
 
 | Señal | Significado | Acción correcta |
 | --- | --- | --- |
-| El digest remoto no coincide | `latest` cambió tras la revisión | Detén el despliegue y repite la aprobación. |
-| El marker de restore no coincide con el catálogo | Se alteró el baseline histórico durante una actualización | Restaura el baseline y actualiza solo `approved_runtime_reference`; nunca edites ni reemitas el marker para una actualización de imagen. |
+| `repository differs from its baseline` | La entrada apunta a otra imagen | Corrige la entrada; el baseline no se toca para una actualización. |
+| `not the reviewed major channel` | Tag de base de datos distinto del revisado | Usa el tag de la tabla; cambiar de mayor exige migración y revisión de la tabla. |
+| `rendered services differ from the channel map` | Servicio renderizado sin entrada | Añade su entrada o su exclusión revisada. |
+| El spec vivo no coincide tras el apply | Un hold fue cambiado fuera de Ansible | Investiga quién lo cambió; no relajes la comprobación. |
+| El marker de restore no coincide con el catálogo | Se alteró el baseline histórico | Restaura el baseline; nunca edites ni reemitas el marker para una actualización de imagen. |
 | Falta `docker buildx` | Falta el plugin fijado por el host | Revisa el contrato de paquetes; no sustituyas el comando. |
-| Falla el SLO del snapshot Ubuntu | La revisión de paquetes está vencida | Promueve un snapshot real tras verificar índices y pins. |
-| Hay un marker en `/run/lock` | Una operación previa no cerró limpiamente | Sigue el recovery documentado y conserva evidencia. |
 | El writer rechaza el worktree | El estado no está revisado/commiteado | Revisa y crea el commit; no uses bypasses. |
 
 <!-- markdownlint-enable MD013 -->
 
-## Checklist de una promoción segura
+## Checklist de un cambio seguro
 
-- [ ] El digest fue observado y revisado por una persona.
-- [ ] `approved_runtime_reference` contiene exactamente ese digest.
-- [ ] El diff no amplía el servicio, componente, repositorio ni etiqueta.
+- [ ] La entrada cambia solo el servicio previsto.
+- [ ] El canal existe con `linux/amd64` y la versión fue revisada.
+- [ ] Si hay datos, el volcado lógico está documentado.
 - [ ] Bootstrap, validación y lint pasan sin omitir compuertas.
-- [ ] El dry-run muestra el mismo digest y no reporta cambios inesperados.
-- [ ] El commit y la revisión están listos antes del apply manual.
+- [ ] El dry-run muestra el digest del canal y ningún cambio inesperado.
 - [ ] La verificación posterior confirma el servicio y un segundo apply
       converge.

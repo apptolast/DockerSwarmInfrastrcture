@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   traefik:
-    image: "{{ edge_traefik_image }}"
+    image: "{{ image_channels_map.edge['traefik'].reference }}"
     user: "{{ edge_traefik_runtime_uid }}:{{ edge_traefik_runtime_gid }}"
     command:
       - --configFile=/etc/traefik.yml
@@ -67,6 +67,8 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      labels:
+        apptolast.autoupdate: "{{ image_channels_map.edge['traefik'].label }}"
       placement:
         constraints:
           - node.role == manager

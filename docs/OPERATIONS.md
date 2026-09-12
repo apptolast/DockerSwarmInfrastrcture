@@ -110,13 +110,16 @@ helper del mismo commit registrado. Un reboot mata procesos pero elimina
 
 ## Secuencia de cambio
 
-1. Actualizar contratos/digests en una rama. La única etiqueta mutable
-   permitida es la excepción `tracked-tag` exacta de Alberto declarada en
-   `config/workload-image-updates.yml`; `config/services.yml` conserva el
-   digest ligado al marcador de restauración. El preflight de una ejecución
-   real consulta el descriptor de la etiqueta en Docker Hub, exige que sea el
-   `approved_runtime_reference` versionado y solo entonces descarga ese digest
-   exacto antes de renderizar el stack.
+1. Actualizar contratos en una rama. Lo que ejecuta cada servicio se declara
+   en `config/image-channels.yml` como canal revisado (`repo:tag`) o como
+   hold (`repo:tag@sha256:...`); `config/services.yml` conserva el digest
+   ligado al marcador de restauración y no se edita para actualizar
+   imágenes. El preflight de una ejecución real resuelve cada canal del
+   stack a su digest actual, exige `linux/amd64` y lo descarga antes de mutar
+   el stack. El CLI vuelve a resolver el canal durante el deploy, así que el
+   apply exige después que cada servicio ejecute ese digest verificado o
+   conserve el que ya tenía. OrganizationWeb, fuera del preflight, verifica la
+   imagen desplegada. Ver [AUTOUPDATE.md](AUTOUPDATE.md).
 2. Ejecutar validación, lint y escaneo de secretos.
 3. Revisar y hacer commit; ningún writer acepta worktree sucio.
 4. Crear el plan Terraform firmado con locking/state proof válidos.
@@ -127,12 +130,19 @@ helper del mismo commit registrado. Un reboot mata procesos pero elimina
 8. Validar firewall, servicios, TLS, DNS, logs, backups y unidades fallidas.
 9. Registrar aceptación y rollback.
 
-La política `tracked-tag` no instala un watcher, un webhook ni un temporizador.
-El `--check` consulta y muestra el digest aprobado sin descargarlo; el apply
-solo continúa si la etiqueta sigue apuntando a ese contenido versionado.
-Conforme al límite de seguridad vigente, `ansible-playbook` contra el clúster
-real sigue siendo una acción humana y ningún push a Docker Hub puede iniciarlo
-por sí solo.
+Por decisión del owner (2026-09-11), el objeto revisado es el canal, no el
+digest. Los stacks se despliegan con `resolve_image: changed`: un servicio
+cuya imagen renderizada no cambió conserva su digest vivo, incluido el que
+haya aplicado el vigilante de canales, de modo que el paso 7 (`changed=0`)
+sigue valiendo para un segundo apply consecutivo desde el mismo commit. Tras
+una actualización del vigilante, el apply siguiente reescribe
+`observed-images.yml` (`changed` en esa tarea, no en `docker_stack`). El
+primer apply tras introducir los canales informa `changed` en `docker_stack`
+por la etiqueta nueva `apptolast.autoupdate`, sin reiniciar tareas. Solo un
+servicio con `autoupdate: true` puede cambiar de
+digest entre applies, y solo mediante ese vigilante revisado en este
+repositorio. `ansible-playbook` contra el clúster real sigue siendo una
+acción humana y ningún push a Docker Hub puede iniciarlo por sí solo.
 
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.

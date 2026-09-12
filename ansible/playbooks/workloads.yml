@@ -10,7 +10,6 @@
     - ../../config/capacity.yml
     - ../../config/platform.yml
     - ../../config/services.yml
-    - ../../config/workload-image-updates.yml
     - ../../config/minecraft.yml
     - ../../stacks/workloads/secrets.yml
     - ../group_vars/all.yml
@@ -22,7 +21,7 @@
         - capacity
     - role: minecraft_preflight
     - role: image_preflight
-      image_preflight_include_tracked_updates: true
+      image_preflight_channel_stacks: [workloads]
     - role: workloads_runner_image
     - role: workloads
     - role: deployment_metadata

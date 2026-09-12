@@ -10,6 +10,33 @@
         ).organizationweb
     fail_msg: OrganizationWeb inputs differ from the versioned catalog.
 
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
+- name: Require exactly the four OrganizationWeb channel entries
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_channels_map.organizationweb.keys() | list | sort
+        == ["backend", "postgres", "rabbitmq", "web"]
+    fail_msg: OrganizationWeb channel entries differ from the stack contract.
+    quiet: true
+
+- name: Bind every OrganizationWeb channel to its catalog image
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.value.baseline
+        == {"catalog": "organizationweb", "component": item.key}
+    fail_msg: >-
+      The image channel of {{ item.key }} is not bound to its reviewed
+      OrganizationWeb catalog image.
+    quiet: true
+  loop: "{{ image_channels_map.organizationweb | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Validate the independent catalog and exact Docker format locally
   ansible.builtin.command:
     argv:

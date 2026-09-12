@@ -80,8 +80,64 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   autonomía: `apply`/`ansible-playbook` contra el host real siguen siendo
   100% manuales.
 
+- Tests negativos con Ansible real (`tests/ansible_task_harness.py`) para las
+  comprobaciones de imagen viva de `edge`, `workloads`, `organizationweb` y
+  `observability`, la prueba de versión mayor y las entradas de canal de
+  OrganizationWeb y edge. `tests/test_edge_contract.py` ejecuta
+  `scripts/validate-contract.py` sobre copias mutadas de sus entradas, y
+  nuevos tests cubren las ramas de canal de `validate-organizationweb.py` y
+  `validate-observability.py`.
+
 ### Changed
 
+- Decisión explícita del owner (2026-09-11): todo servicio Swarm, actual o
+  futuro, se actualiza desde canales revisados en Git (`:latest` para las
+  imágenes propias, canal de versión mayor para las bases de datos de
+  terceros) en lugar de un digest revisado. La regla de oro pasa a leerse
+  como «commit revisado que fija canales»; la reconstrucción descarga la
+  cabeza actual de cada canal. Modelo, interruptor y rollback en
+  [`docs/AUTOUPDATE.md`](docs/AUTOUPDATE.md).
+- Nuevo `config/image-channels.yml` (esquema v1) como única fuente de lo que
+  ejecuta cada servicio de `edge`, `workloads`, `organizationweb` y
+  `observability`. Las entradas parten del inventario vivo del 2026-09-12:
+  los once servicios sin estado que ya ejecutan la cabeza de su tag
+  (`kropia`, `minecraft`, `minecraft-stats`, `passbolt`, `portfolio-alberto`,
+  `portfolio-pablo`, `selenium`, `shlink`, `organizationweb` `backend`/`web`
+  y Traefik en `v3`) adoptan ese canal con `autoupdate: false`;
+  `redis-coordinator` vuelve en hold a los bytes revisados de 7.2.11 tras una
+  actualización no revisada a `redis:latest` 8.x sin volumen; el resto queda
+  en hold con la referencia renderizada hoy.
+- `config/workload-image-updates.yml` desaparece y
+  `scripts/resolve-tracked-image.py`
+  pasa a `scripts/resolve-image-channel.py`, que toma el conjunto de canales
+  del fichero nuevo y ya no exige un digest aprobado en Git.
+- Nuevo `scripts/validate-image-channels.py`, ejecutado por
+  `scripts/validate-iac.sh`: esquema estricto sin claves duplicadas,
+  repositorio igual al baseline, tabla de canales mayores ligada a la mayor
+  del baseline, cobertura exacta de los stacks renderizados, etiqueta
+  `apptolast.autoupdate` coherente y rollback, `monitor` y healthcheck
+  obligatorios para quien se actualice solo.
+- Los stacks `edge`, `workloads`, `organizationweb` y `observability` se
+  despliegan con `resolve_image: changed` y renderizan imagen y etiqueta
+  desde el mapa de canales. Las comprobaciones posteriores aceptan un digest
+  del propio `repo:tag` para un canal y exigen la identidad exacta para un
+  hold; cada apply registra las imágenes vivas en `observed-images.yml`.
+  OrganizationWeb ya no descarga sus imágenes antes de desplegar: verifica
+  plataforma, digest y revisión OCI de la imagen que cada servicio ejecuta.
+- El preflight de imágenes recorre N entradas en lugar de la entrada única de
+  Alberto, y el hash de contrato de `deploy-ansible.sh` y
+  `validate-deployment-metadata.py` incluye `config/image-channels.yml`.
+- `edge`, `workloads`, `observability` y `organizationweb` leen el spec vivo
+  antes de `docker stack deploy` y se detienen si un hold sin cambios ejecuta
+  otra imagen (movida fuera de Git), en lugar de fallar tras mutar. Tras el
+  deploy, un canal de `edge`, `workloads` u `observability` debe ejecutar el
+  digest que resolvió y verificó el preflight o el que ya tenía el servicio:
+  el CLI vuelve a resolver el canal al desplegar.
+- `docs/AUTOUPDATE.md` y `docs/OPERATIONS.md` documentan el inventario previo
+  al primer apply, el `changed` esperado en `docker_stack` por la etiqueta
+  nueva `apptolast.autoupdate` y que `observed-images.yml` cambia tras una
+  actualización del vigilante; `changed=0` se exige al segundo apply
+  consecutivo.
 - `actions/checkout` pasa a v7.0.1, fijado por SHA; el comentario de versión
   va en su propia línea para respetar las 80 columnas de yamllint.
 - El runner de n8n usa `uuid` 14.0.2 (ESM, cargado con `require()` en
@@ -198,6 +254,24 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Un hold `stateful-major` que no sea el baseline exacto prueba su versión
+  mayor antes de mutar, leyendo `PG_MAJOR`, `REDIS_VERSION`,
+  `RABBITMQ_VERSION` o la etiqueta OCI de versión de Traefik de la imagen
+  descargada: el tag de un hold es solo texto y no liga el digest.
+- `workloads` se detiene si el tag local `apptolast/n8n-runners:src-<sha256>`
+  existe en Docker Hub, porque `resolve_image: changed` fijaría los bytes
+  remotos en lugar de la build local.
+- Registro de la decisión del owner (2026-09-11) que invierte la política
+  anterior contra vigilantes de Docker Hub: un servicio con
+  `autoupdate: true` podrá cambiar de digest sin un apply humano. Riesgos
+  aceptados y pendientes de confirmar en el PR del vigilante: sin backups
+  fuera del host (STOP gate 5) las aplicaciones aplican migraciones de
+  esquema solas; el vigilante necesitará el socket Docker de escritura en el
+  único manager; sin protección de rama, un merge a `main` de una aplicación
+  propia llega a producción. Como contención, un digest sin tag solo se
+  acepta como hold exacto del baseline y nunca con `autoupdate: true`, las
+  bases de datos solo aceptan su canal mayor revisado y el socket Docker
+  solo se permite en el stack `autoupdater`.
 - Promueve el snapshot Ubuntu a `20260906T000000Z`, con sus cuatro índices
   InRelease verificados mediante la clave de archivo Ubuntu y simulación APT
   de los trece paquetes Ubuntu fijados. Actualiza curl, gpg, AppArmor y

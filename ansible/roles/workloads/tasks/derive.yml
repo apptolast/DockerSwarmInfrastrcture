@@ -1,4 +1,8 @@
 ---
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
 - name: Validate top-level workload inputs
   ansible.builtin.assert:
     that:
@@ -30,42 +34,11 @@
         workloads_edge_networks.values() | list | unique | length == 8
       - workloads_secret_catalog_version | int == 1
       - workloads_secret_version is match("^v[1-9][0-9]*$")
-      - workload_image_update_schema_version is integer
-      - workload_image_update_schema_version == 1
+      - image_channels_map.workloads is mapping
+      - image_channels_exclusions.workloads == ["n8n-runners"]
       - >-
-        workload_image_updates | length == 1
-      - (workload_image_updates | first) is mapping
-      - >-
-        (workload_image_updates | first).keys() | list | sort
-        == [
-          "approved_runtime_reference",
-          "catalog_reference",
-          "catalog_service",
-          "component",
-          "swarm_service",
-          "tracked_reference",
-          "update_policy"
-        ]
-      - >-
-        (workload_image_updates | first).catalog_service
-        == "personal-website-alberto"
-      - (workload_image_updates | first).component == "app"
-      - (workload_image_updates | first).swarm_service == "portfolio-alberto"
-      - >-
-        (workload_image_updates | first).catalog_reference
-        == "docker.io/hgarciaalberto/personal-website@sha256:"
-        ~ "b0ce681920843501df35793def9fedd1"
-        ~ "011b44626c5e8b543ef76209f911e2c3"
-      - >-
-        (workload_image_updates | first).tracked_reference
-        == "docker.io/hgarciaalberto/personal-website:latest"
-      - >-
-        (workload_image_updates | first).approved_runtime_reference
-        is match(
-          "^docker[.]io/hgarciaalberto/personal-website:latest"
-          ~ "@sha256:[a-f0-9]{64}$"
-        )
-      - (workload_image_updates | first).update_policy == "tracked-tag"
+        (image_channels_map.workloads.keys() | list + ["n8n-runners"]) | sort
+        == workloads_expected_stack_services | sort
       - >-
         approved_services | map(attribute="id") | list | sort
         ==
@@ -139,135 +112,65 @@
     workloads_n8n_runner: >-
       {{ workloads_n8n_runner_description_raw.stdout | from_json }}
 
-- name: Derive the exact Alberto tracked-tag contract
-  ansible.builtin.set_fact:
-    workloads_portfolio_alberto_catalog_image: >-
-      {{
-        (workloads_approved_by_id["personal-website-alberto"].images
-        | selectattr("component", "equalto", "app") | first).reference
-      }}
-    workloads_portfolio_alberto_image_update: >-
-      {{ workload_image_updates | first }}
-
-- name: Enforce the preflighted Alberto runtime identity
+- name: Bind every workload image channel to its catalog baseline
   ansible.builtin.assert:
     that:
-      - >-
-        workloads_portfolio_alberto_catalog_image
-        == workloads_portfolio_alberto_image_update.catalog_reference
-      - >-
-        workloads_portfolio_alberto_image_update.catalog_service
-        == "personal-website-alberto"
-      - workloads_portfolio_alberto_image_update.component == "app"
-      - >-
-        workloads_portfolio_alberto_image_update.swarm_service
-        == "portfolio-alberto"
-      - >-
-        workloads_portfolio_alberto_image_update.tracked_reference
-        == "docker.io/hgarciaalberto/personal-website:latest"
-      - >-
-        workloads_portfolio_alberto_image_update.approved_runtime_reference
-        is match(
-          "^docker[.]io/hgarciaalberto/personal-website:latest"
-          ~ "@sha256:[a-f0-9]{64}$"
-        )
-      - >-
-        workloads_portfolio_alberto_image_update.update_policy
-        == "tracked-tag"
+      - item.key in image_channels_map.workloads
+      - image_channels_map.workloads[item.key].baseline == item.value
+    fail_msg: >-
+      The image channel of {{ item.key }} is not bound to its reviewed
+      catalog baseline.
+    quiet: true
+  loop: "{{ workloads_image_baselines | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# Channel entries are rendered as `repo:tag`; the Docker CLI resolves them
+# on deploy (`resolve_image: changed`). The preflight must still have proved
+# that every channel head exists as linux/amd64 before any stack mutation.
+- name: Require a preflighted head for every workload channel
+  ansible.builtin.assert:
+    that:
       - >-
         (workloads_render_only | bool)
         or
         (
-          image_preflight_tracked_runtime_references is mapping
+          image_preflight_channel_resolutions is mapping
           and
-          image_preflight_tracked_runtime_references.keys() | list
-          == [workloads_portfolio_alberto_image_update.tracked_reference]
-          and
-          image_preflight_tracked_runtime_references[
-            workloads_portfolio_alberto_image_update.tracked_reference]
-          == workloads_portfolio_alberto_image_update.approved_runtime_reference
+          image_channels_map.workloads.values()
+          | selectattr("mode", "equalto", "channel")
+          | map(attribute="reference") | list
+          | difference(image_preflight_channel_resolutions.keys() | list)
+          | length == 0
         )
     fail_msg: >-
-      Alberto's mutable runtime tag was not resolved to one preflighted digest.
+      A workload image channel was not resolved by the image preflight.
 
-- name: Derive workload images from the catalog and reviewed update policy
+- name: Derive workload images from the reviewed image channel map
   ansible.builtin.set_fact:
     workloads_images:
-      kropia: >-
-        {{
-          (workloads_approved_by_id["kropia"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
-      minecraft: >-
-        {{
-          (workloads_approved_by_id["minecraft"].images
-          | selectattr("component", "equalto", "server") | first).reference
-        }}
+      kropia: "{{ image_channels_map.workloads['kropia'].reference }}"
+      minecraft: "{{ image_channels_map.workloads['minecraft'].reference }}"
       minecraft_stats: >-
-        {{
-          (workloads_approved_by_id["minecraft-stats"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
-      n8n_app: >-
-        {{
-          (workloads_approved_by_id["n8n"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
-      n8n_database: >-
-        {{
-          (workloads_approved_by_id["n8n"].images
-          | selectattr("component", "equalto", "database") | first).reference
-        }}
+        {{ image_channels_map.workloads['minecraft-stats'].reference }}
+      n8n_app: "{{ image_channels_map.workloads['n8n'].reference }}"
+      n8n_database: "{{ image_channels_map.workloads['n8n-db'].reference }}"
       n8n_runner: >-
         {{ workloads_n8n_runner.image_reference }}
       n8n_redis: >-
-        {{
-          (workloads_approved_by_id["n8n"].images
-          | selectattr("component", "equalto", "workflow-cache")
-          | first).reference
-        }}
-      n8n_browser: >-
-        {{
-          (workloads_approved_by_id["n8n"].images
-          | selectattr("component", "equalto", "browser") | first).reference
-        }}
-      openclaw: >-
-        {{
-          (workloads_approved_by_id["openclaw-clean"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
-      passbolt_app: >-
-        {{
-          (workloads_approved_by_id["passbolt"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
+        {{ image_channels_map.workloads['redis-coordinator'].reference }}
+      n8n_browser: "{{ image_channels_map.workloads['selenium'].reference }}"
+      openclaw: "{{ image_channels_map.workloads['openclaw'].reference }}"
+      passbolt_app: "{{ image_channels_map.workloads['passbolt'].reference }}"
       passbolt_database: >-
-        {{
-          (workloads_approved_by_id["passbolt"].images
-          | selectattr("component", "equalto", "database") | first).reference
-        }}
+        {{ image_channels_map.workloads['passbolt-db'].reference }}
       portfolio_alberto: >-
-        {{
-          workloads_portfolio_alberto_image_update.tracked_reference
-          if workloads_render_only | bool
-          else image_preflight_tracked_runtime_references[
-            workloads_portfolio_alberto_image_update.tracked_reference]
-        }}
+        {{ image_channels_map.workloads['portfolio-alberto'].reference }}
       portfolio_pablo: >-
-        {{
-          (workloads_approved_by_id["personal-website-pablo"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
-      shlink_app: >-
-        {{
-          (workloads_approved_by_id["shlink"].images
-          | selectattr("component", "equalto", "app") | first).reference
-        }}
+        {{ image_channels_map.workloads['portfolio-pablo'].reference }}
+      shlink_app: "{{ image_channels_map.workloads['shlink'].reference }}"
       shlink_database: >-
-        {{
-          (workloads_approved_by_id["shlink"].images
-          | selectattr("component", "equalto", "database") | first).reference
-        }}
+        {{ image_channels_map.workloads['shlink-db'].reference }}
 
 - name: Derive bind paths only from the dataset catalog
   ansible.builtin.set_fact:
@@ -381,29 +284,8 @@
         workloads_n8n_runner.source_reference
         == workloads_n8n_runner_source_reference
       - >-
-        workloads_images.values() | list
-        | reject("equalto", workloads_images.n8n_runner)
-        | reject("equalto", workloads_images.portfolio_alberto)
-        | select("match", "^.+@sha256:[a-f0-9]{64}$")
-        | list | length == 13
-      - >-
         workloads_images.n8n_runner
         is match("^apptolast/n8n-runners:src-[a-f0-9]{64}$")
-      - >-
-        workloads_portfolio_alberto_catalog_image
-        == workloads_portfolio_alberto_image_update.catalog_reference
-      - >-
-        (
-          (workloads_render_only | bool)
-          and workloads_images.portfolio_alberto
-          == workloads_portfolio_alberto_image_update.tracked_reference
-        )
-        or
-        (
-          not (workloads_render_only | bool)
-          and workloads_images.portfolio_alberto
-          == workloads_portfolio_alberto_image_update.approved_runtime_reference
-        )
       - workloads_paths | length == 9
       - >-
         workloads_paths.values() | list
@@ -444,3 +326,36 @@
       selenium: "{{ workloads_images.n8n_browser }}"
       shlink: "{{ workloads_images.shlink_app }}"
       shlink-db: "{{ workloads_images.shlink_database }}"
+
+- name: Enforce that every rendered workload image is its channel entry
+  ansible.builtin.assert:
+    that:
+      - workloads_expected_images[item.key] == item.value.reference
+      - item.value.label in ["true", "false"]
+      - (item.value.mode == "hold") or (item.value.mode == "channel")
+      - item.value.mode == "channel" or not item.value.autoupdate
+    fail_msg: >-
+      The rendered image of {{ item.key }} differs from its reviewed channel
+      entry.
+    quiet: true
+  loop: "{{ image_channels_map.workloads | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# Hold entries must keep their exact reviewed identity in the live spec;
+# channel entries must run a digest of their own `repo:tag`. The local runner
+# image carries no registry digest and is compared exactly.
+- name: Derive the expected live image identity of every Swarm service
+  ansible.builtin.set_fact:
+    workloads_expected_spec_images: >-
+      {{
+        image_channels_map.workloads
+        | combine({
+          "n8n-runners": {
+            "mode": "hold",
+            "spec_exact": workloads_images.n8n_runner,
+            "spec_pattern":
+              "^" ~ (workloads_images.n8n_runner | regex_escape) ~ "$"
+          }
+        })
+      }}

@@ -9,12 +9,11 @@
   vars_files:
     - ../../config/platform.yml
     - ../../config/services.yml
-    - ../../config/workload-image-updates.yml
     - ../group_vars/all.yml
 
   roles:
     - role: operation_lock_guard
     - role: image_preflight
-      image_preflight_include_tracked_updates: true
+      image_preflight_channel_stacks: [edge, observability, workloads]
     - role: workloads_runner_image
     - role: deployment_metadata

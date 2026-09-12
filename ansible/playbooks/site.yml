@@ -12,7 +12,6 @@
     - ../../config/platform.yml
     - ../../config/services.yml
     - ../../config/organizationweb.yml
-    - ../../config/workload-image-updates.yml
     - ../../config/minecraft.yml
     - ../../stacks/workloads/secrets.yml
     - ../../stacks/observability/secrets.yml
@@ -28,7 +27,7 @@
     - role: platform
     - role: host_baseline
     - role: image_preflight
-      image_preflight_include_tracked_updates: true
+      image_preflight_channel_stacks: [edge, observability, workloads]
     - role: workloads_runner_image
     - role: edge
     - role: workloads

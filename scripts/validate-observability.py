@@ -277,6 +277,29 @@ def static_targets(job: dict[str, Any]) -> set[str]:
     }
 
 
+def load_observability_channels(
+    service_catalog: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return the reviewed channel entries of the observability stack."""
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    path = root / "scripts/validate-image-channels.py"
+    spec = importlib.util.spec_from_file_location("validate_image_channels", path)
+    if spec is None or spec.loader is None:
+        raise ContractError("cannot load the image channel validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        channel_map = module.load_channel_map(root, services=service_catalog)
+    except module.ChannelError as exc:
+        raise ContractError(f"image channel map: {exc}") from exc
+    entries = channel_map["services"].get("observability", {})
+    if set(entries) != EXPECTED_SERVICES:
+        raise ContractError("observability channel service set changed")
+    return entries
+
+
 def validate_stack(
     stack: dict[str, Any],
     service_catalog: dict[str, Any],
@@ -315,12 +338,21 @@ def validate_stack(
     services = stack.get("services")
     if not isinstance(services, dict) or set(services) != EXPECTED_SERVICES:
         raise ContractError("rendered observability service set changed")
+    channel_entries = load_observability_channels(service_catalog)
     for service_name, service in services.items():
-        expected_image = components_by_id[
-            IMAGE_COMPONENT[service_name]
-        ]["image"]
-        if service.get("image") != expected_image:
+        channel = channel_entries.get(service_name)
+        if channel is None or channel["baseline"] != {
+            "catalog": "observability",
+            "component": IMAGE_COMPONENT[service_name],
+        }:
+            raise ContractError(f"channel entry drift for {service_name}")
+        # The rendered image is the reviewed channel entry; the component
+        # catalog above stays the pinned baseline it is bound to.
+        if service.get("image") != channel["reference"]:
             raise ContractError(f"image drift for {service_name}")
+        labels = (service.get("deploy") or {}).get("labels") or {}
+        if labels.get("apptolast.autoupdate") != channel["label"]:
+            raise ContractError(f"autoupdate label drift for {service_name}")
         if service.get("ports", []) != []:
             raise ContractError(f"published port found in {service_name}")
         if service.get("network_mode") == "host":

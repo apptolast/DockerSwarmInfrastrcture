@@ -143,11 +143,23 @@ def main(argv=None):
             ).get_template("stack.yml.j2")
             import yaml
 
+            channel_spec = importlib.util.spec_from_file_location(
+                "validate_image_channels",
+                ROOT / "scripts/validate-image-channels.py",
+            )
+            channels = importlib.util.module_from_spec(channel_spec)
+            channel_spec.loader.exec_module(channels)
+            try:
+                image_channels_map = channels.load_channel_map(ROOT)["services"]
+            except channels.ChannelError as error:
+                raise capacity.CapacityError(f"image channel map: {error}") from error
             stacks = {
                 name: capacity.load_yaml(path)
                 for name, path in capacity.DEFAULT_STACKS.items()
             }
-            stacks["organizationweb"] = yaml.safe_load(template.render(**variables))
+            stacks["organizationweb"] = yaml.safe_load(
+                template.render(**variables, image_channels_map=image_channels_map)
+            )
             validate_profiles(base, profiles, stacks)
     except (capacity.CapacityError, ValueError, KeyError, TypeError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

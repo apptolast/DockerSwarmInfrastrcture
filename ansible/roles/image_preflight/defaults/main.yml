@@ -1,10 +1,12 @@
 ---
 image_preflight_expected_os: linux
 image_preflight_expected_architecture: amd64
-image_preflight_tag_digest_pattern: >-
-  :[^/@]+(@sha256:[a-f0-9]{64})$
-image_preflight_digest_replacement: "\\g<1>"
-image_preflight_excluded_catalog_images:
-  - service: n8n
-    component: runner
-image_preflight_include_tracked_updates: false
+# Stacks whose images are cached before any stack mutation. OrganizationWeb
+# verifies its own images after deploy and is deliberately not listed.
+image_preflight_stacks:
+  - edge
+  - observability
+  - workloads
+# Stacks whose channel entries are resolved against the registry in this
+# operation. Holds are always pulled by digest; channels only when listed.
+image_preflight_channel_stacks: []

@@ -3,7 +3,10 @@
 Este procedimiento aplica el catálogo `config/organizationweb.yml`, sin
 modificar `config/services.yml`, generaciones de datos legacy ni su marcador
 de restauración. El release publicado es el commit MVP que declara el catálogo;
-las dos imágenes deben conservar esa revisión OCI además de su digest.
+la imagen que ejecuta cada servicio la declara `config/image-channels.yml`.
+Mientras API y web estén en hold en su referencia base deben conservar esa
+revisión OCI; en su canal `:latest` basta una revisión OCI de 40 hex, que el
+apply registra en `observed-images.yml`.
 No incluye la feature 19 aún en desarrollo.
 
 ## Precondiciones y alcance

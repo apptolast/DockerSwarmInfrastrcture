@@ -126,22 +126,10 @@ IMAGE_CONTRACT = {
     "shlink": ("shlink", "app"),
     "shlink-db": ("shlink", "database"),
 }
-ALBERTO_CATALOG_REFERENCE = (
-    "docker.io/hgarciaalberto/personal-website@sha256:"
-    "b0ce681920843501df35793def9fedd1011b44626c5e8b543ef76209f911e2c3"
-)
-ALBERTO_TRACKED_REFERENCE = (
-    "docker.io/hgarciaalberto/personal-website:latest"
-)
-EXPECTED_IMAGE_UPDATE = {
-    "catalog_service": "personal-website-alberto",
-    "component": "app",
-    "swarm_service": "portfolio-alberto",
-    "catalog_reference": ALBERTO_CATALOG_REFERENCE,
-    "tracked_reference": ALBERTO_TRACKED_REFERENCE,
-    "update_policy": "tracked-tag",
-}
-IMAGE_UPDATE_KEYS = set(EXPECTED_IMAGE_UPDATE) | {"approved_runtime_reference"}
+# n8n-runners is built locally and is the only workload outside the channel
+# map (config/image-channels.yml); every other service renders its entry.
+CHANNEL_EXCLUDED_SERVICES = {"n8n-runners"}
+AUTOUPDATE_LABEL = "apptolast.autoupdate"
 CONFIG_SOURCE_BY_KEY = {
     "n8n_entrypoint": "n8n-entrypoint.sh",
     "n8n_runners_entrypoint": "n8n-runners-entrypoint.sh",
@@ -253,60 +241,48 @@ def find_image(
     return find_image_entry(services_by_id, service_id, component)["reference"]
 
 
-def validate_image_updates(
-    image_update_contract: dict[str, Any],
-    services_by_id: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-    if set(image_update_contract) != {
-        "workload_image_update_schema_version",
-        "workload_image_updates",
-    }:
-        raise ContractError("workload image update contract keys changed")
-    schema_version = image_update_contract[
-        "workload_image_update_schema_version"
-    ]
-    if type(schema_version) is not int or schema_version != 1:
-        raise ContractError("workload image update schema version changed")
-    updates = image_update_contract["workload_image_updates"]
-    if (
-        not isinstance(updates, list)
-        or len(updates) != 1
-        or not isinstance(updates[0], dict)
-    ):
-        raise ContractError("workload image update allowlist changed")
-    update = updates[0]
-    if set(update) != IMAGE_UPDATE_KEYS or any(
-        update.get(key) != value for key, value in EXPECTED_IMAGE_UPDATE.items()
-    ):
-        raise ContractError("workload image update allowlist changed")
-    approved_runtime_reference = update.get("approved_runtime_reference")
-    if not isinstance(approved_runtime_reference, str) or re.fullmatch(
-        re.escape(ALBERTO_TRACKED_REFERENCE) + r"@sha256:[a-f0-9]{64}",
-        approved_runtime_reference,
-    ) is None:
-        raise ContractError("tracked image runtime approval is invalid")
-    if IMAGE_CONTRACT.get(EXPECTED_IMAGE_UPDATE["swarm_service"]) != (
-        EXPECTED_IMAGE_UPDATE["catalog_service"],
-        EXPECTED_IMAGE_UPDATE["component"],
-    ):
-        raise ContractError("tracked image stack-to-catalog mapping changed")
+def load_channel_module() -> Any:
+    path = Path(__file__).with_name("validate-image-channels.py")
+    spec = importlib.util.spec_from_file_location("validate_image_channels", path)
+    if spec is None or spec.loader is None:
+        raise ContractError("cannot load the image channel validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    catalog_image = find_image_entry(
-        services_by_id,
-        EXPECTED_IMAGE_UPDATE["catalog_service"],
-        EXPECTED_IMAGE_UPDATE["component"],
-    )
-    if catalog_image["reference"] != EXPECTED_IMAGE_UPDATE["catalog_reference"]:
-        raise ContractError("tracked image catalog baseline changed")
-    if (
-        re.fullmatch(
-            r".+@sha256:[a-f0-9]{64}",
-            EXPECTED_IMAGE_UPDATE["catalog_reference"],
+
+def validate_image_channels(
+    channel_document: dict[str, Any],
+    service_catalog: dict[str, Any],
+    services_by_id: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Return the workload channel entries bound to their catalog baselines."""
+    channels = load_channel_module()
+    try:
+        channel_map = channels.derive_channels(
+            channel_document,
+            channels.load_baselines(
+                Path(__file__).resolve().parent.parent,
+                services=service_catalog,
+            ),
         )
-        is None
+    except channels.ChannelError as exc:
+        raise ContractError(f"image channel map: {exc}") from exc
+    entries = channel_map["services"].get("workloads", {})
+    if set(entries) != EXPECTED_STACK_SERVICES - CHANNEL_EXCLUDED_SERVICES:
+        raise ContractError("workload channel service set changed")
+    if set(channel_map["exclusions"].get("workloads", [])) != (
+        CHANNEL_EXCLUDED_SERVICES
     ):
-        raise ContractError("tracked image catalog baseline is not immutable")
-    return {EXPECTED_IMAGE_UPDATE["swarm_service"]: update}
+        raise ContractError("workload channel exclusions changed")
+    for stack_service, entry in entries.items():
+        catalog_id, component = IMAGE_CONTRACT[stack_service]
+        if entry["baseline"] != {"catalog": catalog_id, "component": component}:
+            raise ContractError(
+                f"channel-to-catalog mapping changed for {stack_service}"
+            )
+        find_image_entry(services_by_id, catalog_id, component)
+    return entries
 
 
 def secret_sources(service: dict[str, Any]) -> set[str]:
@@ -337,7 +313,7 @@ def bind_sources(service: dict[str, Any]) -> list[str]:
 def validate_stack(
     stack: dict[str, Any],
     service_catalog: dict[str, Any],
-    image_update_contract: dict[str, Any],
+    channel_document: dict[str, Any],
     secret_catalog: dict[str, Any],
     runner_metadata: dict[str, Any],
     platform: dict[str, Any],
@@ -349,8 +325,9 @@ def validate_stack(
     services_by_id = {item["id"]: item for item in approved}
     if set(services_by_id) != EXPECTED_APPROVED_IDS:
         raise ContractError("approved service scope changed")
-    updates_by_stack = validate_image_updates(
-        image_update_contract,
+    channels_by_service = validate_image_channels(
+        channel_document,
+        service_catalog,
         services_by_id,
     )
     services = stack.get("services")
@@ -360,13 +337,10 @@ def validate_stack(
     for stack_service, (catalog_id, component) in IMAGE_CONTRACT.items():
         catalog_image = find_image_entry(services_by_id, catalog_id, component)
         catalog_reference = catalog_image["reference"]
-        image_update = updates_by_stack.get(stack_service)
-        expected = (
-            image_update["tracked_reference"]
-            if image_update is not None
-            else catalog_reference
-        )
-        if stack_service == "n8n-runners":
+        channel = channels_by_service.get(stack_service)
+        service = services[stack_service]
+        deploy_labels = (service.get("deploy") or {}).get("labels") or {}
+        if stack_service in CHANNEL_EXCLUDED_SERVICES:
             if runner_metadata.get("source_reference") != catalog_reference:
                 raise ContractError("n8n runner audited source reference drift")
             expected = runner_metadata.get("image_reference")
@@ -379,15 +353,18 @@ def validate_stack(
                 is None
             ):
                 raise ContractError("n8n runner local image identity is invalid")
-        service = services[stack_service]
+            if deploy_labels.get(AUTOUPDATE_LABEL) not in (None, "false"):
+                raise ContractError(f"excluded service opts in: {stack_service}")
+        elif channel is None:
+            raise ContractError(f"channel entry missing for {stack_service}")
+        else:
+            # "Image drift" now means the rendered image differs from the
+            # reviewed channel entry, never from the historical digest.
+            expected = channel["reference"]
+            if deploy_labels.get(AUTOUPDATE_LABEL) != channel["label"]:
+                raise ContractError(f"autoupdate label drift for {stack_service}")
         if service.get("image") != expected:
             raise ContractError(f"image drift for {stack_service}")
-        if stack_service != "n8n-runners":
-            if image_update is None and re.fullmatch(
-                r".+@sha256:[a-f0-9]{64}",
-                expected,
-            ) is None:
-                raise ContractError(f"unpinned image for {stack_service}")
         if "env_file" in service:
             raise ContractError(f"env_file is forbidden for {stack_service}")
         if service.get("privileged") is True:
@@ -645,7 +622,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stack", type=Path, required=True)
     parser.add_argument("--services", type=Path, required=True)
-    parser.add_argument("--image-updates", type=Path, required=True)
+    parser.add_argument("--image-channels", type=Path, required=True)
     parser.add_argument("--secrets", type=Path, required=True)
     parser.add_argument("--platform", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
@@ -658,7 +635,7 @@ def main() -> int:
     try:
         stack = load_yaml(args.stack)
         services = load_yaml(args.services)
-        image_updates = load_unique_yaml(args.image_updates)
+        image_channels = load_unique_yaml(args.image_channels)
         secrets = load_yaml(args.secrets)
         platform = load_yaml(args.platform)
         approved = {item["id"]: item for item in services.get("approved_services", [])}
@@ -674,7 +651,7 @@ def main() -> int:
         validate_stack(
             stack,
             services,
-            image_updates,
+            image_channels,
             secrets,
             runner_metadata,
             platform,

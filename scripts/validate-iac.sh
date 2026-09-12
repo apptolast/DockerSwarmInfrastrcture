@@ -129,7 +129,7 @@ yamllint \
   config/minecraft.yml \
   config/platform.yml \
   config/services.yml \
-  config/workload-image-updates.yml \
+  config/image-channels.yml \
   migration/compose \
   stacks \
   tests/fixtures
@@ -175,6 +175,8 @@ scripts/validate-observability.sh
 scripts/validate-capacity.sh --reuse-rendered
 "${VENV_DIR}/bin/python" scripts/validate-organizationweb.py \
   --output .build/organizationweb/stack.yml
+"${VENV_DIR}/bin/python" scripts/validate-image-channels.py validate \
+  --build-dir .build
 "${VENV_DIR}/bin/python" scripts/validate-capacity-profiles.py
 scripts/backup-self-test.sh
 PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \

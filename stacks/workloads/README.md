@@ -8,19 +8,17 @@ OpenClaw, Kubernetes workloads and observability.
 
 The deployment role fails closed unless all of these conditions hold:
 
-1. Every external image and bind path is derived from
-   `config/services.yml`, where every remote source remains digest-pinned.
-   `config/workload-image-updates.yml` defines the sole runtime override:
-   `personal-website-alberto/app` may track its exact `latest` tag. During a
-   real image preflight, Ansible reads that tag's registry descriptor and
-   requires an exact match with the reviewed `approved_runtime_reference`.
-   It then pulls that exact `latest@sha256:...` reference and proves that the
-   local image exposes the same repository digest before rendering production.
-   Each deployment therefore uses an immutable, versioned content identity.
-   Keeping the override separate also preserves the service-catalog hash bound
-   to the restore marker. The private historical n8n runner digest is retained
-   as audited provenance, while its runtime image is built locally from the
-   repository context described below.
+1. Every bind path is derived from `config/services.yml`, where every
+   baseline image remains digest-pinned. The image each service runs comes
+   from `config/image-channels.yml`: a reviewed channel (`repo:tag`) or a
+   hold (`repo:tag@sha256:...`) bound to that baseline repository. During a
+   real image preflight, Ansible resolves every channel of the stack to its
+   current digest, requires linux/amd64 and proves the pulled image exposes
+   that repository digest before any stack mutation. Keeping the channel map
+   separate preserves the service-catalog hash bound to the restore marker.
+   The private historical n8n runner digest is retained as audited
+   provenance, while its runtime image is built locally from the repository
+   context described below; it is the only workload excluded from channels.
 2. Every external, versioned Docker Secret in `secrets.yml` exists with the
    installer contract labels.
 3. All eight dedicated external `apptolast-edge-<backend>` overlays exist as

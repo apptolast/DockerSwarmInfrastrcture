@@ -52,6 +52,24 @@ workloads_expected_stack_services:
   - shlink
   - shlink-db
 
+# Catalog baseline of every channel-managed workload service. n8n-runners is
+# excluded from channels: it is built locally from images/n8n-runners.
+workloads_image_baselines:
+  kropia: {catalog: kropia, component: app}
+  minecraft: {catalog: minecraft, component: server}
+  minecraft-stats: {catalog: minecraft-stats, component: app}
+  n8n: {catalog: n8n, component: app}
+  n8n-db: {catalog: n8n, component: database}
+  openclaw: {catalog: openclaw-clean, component: app}
+  passbolt: {catalog: passbolt, component: app}
+  passbolt-db: {catalog: passbolt, component: database}
+  portfolio-alberto: {catalog: personal-website-alberto, component: app}
+  portfolio-pablo: {catalog: personal-website-pablo, component: app}
+  redis-coordinator: {catalog: n8n, component: workflow-cache}
+  selenium: {catalog: n8n, component: browser}
+  shlink: {catalog: shlink, component: app}
+  shlink-db: {catalog: shlink, component: database}
+
 workloads_config_specs:
   - key: n8n_entrypoint
     source: n8n-entrypoint.sh

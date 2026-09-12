@@ -79,21 +79,21 @@ Minecraft no pasa por Traefik y su publicación TCP sigue desactivada.
 
 ## Workloads
 
-[`config/services.yml`](../config/services.yml) es la allowlist. Fija imágenes
-por digest, datasets, puertos, origen de evidencia y método de migración. La
-política operativa separada
-[`config/workload-image-updates.yml`](../config/workload-image-updates.yml)
-autoriza una única excepción mutable para `personal-website-alberto/app`: la
-referencia exacta de Docker Hub con `update_policy: tracked-tag`. El preflight
-la compara con `approved_runtime_reference`, un `latest@sha256:...` versionado
-y revisado, antes de renderizar un stack de producción. El servicio desplegado
-conserva así una identidad de contenido exacta. Separar ambos contratos
-preserva sin cambios el hash del catálogo ligado al marcador de restauración.
-La denylist completa se valida en CI y no puede aparecer en stacks.
+[`config/services.yml`](../config/services.yml) es la allowlist. Fija la
+imagen base por digest, datasets, puertos, origen de evidencia y método de
+migración. Lo que ejecuta cada servicio lo declara
+[`config/image-channels.yml`](../config/image-channels.yml): un canal
+revisado (`repo:tag`, `:latest` para imágenes propias y canal de versión
+mayor para bases de datos) o un hold (`repo:tag@sha256:...`), ligado a su
+baseline del catálogo. Separar ambos contratos preserva sin cambios el hash
+del catálogo ligado al marcador de restauración. La denylist completa se
+valida en CI y no puede aparecer en stacks.
 
-El render offline conserva `:latest` como representación declarativa. El modo
-`--check` sí consulta el registro de forma no mutante y exige el digest
-versionado, por lo que anticipa exactamente la identidad de un apply posterior.
+Los stacks se despliegan con `resolve_image: changed`: el CLI de Docker fija
+el digest actual de un canal al crearlo o cambiarlo y conserva el digest vivo
+cuando la entrada no cambia. El modo `--check` consulta el registro de forma
+no mutante y muestra el digest de cada canal. El modelo completo está en
+[AUTOUPDATE.md](AUTOUPDATE.md).
 
 `stacks/workloads` contiene bases, caches, runners y aplicaciones. Los
 instaladores de secrets comparan nombres e identidades HMAC contra manifests

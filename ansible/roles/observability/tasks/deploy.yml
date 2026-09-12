@@ -357,6 +357,64 @@
   environment: "{{ operation_lock_guard_environment }}"
   no_log: true
 
+# Same pre-mutation precondition as workloads: a hold moved outside Git
+# would survive the deploy because its rendered string is unchanged.
+- name: Read every observability service before the stack mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ observability_stack_name }}_{{ item.key }}"
+  loop: "{{ observability_expected_images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: observability_services_before_deploy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require every live observability hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or item.stderr is search("(?i)(no such service|not found)")
+      - >-
+        item.rc != 0
+        or image_channels_map.observability[item.item.key].mode != "hold"
+        or (
+          (item.stdout | from_json | first).Spec.Labels | default({}, true)
+        ).get("com.docker.stack.image", "")
+        != image_channels_map.observability[item.item.key].reference
+        or (item.stdout | from_json | first).
+        Spec.TaskTemplate.ContainerSpec.Image
+        == image_channels_map.observability[item.item.key].spec_exact
+    fail_msg: >-
+      Service {{ item.item.key }} runs an image outside its unchanged hold
+      entry, or could not be read. Record the live image in
+      config/image-channels.yml before deploying.
+    quiet: true
+  loop: "{{ observability_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Record the live image of every observability service before the deploy
+  ansible.builtin.set_fact:
+    observability_images_before_deploy: >-
+      {{
+        observability_images_before_deploy | default({})
+        | combine({
+          item.item.key:
+            (
+              (item.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+            ) if item.rc == 0 else ""
+        })
+      }}
+  loop: "{{ observability_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
 - name: Deploy the exact reviewed observability stack
   community.docker.docker_stack:
     name: "{{ observability_stack_name }}"
@@ -369,7 +427,8 @@
     # siguiente exige el inventario exacto de servicios en 1/1.
     detach: true
     prune: true
-    resolve_image: never
+    # Channel semantics: an unchanged rendered image keeps the live digest.
+    resolve_image: changed
 
 - name: Wait for every observability replica to converge
   ansible.builtin.command:
@@ -449,9 +508,44 @@
 - name: Verify deployed observability image and placement identities
   ansible.builtin.assert:
     that:
+      # Hold: exact normalized identity. Channel: a digest of its own tag,
+      # either the one the preflight resolved or the live one kept unchanged.
       - >-
-        (item.stdout | from_json | first).
-        Spec.TaskTemplate.ContainerSpec.Image == item.item.value
+        (
+          image_channels_map.observability[item.item.key].mode == "hold"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          == image_channels_map.observability[item.item.key].spec_exact
+        )
+        or
+        (
+          image_channels_map.observability[item.item.key].mode == "channel"
+          and
+          (item.stdout | from_json | first).
+          Spec.TaskTemplate.ContainerSpec.Image
+          is match(image_channels_map.observability[item.item.key].spec_pattern)
+          and
+          (
+            (item.stdout | from_json | first).
+            Spec.TaskTemplate.ContainerSpec.Image
+            == (observability_images_before_deploy | default({})).get(
+              item.item.key, ""
+            )
+            or
+            (
+              (item.stdout | from_json | first).
+              Spec.TaskTemplate.ContainerSpec.Image
+              | regex_replace("^.*@", "")
+            )
+            == (
+              (image_preflight_channel_resolutions | default({})).get(
+                image_channels_map.observability[item.item.key].reference, ""
+              )
+              | regex_replace("^.*@", "")
+            )
+          )
+        )
       - >-
         "node.labels.platform.observability == true" in
         (item.stdout | from_json | first).

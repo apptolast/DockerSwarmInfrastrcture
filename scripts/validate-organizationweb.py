@@ -2,6 +2,7 @@
 """Validate and render the independent OrganizationWeb catalog."""
 
 import argparse
+import importlib.util
 import re
 from pathlib import Path
 import subprocess
@@ -12,6 +13,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+STACK_SERVICES = {"backend", "web", "postgres", "rabbitmq"}
 
 
 def exact_keys(value, keys, context):
@@ -19,7 +21,18 @@ def exact_keys(value, keys, context):
         raise ValueError(f"{context}: unexpected or missing keys")
 
 
+def load_channel_module():
+    path = ROOT / "scripts/validate-image-channels.py"
+    spec = importlib.util.spec_from_file_location("validate_image_channels", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("cannot load the image channel validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def validate_catalog(document):
+    """Validate the reviewed baseline; the runtime image is the channel map."""
     exact_keys(document, ["organizationweb"], "catalog")
     app = document["organizationweb"]
     exact_keys(app, ["schema_version", "stack_name", "release", "hostname", "edge_network", "data_root", "images", "secrets"], "organizationweb")
@@ -53,6 +66,43 @@ def validate_catalog(document):
     return app
 
 
+def load_image_channels(document=None):
+    """Return the validated per-stack channel map used to render stacks."""
+    module = load_channel_module()
+    try:
+        channel_map = module.load_channel_map(ROOT, organizationweb=document)
+    except module.ChannelError as error:
+        raise ValueError(f"image channel map: {error}") from error
+    entries = channel_map["services"].get("organizationweb", {})
+    if set(entries) != STACK_SERVICES:
+        raise ValueError("OrganizationWeb channel entries differ from the stack")
+    for name, entry in entries.items():
+        if entry["baseline"] != {"catalog": "organizationweb", "component": name}:
+            raise ValueError(f"channel {name} is not bound to its catalog image")
+    return channel_map["services"]
+
+
+def validate_render(stack, image_channels):
+    services = stack.get("services") if isinstance(stack, dict) else None
+    if not isinstance(services, dict) or set(services) != STACK_SERVICES:
+        raise ValueError("rendered OrganizationWeb services changed")
+    for name, service in services.items():
+        entry = image_channels["organizationweb"][name]
+        if service.get("image") != entry["reference"]:
+            raise ValueError(f"rendered image {name} differs from its channel entry")
+        labels = (service.get("deploy") or {}).get("labels") or {}
+        if labels.get("apptolast.autoupdate") != entry["label"]:
+            raise ValueError(f"rendered autoupdate label {name} differs from its channel entry")
+
+
+def render(document, image_channels):
+    template = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
+        undefined=jinja2.StrictUndefined,
+    ).get_template("stack.yml.j2")
+    return template.render(**document, image_channels_map=image_channels)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
@@ -60,11 +110,9 @@ def main(argv=None):
     try:
         document = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
         validate_catalog(document)
-        template = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
-            undefined=jinja2.StrictUndefined,
-        ).get_template("stack.yml.j2")
-        rendered = template.render(**document)
+        image_channels = load_image_channels(document)
+        rendered = render(document, image_channels)
+        validate_render(yaml.safe_load(rendered), image_channels)
         result = subprocess.run(
             ["docker", "stack", "config", "--compose-file", "-"],
             input=rendered, text=True, capture_output=True, check=False,
@@ -77,7 +125,7 @@ def main(argv=None):
     except (ValueError, OSError, yaml.YAMLError, jinja2.TemplateError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print("OrganizationWeb catalog and Docker stack format passed.")
+    print("OrganizationWeb catalog, image channels and Docker stack format passed.")
     return 0
 
 

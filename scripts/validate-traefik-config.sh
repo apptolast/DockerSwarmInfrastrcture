@@ -13,6 +13,11 @@ readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 # v3.7.9 emits this unconditionally before it evaluates effective config:
 # https://github.com/traefik/traefik/blob/d0bd2ec198533d760c1abfc74b98033d6d92d039/cmd/traefik/traefik.go#L100-L103
 readonly KNOWN_WARNING="Traefik can reject some encoded characters in the request path"
+# Traefik v3.7.13 (the v3 channel head since 2026-09) deprecates the option
+# the four entry points use; v3.7.9 does not warn. Moving to
+# aliasHeadersStrategy widens what is rejected, so it is a separate change.
+readonly KNOWN_DEPRECATION="The underscoreHeadersStrategy option is deprecated"
+readonly ENTRYPOINT_COUNT=4
 
 # shellcheck source=scripts/host-global-docker-validation-lock.sh
 source "${SCRIPT_DIR}/host-global-docker-validation-lock.sh"
@@ -64,8 +69,12 @@ stack = yaml.safe_load((root / ".build/edge/stack.yml").read_text())
 print(stack["services"]["traefik"]["image"])
 '
 )"
-[[ "${traefik_image}" =~ ^traefik@sha256:[a-f0-9]{64}$ ]] ||
-  fail "rendered Traefik image is not digest-pinned"
+# A digest hold, or exactly the reviewed major channel from
+# config/image-channels.yml (validate-image-channels.py binds the render to
+# that entry). Validating the channel runs the head the deploy will resolve.
+traefik_image_re='^((docker\.io/library/)?traefik(:v3)?@sha256:[a-f0-9]{64}|docker\.io/library/traefik:v3)$'
+[[ "${traefik_image}" =~ ${traefik_image_re} ]] ||
+  fail "rendered Traefik image is neither digest-pinned nor the v3 channel"
 
 validation_name="edge-config-validation-$$"
 cleanup() {
@@ -124,7 +133,8 @@ problem_logs="$(
     true
 )"
 unknown_logs="$(
-  grep -Fv "${KNOWN_WARNING}" <<<"${problem_logs}" ||
+  grep -Fv -e "${KNOWN_WARNING}" -e "${KNOWN_DEPRECATION}" \
+    <<<"${problem_logs}" ||
     true
 )"
 if [[ -n "${unknown_logs}" ]]; then
@@ -137,10 +147,16 @@ known_warning_count="$(
 )"
 [[ "${known_warning_count}" -eq 1 ]] ||
   fail "the unconditional pinned Traefik warning did not occur exactly once"
+deprecation_count="$(
+  grep -Fc "${KNOWN_DEPRECATION}" <<<"${problem_logs}" ||
+    true
+)"
+[[ "${deprecation_count}" -eq 0 || "${deprecation_count}" -eq "${ENTRYPOINT_COUNT}" ]] ||
+  fail "the underscoreHeadersStrategy deprecation did not occur once per entry point"
 
 cleanup
 trap - EXIT
 
 printf '%s\n' \
   "Traefik config, healthcheck and hardening validation passed." \
-  "No warning-or-higher entries beyond the one unconditional v3.7.9 notice."
+  "No warning-or-higher entries beyond the known v3.7 notices."
