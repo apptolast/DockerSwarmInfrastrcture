@@ -1,0 +1,28 @@
+---
+# Reviewed contract of the image watcher (stack `autoupdater`, service
+# `shepherd`). scripts/validate-autoupdater.py pins every value below and
+# renders stacks/autoupdater/stack.yml.j2. See docs/AUTOUPDATE.md.
+#
+# - `enabled` is the kill switch: false renders `replicas: 0`. The service
+#   stays registered and its capacity budget stays reserved, so re-enabling
+#   is a reviewed one-line change plus `--playbook autoupdater`.
+# - The watcher only touches services labelled
+#   `apptolast.autoupdate=true` (config/image-channels.yml decides the label).
+# - The image is v1.8.1 (upstream tag commit ee48ca1) pinned by index
+#   digest; it is excluded from the channel map and never updates itself.
+# - The registry password is never in Git: the external Docker secret below
+#   is created by hand from a root-only file and mounted at the path Shepherd
+#   reads (`/run/secrets/shepherd_registry_password`).
+autoupdater:
+  schema_version: 1
+  stack_name: autoupdater
+  enabled: true
+  image: "containrrr/shepherd:v1.8.1@sha256:\
+    b117c2394832e088932d5e1eebb8df6c1924f47d0fef31788cb310c0fe3bf7db"
+  # One cycle per hour. Docker Hub counts manifest GETs against the
+  # authenticated free account (200 per 6 h): 6 cycles x N opted-in Docker
+  # Hub services must leave room for real pulls. 20m (18 cycles) would not.
+  sleep_time: 1h
+  timeout_seconds: 900
+  registry_user: ocholoko888
+  registry_password_secret: autoupdater-dockerhub-pat-v1

@@ -1,0 +1,21 @@
+---
+- name: Reconcile the reviewed image watcher stack
+  hosts: swarm_managers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/capacity.yml
+    - ../../config/platform.yml
+    - ../../config/autoupdater.yml
+    - ../group_vars/all.yml
+
+  roles:
+    - role: operation_lock_guard
+    - role: capacity_preflight
+      tags:
+        - capacity
+    - role: autoupdater
+    - role: deployment_metadata

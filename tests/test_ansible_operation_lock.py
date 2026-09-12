@@ -450,6 +450,8 @@ class AnsibleOperationLockTests(unittest.TestCase):
             "edge",
             "workloads",
             "observability",
+            "organizationweb",
+            "autoupdater",
             "backup",
             "site",
         ):

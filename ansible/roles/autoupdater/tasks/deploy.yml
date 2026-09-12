@@ -1,0 +1,129 @@
+---
+- name: Create the watcher installation directory
+  ansible.builtin.file:
+    path: /opt/dockerswarm/autoupdater
+    owner: root
+    group: root
+    mode: '0750'
+    state: directory
+
+- name: Render the exact reviewed watcher stack
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../stacks/autoupdater/stack.yml.j2"
+    dest: /opt/dockerswarm/autoupdater/stack.yml
+    owner: root
+    group: root
+    mode: '0640'
+
+# The image is pinned by digest and excluded from the channel map, so the CLI
+# never asks the registry for it. This apply replaces any unreviewed spec of
+# autoupdater_shepherd (for example IGNORELIST_SERVICES without a filter).
+- name: Deploy only the watcher stack
+  community.docker.docker_stack:
+    name: "{{ autoupdater.stack_name }}"
+    state: present
+    compose: [/opt/dockerswarm/autoupdater/stack.yml]
+    detach: true
+    prune: true
+    resolve_image: never
+
+- name: Require the reviewed replica count and no extra service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - "{{ autoupdater.stack_name }}"
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: autoupdater_replicas
+  changed_when: false
+  until: >-
+    autoupdater_replicas.stdout_lines
+    == [autoupdater_service_name ~ '=' ~ autoupdater_expected_replicas
+        ~ '/' ~ autoupdater_expected_replicas]
+  retries: 18
+  delay: 10
+
+- name: Inspect the converged watcher service
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "{{ autoupdater_service_name }}"]
+  register: autoupdater_service_inspection
+  changed_when: false
+
+- name: Require the live watcher spec to be exactly the reviewed one
+  ansible.builtin.assert:
+    that:
+      - >-
+        autoupdater_service.Spec.Labels['com.docker.stack.namespace']
+        == autoupdater.stack_name
+      - >-
+        autoupdater_service.Spec.Labels['apptolast.autoupdate'] == 'false'
+      - >-
+        autoupdater_container.Image == autoupdater.image
+      - >-
+        autoupdater_container.Env | default([]) | sort
+        == autoupdater_expected_environment | sort
+      - >-
+        'FILTER_SERVICES=label=apptolast.autoupdate=true'
+        in autoupdater_container.Env
+      - >-
+        autoupdater_container.Env | default([])
+        | select('match', '^(IGNORELIST_SERVICES|UPDATE_OPTIONS|'
+        ~ 'ROLLBACK_ON_FAILURE|RUN_ONCE_AND_EXIT|WITH_NO_RESOLVE_IMAGE|'
+        ~ 'WITH_INSECURE_REGISTRY|IMAGE_AUTOCLEAN_LIMIT|REGISTRY_PASSWORD)=')
+        | list | length == 0
+      - >-
+        autoupdater_service.Spec.Mode.Replicated.Replicas
+        == autoupdater_expected_replicas | int
+      - >-
+        autoupdater_service.Spec.TaskTemplate.Placement.Constraints
+        == ['node.role == manager']
+      - autoupdater_container.Secrets | length == 1
+      - >-
+        autoupdater_container.Secrets[0].SecretName
+        == autoupdater.registry_password_secret
+      - >-
+        autoupdater_container.Secrets[0].SecretID
+        == (autoupdater_secret_inspection.stdout | from_json | first).ID
+      - >-
+        autoupdater_container.Secrets[0].File
+        == {'Name': 'shepherd_registry_password', 'UID': '0', 'GID': '0',
+            'Mode': 256}
+      - autoupdater_container.Mounts | length == 1
+      - autoupdater_container.Mounts[0].Type == 'bind'
+      - autoupdater_container.Mounts[0].Source == '/var/run/docker.sock'
+      - autoupdater_container.Mounts[0].Target == '/var/run/docker.sock'
+      - autoupdater_container.Mounts[0].ReadOnly | default(false) | bool
+      - autoupdater_service.Spec.EndpointSpec.Ports | default([]) | length == 0
+    fail_msg: >-
+      The live watcher differs from config/autoupdater.yml: image,
+      environment, label filter, replicas, placement, secret or socket mount.
+    quiet: true
+  vars:
+    autoupdater_service: >-
+      {{ autoupdater_service_inspection.stdout | from_json | first }}
+    autoupdater_container: >-
+      {{
+        (autoupdater_service_inspection.stdout | from_json | first)
+        .Spec.TaskTemplate.ContainerSpec
+      }}
+
+- name: Require one running watcher container when enabled and none otherwise
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --filter
+      - "label=com.docker.swarm.service.name={{ autoupdater_service_name }}"
+      - --filter
+      - status=running
+      - --format
+      - "{% raw %}{{.ID}}{% endraw %}"
+  register: autoupdater_running
+  changed_when: false
+  until: >-
+    autoupdater_running.stdout_lines | length
+    == autoupdater_expected_replicas | int
+  retries: 18
+  delay: 10

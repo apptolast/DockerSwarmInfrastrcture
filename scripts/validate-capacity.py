@@ -20,8 +20,12 @@ DEFAULT_STACKS = {
     "edge": PROJECT_DIR / ".build/edge/stack.yml",
     "workloads": PROJECT_DIR / ".build/workloads/stack.yml",
     "observability": PROJECT_DIR / ".build/observability/stack.yml",
+    "autoupdater": PROJECT_DIR / ".build/autoupdater/stack.yml",
 }
 STACK_IDS = frozenset(DEFAULT_STACKS)
+# Replicated services whose kill switch may render `replicas: 0`. Their budget
+# stays reserved as one instance, so re-enabling needs no capacity review.
+SUSPENDABLE_SERVICES = frozenset({("autoupdater", "shepherd")})
 IDENTIFIER_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 CPU_RE = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]{2}")
 MEMORY_RE = re.compile(r"([1-9][0-9]*)M")
@@ -758,7 +762,15 @@ def service_resources(
             )
         instances = eligible_nodes
     else:
-        if mode != "replicated" or deploy.get("replicas") != 1:
+        replicas = deploy.get("replicas")
+        allowed_replicas = (
+            {0, 1} if (stack_id, service_name) in SUSPENDABLE_SERVICES else {1}
+        )
+        if (
+            mode != "replicated"
+            or type(replicas) is not int
+            or replicas not in allowed_replicas
+        ):
             raise CapacityError(
                 f"{context} must use replicated mode with exactly one replica"
             )
@@ -811,7 +823,9 @@ def validate_stacks(
     redis_config_text: str | None = None,
 ) -> dict[str, dict[str, dict[str, int]]]:
     if set(stack_documents) != STACK_IDS:
-        raise CapacityError("exactly edge, workloads and observability are required")
+        raise CapacityError(
+            "exactly edge, workloads, observability and autoupdater are required"
+        )
 
     totals: dict[str, dict[str, dict[str, int]]] = {}
     resource_plans: dict[
@@ -952,12 +966,14 @@ def parse_stack_arguments(values: list[str] | None) -> dict[str, Path]:
     for value in values:
         stack_id, separator, raw_path = value.partition("=")
         if not separator or stack_id not in STACK_IDS or not raw_path:
-            raise CapacityError("--stack must use edge|workloads|observability=PATH")
+            raise CapacityError(
+                "--stack must use edge|workloads|observability|autoupdater=PATH"
+            )
         if stack_id in result:
             raise CapacityError(f"duplicate --stack identity: {stack_id}")
         result[stack_id] = Path(raw_path)
     if set(result) != STACK_IDS:
-        raise CapacityError("all three stack identities must be provided")
+        raise CapacityError("all four stack identities must be provided")
     return result
 
 
@@ -999,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stack",
         action="append",
-        help="rendered stack identity and path as STACK=PATH; repeat three times",
+        help="rendered stack identity and path as STACK=PATH; repeat four times",
     )
     parser.add_argument(
         "--verify-host",

@@ -35,6 +35,8 @@ deployment_metadata_components_by_playbook:
     - backup
   organizationweb:
     - organizationweb
+  autoupdater:
+    - autoupdater
   site:
     - host-security
     - platform
@@ -45,3 +47,4 @@ deployment_metadata_components_by_playbook:
     - edge
     - workloads
     - observability
+    - autoupdater

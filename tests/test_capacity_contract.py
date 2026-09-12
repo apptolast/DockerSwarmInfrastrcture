@@ -57,15 +57,97 @@ class CapacityContractTests(unittest.TestCase):
             totals["aggregate"],
             {
                 "reservations": {
-                    "cpu_millicores": 3470,
-                    "memory_mib": 7232,
+                    "cpu_millicores": 3570,
+                    "memory_mib": 7250,
                 },
                 "limits": {
-                    "cpu_millicores": 17200,
-                    "memory_mib": 12352,
+                    "cpu_millicores": 17450,
+                    "memory_mib": 12397,
                 },
             },
         )
+        self.assertEqual(
+            totals["autoupdater"],
+            {
+                "reservations": {"cpu_millicores": 100, "memory_mib": 18},
+                "limits": {"cpu_millicores": 250, "memory_mib": 45},
+            },
+        )
+        # The full platform now uses the whole memory-limit budget.
+        allocatable = (
+            contract["host"]["minimum_memory_mib"]
+            - contract["system_reserve"]["memory_mib"]
+            - contract["operational_headroom"]["memory_mib"]
+        )
+        self.assertEqual(totals["aggregate"]["limits"]["memory_mib"], allocatable)
+
+    def test_the_four_stacks_are_all_required(self) -> None:
+        self.assertEqual(
+            set(capacity.STACK_IDS),
+            {"edge", "workloads", "observability", "autoupdater"},
+        )
+        documents = copy.deepcopy(self.stack_documents)
+        del documents["autoupdater"]
+        with self.assertRaisesRegex(capacity.CapacityError, "autoupdater"):
+            capacity.validate_stacks(self.normalized_contract(), documents)
+        document = copy.deepcopy(self.contract_document)
+        del document["capacity_contract"]["stacks"]["autoupdater"]
+        with self.assertRaises(capacity.CapacityError):
+            capacity.validate_contract(document)
+
+    def test_only_the_watcher_kill_switch_may_render_zero_replicas(self) -> None:
+        contract = self.normalized_contract()
+        documents = copy.deepcopy(self.stack_documents)
+        documents["autoupdater"]["services"]["shepherd"]["deploy"]["replicas"] = 0
+        totals = capacity.validate_stacks(contract, documents)
+        # A disabled watcher keeps its reviewed budget reserved.
+        self.assertEqual(
+            totals["autoupdater"], contract["reviewed_totals"]["autoupdater"]
+        )
+        for replicas in (2, True, "1", None):
+            with self.subTest(replicas=replicas):
+                documents = copy.deepcopy(self.stack_documents)
+                deploy = documents["autoupdater"]["services"]["shepherd"]["deploy"]
+                deploy["replicas"] = replicas
+                with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
+                    capacity.validate_stacks(contract, documents)
+        documents = copy.deepcopy(self.stack_documents)
+        documents["edge"]["services"]["traefik"]["deploy"]["replicas"] = 0
+        with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
+            capacity.validate_stacks(contract, documents)
+
+    def test_watcher_resources_over_budget_are_rejected(self) -> None:
+        contract = self.normalized_contract()
+        for resource_class, key, value in (
+            ("limits", "memory", "44M"),
+            ("limits", "cpus", "0.30"),
+            ("reservations", "memory", "20M"),
+        ):
+            with self.subTest(resource=f"{resource_class}.{key}"):
+                documents = copy.deepcopy(self.stack_documents)
+                resources = documents["autoupdater"]["services"]["shepherd"][
+                    "deploy"
+                ]["resources"]
+                resources[resource_class][key] = value
+                with self.assertRaisesRegex(
+                    capacity.CapacityError, "autoupdater rendered totals differ"
+                ):
+                    capacity.validate_stacks(contract, documents)
+        # Re-reviewing the totals cannot buy memory beyond the host budget.
+        document = copy.deepcopy(self.contract_document)
+        totals = document["capacity_contract"]["reviewed_totals"]
+        for resource_class, delta in (("limits", 1), ("reservations", 1)):
+            totals["autoupdater"][resource_class]["memory_mib"] += delta
+            totals["aggregate"][resource_class]["memory_mib"] += delta
+        contract = capacity.validate_contract(document)
+        documents = copy.deepcopy(self.stack_documents)
+        resources = documents["autoupdater"]["services"]["shepherd"]["deploy"][
+            "resources"
+        ]
+        resources["limits"]["memory"] = "46M"
+        resources["reservations"]["memory"] = "19M"
+        with self.assertRaisesRegex(capacity.CapacityError, "swapless host headroom"):
+            capacity.validate_stacks(contract, documents)
 
     def test_docker_normalizes_m_suffix_as_binary_mebibytes(self) -> None:
         for stack_id, path in capacity.DEFAULT_STACKS.items():

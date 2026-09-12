@@ -24,6 +24,16 @@ def load_image_channels_map():
     return module.load_channel_map(ROOT)["services"]
 
 
+def load_autoupdater_stack():
+    """Render the reviewed watcher stack without Docker."""
+    spec = importlib.util.spec_from_file_location(
+        "validate_autoupdater", ROOT / "scripts/validate-autoupdater.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.render_validated()[1]
+
+
 class CapacityProfileTests(unittest.TestCase):
     def setUp(self):
         spec = importlib.util.spec_from_file_location(
@@ -44,13 +54,53 @@ class CapacityProfileTests(unittest.TestCase):
                     for name in ("edge", "workloads", "observability")
                 },
                 "organizationweb": yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map())),
+                "autoupdater": load_autoupdater_stack(),
             }
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
-        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 11456)
-        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 6784)
-        self.assertEqual(totals["observability"]["limits"]["memory_mib"], 12352)
+        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 11501)
+        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 6802)
+        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 14600)
+        self.assertEqual(totals["observability"]["limits"]["memory_mib"], 12397)
+        self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 17450)
+
+    def test_every_profile_must_include_the_watcher(self):
+        for name in ("observability", "organizationweb"):
+            with self.subTest(profile=name):
+                profiles = yaml.safe_load(
+                    (ROOT / "config/capacity-profiles.yml").read_text()
+                )
+                plan = profiles["capacity_profiles"]["profiles"][name]
+                plan["stacks"].remove("autoupdater")
+                plan["aggregate"]["reservations"]["memory_mib"] -= 18
+                plan["aggregate"]["reservations"]["cpu_millicores"] -= 100
+                plan["aggregate"]["limits"]["memory_mib"] -= 45
+                plan["aggregate"]["limits"]["cpu_millicores"] -= 250
+                with self.assertRaisesRegex(
+                    self.module.capacity.CapacityError, "autoupdater"
+                ):
+                    self.module.validate_profiles(self.base, profiles, self.stacks)
+
+    def test_live_registered_watcher_is_accepted_and_requestable(self):
+        live = [
+            {"name": "edge_traefik", "stack": "edge"},
+            {"name": "organizationweb_web", "stack": "organizationweb"},
+            {"name": "autoupdater_shepherd", "stack": "autoupdater"},
+        ]
+        for requested in ("autoupdater", "organizationweb", "edge", "workloads"):
+            with self.subTest(requested=requested):
+                self.module.validate_live(self.base, self.profiles, requested, live)
+        for service in (
+            {"name": "autoupdater_gantry", "stack": "autoupdater"},
+            {"name": "autoupdater_shepherd", "stack": None},
+            {"name": "shepherd", "stack": None},
+        ):
+            with self.subTest(service=service):
+                with self.assertRaisesRegex(self.module.capacity.CapacityError, "live"):
+                    self.module.validate_live(
+                        self.base, self.profiles, "autoupdater", [*live, service]
+                    )
 
     def test_unaccounted_application_service_is_rejected(self):
         self.stacks["organizationweb"]["services"]["unreviewed"] = {
@@ -125,7 +175,7 @@ class CapacityProfileTests(unittest.TestCase):
         )
         self.assertIs(live_check["check_mode"], False)
         self.assertIs(live_check["changed_when"], False)
-        for name in ("edge", "workloads", "observability", "site"):
+        for name in ("edge", "workloads", "observability", "autoupdater", "site"):
             play = yaml.safe_load((ROOT / f"ansible/playbooks/{name}.yml").read_text())[0]
             roles = [item["role"] for item in play["roles"]]
             self.assertLess(roles.index("operation_lock_guard"), roles.index("capacity_preflight"))

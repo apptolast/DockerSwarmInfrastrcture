@@ -1927,6 +1927,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "edge",
                 "workloads",
                 "observability",
+                "autoupdater",
                 "deployment_metadata",
             ],
         )
@@ -1984,6 +1985,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "preflight-images",
             "workloads",
             "observability",
+            "autoupdater",
             "backup",
             "site",
         ):
@@ -2006,6 +2008,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "config/platform.yml",
             "config/services.yml",
             "config/image-channels.yml",
+            "config/autoupdater.yml",
             "stacks/observability/secrets.yml",
             "stacks/workloads/secrets.yml",
         ):

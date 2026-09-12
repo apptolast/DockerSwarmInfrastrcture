@@ -35,7 +35,7 @@ Usage:
       [--local | --ask-become-pass] [--check | --confirm-production]
 
 NAME is one of: platform, host-baseline, preflight-images, edge, workloads,
-observability, organizationweb, backup, site.
+observability, organizationweb, autoupdater, backup, site.
 PROFILE is production (default) or acme-staging. The staging profile is valid
 only with the edge playbook and uses a separate ACME storage file.
 
@@ -126,7 +126,7 @@ while (( $# > 0 )); do
 done
 
 case "${playbook_name}" in
-  platform|host-baseline|preflight-images|edge|workloads|observability|organizationweb|backup|site)
+  platform|host-baseline|preflight-images|edge|workloads|observability|organizationweb|autoupdater|backup|site)
     ;;
   *)
     fail "--playbook is missing or invalid"
@@ -195,6 +195,7 @@ contract_sha256="$(
     "${PROJECT_DIR}/config/platform.yml" \
     "${PROJECT_DIR}/config/services.yml" \
     "${PROJECT_DIR}/config/image-channels.yml" \
+    "${PROJECT_DIR}/config/autoupdater.yml" \
     "${PROJECT_DIR}/stacks/observability/secrets.yml" \
     "${PROJECT_DIR}/stacks/workloads/secrets.yml"; do
     sha256sum "${contract_path}" | awk '{print $1}'

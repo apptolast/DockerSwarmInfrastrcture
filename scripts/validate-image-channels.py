@@ -45,7 +45,13 @@ ALLOWED_STACKS = (
     "observability",
     "autoupdater",
 )
-RENDERED_STACKS = ("edge", "workloads", "organizationweb", "observability")
+RENDERED_STACKS = (
+    "edge",
+    "workloads",
+    "organizationweb",
+    "observability",
+    "autoupdater",
+)
 CLASSES = {"owner", "third-party", "stateful-major"}
 # Owner images follow `:latest`; every other namespace is third-party.
 OWNER_NAMESPACES = {
@@ -594,17 +600,26 @@ def has_active_healthcheck(service: dict[str, Any]) -> bool:
 
 
 def socket_binds(service: dict[str, Any]) -> list[str]:
+    return [source for source, _read_only in socket_mounts(service)]
+
+
+def socket_mounts(service: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Return every Docker socket bind and whether it is read-only."""
     found = []
     for volume in service.get("volumes", []) or []:
         source = None
+        read_only = False
         if isinstance(volume, dict):
             source = volume.get("source")
+            read_only = volume.get("read_only") is True
         elif isinstance(volume, str):
-            source = volume.split(":", 1)[0]
+            parts = volume.split(":")
+            source = parts[0]
+            read_only = len(parts) == 3 and "ro" in parts[2].split(",")
         if isinstance(source, str) and (
             source in DOCKER_SOCKETS or source.endswith("/docker.sock")
         ):
-            found.append(source)
+            found.append((source, read_only))
     return found
 
 
@@ -708,6 +723,10 @@ def validate_rendered(
                 raise ChannelError(
                     f"{stack}/{name}: the Docker socket is allowed only in "
                     "the autoupdater stack"
+                )
+            if any(not read_only for _source, read_only in socket_mounts(service)):
+                raise ChannelError(
+                    f"{stack}/{name}: the Docker socket bind must be read-only"
                 )
             observed_label = service_label(service, label)
             if name in excluded:
