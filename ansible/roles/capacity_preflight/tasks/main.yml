@@ -93,6 +93,8 @@
           | int
         + capacity_contract.reviewed_totals.observability.limits.cpu_millicores
           | int
+        + capacity_contract.reviewed_totals.autoupdater.limits.cpu_millicores
+          | int
       }}
     capacity_preflight_reviewed_stack_cpu_reservation_millicores: >-
       {{
@@ -102,12 +104,16 @@
           .cpu_millicores | int
         + capacity_contract.reviewed_totals.observability.reservations
           .cpu_millicores | int
+        + capacity_contract.reviewed_totals.autoupdater.reservations
+          .cpu_millicores | int
       }}
     capacity_preflight_reviewed_stack_memory_limit_mib: >-
       {{
         capacity_contract.reviewed_totals.edge.limits.memory_mib | int
         + capacity_contract.reviewed_totals.workloads.limits.memory_mib | int
         + capacity_contract.reviewed_totals.observability.limits.memory_mib
+          | int
+        + capacity_contract.reviewed_totals.autoupdater.limits.memory_mib
           | int
       }}
     capacity_preflight_reviewed_stack_memory_reservation_mib: >-
@@ -116,6 +122,8 @@
         + capacity_contract.reviewed_totals.workloads.reservations.memory_mib
           | int
         + capacity_contract.reviewed_totals.observability.reservations
+          .memory_mib | int
+        + capacity_contract.reviewed_totals.autoupdater.reservations
           .memory_mib | int
       }}
 

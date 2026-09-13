@@ -502,6 +502,14 @@ class ChannelMapTests(unittest.TestCase):
         )
 
 
+READ_ONLY_SOCKET = {
+    "type": "bind",
+    "source": "/var/run/docker.sock",
+    "target": "/var/run/docker.sock",
+    "read_only": True,
+}
+
+
 def synthetic_service(image: str | None, label: str | None) -> dict[str, Any]:
     service: dict[str, Any] = {
         "healthcheck": {"test": ["CMD", "true"]},
@@ -535,6 +543,11 @@ class RenderedCoverageTests(unittest.TestCase):
             }
             for name in channel_map["exclusions"].get(stack, []):
                 services[name] = synthetic_service("local/excluded:tag", "false")
+            if stack == "autoupdater":
+                services["shepherd"]["environment"] = dict(
+                    AutoupdaterEnvironmentTests.VALID
+                )
+                services["shepherd"]["volumes"] = [dict(READ_ONLY_SOCKET)]
             rendered[stack] = {"services": services}
         return rendered
 
@@ -553,7 +566,13 @@ class RenderedCoverageTests(unittest.TestCase):
     @unittest.skipUnless(
         all(
             (REPOSITORY_ROOT / ".build" / stack / "stack.yml").is_file()
-            for stack in ("edge", "workloads", "organizationweb", "observability")
+            for stack in (
+                "edge",
+                "workloads",
+                "organizationweb",
+                "observability",
+                "autoupdater",
+            )
         ),
         "rendered stacks are produced by scripts/validate-iac.sh",
     )
@@ -661,17 +680,42 @@ class RenderedCoverageTests(unittest.TestCase):
                     rendered[stack]["services"][service]["volumes"] = [volume]
                     self.assert_rejected(rendered, "Docker socket")
 
-    def test_autoupdater_stack_is_checked_when_rendered(self) -> None:
+    def test_autoupdater_stack_is_required_and_checked(self) -> None:
         rendered = self.rendered_for(self.channel_map)
-        shepherd = synthetic_service("docker.io/containrrr/shepherd:v1.8.1", None)
-        shepherd["volumes"] = [
-            {"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}
-        ]
-        shepherd["environment"] = dict(AutoupdaterEnvironmentTests.VALID)
-        rendered["autoupdater"] = {"services": {"shepherd": shepherd}}
         channels.validate_rendered(self.channel_map, rendered)
+        del rendered["autoupdater"]
+        self.assert_rejected(rendered, "rendered stack is missing: autoupdater")
+        rendered = self.rendered_for(self.channel_map)
+        shepherd = rendered["autoupdater"]["services"]["shepherd"]
         shepherd["environment"]["FILTER_SERVICES"] = ""
         self.assert_rejected(rendered, "FILTER_SERVICES")
+        rendered = self.rendered_for(self.channel_map)
+        rendered["autoupdater"]["services"]["shepherd"]["environment"][
+            "IGNORELIST_SERVICES"
+        ] = "workloads_n8n"
+        self.assert_rejected(rendered, "must be absent")
+        rendered = self.rendered_for(self.channel_map)
+        rendered["autoupdater"]["services"]["shepherd"]["deploy"]["labels"][
+            "apptolast.autoupdate"
+        ] = "true"
+        self.assert_rejected(rendered, "excluded service opts in")
+
+    def test_docker_socket_in_autoupdater_must_be_read_only(self) -> None:
+        for volume in (
+            {**READ_ONLY_SOCKET, "read_only": False},
+            {key: value for key, value in READ_ONLY_SOCKET.items() if key != "read_only"},
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "/var/run/docker.sock:/var/run/docker.sock:rw",
+        ):
+            with self.subTest(volume=volume):
+                rendered = self.rendered_for(self.channel_map)
+                rendered["autoupdater"]["services"]["shepherd"]["volumes"] = [volume]
+                self.assert_rejected(rendered, "must be read-only")
+        rendered = self.rendered_for(self.channel_map)
+        rendered["autoupdater"]["services"]["shepherd"]["volumes"] = [
+            "/var/run/docker.sock:/var/run/docker.sock:ro"
+        ]
+        channels.validate_rendered(self.channel_map, rendered)
 
 
 class AutoupdaterEnvironmentTests(unittest.TestCase):

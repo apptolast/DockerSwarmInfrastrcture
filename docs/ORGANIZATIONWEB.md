@@ -25,7 +25,8 @@ No incluye la feature 19 aún en desarrollo.
   Este despliegue no cierra el gate de migración legacy ni certifica recuperación
   ante pérdida del host. No ejecutar el playbook backup como atajo.
 
-El plan app suma 6784 MiB de reservas y 11456 MiB de límites de servicios,
+El perfil suma 6802 MiB de reservas y 11501 MiB de límites de servicios,
+incluido el vigilante `autoupdater` (18/45 MiB),
 manteniendo 3072 MiB de reserva del sistema y 512 MiB de margen. Es un sizing
 inicial probado nominalmente, no una garantía de carga sostenida.
 

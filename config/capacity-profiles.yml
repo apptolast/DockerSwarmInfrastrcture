@@ -4,15 +4,15 @@ capacity_profiles:
   active: organizationweb
   profiles:
     observability:
-      stacks: [edge, workloads, observability]
+      stacks: [edge, workloads, observability, autoupdater]
       aggregate:
-        reservations: {cpu_millicores: 3470, memory_mib: 7232}
-        limits: {cpu_millicores: 17200, memory_mib: 12352}
+        reservations: {cpu_millicores: 3570, memory_mib: 7250}
+        limits: {cpu_millicores: 17450, memory_mib: 12397}
     organizationweb:
-      stacks: [edge, workloads, organizationweb]
+      stacks: [edge, workloads, organizationweb, autoupdater]
       aggregate:
-        reservations: {cpu_millicores: 2900, memory_mib: 6784}
-        limits: {cpu_millicores: 14350, memory_mib: 11456}
+        reservations: {cpu_millicores: 3000, memory_mib: 6802}
+        limits: {cpu_millicores: 14600, memory_mib: 11501}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:

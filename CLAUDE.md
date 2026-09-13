@@ -135,6 +135,16 @@ Per [`docs/OPERATIONS.md`](docs/OPERATIONS.md) ("Modelo de acceso"):
   `sudo -- ./scripts/...`.
 - The end-state contract removes ALL human users, including `admin`, from
   the root-equivalent `docker` group.
+- One accepted exception, by owner decision: the image watcher
+  (`autoupdater_shepherd`, stack `autoupdater`) mounts `/var/run/docker.sock`
+  on the only manager. The bind is read-only, which does not restrict the
+  Docker API, so the service is root-equivalent. It is the only stack the
+  validators allow to mount the socket, its whole contract is pinned in
+  `config/autoupdater.yml`, and it only touches services labelled
+  `apptolast.autoupdate=true`. Stop it with `enabled: false` plus
+  `--playbook autoupdater`; never `docker service scale` it by hand except
+  in an emergency, codified in Git the same day. See
+  [`docs/AUTOUPDATE.md`](docs/AUTOUPDATE.md).
 - Sudo passwords are never stored anywhere in this repo (inventory, vars,
   shell history, git).
 
@@ -250,8 +260,9 @@ Always dry-run before applying:
 
 Valid `--playbook` values for `scripts/deploy-ansible.sh` are: `platform`,
 `host-baseline`, `preflight-images`, `edge`, `workloads`, `observability`,
-`backup`, `site`. Valid `--profile` values are `production` (default) and
-`acme-staging` (edge playbook only, uses a separate ACME storage file).
+`organizationweb`, `autoupdater`, `backup`, `site`. Valid `--profile` values
+are `production` (default) and `acme-staging` (edge playbook only, uses a
+separate ACME storage file).
 `scripts/bootstrap-host.sh` is a separate script (its own flags: `--host`,
 `--authorized-keys-file`, `--password-hash-file`,
 `--confirm-production`) that always drives playbook `bootstrap-host` under

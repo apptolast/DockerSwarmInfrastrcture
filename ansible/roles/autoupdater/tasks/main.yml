@@ -1,0 +1,146 @@
+---
+- name: Reject overrides of the reviewed watcher catalog
+  ansible.builtin.assert:
+    that:
+      - >-
+        autoupdater == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/autoupdater.yml')
+          | from_yaml
+        ).autoupdater
+    fail_msg: Autoupdater inputs differ from config/autoupdater.yml.
+    quiet: true
+
+- name: Validate the watcher catalog and exact Docker format locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-autoupdater.py"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
+- name: Require the watcher to stay outside every channel
+  ansible.builtin.assert:
+    that:
+      - "'autoupdater' not in image_channels_map"
+      - image_channels_exclusions.autoupdater | default([]) == ['shepherd']
+      - image_channels_autoupdate_label == 'apptolast.autoupdate'
+    fail_msg: The watcher must be excluded from the channel map.
+    quiet: true
+
+- name: Derive the exact reviewed watcher runtime
+  ansible.builtin.set_fact:
+    autoupdater_service_name: "{{ autoupdater.stack_name }}_shepherd"
+    autoupdater_expected_replicas: "{{ 1 if autoupdater.enabled else 0 }}"
+    autoupdater_expected_environment:
+      - FILTER_SERVICES=label=apptolast.autoupdate=true
+      - "REGISTRY_USER={{ autoupdater.registry_user }}"
+      - "SLEEP_TIME={{ autoupdater.sleep_time }}"
+      - "TIMEOUT={{ autoupdater.timeout_seconds }}"
+      - TZ=UTC
+      - VERBOSE=true
+      - WITH_REGISTRY_AUTH=true
+
+- name: Read the actual Swarm node inventory
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, ls, --quiet]
+  register: autoupdater_node_ids
+  changed_when: false
+  check_mode: false
+
+- name: Inspect this manager
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, inspect, self]
+  register: autoupdater_local_node
+  changed_when: false
+  check_mode: false
+
+- name: Require the single node to be this active manager
+  ansible.builtin.assert:
+    that:
+      - autoupdater_node_ids.stdout_lines | length == 1
+      - >-
+        (autoupdater_local_node.stdout | from_json | first).ID
+        == autoupdater_node_ids.stdout_lines[0]
+      - >-
+        (autoupdater_local_node.stdout | from_json | first)
+        .Spec.Role == 'manager'
+      - >-
+        (autoupdater_local_node.stdout | from_json | first)
+        .Spec.Availability == 'active'
+      - >-
+        (autoupdater_local_node.stdout | from_json | first)
+        .Status.State == 'ready'
+    fail_msg: The watcher requires the reviewed single-manager placement.
+
+# The token lives only in a root-only file on the host and in this secret.
+# Only its metadata is read; its value never reaches Ansible.
+- name: Inspect the external registry secret without retrieving its value
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ autoupdater.registry_password_secret }}"
+  register: autoupdater_secret_inspection
+  changed_when: false
+  check_mode: false
+
+- name: Require the reviewed provenance of the registry secret
+  ansible.builtin.assert:
+    that:
+      - >-
+        (autoupdater_secret_inspection.stdout | from_json | first).Spec.Name
+        == autoupdater.registry_password_secret
+      - >-
+        (autoupdater_secret_inspection.stdout | from_json | first)
+        .Spec.Labels['com.apptolast.managed-by'] | default('')
+        == 'manual-bootstrap'
+      - >-
+        (autoupdater_secret_inspection.stdout | from_json | first)
+        .Spec.Labels['com.apptolast.purpose'] | default('')
+        == 'autoupdater'
+    fail_msg: >-
+      Create the external registry secret with its reviewed labels before
+      deploying the watcher (docs/AUTOUPDATE.md).
+    quiet: true
+
+- name: Inspect the Docker socket and installation paths without links
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - {path: /var/run/docker.sock, uid: 0, kind: socket}
+    - {path: /opt, uid: 0, kind: directory}
+    - {path: /opt/dockerswarm, uid: 0, kind: directory}
+    - {path: /opt/dockerswarm/autoupdater, uid: 0, kind: directory}
+    - {path: /opt/dockerswarm/autoupdater/stack.yml, uid: 0, kind: file}
+  register: autoupdater_paths
+
+- name: Reject unsafe types ownership and permissions in watcher paths
+  ansible.builtin.assert:
+    that:
+      - item.item.kind != 'socket' or item.stat.exists
+      - not item.stat.exists or not item.stat.islnk
+      - >-
+        not item.stat.exists or (
+          item.stat.issock if item.item.kind == 'socket'
+          else item.stat.isdir if item.item.kind == 'directory'
+          else item.stat.isreg
+        )
+      - not item.stat.exists or item.stat.uid == item.item.uid
+      - not item.stat.exists or item.stat.mode[-1] | int not in [2, 3, 6, 7]
+    fail_msg: Refusing to deploy the watcher through an unsafe path.
+  loop: "{{ autoupdater_paths.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Deploy only after the complete preflight and outside check mode
+  ansible.builtin.import_tasks: deploy.yml
+  when: not ansible_check_mode

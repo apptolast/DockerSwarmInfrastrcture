@@ -86,6 +86,12 @@ capacity_contract:
         - alloy
         - node-exporter
         - cadvisor
+    # The image watcher. Its kill switch may render replicas 0; the budget
+    # stays reserved (scripts/validate-capacity.py SUSPENDABLE_SERVICES).
+    autoupdater:
+      expected_services:
+        - shepherd
+      global_services: []
 
   reviewed_totals:
     edge:
@@ -109,10 +115,20 @@ capacity_contract:
       limits:
         cpu_millicores: 5100
         memory_mib: 2496
+    # 45 MiB is the whole memory-limit headroom left by the full platform:
+    # 15981 - 3072 reserve - 512 headroom = 12397 MiB, and the other stacks
+    # already limit 12352 MiB.
+    autoupdater:
+      reservations:
+        cpu_millicores: 100
+        memory_mib: 18
+      limits:
+        cpu_millicores: 250
+        memory_mib: 45
     aggregate:
       reservations:
-        cpu_millicores: 3470
-        memory_mib: 7232
+        cpu_millicores: 3570
+        memory_mib: 7250
       limits:
-        cpu_millicores: 17200
-        memory_mib: 12352
+        cpu_millicores: 17450
+        memory_mib: 12397

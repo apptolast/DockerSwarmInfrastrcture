@@ -16,7 +16,7 @@ usage() {
   cat <<'EOF'
 Usage: validate-capacity.sh [--reuse-rendered] [--verify-host]
 
-Without --reuse-rendered, render all three stacks before validating them.
+Without --reuse-rendered, render all four stacks before validating them.
 --verify-host also compares local /proc facts with the reviewed capacity floor.
 EOF
 }
@@ -63,9 +63,11 @@ if [[ "${reuse_rendered}" == false ]]; then
       --inventory ansible/inventory/local/hosts.yml \
       "ansible/playbooks/render-${stack_id}.yml" >/dev/null
   done
+  "${VENV_DIR}/bin/python" scripts/validate-autoupdater.py \
+    --output .build/autoupdater/stack.yml >/dev/null
 fi
 
-for stack_id in edge workloads observability; do
+for stack_id in edge workloads observability autoupdater; do
   stack_path="${PROJECT_DIR}/.build/${stack_id}/stack.yml"
   [[ -f "${stack_path}" ]] ||
     fail "rendered stack is absent: ${stack_path}"

@@ -124,6 +124,7 @@ yamllint \
   ansible \
   config/capacity.yml \
   config/capacity-profiles.yml \
+  config/autoupdater.yml \
   config/organizationweb.yml \
   config/host-security.yml \
   config/minecraft.yml \
@@ -172,6 +173,8 @@ PYTHONPYCACHEPREFIX="${PROJECT_DIR}/.build/pycache" \
   "${VENV_DIR}/bin/python" -m py_compile "${python_scripts[@]}"
 scripts/validate-workloads.sh
 scripts/validate-observability.sh
+"${VENV_DIR}/bin/python" scripts/validate-autoupdater.py \
+  --output .build/autoupdater/stack.yml
 scripts/validate-capacity.sh --reuse-rendered
 "${VENV_DIR}/bin/python" scripts/validate-organizationweb.py \
   --output .build/organizationweb/stack.yml

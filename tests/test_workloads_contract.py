@@ -1927,6 +1927,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "edge",
                 "workloads",
                 "observability",
+                "autoupdater",
                 "deployment_metadata",
             ],
         )
@@ -1984,6 +1985,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "preflight-images",
             "workloads",
             "observability",
+            "autoupdater",
             "backup",
             "site",
         ):
@@ -1999,11 +2001,14 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for relative_path in (
             "config/capacity.yml",
+            "config/capacity-profiles.yml",
+            "config/organizationweb.yml",
             "config/host-security.yml",
             "config/minecraft.yml",
             "config/platform.yml",
             "config/services.yml",
             "config/image-channels.yml",
+            "config/autoupdater.yml",
             "stacks/observability/secrets.yml",
             "stacks/workloads/secrets.yml",
         ):

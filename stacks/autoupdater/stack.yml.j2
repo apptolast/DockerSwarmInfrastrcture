@@ -1,0 +1,75 @@
+---
+version: "3.8"
+
+# The only stack allowed to mount the Docker socket
+# (scripts/validate-image-channels.py). A read-only bind does not reduce
+# what the API allows: this service is root-equivalent on the manager, an
+# exposure the owner accepted (docs/AUTOUPDATE.md).
+services:
+  shepherd:
+    image: "{{ autoupdater.image }}"
+    init: true
+    logging:
+      driver: local
+      options:
+        max-file: "5"
+        max-size: 20m
+    # Shepherd switches WITH_REGISTRY_AUTH on by presence. Every other
+    # presence switch, IGNORELIST_SERVICES and UPDATE_OPTIONS stay absent.
+    environment:
+      FILTER_SERVICES: "label=apptolast.autoupdate=true"
+      SLEEP_TIME: "{{ autoupdater.sleep_time }}"
+      TIMEOUT: "{{ autoupdater.timeout_seconds }}"
+      VERBOSE: "true"
+      TZ: UTC
+      WITH_REGISTRY_AUTH: "true"
+      REGISTRY_USER: "{{ autoupdater.registry_user }}"
+    secrets:
+      - source: registry_password
+        target: shepherd_registry_password
+        uid: "0"
+        gid: "0"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    networks: [egress]
+    deploy:
+      mode: replicated
+      replicas: {{ 1 if autoupdater.enabled else 0 }}
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        apptolast.autoupdate: "false"
+      restart_policy:
+        condition: any
+        delay: 30s
+        window: 60s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+      resources:
+        reservations: {cpus: "0.10", memory: 18M}
+        limits: {cpus: "0.25", memory: 45M}
+
+networks:
+  egress:
+    driver: overlay
+    attachable: false
+
+secrets:
+  registry_password:
+    external: true
+    name: "{{ autoupdater.registry_password_secret }}"

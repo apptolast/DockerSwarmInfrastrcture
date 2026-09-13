@@ -12,6 +12,7 @@
     - ../../config/platform.yml
     - ../../config/services.yml
     - ../../config/organizationweb.yml
+    - ../../config/autoupdater.yml
     - ../../config/minecraft.yml
     - ../../stacks/workloads/secrets.yml
     - ../../stacks/observability/secrets.yml
@@ -32,4 +33,6 @@
     - role: edge
     - role: workloads
     - role: observability
+    # The watcher goes last: it only acts on stacks that already exist.
+    - role: autoupdater
     - role: deployment_metadata

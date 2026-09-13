@@ -36,8 +36,10 @@ def validate_profile_contract(document):
     )
     for name, plan in plans.items():
         capacity.expect_mapping(plan, {"stacks", "aggregate"}, f"profile.{name}")
-        if plan["stacks"] != ["edge", "workloads", name]:
-            raise capacity.CapacityError("profile must include edge, workloads and its own stack")
+        if plan["stacks"] != ["edge", "workloads", name, "autoupdater"]:
+            raise capacity.CapacityError(
+                "profile must include edge, workloads, its own stack and autoupdater"
+            )
         capacity.validate_resource_totals(plan["aggregate"], f"profile.{name}.aggregate")
     app = capacity.expect_mapping(
         profiles["organizationweb"], {"expected_services", "aggregate"}, "profile.application"
@@ -123,7 +125,17 @@ def main(argv=None):
     parser.add_argument("--base-contract", type=Path, default=ROOT / "config/capacity.yml")
     parser.add_argument("--profile-contract", type=Path, default=ROOT / "config/capacity-profiles.yml")
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--requested-stack", choices=("edge", "workloads", "observability", "organizationweb", "site"))
+    parser.add_argument(
+        "--requested-stack",
+        choices=(
+            "edge",
+            "workloads",
+            "observability",
+            "organizationweb",
+            "autoupdater",
+            "site",
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         base = capacity.load_yaml(args.base_contract)
@@ -156,10 +168,21 @@ def main(argv=None):
             stacks = {
                 name: capacity.load_yaml(path)
                 for name, path in capacity.DEFAULT_STACKS.items()
+                if name != "autoupdater"
             }
             stacks["organizationweb"] = yaml.safe_load(
                 template.render(**variables, image_channels_map=image_channels_map)
             )
+            autoupdater_spec = importlib.util.spec_from_file_location(
+                "validate_autoupdater",
+                ROOT / "scripts/validate-autoupdater.py",
+            )
+            autoupdater = importlib.util.module_from_spec(autoupdater_spec)
+            autoupdater_spec.loader.exec_module(autoupdater)
+            try:
+                _rendered, stacks["autoupdater"] = autoupdater.render_validated()
+            except autoupdater.AutoupdaterError as error:
+                raise capacity.CapacityError(f"autoupdater: {error}") from error
             validate_profiles(base, profiles, stacks)
     except (capacity.CapacityError, ValueError, KeyError, TypeError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

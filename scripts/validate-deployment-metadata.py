@@ -31,6 +31,8 @@ PLAYBOOK_COMPONENTS = {
         "runner-image",
         "observability",
     ],
+    "organizationweb": ["organizationweb"],
+    "autoupdater": ["autoupdater"],
     "backup": ["backup"],
     "site": [
         "host-security",
@@ -42,6 +44,7 @@ PLAYBOOK_COMPONENTS = {
         "edge",
         "workloads",
         "observability",
+        "autoupdater",
     ],
 }
 ALLOWED_COMPONENTS = {
@@ -120,13 +123,17 @@ playbook = metadata.get("playbook")
 if playbook not in PLAYBOOK_COMPONENTS:
     fail("deployment metadata contains an invalid playbook identity")
 
+# Same files and order as scripts/deploy-ansible.sh hashes.
 contract_paths = [
     PROJECT_DIR / "config/capacity.yml",
+    PROJECT_DIR / "config/capacity-profiles.yml",
+    PROJECT_DIR / "config/organizationweb.yml",
     PROJECT_DIR / "config/host-security.yml",
     PROJECT_DIR / "config/minecraft.yml",
     PROJECT_DIR / "config/platform.yml",
     PROJECT_DIR / "config/services.yml",
     PROJECT_DIR / "config/image-channels.yml",
+    PROJECT_DIR / "config/autoupdater.yml",
     PROJECT_DIR / "stacks/observability/secrets.yml",
     PROJECT_DIR / "stacks/workloads/secrets.yml",
 ]
