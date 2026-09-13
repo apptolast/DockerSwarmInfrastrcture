@@ -341,9 +341,9 @@
 # Image, Labels (the stack namespace), Env, Init, Mounts, Secrets and an empty
 # Privileges; the daemon reports Isolation "default" and the default
 # StopGracePeriod of 10 s (observed on Docker 29.6.2 for every stack service,
-# 2026-09-13). DNSConfig is tolerated only empty. Any other key (Command, Args, User, Hostname, Hosts, Dir,
-# CapabilityAdd, Sysctls, Configs, ...) came from outside the reviewed
-# template, and is refused by name.
+# 2026-09-13). DNSConfig is tolerated only empty. Any other key (Command,
+# Args, User, Hostname, Hosts, Dir, CapabilityAdd, Sysctls, Configs, ...) came
+# from outside the reviewed template, and is refused by name.
 - name: Require only the reviewed live watcher container fields
   ansible.builtin.assert:
     that:
