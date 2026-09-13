@@ -368,6 +368,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `scripts/resolve-image-channel.py` acepta un índice OCI sin `mediaType`
+  (opcional según la especificación) cuando declara `schemaVersion: 2` y
+  una lista `manifests`. `passbolt/passbolt:latest` publica así su índice y
+  el preflight de imágenes de `workloads` fallaba al resolver ese canal;
+  cualquier otro documento sin `mediaType` sigue rechazado.
 - `scripts/validate-deployment-metadata.py` hashea los mismos contratos y en
   el mismo orden que `scripts/deploy-ansible.sh` (faltaban
   `config/capacity-profiles.yml` y `config/organizationweb.yml`) y acepta el
