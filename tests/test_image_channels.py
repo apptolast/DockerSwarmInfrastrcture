@@ -850,6 +850,41 @@ class ChannelResolverTests(unittest.TestCase):
             ),
             f"{self.REFERENCE}@{DIGEST}",
         )
+        # An OCI index may omit mediaType (seen on passbolt/passbolt:latest).
+        index_without_media_type = self.descriptor(
+            schemaVersion=2,
+            manifests=[{"platform": {"os": "linux", "architecture": "amd64"}}],
+        )
+        del index_without_media_type["mediaType"]
+        self.assertEqual(
+            resolver.resolve_channel_reference(
+                self.REFERENCE, self.REFERENCES, index_without_media_type
+            ),
+            f"{self.REFERENCE}@{DIGEST}",
+        )
+
+    def test_descriptor_without_media_type_must_be_a_schema_2_index(self) -> None:
+        amd64 = [{"platform": {"os": "linux", "architecture": "amd64"}}]
+        arm64 = [{"platform": {"os": "linux", "architecture": "arm64"}}]
+        for changes in (
+            {},
+            {"schemaVersion": 2},
+            {"manifests": amd64},
+            {"schemaVersion": 1, "manifests": amd64},
+            {"schemaVersion": True, "manifests": amd64},
+            {"schemaVersion": "2", "manifests": amd64},
+            {"schemaVersion": 2, "manifests": {}},
+            {"schemaVersion": 2, "manifests": arm64},
+            {"schemaVersion": 2, "manifests": amd64, "mediaType": None},
+        ):
+            with self.subTest(changes=changes):
+                descriptor = self.descriptor(**changes)
+                if "mediaType" not in changes:
+                    del descriptor["mediaType"]
+                with self.assertRaises(resolver.ChannelImageError):
+                    resolver.resolve_channel_reference(
+                        self.REFERENCE, self.REFERENCES, descriptor
+                    )
 
     def test_non_channel_references_and_bad_descriptors_are_rejected(self) -> None:
         for reference in (

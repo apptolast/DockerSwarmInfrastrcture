@@ -73,6 +73,17 @@ def resolve_channel_reference(
     if not isinstance(document, dict):
         raise ChannelImageError("registry descriptor must be an object")
     media_type = document.get("mediaType")
+    if (
+        "mediaType" not in document
+        and type(document.get("schemaVersion")) is int
+        and document.get("schemaVersion") == 2
+        and isinstance(document.get("manifests"), list)
+    ):
+        # The OCI image-spec makes mediaType optional in an image index, and
+        # some publishers omit it (passbolt/passbolt, 2026-09-13). Only an
+        # explicit schema 2 manifest list is read as an index; any other
+        # document without mediaType stays unsupported.
+        media_type = "application/vnd.oci.image.index.v1+json"
     digest = document.get("digest")
     size = document.get("size")
     if media_type not in ALLOWED_MEDIA_TYPES:
