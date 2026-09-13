@@ -134,10 +134,12 @@ consecutivo desde el mismo commit vuelve a `changed=0`.
 Ningún servicio tiene `autoupdate: true` en Git. El vigilante que corría
 en el host sin registrar (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
 en lugar del filtro por etiqueta) queda registrado en Git por el stack
-`autoupdater` (ver «Vigilante registrado»). Hasta que ese stack se aplique,
-el preflight de capacidad de un checkout anterior rechaza cualquier apply de
-`edge`, `workloads` u `organizationweb` porque ese servicio vivo queda fuera
-del perfil revisado.
+`autoupdater` (ver «Vigilante registrado»). Mientras `autoupdater_shepherd`
+exista, un checkout anterior a este cambio, incluido el del cambio de
+canales, ya no puede aplicar `edge`, `workloads` ni `organizationweb`: su
+preflight de capacidad rechaza ese servicio vivo porque queda fuera de su
+perfil. Todos los applies salen de un checkout de `main` que contenga los dos
+cambios, y el primero es `autoupdater` (ver «Aplicar el registro»).
 
 Las entradas iniciales parten del inventario vivo del 2026-09-12:
 
@@ -254,25 +256,85 @@ reequilibra el presupuesto en un PR revisado.
 
 ### Aplicar el registro
 
-1. Tras el merge del cambio de canales, aplica en orden `edge`, `workloads` y
-   `organizationweb` desde su checkout (sección siguiente).
-2. Desde un checkout limpio de este cambio:
-   `./scripts/deploy-ansible.sh --playbook autoupdater --check`, y después
-   con `--confirm-production`. El apply sustituye el spec vivo sin revisar
-   por el revisado; el rol comprueba después imagen, entorno, filtro,
-   réplicas, colocación, secret y socket.
-3. `sudo -- docker service logs autoupdater_shepherd` debe mostrar el inicio
-   de sesión y la espera de una hora sin intentar actualizar ningún servicio.
-4. Repite `--playbook workloads` y exige `changed=0`.
+Todos los pasos salen de **un único checkout limpio de `main`** que contenga
+el cambio de canales y este. Un checkout anterior no sirve: su preflight de
+capacidad rechaza el `autoupdater_shepherd` vivo (ver «Estado tras este
+cambio»). El orden importa: el vigilante sin revisar (sin filtro,
+`SLEEP_TIME=20m`) mueve el digest de todo servicio fuera de su
+`IGNORELIST_SERVICES`, así que se sustituye **antes** de introducir los holds.
 
-Shepherd solo se reactiva con este apply, nunca con `docker service scale`.
+1. Haz el inventario de solo lectura de «Antes del primer apply». Si un
+   hold no ejecuta su `spec_exact`, corrige su entrada en un PR revisado y
+   empieza de nuevo desde el checkout de ese merge.
+2. `./scripts/deploy-ansible.sh --playbook autoupdater --check` y después
+   con `--confirm-production`. Es seguro como primer apply: el rol solo lee
+   la configuración de Git (mapa de canales y exclusiones), no el estado
+   vivo de los otros stacks, y su filtro `label=apptolast.autoupdate=true`
+   no selecciona ningún servicio porque ninguno lleva todavía esa etiqueta.
+   El apply sustituye el spec vivo sin revisar por el revisado. Después, el
+   rol espera a que Swarm termine la actualización (falla ante `rollback_*` o
+   `paused`) y comprueba imagen, entorno, filtro, réplicas, colocación,
+   secret, socket, el conjunto exacto de campos del contenedor y los
+   recursos.
+3. Comprueba el vigilante con estas lecturas:
+
+   ```bash
+   sudo -- docker service logs autoupdater_shepherd
+   sudo -- docker service inspect \
+     --format '{{json .UpdateStatus}}' \
+     autoupdater_shepherd
+   sudo -- docker service ls --filter label=apptolast.autoupdate=true
+   ```
+
+   Los logs deben mostrar el inicio de sesión y la espera sin intentar
+   actualizar ningún servicio; el texto exacto de cada línea es el de
+   Shepherd v1.8.1 y este repositorio no lo fija. `UpdateStatus` debe tener
+   `"State":"completed"`: un estado `rollback_*` significa que Swarm restauró
+   el spec sin revisar, así que detente y no sigas con el paso 4. El listado
+   filtrado por la etiqueta no debe mostrar ningún servicio.
+4. Repite el inventario del paso 1 y aplica, en este orden, `edge`,
+   `workloads` y `organizationweb`, cada uno con `--check` y después con
+   `--confirm-production`.
+5. Idempotencia: justo después de cada apply de los pasos 2 y 4, repite ese
+   mismo playbook desde el mismo commit y exige `changed=0`. Solo vale la
+   repetición consecutiva del mismo playbook: `deployment_metadata` registra
+   en `DEPLOYED_VERSION.yml` qué playbook aplicó, así que alternar playbooks
+   siempre informa `changed`.
+6. Limpia el estado hecho a mano. El stack a mano usaba la red overlay
+   `autoupdater_default`, que `docker stack deploy --prune` no borra.
+   Comprueba que ya no la usa nada: el primer comando debe devolver `0` y el
+   identificador que imprime el segundo no debe aparecer en la salida del
+   tercero (Swarm guarda las redes de un servicio por ID, no por nombre).
+   Solo entonces bórrala con el cuarto; `docker network rm` rechaza además
+   una red en uso.
+
+   ```bash
+   sudo -- docker network inspect \
+     --format '{{len .Containers}}' \
+     autoupdater_default
+   sudo -- docker network inspect --format '{{.Id}}' autoupdater_default
+   sudo -- docker service inspect \
+     --format '{{json .Spec.TaskTemplate.Networks}}' \
+     autoupdater_shepherd
+   sudo -- docker network rm autoupdater_default
+   ```
+
+   El fichero del stack a mano nunca estuvo en Git. El 2026-09-12 estaba sin
+   seguimiento en
+   `/home/admin/infraestructure/dockerswarm/stacks/autoupdater/stack.yml`,
+   dentro de la copia de trabajo del owner. No se vuelve a desplegar ni se
+   añade a Git; el owner decide si lo borra de su copia.
+
+Shepherd solo se reactiva con el apply de `autoupdater`, nunca con
+`docker service scale`.
 
 ## Antes del primer apply
 
-Inventario de solo lectura, obligatorio antes de aplicar este cambio: para
-cada entrada hold, en especial las bases de datos y `organizationweb_*`, la
-imagen viva debe ser su `spec_exact` (`validate-image-channels.py derive`),
-salvo `redis-coordinator`, cuya cadena renderizada cambia a propósito.
+Inventario de solo lectura, obligatorio antes del primer apply (pasos 1 y 4
+de «Aplicar el registro»): para cada entrada hold, en especial las bases de
+datos y `organizationweb_*`, la imagen viva debe ser su `spec_exact`
+(`validate-image-channels.py derive`), salvo `redis-coordinator`, cuya cadena
+renderizada cambia a propósito.
 
 ```bash
 sudo -- docker service inspect \
@@ -325,7 +387,9 @@ sus pins; Traefik queda por confirmar.
   feature flags ya activados.
 - **Todo el modelo.** No hagas `git revert` a los digests del baseline:
   degradaría aplicaciones ya migradas. Pon cada servicio en hold en su
-  digest vivo actual y después retira el vigilante.
+  digest vivo actual y después detén el vigilante con un PR que pone
+  `enabled: false` en `config/autoupdater.yml` y `--playbook autoupdater`.
+  El stack no se retira: todos los perfiles de capacidad lo exigen.
 
 ## Riesgos aceptados
 

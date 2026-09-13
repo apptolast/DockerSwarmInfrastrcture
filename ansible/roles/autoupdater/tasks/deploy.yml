@@ -339,8 +339,9 @@
 
 # The Docker CLI converts this compose service into a ContainerSpec with only
 # Image, Labels (the stack namespace), Env, Init, Mounts, Secrets and an empty
-# Privileges; the daemon reports Isolation "default". DNSConfig is tolerated
-# only empty. Any other key (Command, Args, User, Hostname, Hosts, Dir,
+# Privileges; the daemon reports Isolation "default" and the default
+# StopGracePeriod of 10 s (observed on Docker 29.6.2 for every stack service,
+# 2026-09-13). DNSConfig is tolerated only empty. Any other key (Command, Args, User, Hostname, Hosts, Dir,
 # CapabilityAdd, Sysctls, Configs, ...) came from outside the reviewed
 # template, and is refused by name.
 - name: Require only the reviewed live watcher container fields
@@ -349,10 +350,14 @@
       - >-
         autoupdater_container | list
         | difference(['Image', 'Labels', 'Env', 'Init', 'Mounts', 'Secrets',
-                      'Isolation', 'Privileges', 'DNSConfig'])
+                      'Isolation', 'Privileges', 'DNSConfig',
+                      'StopGracePeriod'])
         | length == 0
       - autoupdater_container.Init | default(false) is sameas true
       - autoupdater_container.Isolation | default('default') == 'default'
+      - >-
+        autoupdater_container.StopGracePeriod | default(10000000000)
+        == 10000000000
       - >-
         autoupdater_container.Privileges | default({}, true)
         | dict2items | selectattr('value') | list | length == 0
@@ -368,7 +373,8 @@
       keys:
       {{ autoupdater_container | list
          | difference(['Image', 'Labels', 'Env', 'Init', 'Mounts', 'Secrets',
-                       'Isolation', 'Privileges', 'DNSConfig']) }}).
+                       'Isolation', 'Privileges', 'DNSConfig',
+                       'StopGracePeriod']) }}).
     quiet: true
 
 # The CLI parses compose sizes as binary units: 45M is 45 x 1024 x 1024 =

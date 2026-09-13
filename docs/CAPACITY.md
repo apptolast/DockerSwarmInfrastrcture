@@ -6,8 +6,9 @@
 topología mononodo actual. Une los recursos de los cuatro stacks (`edge`,
 `workloads`, `observability` y `autoupdater`) con el tamaño mínimo del
 servidor y evita que un cambio aparentemente local produzca un plan global
-imposible. `config/capacity-profiles.yml` suma además `organizationweb` en el
-perfil alternativo; ambos perfiles incluyen `autoupdater`.
+imposible. `config/capacity-profiles.yml` define el perfil activo
+`organizationweb`, que sustituye `observability` por `organizationweb`, y el
+perfil `observability`; ambos perfiles incluyen `autoupdater`.
 
 Docker advierte que agotar la memoria puede activar el OOM killer contra un
 contenedor, el daemon u otros procesos importantes del host. También distingue

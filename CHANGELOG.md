@@ -100,6 +100,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   aplicarlo el vigilante no selecciona ningún servicio.
 - Interruptor `enabled` en `config/autoupdater.yml`: `false` renderiza
   `replicas: 0` y conserva el servicio y su presupuesto de capacidad.
+- El rol `autoupdater` espera a que Swarm termine la actualización del
+  vigilante y falla ante `rollback_*`, `paused` o un `completed` antiguo, y
+  el spec vivo debe tener exactamente los campos de contenedor revisados
+  (sin `Command`, `Args`, `User`, `Hosts` ni capacidades; `Init` activo y
+  `StopGracePeriod` de 10 s) y los recursos del presupuesto. El render exige
+  el conjunto exacto de claves del servicio y todo `deploy`.
+- El runbook aplica primero `autoupdater`, que no selecciona ningún servicio,
+  y después `edge`, `workloads` y `organizationweb` desde el mismo checkout
+  de `main`, y limpia la red `autoupdater_default` del stack hecho a mano.
 - Nuevo `scripts/validate-autoupdater.py`, ejecutado por
   `scripts/validate-iac.sh`, que fija digest, entorno, secret, socket de
   solo lectura, colocación, réplicas y recursos, y renderiza

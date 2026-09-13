@@ -150,10 +150,13 @@ primer apply tras introducir los canales informa `changed` en `docker_stack`
 por la etiqueta nueva `apptolast.autoupdate`, sin reiniciar tareas. Solo un
 servicio con `autoupdate: true` puede cambiar de
 digest entre applies, y solo mediante ese vigilante revisado en este
-repositorio (stack `autoupdater`, playbook `autoupdater`, que se aplica
-después de los stacks de aplicación). `ansible-playbook` contra el clúster
-real sigue siendo una acción humana y ningún push a Docker Hub puede
-iniciarlo por sí solo.
+repositorio (stack `autoupdater`, playbook `autoupdater`). En la primera
+adopción, `autoupdater` se aplica antes que `edge`, `workloads` y
+`organizationweb`, todo desde el mismo checkout; el orden completo está en
+[`AUTOUPDATE.md`](AUTOUPDATE.md) («Aplicar el registro»). En `site` el rol
+sigue ejecutándose tras `edge`, `workloads` y `observability`.
+`ansible-playbook` contra el clúster real sigue siendo una acción humana y
+ningún push a Docker Hub puede iniciarlo por sí solo.
 
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.

@@ -426,14 +426,21 @@ class AutoupdaterLiveGateTests(AnsibleTaskAssertions, unittest.TestCase):
 
     def variables(self, **changes: Any) -> dict[str, Any]:
         # What Swarm stores for the rendered stack: the CLI adds the stack
-        # namespace label and an empty Privileges, the daemon Isolation.
+        # namespace label and an empty Privileges, the daemon Isolation and
+        # the default StopGracePeriod (as observed on Docker 29.6.2).
         container = {
             "Image": self.catalog["image"],
             "Labels": {"com.docker.stack.namespace": "autoupdater"},
             "Env": list(REVIEWED_ENV),
             "Init": True,
-            "Privileges": {"CredentialSpec": None, "SELinuxContext": None},
+            "Privileges": {
+                "CredentialSpec": None,
+                "SELinuxContext": None,
+                "NoNewPrivileges": False,
+            },
             "Isolation": "default",
+            "StopGracePeriod": 10000000000,
+            "DNSConfig": {},
             "Secrets": [
                 {
                     "File": {
@@ -555,6 +562,7 @@ class AutoupdaterLiveGateTests(AnsibleTaskAssertions, unittest.TestCase):
             ("container", {"container": {"Hosts": ["203.0.113.1 index.docker.io"]}}),
             ("container", {"container": {"CapabilityAdd": ["CAP_SYS_ADMIN"]}}),
             ("container", {"container": {"Init": False}}),
+            ("container", {"container": {"StopGracePeriod": 3600000000000}}),
             (
                 "container",
                 {
