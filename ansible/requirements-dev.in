@@ -1,5 +1,5 @@
 # Dependencias directas del control plane local y de CI.
-ansible-core==2.21.3
+ansible-core==2.21.4
 ansible-lint==26.8.0
 jsondiff==2.2.1
 PyYAML==6.0.3
