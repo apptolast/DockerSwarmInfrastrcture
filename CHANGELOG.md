@@ -122,6 +122,22 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   escritura o fuera de `autoupdater`, digest o tag distintos, réplicas,
   secret ausente, recursos fuera de presupuesto) y la comprobación del spec
   vivo con Ansible real.
+- `operation_lock_guard` comprueba, tras probar el lock y antes de mutar, que
+  ningún servicio con `apptolast.autoupdate=true` tiene `UpdateStatus.State`
+  en `updating` o `rollback_started`, sea un update del vigilante o uno que
+  un apply anterior dejó dentro de su ventana `monitor`. Si lo hay, espera
+  hasta 36 × 10 s por servicio a que termine; si sigue, el apply falla sin
+  mutar y sin override, y el marker se recupera antes de repetirlo. Corre en
+  todos los playbooks con lock, solo lee, solo en modo apply y solo con
+  `/usr/bin/docker` instalado: un Swarm `inactive` (bootstrap fresco) se salta;
+  un daemon que no responde o cualquier otro estado distinto de `active` falla
+  cerrado, también en `platform`. `paused`, `rollback_paused` y
+  `rollback_completed` no bloquean, para que el arreglo en Git siga siendo
+  aplicable. Estrecha la carrera con el vigilante, no la cierra.
+  `docs/OPERATIONS.md` documenta la espera antes de repetir o encadenar applies
+  y las salidas manuales ante un update que nunca termina o un Swarm parado o
+  bloqueado. Un test de contrato fija su posición, su modo de solo lectura y los
+  dos estados.
 
 ### Changed
 
@@ -382,6 +398,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La búsqueda de mutadores de `ansible-operation-lock.py recover` reconoce
+  los clientes `docker stack|service|swarm|node` detrás de `timeout`
+  (coreutils o busybox, con `-s`, `-k` o `-t`) y de opciones globales de
+  Docker con valor (`--config`, `-c`, `--context`, `-H`, `--host`, `-l`,
+  `--log-level`, `--tlscacert`, `--tlscert`, `--tlskey`, también como
+  `--opcion=valor`) o sin él (`--tls`, `--tlsverify`, `-D`, `--debug`).
+  Antes solo miraba `argv[1]`, así que no veía el
+  `docker --config ... service update` del vigilante. Una opción no
+  reconocida cuenta como mutador si detrás aparece uno de esos subcomandos.
+  `docker manifest inspect`, `docker login` y `docker ps` siguen sin contar.
+  No reconoce otros envoltorios (`sudo`, `env`, `nice`, `nohup`, `setsid`,
+  `sh -c`), como tampoco antes; `docs/OPERATIONS.md` lo indica.
 - El vigilante espera una hora antes de reiniciarse (`restart_policy.delay`
   pasa de `30s` a `1h`). Tras un rollback automático de swarmkit, Shepherd
   v1.8.1 muere por `set -e` al leer un `PreviousSpec` nulo y, con 30 s, el

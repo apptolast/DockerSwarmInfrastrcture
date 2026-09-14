@@ -66,6 +66,137 @@
   check_mode: false
   no_log: true
 
+# The image watcher (docs/AUTOUPDATE.md) runs `docker service update` on the
+# services labelled `apptolast.autoupdate=true` without taking this lock, and
+# swarmkit keeps rolling an update forward on the server even after the
+# watcher's client timed out or died. Under the held lock, refuse to start an
+# apply while such an update is still in progress: nothing has been mutated
+# yet. Swarm does not record who started an update, so this also sees an
+# update left by a previous apply that is still inside its `monitor` window
+# (the stack roles deploy with `detach: true`). It waits up to 36 x 10 s per
+# service for the update to finish, which covers a 120 s monitor plus a
+# 2 min start_period, and fails only if it is still in progress. The
+# wrapper retains the marker of that failed run, so the operator recovers it
+# and retries. There is no override. Only the
+# in-progress states block. `paused`, `rollback_paused` and
+# `rollback_completed` are terminal and stay allowed on purpose: the
+# reviewed Git fix for that service must remain appliable, and the stack
+# roles already reject those states after their own deploy.
+#
+# The check runs in every locked playbook on purpose, with no per-playbook
+# switch: any apply may restart Docker or redeploy a watched service, and a
+# playbook-set variable would be one more way to skip it.
+#
+# A fresh-host bootstrap runs this role before Docker exists, so the checks
+# only read Swarm when the Docker CLI is installed. An inactive Swarm has no
+# services to update. An unreachable daemon makes `docker info` itself fail
+# with Docker's error; any other state (pending, locked, error) fails the
+# assert. Neither can prove that no update is in progress, so both fail
+# closed, also for `platform`, which then cannot start or unlock Docker
+# from Git: docs/OPERATIONS.md documents that manual step.
+- name: Refuse to mutate while a watched service is mid-update
+  when: operation_lock_guard_mode == "apply"
+  block:
+    - name: Detect the Docker CLI before reading the Swarm state
+      ansible.builtin.stat:
+        path: /usr/bin/docker
+        get_checksum: false
+      register: operation_lock_guard_docker_cli
+      changed_when: false
+      check_mode: false
+
+    - name: Read the Swarm state (fails if the daemon is unreachable)
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - info
+          - --format
+          - "{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}"
+      register: operation_lock_guard_swarm_state
+      changed_when: false
+      check_mode: false
+      when: operation_lock_guard_docker_cli.stat.exists
+
+    - name: Require a Swarm state that proves whether the watcher can act
+      ansible.builtin.assert:
+        that:
+          - operation_lock_guard_swarm_state.stdout in ["inactive", "active"]
+        fail_msg: >-
+          Docker reported the local Swarm state
+          '{{ operation_lock_guard_swarm_state.stdout }}', so this apply
+          cannot prove that no service update is in progress. Nothing was
+          mutated. Bring the Swarm back to active (docs/OPERATIONS.md),
+          recover the retained operation marker and retry the apply.
+        quiet: true
+      when: operation_lock_guard_docker_cli.stat.exists
+
+    - name: Check the watched services on an active Swarm
+      when:
+        - operation_lock_guard_docker_cli.stat.exists
+        - operation_lock_guard_swarm_state.stdout == "active"
+      block:
+        - name: List the services the image watcher may update
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/docker
+              - service
+              - ls
+              - --quiet
+              - --filter
+              - label=apptolast.autoupdate=true
+          register: operation_lock_guard_watched_services
+          changed_when: false
+          check_mode: false
+
+        - name: Wait for any in-progress update of each watched service
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/docker
+              - service
+              - inspect
+              - --format
+              - >-
+                {% raw %}{"Name":{{json .Spec.Name}},"UpdateStatus":{{json
+                .UpdateStatus}}}{% endraw %}
+              - "{{ item }}"
+          loop: "{{ operation_lock_guard_watched_services.stdout_lines }}"
+          register: operation_lock_guard_watched_states
+          changed_when: false
+          check_mode: false
+          # A failed read stops the wait at once and fails the task; running
+          # out of retries fails it too.
+          until: >-
+            operation_lock_guard_watched_states.rc != 0
+            or (
+              (operation_lock_guard_watched_states.stdout | from_json).UpdateStatus
+              | default({}, true)
+            ).get("State", "none")
+            not in ["updating", "rollback_started"]
+          retries: 36
+          delay: 10
+
+        - name: Reject a watched-service update that is still in progress
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  (item.stdout | from_json).UpdateStatus
+                  | default({}, true)
+                ).get("State", "none")
+                not in ["updating", "rollback_started"]
+            fail_msg: >-
+              An update is in progress on service {{ item.item }}, started
+              by the image watcher or left by a previous apply inside its
+              monitor window; Swarm reported {{ item.stdout }} (compare
+              StartedAt with the monitor window). This apply mutated
+              nothing. Wait until that update finishes, recover the retained
+              operation marker and retry the apply; for an update that never
+              finishes see docs/OPERATIONS.md.
+            quiet: true
+          loop: "{{ operation_lock_guard_watched_states.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
 - name: Derive the strict nested operation-lock proof environment
   ansible.builtin.set_fact:
     operation_lock_guard_environment:

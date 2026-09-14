@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -12,6 +14,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HELPER = PROJECT_ROOT / "scripts/ansible-operation-lock.py"
@@ -644,6 +648,364 @@ class AnsibleOperationLockTests(unittest.TestCase):
         finally:
             watcher.terminate()
             watcher.wait(timeout=5)
+
+
+class MutatingProcessClassificationTests(unittest.TestCase):
+    """Classify synthetic argv lists; the real /proc is never scanned."""
+
+    def assert_mutating(self, arguments: list[str]) -> None:
+        self.assertTrue(helper.is_mutating_process(arguments), arguments)
+
+    def assert_not_mutating(self, arguments: list[str]) -> None:
+        self.assertFalse(helper.is_mutating_process(arguments), arguments)
+
+    def assert_parsed_swarm_writer(self, arguments: list[str]) -> None:
+        """Prove the exact parse, not the fail-closed fallback, matched."""
+        try:
+            invocation = helper.swarm_cli_invocation(arguments)
+        except helper.AmbiguousCommandLine as error:
+            self.fail(f"{arguments} fell back to fail-closed: {error}")
+        self.assertIsNotNone(invocation, arguments)
+        self.assertIn(invocation[0], helper.SWARM_WRITER_SUBCOMMANDS, arguments)
+        self.assertEqual(
+            invocation, arguments[len(arguments) - len(invocation) :], arguments
+        )
+        self.assert_mutating(arguments)
+
+    def test_existing_classifications_are_kept(self) -> None:
+        for arguments in (
+            ["apt-get", "install", "-y", "docker-ce"],
+            ["/usr/bin/dpkg", "--configure", "-a"],
+            ["/usr/bin/python3", "/usr/bin/unattended-upgrade"],
+            ["/usr/bin/python3", "/root/.ansible/tmp/x/AnsiballZ_command.py"],
+            ["python3", "/srv/.venv/bin/ansible-playbook", "site.yml"],
+            ["docker", "service", "update", "portfolio_pablo"],
+            ["/usr/bin/docker", "stack", "deploy", "-c", "stack.yml", "edge"],
+            ["docker", "swarm", "update"],
+            ["docker", "node", "update", "--availability", "drain", "self"],
+            # Reads through a Swarm writer command family keep counting.
+            ["docker", "service", "inspect", "portfolio_pablo"],
+        ):
+            self.assert_mutating(arguments)
+        for arguments in (
+            [],
+            ["docker"],
+            ["docker", "ps"],
+            ["docker", "manifest", "inspect", "nginx:1"],
+            ["docker", "login", "--username", "bot", "--password-stdin"],
+            ["/usr/local/bin/shepherd"],
+            ["sleep", "3600"],
+            ["dockerd", "--host", "fd://", "service"],
+        ):
+            self.assert_not_mutating(arguments)
+
+    def test_docker_global_options_before_a_swarm_writer_are_skipped(
+        self,
+    ) -> None:
+        for arguments in (
+            ["docker", "--config", "/x", "service", "update", "s"],
+            ["docker", "--config=/x", "service", "update", "--rollback", "s"],
+            ["docker", "-c", "/x", "node", "update", "self"],
+            ["docker", "-c/x", "node", "update", "self"],
+            [
+                "docker",
+                "-H",
+                "unix:///var/run/docker.sock",
+                "service",
+                "update",
+                "--rollback",
+                "s",
+            ],
+            ["docker", "--host=unix:///var/run/docker.sock", "swarm", "update"],
+            ["docker", "-Hunix:///var/run/docker.sock", "service", "rm", "s"],
+            ["docker", "--context", "c", "stack", "deploy"],
+            ["docker", "--context=c", "stack", "rm", "edge"],
+            ["docker", "-l", "debug", "service", "scale", "s=0"],
+            ["docker", "--log-level=info", "--debug", "stack", "rm", "x"],
+            [
+                "/usr/bin/docker",
+                "--tls",
+                "--tlsverify",
+                "--tlscacert",
+                "/ca.pem",
+                "--tlscert=/cert.pem",
+                "--tlskey",
+                "/key.pem",
+                "-D",
+                "service",
+                "update",
+                "s",
+            ],
+            ["docker", "--tlsverify=false", "service", "update", "s"],
+            ["docker", "--", "service", "update", "s"],
+        ):
+            self.assert_parsed_swarm_writer(arguments)
+
+    def test_timeout_wrappers_around_a_swarm_writer_are_skipped(self) -> None:
+        image = "--image=apptolast/portfolio@sha256:" + "d" * 64
+        for arguments in (
+            # The exact Shepherd v1.8.1 invocation.
+            [
+                "timeout",
+                "900",
+                "docker",
+                "service",
+                "update",
+                "portfolio_pablo",
+                "--detach=false",
+                "--with-registry-auth",
+                image,
+            ],
+            ["timeout", "900", "docker", "--config", "/x", "service", "update"],
+            ["timeout", "900", "docker", "service", "update", "--rollback", "s"],
+            [
+                "/usr/bin/timeout",
+                "-s",
+                "KILL",
+                "-k",
+                "10s",
+                "900",
+                "docker",
+                "service",
+                "update",
+                "s",
+            ],
+            ["timeout", "-sKILL", "-k5", "15m", "docker", "stack", "deploy"],
+            [
+                "timeout",
+                "--signal=TERM",
+                "--kill-after=5",
+                "--preserve-status",
+                "--foreground",
+                "-v",
+                "1.5m",
+                "/usr/bin/docker",
+                "node",
+                "update",
+            ],
+            ["timeout", "--", "900", "docker", "swarm", "update"],
+            ["timeout", "-t", "900", "-s", "KILL", "docker", "service", "rm"],
+            ["busybox", "timeout", "900", "docker", "service", "update", "s"],
+            ["timeout", "900", "timeout", "800", "docker", "node", "update"],
+        ):
+            self.assert_parsed_swarm_writer(arguments)
+
+    def test_unparsed_options_fail_closed_before_a_swarm_writer(self) -> None:
+        for arguments in (
+            ["docker", "--unreviewed", "service", "update", "s"],
+            ["timeout", "--odd", "900", "docker", "service", "rm"],
+            ["timeout", "docker", "service", "update", "s"],
+            ["timeout", "soon", "docker", "service", "update", "s"],
+        ):
+            with self.assertRaises(helper.AmbiguousCommandLine, msg=arguments):
+                helper.swarm_cli_invocation(arguments)
+        self.assert_mutating(["docker", "--unreviewed", "service", "update", "s"])
+        self.assert_mutating(["timeout", "--odd", "900", "docker", "service", "rm"])
+        self.assert_mutating(["timeout", "docker", "service", "update", "s"])
+        self.assert_not_mutating(["docker", "--unreviewed", "manifest", "inspect"])
+
+    def test_exact_parse_returns_the_subcommand_after_the_options(self) -> None:
+        self.assertEqual(
+            helper.swarm_cli_invocation(
+                ["timeout", "-k", "5", "900", "docker", "-H", "x", "ps"]
+            ),
+            ["ps"],
+        )
+        self.assertEqual(
+            helper.swarm_cli_invocation(["docker", "-c", "/x", "service", "ls"]),
+            ["service", "ls"],
+        )
+        self.assertIsNone(helper.swarm_cli_invocation(["timeout", "9", "sleep"]))
+
+    def test_reads_and_non_docker_commands_stay_non_mutating(self) -> None:
+        for arguments in (
+            ["timeout", "900", "docker", "manifest", "inspect", "nginx:1"],
+            ["docker", "--config", "/x", "manifest", "inspect", "nginx:1"],
+            ["timeout", "900", "docker", "--config=/x", "manifest", "inspect"],
+            ["docker", "--config", "/x", "login", "--password-stdin"],
+            ["timeout", "-s", "KILL", "900", "docker", "ps"],
+            # An option value is never mistaken for the subcommand.
+            ["docker", "-H", "service", "ps"],
+            ["docker", "--context", "stack", "info"],
+            ["docker", "--config"],
+            ["timeout", "900", "sleep", "service"],
+            ["timeout", "900"],
+            ["busybox", "sleep", "60"],
+        ):
+            self.assert_not_mutating(arguments)
+
+
+class WatcherUpdateGuardContractTests(unittest.TestCase):
+    """Structure of the read-only image-watcher check in the lock guard."""
+
+    PROVE = "Prove the host-global deployment lock before mutation"
+    GUARD_BLOCK = "Refuse to mutate while a watched service is mid-update"
+    WAIT = "Wait for any in-progress update of each watched service"
+
+    def setUp(self) -> None:
+        self.tasks = yaml.safe_load(GUARD.read_text(encoding="utf-8"))
+        names = [task["name"] for task in self.tasks]
+        self.guard = self.tasks[names.index(self.PROVE) + 1]
+
+    def flattened(self, tasks: list[dict]) -> list[dict]:
+        result: list[dict] = []
+        for task in tasks:
+            result.append(task)
+            result.extend(self.flattened(task.get("block", [])))
+        return result
+
+    def test_guard_follows_the_prove_task_and_runs_only_in_apply(self) -> None:
+        self.assertEqual(self.guard["name"], self.GUARD_BLOCK)
+        self.assertEqual(self.guard["when"], 'operation_lock_guard_mode == "apply"')
+        names = [task["name"] for task in self.tasks]
+        self.assertEqual(
+            names.index("Derive the strict nested operation-lock proof environment"),
+            names.index(self.GUARD_BLOCK) + 1,
+        )
+
+    def test_guard_is_read_only_and_cannot_be_overridden(self) -> None:
+        defaults = (
+            PROJECT_ROOT / "ansible/roles/operation_lock_guard/defaults/main.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("watch", defaults)
+        self.assertNotIn("autoupdate", defaults)
+        commands = 0
+        for task in self.flattened([self.guard]):
+            for forbidden in (
+                "ignore_errors",
+                "failed_when",
+                "vars",
+                "rescue",
+                "always",
+                "ansible.builtin.shell",
+            ):
+                self.assertNotIn(forbidden, task, task["name"])
+            if task["name"] != self.WAIT:
+                for forbidden in ("until", "retries", "delay"):
+                    self.assertNotIn(forbidden, task, task["name"])
+            if "block" in task:
+                continue
+            if "ansible.builtin.assert" in task:
+                continue
+            self.assertIs(task["check_mode"], False, task["name"])
+            self.assertIs(task["changed_when"], False, task["name"])
+            if "ansible.builtin.command" in task:
+                commands += 1
+                argv = task["ansible.builtin.command"]["argv"]
+                self.assertEqual(argv[0], "/usr/bin/docker")
+                self.assertIn(argv[1], {"info", "service"})
+                if argv[1] == "service":
+                    self.assertIn(argv[2], {"ls", "inspect"})
+            else:
+                self.assertEqual(
+                    set(task) - {"name", "register", "changed_when", "check_mode"},
+                    {"ansible.builtin.stat"},
+                )
+                self.assertEqual(
+                    task["ansible.builtin.stat"]["path"], "/usr/bin/docker"
+                )
+        self.assertEqual(commands, 3)
+        listing = next(
+            task
+            for task in self.flattened([self.guard])
+            if task["name"] == "List the services the image watcher may update"
+        )
+        self.assertEqual(
+            listing["ansible.builtin.command"]["argv"][3:],
+            ["--quiet", "--filter", "label=apptolast.autoupdate=true"],
+        )
+
+    def test_only_in_progress_update_states_block(self) -> None:
+        asserts = [
+            task
+            for task in self.flattened([self.guard])
+            if "ansible.builtin.assert" in task
+        ]
+        state_gate = next(
+            task
+            for task in asserts
+            if task["name"]
+            == "Reject a watched-service update that is still in progress"
+        )
+        expression = " ".join(state_gate["ansible.builtin.assert"]["that"])
+        blocked = re.findall(r"not in (\[[^\]]*\])", expression)
+        self.assertEqual(len(blocked), 1, expression)
+        self.assertEqual(
+            set(ast.literal_eval(blocked[0])), {"updating", "rollback_started"}
+        )
+        for terminal in ("paused", "rollback_paused", "rollback_completed"):
+            self.assertNotIn(terminal, expression)
+        fail_msg = state_gate["ansible.builtin.assert"]["fail_msg"]
+        self.assertIn("retry", fail_msg)
+        # Swarm cannot tell a watcher update from one a previous apply left.
+        self.assertIn("previous apply", fail_msg)
+        self.assertNotIn("The image watcher is updating", fail_msg)
+        self.assertEqual(
+            state_gate["loop"], "{{ operation_lock_guard_watched_states.results }}"
+        )
+
+        swarm_gate = next(
+            task
+            for task in asserts
+            if task["name"]
+            == "Require a Swarm state that proves whether the watcher can act"
+        )
+        self.assertEqual(
+            swarm_gate["ansible.builtin.assert"]["that"],
+            ['operation_lock_guard_swarm_state.stdout in ["inactive", "active"]'],
+        )
+        active_block = next(
+            task
+            for task in self.flattened([self.guard])
+            if task["name"] == "Check the watched services on an active Swarm"
+        )
+        self.assertEqual(
+            active_block["when"],
+            [
+                "operation_lock_guard_docker_cli.stat.exists",
+                'operation_lock_guard_swarm_state.stdout == "active"',
+            ],
+        )
+
+    def test_wait_is_bounded_and_stops_on_the_same_in_progress_states(
+        self,
+    ) -> None:
+        wait = next(
+            task for task in self.flattened([self.guard]) if task["name"] == self.WAIT
+        )
+        # Covers a 120 s monitor plus a 2 min start_period, then fails.
+        self.assertGreaterEqual(wait["retries"] * wait["delay"], 300)
+        self.assertLessEqual(wait["retries"] * wait["delay"], 600)
+        until = wait["until"]
+        self.assertIn("operation_lock_guard_watched_states.rc != 0", until)
+        blocked = re.findall(r"not in (\[[^\]]*\])", until)
+        self.assertEqual(len(blocked), 1, until)
+        self.assertEqual(
+            set(ast.literal_eval(blocked[0])), {"updating", "rollback_started"}
+        )
+
+    def test_unreachable_or_locked_swarm_fails_closed_with_a_manual_exit(
+        self,
+    ) -> None:
+        # Decision: no platform-only tolerance and no bypass variable. The
+        # guard fails closed everywhere and the manual exits are documented.
+        for task in self.flattened([self.guard]):
+            conditions = task.get("when", [])
+            if isinstance(conditions, str):
+                conditions = [conditions]
+            for condition in conditions:
+                self.assertNotIn("platform", condition, task["name"])
+                self.assertNotIn("playbook", condition, task["name"])
+        operations = (PROJECT_ROOT / "docs/OPERATIONS.md").read_text(
+            encoding="utf-8"
+        )
+        for heading in (
+            "### Apply rechazado por un update en curso",
+            "### Swarm parado o bloqueado",
+        ):
+            self.assertIn(heading, operations)
+        self.assertIn("sudo -- systemctl start docker.service", operations)
+        self.assertIn("UpdateStatus.StartedAt", operations)
 
 
 if __name__ == "__main__":
