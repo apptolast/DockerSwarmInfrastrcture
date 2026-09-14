@@ -125,6 +125,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Primera activación de la actualización automática: `kropia`,
+  `minecraft-stats`, `portfolio-alberto`, `portfolio-pablo` y `selenium`
+  pasan a `autoupdate: true`. Son los canales sin datos propios (como mucho
+  un bind de solo lectura) ni migraciones de esquema, así que una imagen
+  mala se deshace con el rollback de Swarm. `minecraft`, `passbolt`,
+  `shlink`, `openclaw`, `organizationweb` y Traefik siguen en `false` mientras
+  no exista backup fuera del host (compuerta STOP 5).
+- El runbook de `docs/AUTOUPDATE.md` admite que, cuando cambió la cadena de
+  imagen, la primera repetición informe `changed=1` sin reiniciar tareas
+  (Swarm reescribe `PreviousSpec`); la segunda debe dar `changed=0`. Se
+  observó así en `edge`, `workloads` y `organizationweb` el 2026-09-13.
 - Decisión explícita del owner (2026-09-11): todo servicio Swarm, actual o
   futuro, se actualiza desde canales revisados en Git (`:latest` para las
   imágenes propias, canal de versión mayor para las bases de datos de

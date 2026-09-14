@@ -727,7 +727,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             ("kropia", {"reference": "docker.io/example/kropia-web:latest"}),
             ("kropia", {"reference": "docker.io/apptolast/kropia-web:canary"}),
             ("shlink-db", {"reference": "docker.io/library/postgres:16"}),
-            ("portfolio-alberto", {"autoupdate": True}),
+            ("shlink", {"autoupdate": True}),
             ("kropia", {"baseline": {"catalog": "shlink", "component": "app"}}),
             ("kropia", {"unexpected": True}),
         ):

@@ -131,7 +131,8 @@ consecutivo desde el mismo commit vuelve a `changed=0`.
 
 ## Estado tras este cambio
 
-Ningún servicio tiene `autoupdate: true` en Git. El vigilante que corría
+Este apartado describe el cambio que introdujo los canales; la activación
+posterior está en «Servicios activados». El vigilante que corría
 en el host sin registrar (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
 en lugar del filtro por etiqueta) queda registrado en Git por el stack
 `autoupdater` (ver «Vigilante registrado»). Mientras `autoupdater_shepherd`
@@ -299,7 +300,12 @@ cambio»). El orden importa: el vigilante sin revisar (sin filtro,
    mismo playbook desde el mismo commit y exige `changed=0`. Solo vale la
    repetición consecutiva del mismo playbook: `deployment_metadata` registra
    en `DEPLOYED_VERSION.yml` qué playbook aplicó, así que alternar playbooks
-   siempre informa `changed`.
+   siempre informa `changed`. Si el apply cambió la cadena de imagen de algún
+   servicio, la primera repetición puede informar `changed=1` sin reiniciar
+   tareas: `docker_stack` compara el inspect completo y Swarm acaba de
+   reescribir `PreviousSpec`. Una segunda repetición debe dar `changed=0`; si
+   no, detente. Así ocurrió el 2026-09-13 en `edge`, `workloads` y
+   `organizationweb`.
 6. Limpia el estado hecho a mano. El stack a mano usaba la red overlay
    `autoupdater_default`, que `docker stack deploy --prune` no borra.
    Comprueba que ya no la usa nada: el primer comando debe devolver `0` y el
@@ -327,6 +333,44 @@ cambio»). El orden importa: el vigilante sin revisar (sin filtro,
 
 Shepherd solo se reactiva con el apply de `autoupdater`, nunca con
 `docker service scale`.
+
+## Servicios activados
+
+Registro aplicado el 2026-09-13 desde `6594913` (`autoupdater`, `edge`,
+`workloads` y `organizationweb`, todos con repetición final en `changed=0`) y
+red `autoupdater_default` eliminada. Después, estos canales pasan a
+`autoupdate: true`:
+
+- `workloads/kropia`, `workloads/portfolio-alberto` y
+  `workloads/portfolio-pablo`: imágenes propias sin volumen.
+- `workloads/minecraft-stats`: imagen propia; solo monta el mundo de
+  Minecraft en solo lectura.
+- `workloads/selenium`: tercero sin estado.
+
+Criterio: ningún dato propio ni migración de esquema, así que una imagen mala
+cuesta un reinicio y el rollback de Swarm (`failure_action: rollback`, 120 s
+de `monitor` y healthcheck) la deshace. Si la cabeza del canal sigue rota, el
+vigilante lo reintenta en cada ciclo; se corta con un hold de esa entrada
+(ver «Interruptor y rollback»).
+
+Siguen en `false`, a propósito:
+
+- `minecraft` (formato del mundo), `passbolt`, `shlink` y `organizationweb`
+  `backend` (migraciones de esquema) y `organizationweb` `web` (avanza con su
+  `backend`): una actualización no se deshace sin backup y no hay copia fuera
+  del host (compuerta STOP 5).
+- `openclaw` y `n8n`: siguen en hold de versión.
+- Traefik: un fallo corta los diez hosts y su healthcheck no prueba el
+  enrutado ni el TLS.
+
+Presupuesto de Docker Hub: 5 servicios, a lo sumo 2 peticiones por servicio y
+6 ciclos cada 6 horas, son 60 de las 200 descargas.
+
+Aplicación: `--playbook workloads` con `--check`, `--confirm-production` y la
+repetición del paso 5. Solo cambian etiquetas de servicio, sin reiniciar
+tareas. Después, `sudo -- docker service ls --filter
+label=apptolast.autoupdate=true` debe listar exactamente esos cinco servicios,
+y el siguiente ciclo del vigilante debe mencionarlos en su log.
 
 ## Antes del primer apply
 

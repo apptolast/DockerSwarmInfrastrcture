@@ -62,6 +62,15 @@ ADOPTED_CHANNELS = {
         "docker.io/ocholoko888/organizationweb-web:latest"
     ),
 }
+# PR-B3 opts in only the channels without data of their own or schema
+# migrations; everything else stays out of the watcher's selection.
+AUTOUPDATED_CHANNELS = {
+    ("workloads", "kropia"),
+    ("workloads", "minecraft-stats"),
+    ("workloads", "portfolio-alberto"),
+    ("workloads", "portfolio-pablo"),
+    ("workloads", "selenium"),
+}
 REDIS_HOLD = (
     "docker.io/library/redis:7.2-alpine@sha256:"
     "1a34bdba051ecd8a58ec8a3cc460acef"
@@ -123,9 +132,9 @@ class ChannelMapTests(unittest.TestCase):
         for stack, entries in services.items():
             for name, entry in entries.items():
                 with self.subTest(service=f"{stack}/{name}"):
-                    # PR-B1 opts nothing in: the watcher selects no service.
-                    self.assertIs(entry["autoupdate"], False)
-                    self.assertEqual(entry["label"], "false")
+                    opted_in = (stack, name) in AUTOUPDATED_CHANNELS
+                    self.assertIs(entry["autoupdate"], opted_in)
+                    self.assertEqual(entry["label"], str(opted_in).lower())
                     if (stack, name) in ADOPTED_CHANNELS:
                         self.assertEqual(entry["mode"], "channel")
                         self.assertEqual(
@@ -226,8 +235,11 @@ class ChannelMapTests(unittest.TestCase):
             "docker.io/apptolast/kropia-web:main@" + DIGEST,
         ):
             with self.subTest(reference=reference):
+                # A hold may never opt in, so keep the tag rule isolated.
                 self.assert_rejected(
-                    self.mutated("workloads", "kropia", reference=reference),
+                    self.mutated(
+                        "workloads", "kropia", reference=reference, autoupdate=False
+                    ),
                     "owner images follow :latest",
                 )
 
@@ -610,12 +622,25 @@ class RenderedCoverageTests(unittest.TestCase):
         for label in ("true", None, "False", "yes"):
             with self.subTest(label=label):
                 rendered = self.rendered_for(self.channel_map)
-                service = rendered["workloads"]["services"]["kropia"]
+                service = rendered["workloads"]["services"]["shlink"]
                 if label is None:
                     del service["deploy"]["labels"]["apptolast.autoupdate"]
                 else:
                     service["deploy"]["labels"]["apptolast.autoupdate"] = label
                 self.assert_rejected(rendered, "label must be 'false'")
+
+    def test_label_not_true_while_autoupdate_true_is_rejected(self) -> None:
+        kropia = self.channel_map["services"]["workloads"]["kropia"]
+        self.assertIs(kropia["autoupdate"], True)
+        for label in ("false", None, "True", "1"):
+            with self.subTest(label=label):
+                rendered = self.rendered_for(self.channel_map)
+                service = rendered["workloads"]["services"]["kropia"]
+                if label is None:
+                    del service["deploy"]["labels"]["apptolast.autoupdate"]
+                else:
+                    service["deploy"]["labels"]["apptolast.autoupdate"] = label
+                self.assert_rejected(rendered, "label must be 'true'")
 
     def test_excluded_service_cannot_opt_in(self) -> None:
         rendered = self.rendered_for(self.channel_map)
