@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev \
     && npm cache clean --force
 
-FROM docker.io/n8nio/runners:2.32.6@sha256:9c9ddc41410b56650605f44c3af6366abb467c33176569be371ccc5f476439fc
+FROM docker.io/n8nio/runners:2.38.7@sha256:82167390e7c3b58ccb30147c9f642997b3074233f1d4bf44fdc1d8a59266b27f
 
 LABEL org.opencontainers.image.source="https://github.com/apptolast/DockerSwarmInfrastrcture" \
       org.opencontainers.image.description="n8n 2.31.5 task runners with the exact external modules used by the restored workflows"
