@@ -168,7 +168,9 @@
           until: >-
             operation_lock_guard_watched_states.rc != 0
             or (
-              (operation_lock_guard_watched_states.stdout | from_json).UpdateStatus
+              (
+                operation_lock_guard_watched_states.stdout | from_json
+              ).UpdateStatus
               | default({}, true)
             ).get("State", "none")
             not in ["updating", "rollback_started"]
