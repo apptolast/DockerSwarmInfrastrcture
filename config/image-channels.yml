@@ -29,12 +29,21 @@ image_channel_services:
   # production (inventory 2026-09-12): these entries adopt that drift into
   # Git. A channel keeps whatever digest Swarm runs, so the first apply only
   # rewrites service labels.
+  #
+  # `autoupdate: true` only for services with no volume of their own data
+  # and no schema migrations (kropia, minecraft-stats, both portfolios and
+  # selenium): a bad image is undone by Swarm's rollback, at the cost of a
+  # few minutes of downtime per attempt. Channels whose update can migrate
+  # data (minecraft, passbolt, shlink, organizationweb backend and the web
+  # that moves with it) stay `false` while no off-host backup exists (STOP
+  # gate 5); openclaw and n8n stay version holds; Traefik stays out for its
+  # blast radius. See docs/AUTOUPDATE.md.
   - stack: workloads
     service: kropia
     baseline: {catalog: kropia, component: app}
     reference: docker.io/apptolast/kropia-web:latest
     class: owner
-    autoupdate: false
+    autoupdate: true
 
   - stack: workloads
     service: minecraft
@@ -48,7 +57,7 @@ image_channel_services:
     baseline: {catalog: minecraft-stats, component: app}
     reference: docker.io/ocholoko888/minecraft-stats-web:latest
     class: owner
-    autoupdate: false
+    autoupdate: true
 
   - stack: workloads
     service: n8n
@@ -81,7 +90,7 @@ image_channel_services:
     baseline: {catalog: n8n, component: browser}
     reference: docker.io/selenium/standalone-chrome:latest
     class: third-party
-    autoupdate: false
+    autoupdate: true
 
   - stack: workloads
     service: openclaw
@@ -111,14 +120,14 @@ image_channel_services:
     baseline: {catalog: personal-website-alberto, component: app}
     reference: docker.io/hgarciaalberto/personal-website:latest
     class: owner
-    autoupdate: false
+    autoupdate: true
 
   - stack: workloads
     service: portfolio-pablo
     baseline: {catalog: personal-website-pablo, component: app}
     reference: docker.io/ocholoko888/personal-website:latest
     class: owner
-    autoupdate: false
+    autoupdate: true
 
   - stack: workloads
     service: shlink

@@ -690,11 +690,17 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             if item["id"] == "kropia"
         )
         rejected_stacks.append((baseline_stack, "image drift for kropia"))
+        # kropia opts in and shlink does not: drift in both directions.
         label_stack = copy.deepcopy(self.stack)
         label_stack["services"]["kropia"]["deploy"]["labels"][
             "apptolast.autoupdate"
-        ] = "true"
+        ] = "false"
         rejected_stacks.append((label_stack, "autoupdate label drift for kropia"))
+        opt_in_stack = copy.deepcopy(self.stack)
+        opt_in_stack["services"]["shlink"]["deploy"]["labels"][
+            "apptolast.autoupdate"
+        ] = "true"
+        rejected_stacks.append((opt_in_stack, "autoupdate label drift for shlink"))
         unlabeled_stack = copy.deepcopy(self.stack)
         del unlabeled_stack["services"]["shlink-db"]["deploy"]["labels"][
             "apptolast.autoupdate"
@@ -727,7 +733,7 @@ class WorkloadNetworkIsolationTests(unittest.TestCase):
             ("kropia", {"reference": "docker.io/example/kropia-web:latest"}),
             ("kropia", {"reference": "docker.io/apptolast/kropia-web:canary"}),
             ("shlink-db", {"reference": "docker.io/library/postgres:16"}),
-            ("portfolio-alberto", {"autoupdate": True}),
+            ("shlink", {"autoupdate": True}),
             ("kropia", {"baseline": {"catalog": "shlink", "component": "app"}}),
             ("kropia", {"unexpected": True}),
         ):

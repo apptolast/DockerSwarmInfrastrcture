@@ -131,7 +131,8 @@ consecutivo desde el mismo commit vuelve a `changed=0`.
 
 ## Estado tras este cambio
 
-Ningún servicio tiene `autoupdate: true` en Git. El vigilante que corría
+Este apartado describe el cambio que introdujo los canales; la activación
+posterior está en «Servicios activados». El vigilante que corría
 en el host sin registrar (`autoupdater_shepherd`, con `IGNORELIST_SERVICES`
 en lugar del filtro por etiqueta) queda registrado en Git por el stack
 `autoupdater` (ver «Vigilante registrado»). Mientras `autoupdater_shepherd`
@@ -164,7 +165,7 @@ El primer apply de cada stack (`edge`, `workloads`, `organizationweb` y, al
 activarse, `observability`) informa `changed` en `docker_stack` aunque no se
 adopte nada: todo servicio renderizado gana la etiqueta de servicio
 `apptolast.autoupdate`, que cambia `Spec.Labels`, y el módulo compara el
-`docker service inspect` completo antes y después. `TaskTemplate` no cambia,
+`Spec` de cada servicio antes y después. `TaskTemplate` no cambia,
 así que solo se reinician `edge_traefik` y `workloads_redis-coordinator`,
 más cualquier canal cuya cabeza haya avanzado desde el último ciclo del
 vigilante. El segundo apply consecutivo debe devolver `changed=0`.
@@ -234,8 +235,8 @@ cuenta gratuita autenticada tiene 200 descargas cada 6 horas.
 Con `20m` el presupuesto se agota aunque cada servicio cueste una sola
 petición. Con `1h` quedan 86 descargas para actualizaciones reales y applies
 si cuesta una; si cuesta dos, el límite es 16 servicios (200 / 12). Antes de
-activar muchos servicios, comprueba la cabecera `ratelimit-remaining`. Tras
-este cambio el vigilante no selecciona ninguno y solo inicia sesión.
+activar muchos servicios, comprueba la cabecera `ratelimit-remaining`. El
+coste con los servicios activados hoy está en «Servicios activados».
 
 ### Recursos y riesgo de OOM
 
@@ -299,7 +300,12 @@ cambio»). El orden importa: el vigilante sin revisar (sin filtro,
    mismo playbook desde el mismo commit y exige `changed=0`. Solo vale la
    repetición consecutiva del mismo playbook: `deployment_metadata` registra
    en `DEPLOYED_VERSION.yml` qué playbook aplicó, así que alternar playbooks
-   siempre informa `changed`.
+   siempre informa `changed`. Tras un apply que cambió specs, la primera
+   repetición puede informar `changed=1` en `docker_stack` sin reiniciar
+   tareas; una segunda repetición debe dar `changed=0` y, si no, detente. Así
+   ocurrió el 2026-09-13 en `edge`, `workloads` y `organizationweb`. La causa
+   no está identificada: el módulo solo compara `Spec` (ignora
+   `PreviousSpec`) y los logs de aquel apply no guardan `stack_spec_diff`.
 6. Limpia el estado hecho a mano. El stack a mano usaba la red overlay
    `autoupdater_default`, que `docker stack deploy --prune` no borra.
    Comprueba que ya no la usa nada: el primer comando debe devolver `0` y el
@@ -327,6 +333,59 @@ cambio»). El orden importa: el vigilante sin revisar (sin filtro,
 
 Shepherd solo se reactiva con el apply de `autoupdater`, nunca con
 `docker service scale`.
+
+## Servicios activados
+
+Registro aplicado el 2026-09-13 desde `6594913` (`autoupdater`, `edge`,
+`workloads` y `organizationweb`, todos con repetición final en `changed=0`) y
+red `autoupdater_default` eliminada. Después, estos canales pasan a
+`autoupdate: true`:
+
+- `workloads/kropia`, `workloads/portfolio-alberto` y
+  `workloads/portfolio-pablo`: imágenes propias sin volumen.
+- `workloads/minecraft-stats`: imagen propia; solo monta el mundo de
+  Minecraft en solo lectura.
+- `workloads/selenium`: tercero sin estado.
+
+Criterio: ningún dato propio ni migración de esquema, así que una imagen mala
+no deja nada que restaurar: el rollback de Swarm (`failure_action: rollback`,
+120 s de `monitor` y healthcheck) vuelve a la anterior. No sale gratis: con
+una réplica y `stop-first`, cada intento deja el host sin servicio varios
+minutos (arranque, `start_period` más cinco sondas de 30 s y el arranque de
+la vuelta atrás; más en `minecraft-stats`, con `start_period` de 2 min).
+Mientras la cabeza del canal siga rota, el vigilante lo reintenta **cada
+hora** y ninguna alerta avisa: `observability` no está en el perfil activo y
+Alertmanager no entrega notificaciones. Se detecta con
+`sudo -- docker service inspect --format '{{json .UpdateStatus}}' <servicio>`
+(`rollback_completed`) o en el log del vigilante, y se corta con un hold de
+esa entrada (ver «Interruptor y rollback»).
+
+Siguen en `false`, a propósito:
+
+- `minecraft` (formato del mundo), `passbolt`, `shlink` y `organizationweb`
+  `backend` (migraciones de esquema) y `organizationweb` `web` (avanza con su
+  `backend`): una actualización no se deshace sin backup y no hay copia fuera
+  del host (STOP gate 5).
+- `openclaw` y `n8n`: siguen en hold de versión.
+- Traefik: un fallo corta los diez hosts y su healthcheck no prueba el
+  enrutado ni el TLS.
+
+Presupuesto de Docker Hub, estimado con las hipótesis de «Por qué
+`SLEEP_TIME=1h`» (hasta 2 peticiones por servicio y ciclo, sin medir): 5
+servicios por 6 ciclos cada 6 horas son unas 60 de las 200 descargas, más la
+descarga real de cada imagen que cambie. Tras el primer ciclo, compara
+`ratelimit-remaining` antes y después para medirlo.
+
+`selenium/standalone-chrome:latest` no tiene canal de versión mayor: una
+versión que los flujos de n8n no toleren pasaría su healthcheck (`/status`
+listo) y se quedaría. Si ocurre, hold de la entrada en el último digest
+bueno.
+
+Aplicación: `--playbook workloads` con `--check`, `--confirm-production` y la
+repetición del paso 5. Solo cambian etiquetas de servicio, sin reiniciar
+tareas. Después, `sudo -- docker service ls --filter
+label=apptolast.autoupdate=true` debe listar exactamente esos cinco servicios,
+y el siguiente ciclo del vigilante debe mencionarlos en su log.
 
 ## Antes del primer apply
 
@@ -403,6 +462,12 @@ sus pins; Traefik queda por confirmar.
 - Shepherd v1.8.1 apenas se mantiene (último commit 2025-11-11) y tiene
   fallos latentes que ocultan errores en su log; el `failure_action:
   rollback` de Swarm sigue aplicando.
+- Un apply de `workloads` puede coincidir con un ciclo del vigilante sobre un
+  servicio activado. Si la cabeza de su canal cambió justo entonces, el apply
+  falla tras mutar (contenedor sustituido o digest distinto del resuelto):
+  se recupera el marker con el procedimiento documentado y se repite el apply.
+  Antes de aplicar, espera a que no haya ningún `docker service update` en
+  curso (`ps -eo args`); el vigilante no se pausa por los applies.
 - Sin protección de rama, cualquier merge a `main` de una aplicación propia
   que pase su CI llega a producción.
 - n8n y sus runners locales deben avanzar juntos; n8n sigue en hold hasta
