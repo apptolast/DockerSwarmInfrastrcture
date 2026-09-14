@@ -264,19 +264,37 @@ actual. Cuando la imagen nueva falla y swarmkit hace el rollback automático
 (`failure_action: rollback`), el servicio queda con `PreviousSpec` nulo
 (`manager/orchestrator/update/updater.go` de moby/swarmkit) y el CLI
 devuelve 0 al converger en `rollback_completed`
-(`cli/command/service/progress/progress.go` de docker/cli). Esa lectura
-falla con `nil pointer evaluating`, comprobado el 2026-09-14 con el CLI
-28.5.2 de la propia imagen, y el script termina antes de dormir.
+(`cli/command/service/progress/progress.go` de docker/cli). Una plantilla
+que atraviesa un puntero nulo falla con `nil pointer evaluating`: se
+comprobó el 2026-09-14 con el CLI 28.5.2 de la propia imagen sobre el campo
+análogo `.UpdateStatus.State` (ningún servicio vivo tenía `PreviousSpec`
+nulo para probar ese mismo). El script termina ahí, antes de revisar los
+servicios que van detrás en ese ciclo y antes de dormir.
 
 Con `restart_policy.delay: 30s` la tarea nueva empezaba otro ciclo a los
 30 s y volvía a intentar la misma cabeza rota: el servicio quedaba casi
-siempre caído y cada vuelta gastaba peticiones de Docker Hub de todos los
-servicios activados. Con `delay: 1h` un crash espera un ciclo completo, así
-que el reintento es horario, como describe «Servicios activados». Swarm solo
-aplica ese retraso a los reinicios: un apply de `autoupdater` o su rollback
-arrancan la tarea al momento. Efecto aceptado: tras un OOM o un reinicio del
-host, el vigilante tarda hasta una hora en volver. El log de ese ciclo
-termina con el `nil pointer` en lugar de «Sleeping 1h».
+siempre caído y cada vuelta gastaba peticiones de Docker Hub de los
+servicios hasta el roto. Con `delay: 1h` un crash espera un ciclo completo.
+Es una **mitigación, no un arreglo**: mientras la cabeza siga rota, cada
+hora hay un intento (unos minutos sin servicio y rollback) y los servicios
+que van detrás del roto en el listado no se actualizan. Se corta con un
+hold o `autoupdate: false` en esa entrada, que además desbloquea al resto.
+El arreglo de raíz (un entrypoint que tolere el fallo sin salir) queda
+pendiente.
+
+El mismo retraso cubre las demás salidas por `set -e` de un ciclo: un
+`docker login` fallido, un `docker service inspect` de un servicio que un
+apply con `prune` acaba de borrar, o un `docker service ls` fallido. El log
+de ese ciclo termina con el error en lugar de «Sleeping 1h».
+
+Swarm solo aplica el retraso a los reinicios. Un apply que cambia el spec
+de la tarea, o su rollback, la arrancan al momento. Un apply idéntico no:
+si el vigilante está esperando su reinicio (`sudo -- docker service ps
+autoupdater_shepherd` muestra la tarea nueva sin `Running` y la anterior
+terminada), `--playbook autoupdater` o `site` fallan en la comprobación de
+réplicas sin mutar el vigilante. No se fuerza a mano: espera a que venza el
+retraso, como mucho una hora, y repite. Efecto aceptado: tras un OOM o un
+reinicio del host el vigilante tarda hasta una hora en volver.
 
 ### Aplicar el registro
 
@@ -484,7 +502,9 @@ sus pins; Traefik queda por confirmar.
   aunque el bind sea de solo lectura. El owner acepta este consumidor.
 - Shepherd v1.8.1 apenas se mantiene (último commit 2025-11-11) y tiene
   fallos latentes que ocultan errores en su log; el `failure_action:
-  rollback` de Swarm sigue aplicando.
+  rollback` de Swarm sigue aplicando. Tras un rollback automático muere y,
+  con el retraso de reinicio de 1 h, reintenta cada hora y deja sin revisar
+  los servicios siguientes (ver «Crash tras un rollback»).
 - Un apply de `workloads` puede coincidir con un ciclo del vigilante sobre un
   servicio activado. Si la cabeza de su canal cambió justo entonces, el apply
   falla tras mutar (contenedor sustituido o digest distinto del resuelto):

@@ -48,8 +48,9 @@ services:
       # service has no PreviousSpec, `service update --detach=false` still
       # exits 0, and Shepherd v1.8.1 dies under `set -e` reading
       # `.PreviousSpec` (docs/AUTOUPDATE.md). With a short delay the new
-      # task would retry the broken head at once, in a loop. Deploys start
-      # the new task without this delay.
+      # task would retry the broken head at once, in a loop. This only
+      # slows the loop to one attempt per cycle. Deploys that change the
+      # task spec start the new task without this delay.
       restart_policy:
         condition: any
         delay: 1h
