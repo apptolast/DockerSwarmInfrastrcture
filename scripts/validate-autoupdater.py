@@ -73,7 +73,9 @@ REVIEWED_LOGGING = {
     "driver": "local",
     "options": {"max-file": "5", "max-size": "20m"},
 }
-REVIEWED_RESTART_POLICY = {"condition": "any", "delay": "30s", "window": "60s"}
+# `delay` equals one watcher cycle: see the restart_policy comment in the
+# stack template and docs/AUTOUPDATE.md («Crash tras un rollback»).
+REVIEWED_RESTART_POLICY = {"condition": "any", "delay": "1h", "window": "60s"}
 REVIEWED_UPDATE_CONFIG = {
     "parallelism": 1,
     "order": "stop-first",

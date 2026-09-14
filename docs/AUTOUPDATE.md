@@ -250,10 +250,33 @@ límite/reserva de 2,5 fija la reserva en 18 MiB. En el perfil activo
 más el CLI de Docker. Medida del servicio vivo sin revisar el 2026-09-12,
 en pleno ciclo sobre 15 servicios: 19,4-19,8 MiB estables y un pico de
 23,8 MiB (`memory.peak` del cgroup), así que 45 MiB deja unas 1,9 veces el
-pico. Si el contenedor muere por OOM, se reinicia sin tocar ningún servicio
-a medias (Swarm conserva la actualización ya enviada). Vigila
+pico. Si el contenedor muere por OOM, Swarm lo reinicia **una hora después**
+(ver «Crash tras un rollback») sin tocar ningún servicio a medias (Swarm
+conserva la actualización ya enviada). Vigila
 `docker service ps autoupdater_shepherd` tras el primer apply y, si hay OOM,
 reequilibra el presupuesto en un PR revisado.
+
+### Crash tras un rollback
+
+Shepherd v1.8.1 corre con `set -euo pipefail`. Tras actualizar un servicio
+compara `{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}` con la imagen
+actual. Cuando la imagen nueva falla y swarmkit hace el rollback automático
+(`failure_action: rollback`), el servicio queda con `PreviousSpec` nulo
+(`manager/orchestrator/update/updater.go` de moby/swarmkit) y el CLI
+devuelve 0 al converger en `rollback_completed`
+(`cli/command/service/progress/progress.go` de docker/cli). Esa lectura
+falla con `nil pointer evaluating`, comprobado el 2026-09-14 con el CLI
+28.5.2 de la propia imagen, y el script termina antes de dormir.
+
+Con `restart_policy.delay: 30s` la tarea nueva empezaba otro ciclo a los
+30 s y volvía a intentar la misma cabeza rota: el servicio quedaba casi
+siempre caído y cada vuelta gastaba peticiones de Docker Hub de todos los
+servicios activados. Con `delay: 1h` un crash espera un ciclo completo, así
+que el reintento es horario, como describe «Servicios activados». Swarm solo
+aplica ese retraso a los reinicios: un apply de `autoupdater` o su rollback
+arrancan la tarea al momento. Efecto aceptado: tras un OOM o un reinicio del
+host, el vigilante tarda hasta una hora en volver. El log de ese ciclo
+termina con el `nil pointer` en lugar de «Sleeping 1h».
 
 ### Aplicar el registro
 

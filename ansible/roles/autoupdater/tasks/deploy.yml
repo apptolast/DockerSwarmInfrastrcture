@@ -72,8 +72,10 @@
 # - `rollback_completed`, `rollback_paused` and `paused` are terminal and
 #   rejected by the next task.
 #
-# 30 x 10 s covers stop-first, image start, the 30 s monitor, a 30 s restart
-# delay and a full rollback with its own 30 s monitor.
+# 30 x 10 s covers stop-first, image start, the 30 s monitor and a full
+# rollback with its own 30 s monitor. A deploy or rollback starts its task
+# without the 1 h restart delay; a task that dies inside the monitor fails
+# the update and the rollback is what this poll waits for.
 - name: Wait for the watcher update to reach a terminal state
   ansible.builtin.command:
     argv: [/usr/bin/docker, service, inspect, "{{ autoupdater_service_name }}"]

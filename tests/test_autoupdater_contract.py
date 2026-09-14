@@ -229,6 +229,11 @@ class AutoupdaterValidatorTests(unittest.TestCase):
                 "rollback_config"
             ].update(failure_action="continue"),
             "restart_policy differs": deploy(restart_policy={"condition": "none"}),
+            # A 30 s delay lets a crash after a swarmkit rollback retry the
+            # broken head in a loop.
+            "restart_policy differs from": deploy(
+                restart_policy={"condition": "any", "delay": "30s", "window": "60s"}
+            ),
             "reviewed exact mapping": deploy(endpoint_mode="dnsrr"),
             "top-level keys differ": lambda s: s.update(configs={}),
         }
@@ -832,7 +837,7 @@ class AutoupdaterUpdateGateTests(AnsibleTaskAssertions, unittest.TestCase):
         self.assertEqual(poll, deploy + 1)
         self.assertEqual(names.index(self.GATE), poll + 1)
         task = tasks[poll]
-        # Above monitor 30s + restart delay 30s + start, plus a full rollback.
+        # Above monitor 30s + start, plus a full rollback with its monitor.
         self.assertGreaterEqual(task["retries"] * task["delay"], 180)
         self.assertIs(task["check_mode"], False)
         self.assertEqual(tasks[poll]["vars"], tasks[poll + 1]["vars"])

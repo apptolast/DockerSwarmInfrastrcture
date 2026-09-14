@@ -382,6 +382,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El vigilante espera una hora antes de reiniciarse (`restart_policy.delay`
+  pasa de `30s` a `1h`). Tras un rollback automático de swarmkit, Shepherd
+  v1.8.1 muere por `set -e` al leer un `PreviousSpec` nulo y, con 30 s, el
+  reinicio reintentaba al momento la imagen rota: el servicio activado
+  quedaba casi siempre caído y se agotaba el cupo de Docker Hub. El
+  validador fija el nuevo valor y un test rechaza el anterior.
 - `scripts/resolve-image-channel.py` acepta un índice OCI sin `mediaType`
   (opcional según la especificación) cuando declara `schemaVersion: 2` y
   una lista `manifests`. `passbolt/passbolt:latest` publica así su índice y

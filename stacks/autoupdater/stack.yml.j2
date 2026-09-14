@@ -44,9 +44,15 @@ services:
           - node.role == manager
       labels:
         apptolast.autoupdate: "false"
+      # A restart waits a whole cycle. After a swarmkit auto-rollback the
+      # service has no PreviousSpec, `service update --detach=false` still
+      # exits 0, and Shepherd v1.8.1 dies under `set -e` reading
+      # `.PreviousSpec` (docs/AUTOUPDATE.md). With a short delay the new
+      # task would retry the broken head at once, in a loop. Deploys start
+      # the new task without this delay.
       restart_policy:
         condition: any
-        delay: 30s
+        delay: 1h
         window: 60s
       update_config:
         parallelism: 1
