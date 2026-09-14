@@ -32,10 +32,12 @@ image_channel_services:
   #
   # `autoupdate: true` only for services with no volume of their own data
   # and no schema migrations (kropia, minecraft-stats, both portfolios and
-  # selenium): a bad image is undone by Swarm's rollback and costs nothing
-  # else. Channels whose update can migrate data (minecraft, passbolt,
-  # shlink, organizationweb) stay `false` while no off-host backup exists
-  # (STOP gate 5). See docs/AUTOUPDATE.md.
+  # selenium): a bad image is undone by Swarm's rollback, at the cost of a
+  # few minutes of downtime per attempt. Channels whose update can migrate
+  # data (minecraft, passbolt, shlink, organizationweb backend and the web
+  # that moves with it) stay `false` while no off-host backup exists (STOP
+  # gate 5); openclaw and n8n stay version holds; Traefik stays out for its
+  # blast radius. See docs/AUTOUPDATE.md.
   - stack: workloads
     service: kropia
     baseline: {catalog: kropia, component: app}
