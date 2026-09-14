@@ -603,6 +603,135 @@ def ancestor_pids(pid: int) -> set[int]:
     return ancestors
 
 
+SWARM_WRITER_SUBCOMMANDS = frozenset({"stack", "service", "swarm", "node"})
+# Docker CLI global options that precede the subcommand. The image watcher
+# runs `docker --config DIR service update ...` for services that carry
+# registry credentials, so the subcommand is not always argv[1].
+DOCKER_GLOBAL_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "--config",
+        "-c",
+        "--context",
+        "-H",
+        "--host",
+        "-l",
+        "--log-level",
+        "--tlscacert",
+        "--tlscert",
+        "--tlskey",
+    }
+)
+DOCKER_GLOBAL_FLAGS = frozenset({"--tls", "--tlsverify", "-D", "--debug"})
+# coreutils `timeout [OPTION] DURATION COMMAND` and busybox
+# `timeout [-s SIG] [-k SECS] SECS PROG` (older busybox: `-t SECS PROG`).
+TIMEOUT_OPTIONS_WITH_VALUE = frozenset({"-s", "--signal", "-k", "--kill-after", "-t"})
+TIMEOUT_FLAGS = frozenset({"--preserve-status", "--foreground", "-v", "--verbose"})
+TIMEOUT_DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
+MAXIMUM_COMMAND_WRAPPERS = 4
+
+
+class AmbiguousCommandLine(Exception):
+    """A wrapper or Docker option could not be parsed without guessing."""
+
+
+def skip_options(
+    arguments: list[str],
+    with_value: frozenset[str],
+    flags: frozenset[str],
+) -> tuple[int, set[str]]:
+    """Return the index of the first operand and the option names seen."""
+    index = 1
+    seen: set[str] = set()
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return index + 1, seen
+        if not argument.startswith("-") or argument == "-":
+            return index, seen
+        if argument.startswith("--"):
+            name, inline, _value = argument.partition("=")
+            if name in with_value:
+                index += 1 if inline else 2
+            elif name in flags:
+                index += 1
+            else:
+                raise AmbiguousCommandLine(argument)
+        else:
+            name = argument[:2]
+            if name in with_value:
+                # getopt/pflag accept both `-sKILL` and `-s KILL`.
+                index += 1 if len(argument) > 2 else 2
+            elif argument in flags:
+                index += 1
+            else:
+                raise AmbiguousCommandLine(argument)
+        seen.add(name)
+    return index, seen
+
+
+def unwrap_timeout(arguments: list[str]) -> list[str]:
+    index, seen = skip_options(
+        arguments,
+        TIMEOUT_OPTIONS_WITH_VALUE,
+        TIMEOUT_FLAGS,
+    )
+    if "-t" not in seen:
+        if index >= len(arguments) or not TIMEOUT_DURATION.fullmatch(
+            arguments[index]
+        ):
+            raise AmbiguousCommandLine("timeout without a duration")
+        index += 1
+    if index >= len(arguments):
+        raise AmbiguousCommandLine("timeout without a command")
+    return arguments[index:]
+
+
+def swarm_cli_invocation(arguments: list[str]) -> list[str] | None:
+    """Return the Docker argv from its subcommand on, or None if not Docker.
+
+    Wrappers (`timeout`, `busybox timeout`) and Docker global options are
+    skipped. Anything that cannot be parsed exactly raises
+    AmbiguousCommandLine so the caller can fail closed.
+    """
+    current = arguments
+    for _ in range(MAXIMUM_COMMAND_WRAPPERS + 1):
+        if not current:
+            return None
+        name = Path(current[0]).name
+        if name == "busybox":
+            current = current[1:]
+        elif name == "timeout":
+            current = unwrap_timeout(current)
+        elif name == "docker":
+            index, _seen = skip_options(
+                current,
+                DOCKER_GLOBAL_OPTIONS_WITH_VALUE,
+                DOCKER_GLOBAL_FLAGS,
+            )
+            return current[index:]
+        else:
+            return None
+    raise AmbiguousCommandLine("too many nested command wrappers")
+
+
+def is_swarm_writer_cli(arguments: list[str]) -> bool:
+    try:
+        invocation = swarm_cli_invocation(arguments)
+    except AmbiguousCommandLine:
+        # Fail closed for recovery: an unparsed option in front of a Docker
+        # CLI still counts when a Swarm writer subcommand follows it.
+        docker_positions = [
+            position
+            for position, argument in enumerate(arguments)
+            if Path(argument).name == "docker"
+        ]
+        return bool(docker_positions) and any(
+            argument in SWARM_WRITER_SUBCOMMANDS
+            for argument in arguments[docker_positions[0] + 1 :]
+        )
+    return bool(invocation) and invocation[0] in SWARM_WRITER_SUBCOMMANDS
+
+
 def is_mutating_process(arguments: list[str]) -> bool:
     basenames = [Path(argument).name for argument in arguments[:3]]
     if any(
@@ -620,9 +749,7 @@ def is_mutating_process(arguments: list[str]) -> bool:
         return True
     if any(name.startswith("AnsiballZ_") for name in basenames):
         return True
-    if basenames and basenames[0] == "docker" and len(arguments) >= 2:
-        return arguments[1] in {"stack", "service", "swarm", "node"}
-    return False
+    return is_swarm_writer_cli(arguments)
 
 
 def mutating_processes() -> list[tuple[int, str]]:

@@ -336,9 +336,11 @@ cambio»). El orden importa: el vigilante sin revisar (sin filtro,
    filtrado por la etiqueta no debe mostrar ningún servicio.
 4. Repite el inventario del paso 1 y aplica, en este orden, `edge`,
    `workloads` y `organizationweb`, cada uno con `--check` y después con
-   `--confirm-production`.
-5. Idempotencia: justo después de cada apply de los pasos 2 y 4, repite ese
-   mismo playbook desde el mismo commit y exige `changed=0`. Solo vale la
+   `--confirm-production`. Si el apply anterior dejó un servicio activado
+   en `updating` dentro de su ventana `monitor`, `operation_lock_guard`
+   espera a que termine antes de mutar (ver «Riesgos aceptados»).
+5. Idempotencia: después de cada apply de los pasos 2 y 4, repite ese mismo
+   playbook desde el mismo commit y exige `changed=0`. Solo vale la
    repetición consecutiva del mismo playbook: `deployment_metadata` registra
    en `DEPLOYED_VERSION.yml` qué playbook aplicó, así que alternar playbooks
    siempre informa `changed`. Tras un apply que cambió specs, la primera
@@ -459,8 +461,9 @@ sus pins; Traefik queda por confirmar.
 3. Ejecuta `./scripts/bootstrap-tooling.sh`, `./scripts/validate-iac.sh` y
    `./scripts/lint.sh`, y registra el cambio en `CHANGELOG.md`.
 4. Tras el merge, ejecuta el playbook del stack con `--check` y después con
-   `--confirm-production`. Repite el apply y exige `changed=0` en ese segundo
-   apply consecutivo.
+   `--confirm-production`. Repite el apply y exige `changed=0` en ese
+   segundo apply consecutivo; si el primero dejó un servicio activado en
+   `updating`, el segundo espera a que termine antes de mutar.
 
 ## Interruptor y rollback
 
@@ -505,12 +508,57 @@ sus pins; Traefik queda por confirmar.
   rollback` de Swarm sigue aplicando. Tras un rollback automático muere y,
   con el retraso de reinicio de 1 h, reintenta cada hora y deja sin revisar
   los servicios siguientes (ver «Crash tras un rollback»).
-- Un apply de `workloads` puede coincidir con un ciclo del vigilante sobre un
-  servicio activado. Si la cabeza de su canal cambió justo entonces, el apply
-  falla tras mutar (contenedor sustituido o digest distinto del resuelto):
-  se recupera el marker con el procedimiento documentado y se repite el apply.
-  Antes de aplicar, espera a que no haya ningún `docker service update` en
-  curso (`ps -eo args`); el vigilante no se pausa por los applies.
+- Un apply puede coincidir con un ciclo del vigilante sobre un servicio
+  activado: el vigilante no toma el lock host-global ni se pausa por los
+  applies.
+  - Con el lock ya tomado y antes de mutar, `operation_lock_guard` lista los
+    servicios con `apptolast.autoupdate=true` y falla si alguno tiene
+    `UpdateStatus.State` en `updating` o `rollback_started`, tras esperar
+    hasta 36 × 10 s por servicio a que termine. No admite override. Solo actúa
+    en modo apply y si existe `/usr/bin/docker`: un Swarm `inactive` (bootstrap
+    fresco) no tiene servicios y se salta. Si Docker no responde, falla la
+    lectura de `docker info` con el error de Docker; cualquier otro estado
+    distinto de `active` (`pending`, `locked`, `error`) falla en el assert.
+    Ambos casos fallan cerrado.
+  - Corre en todos los playbooks con lock (también `platform`, `backup`,
+    `host-baseline`, `preflight-images` y `organizationweb`), a propósito y
+    sin variable por playbook: cualquiera puede reiniciar Docker o
+    redesplegar un servicio activado, y una variable así sería otra forma de
+    saltarla. El precio es que un Swarm parado o bloqueado ya no se arregla
+    con `--playbook platform`: la salida manual está en «Swarm parado o
+    bloqueado» de [OPERATIONS.md](OPERATIONS.md).
+  - No distingue quién empezó el update. Los roles de stack despliegan con
+    `detach: true`, así que un apply que cambió un servicio activado termina
+    con ese servicio en `updating` hasta cerrar su ventana `monitor` (120 s
+    en `workloads`, 90 s en `edge`). Repetir o encadenar applies antes de
+    ese plazo solo hace esperar al guard.
+  - `paused`, `rollback_paused` y `rollback_completed` no bloquean: el
+    arreglo en Git de ese servicio tiene que poder aplicarse, y los roles
+    `workloads`, `edge` y `autoupdater` ya rechazan esos estados tras su
+    propio deploy.
+  - Si el update sigue tras la espera, el fallo no muta nada, pero el
+    wrapper retiene el marker como ante cualquier fallo de Ansible: se
+    espera a que termine el update, se recupera el marker
+    ([OPERATIONS.md](OPERATIONS.md)) y se repite el apply. Un update que nunca
+    termina bloquea todos los applies; su salida manual está en «Apply rechazado
+    por un update en curso» de [OPERATIONS.md](OPERATIONS.md).
+  - La comprobación estrecha la carrera, no la cierra. Si un ciclo empieza
+    después y la cabeza del canal cambió justo entonces, el apply falla tras
+    mutar (contenedor sustituido o digest distinto del resuelto): se
+    recupera el marker y se repite el apply.
+  - Antes de aplicar o de recuperar, comprueba que ningún servicio activado
+    está a mitad de update. Swarm sigue el rolling update en el servidor
+    aunque el cliente del vigilante haya muerto por su `timeout`. Mientras
+    algún `State` sea `updating` o `rollback_started`, los mismos estados
+    que rechaza el guard, espera; una lista vacía no tiene nada que revisar:
+
+    ```bash
+    services="$(sudo -- docker service ls -q \
+      --filter label=apptolast.autoupdate=true)"
+    [ -z "$services" ] || sudo -- docker service inspect \
+      --format '{{.Spec.Name}} {{json .UpdateStatus}}' $services
+    ```
+
 - Sin protección de rama, cualquier merge a `main` de una aplicación propia
   que pase su CI llega a producción.
 - n8n y sus runners locales deben avanzar juntos; n8n sigue en hold hasta

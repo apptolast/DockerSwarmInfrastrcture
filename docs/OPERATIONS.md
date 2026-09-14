@@ -105,6 +105,30 @@ sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py \
   --confirm 'CONFIRMACION_EXACTA_MOSTRADA'
 ```
 
+La búsqueda de mutadores cuenta como tal todo cliente `docker stack`,
+`service`, `swarm` o `node`, también detrás de un `timeout` (coreutils o
+busybox, con `-s`/`-k`) y de opciones globales de Docker (`--config`, `-c`,
+`--context`, `-H`/`--host`, `-l`/`--log-level`, `--tls*`, `-D`/`--debug`,
+incluida la forma `--opcion=valor`). Así detecta el
+`timeout 900 docker service update ...` del vigilante de imágenes, con o sin
+`--config`. Mientras el vigilante actualiza, `recover` se niega; hay que
+esperar y repetir el dry-run. El marker `direct` se recupera con otro helper
+que no busca mutadores.
+
+Límites de esa búsqueda:
+
+- Solo reconoce el cliente directo y los envoltorios `timeout` y
+  `busybox timeout`. Un `docker service update` lanzado detrás de `sudo`,
+  `env`, `nice`, `nohup`, `setsid` o `sh -c` no cuenta; confirma a mano con
+  `ps -eo args` que no hay ninguno.
+- Una opción que no sabe interpretar cuenta como mutador si detrás aparece
+  `stack`, `service`, `swarm` o `node` en cualquier posición, aunque sea el
+  valor de otra opción (`docker --opcion-rara ps --filter node`). Ese falso
+  positivo solo obliga a esperar y repetir el dry-run.
+- El proceso no basta como prueba: Swarm sigue el update en el servidor tras
+  morir el cliente. Antes se revisa `UpdateStatus` de los servicios activados
+  (ver «Riesgos aceptados» en [AUTOUPDATE.md](AUTOUPDATE.md)).
+
 Para un marker de bootstrap se añaden:
 
 ```text
@@ -116,6 +140,63 @@ Para un marker de bootstrap se añaden:
 La evidencia se archiva antes de retirar el marker. Se usa, si es posible, el
 helper del mismo commit registrado. Un reboot mata procesos pero elimina
 `/run`; primero debe conservarse la evidencia cuando todavía sea accesible.
+
+### Apply rechazado por un update en curso
+
+`operation_lock_guard` corre en todos los playbooks con lock, sin variable
+que lo desactive. Un apply que empieza mientras un servicio con
+`apptolast.autoupdate=true` está en `updating` o `rollback_started` espera
+hasta 36 × 10 s por servicio a que termine y, si sigue, falla antes de
+mutar y deja su marker. Swarm no registra quién empezó el update:
+puede ser el vigilante o un apply anterior. Los roles de stack despliegan
+con `detach: true`, así que un apply que cambió uno de esos servicios
+termina con el update aún dentro de su ventana `monitor` (120 s en
+`workloads`, 90 s en `edge`); la espera del guard cubre ese plazo. Si aun
+así falla, cuando el update termine recupera el marker con el procedimiento
+de arriba y repite el apply.
+
+Un update que nunca termina bloquea todos los applies, también el PR de
+hold que lo arreglaría. Se reconoce porque `UpdateStatus.StartedAt` es más
+antiguo que el `delay` más la ventana `monitor` de su stack y
+`sudo -- docker service ps <servicio>` muestra la tarea nueva parada en
+`pending`, `preparing` o `assigned`. La salida manual, auditable y sin
+`docker service rollback` (ver «Interruptor y rollback» en
+[AUTOUPDATE.md](AUTOUPDATE.md)), es:
+
+1. Detén el vigilante con la parada de emergencia documentada:
+   `sudo -- docker service scale autoupdater_shepherd=0`.
+2. Recupera el marker retenido (dry-run y `--apply` de arriba).
+3. Bajo el lock directo, fija en ese servicio el último digest bueno (ver
+   «Rollback de un servicio» en [AUTOUPDATE.md](AUTOUPDATE.md)):
+
+   ```bash
+   sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+     --operation autoupdate-stuck-update -- \
+     /usr/bin/docker service update --detach \
+     --image 'repo:tag@sha256:ULTIMO_BUENO' SERVICIO
+   ```
+
+4. Espera a que su `UpdateStatus.State` salga de `updating` y aplica ese
+   mismo día el PR de hold de la entrada y el PR con `enabled: false` del
+   vigilante, cada uno con su playbook.
+
+### Swarm parado o bloqueado
+
+Esa misma comprobación falla cerrado si Docker no responde (`docker info`
+devuelve el error de Docker) o si `LocalNodeState` no es `inactive` ni
+`active` (`pending`, `locked`, `error`). Pasa también con
+`--playbook platform`, que ya no puede arrancar ni desbloquear Docker desde
+Git. La salida es manual:
+
+1. Arranca Docker con `sudo -- systemctl start docker.service`. Con el nodo
+   en `locked`, desbloquéalo con
+   `sudo -- systemctl start dockerswarm-swarm-unlock.service` si existe el
+   escrow local o, si no, con `sudo -- docker swarm unlock` y la clave del
+   gestor de secretos (ver [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)). Nunca
+   ejecutes `docker swarm update --autolock=true`.
+2. Comprueba que
+   `sudo -- docker info --format '{{.Swarm.LocalNodeState}}'` dice `active`.
+3. Recupera el marker retenido y repite el apply.
 
 ## Secuencia de cambio
 
@@ -135,7 +216,9 @@ helper del mismo commit registrado. Un reboot mata procesos pero elimina
 5. Aplicar solo mediante `apply-terraform.sh`; conservar snapshots y evidencia
    mientras el lock remoto sigue ligado a la operación.
 6. Aplicar Ansible mediante `deploy-ansible.sh`.
-7. Repetir Ansible y exigir `changed=0`.
+7. Repetir Ansible y exigir `changed=0` (si un servicio activado sigue en
+   `updating`, el guard espera; ver «Apply rechazado por un update en
+   curso»).
 8. Validar firewall, servicios, TLS, DNS, logs, backups y unidades fallidas.
 9. Registrar aceptación y rollback.
 
