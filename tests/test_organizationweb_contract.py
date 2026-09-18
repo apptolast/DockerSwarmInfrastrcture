@@ -202,7 +202,14 @@ class OrganizationWebContractTests(unittest.TestCase):
         self.assertEqual(len(legacy), 8)
         self.assertEqual(
             set(dynamic["http"]["routers"]),
-            {*legacy, "edge-health", "edge-ping-internal", "organizationweb"},
+            {
+                *legacy,
+                "edge-health",
+                "edge-ping-internal",
+                "organizationweb",
+                "racinggame",
+                "monitorizacion",
+            },
         )
         router = dynamic["http"]["routers"]["organizationweb"]
         self.assertEqual(router["rule"], "Host(`organizacion.apptolast.com`)")

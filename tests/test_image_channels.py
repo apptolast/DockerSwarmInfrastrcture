@@ -61,10 +61,12 @@ ADOPTED_CHANNELS = {
     ("organizationweb", "web"): (
         "docker.io/ocholoko888/organizationweb-web:latest"
     ),
+    ("racinggame", "web"): "docker.io/ocholoko888/racinggame:latest",
 }
 # PR-B3 opts in only the channels without data of their own or schema
 # migrations; everything else stays out of the watcher's selection.
 AUTOUPDATED_CHANNELS = {
+    ("racinggame", "web"),
     ("workloads", "kropia"),
     ("workloads", "minecraft-stats"),
     ("workloads", "portfolio-alberto"),
