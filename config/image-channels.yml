@@ -175,6 +175,16 @@ image_channel_services:
     class: stateful-major
     autoupdate: false
 
+  # --- racinggame ---------------------------------------------------------
+  # Stateless and owner-built: no volume of its own, so it rides the
+  # `:latest` channel and the watcher re-pins it between deploys.
+  - stack: racinggame
+    service: web
+    baseline: {catalog: racinggame, component: web}
+    reference: docker.io/ocholoko888/racinggame:latest
+    class: owner
+    autoupdate: true
+
   # --- observability (not in the active profile; holds only) -------------
   - stack: observability
     service: prometheus

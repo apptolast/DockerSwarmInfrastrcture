@@ -1,0 +1,148 @@
+---
+- name: Reject overrides of the reviewed application catalog
+  ansible.builtin.assert:
+    that:
+      - >-
+        racinggame == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/racinggame.yml')
+          | from_yaml
+        ).racinggame
+    fail_msg: RacingGame inputs differ from the versioned catalog.
+
+- name: Load the reviewed image channel map
+  ansible.builtin.import_role:
+    name: image_channels
+
+- name: Require exactly the single RacingGame channel entry
+  ansible.builtin.assert:
+    that:
+      - image_channels_map.racinggame.keys() | list | sort == ["web"]
+    fail_msg: RacingGame channel entries differ from the stack contract.
+    quiet: true
+
+- name: Bind the RacingGame channel to its catalog image
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.value.baseline
+        == {"catalog": "racinggame", "component": item.key}
+    fail_msg: >-
+      The image channel of {{ item.key }} is not bound to its reviewed
+      RacingGame catalog image.
+    quiet: true
+  loop: "{{ image_channels_map.racinggame | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate the independent catalog and exact Docker format locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-racinggame.py"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Read the actual Swarm node inventory
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, ls, --quiet]
+  register: racinggame_node_ids
+  changed_when: false
+  check_mode: false
+
+- name: Inspect this manager and its placement identity
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, node, inspect, self]
+  register: racinggame_local_node
+  changed_when: false
+  check_mode: false
+
+- name: Require the single eligible node to be this active manager
+  ansible.builtin.assert:
+    that:
+      - racinggame_node_ids.stdout_lines | length == 1
+      - >-
+        (racinggame_local_node.stdout | from_json | first).ID
+        == racinggame_node_ids.stdout_lines[0]
+      - >-
+        (racinggame_local_node.stdout | from_json | first)
+        .Spec.Role == 'manager'
+      - >-
+        (racinggame_local_node.stdout | from_json | first)
+        .Spec.Availability == 'active'
+      - >-
+        (racinggame_local_node.stdout | from_json | first)
+        .Status.State == 'ready'
+      - >-
+        (racinggame_local_node.stdout | from_json | first)
+        .Spec.Labels['platform.workloads'] == 'true'
+    fail_msg: Local health checks require the reviewed single-node placement.
+
+- name: Inspect the dedicated edge network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ racinggame.edge_network }}"
+  register: racinggame_edge_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Require the encrypted isolated Swarm edge network
+  ansible.builtin.assert:
+    that:
+      - >-
+        (racinggame_edge_inspect.stdout | from_json | first)
+        .Driver == 'overlay'
+      - >-
+        (racinggame_edge_inspect.stdout | from_json | first)
+        .Scope == 'swarm'
+      - not (racinggame_edge_inspect.stdout | from_json | first).Attachable
+      - not (racinggame_edge_inspect.stdout | from_json | first).Internal
+      - >-
+        (racinggame_edge_inspect.stdout | from_json | first)
+        .Options.encrypted
+        | default(None) == ''
+    fail_msg: Run the reviewed edge deployment before the application stack.
+
+- name: Inspect application install paths without following links
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - {path: /opt, uid: 0, gid: 0, directory: true}
+    - {path: /opt/dockerswarm, uid: 0, gid: 0, directory: true}
+    - {path: /opt/dockerswarm/racinggame, uid: 0, gid: 0, directory: true}
+    - path: /opt/dockerswarm/racinggame/stack.yml
+      uid: 0
+      gid: 0
+      directory: false
+    - path: /opt/dockerswarm/racinggame/validate-swarm-deployment.py
+      uid: 0
+      gid: 0
+      directory: false
+  register: racinggame_install_paths
+
+- name: Reject unsafe types ownership and permissions in application paths
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - >-
+        not item.stat.exists or (
+          item.stat.isdir if item.item.directory else item.stat.isreg
+        )
+      - not item.stat.exists or item.stat.uid == item.item.uid
+      - not item.stat.exists or item.stat.gid == item.item.gid
+      - not item.stat.exists or item.stat.mode[-1] | int not in [2, 3, 6, 7]
+      - not item.stat.exists or item.stat.mode[-2] | int not in [2, 3, 6, 7]
+    fail_msg: Refusing to render the stack through an unsafe path.
+  loop: "{{ racinggame_install_paths.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Deploy only after the complete preflight and outside check mode
+  ansible.builtin.import_tasks: deploy.yml
+  when: not ansible_check_mode

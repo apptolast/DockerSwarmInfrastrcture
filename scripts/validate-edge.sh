@@ -57,7 +57,18 @@ traefik = channels.load_channel_map(root)["services"]["edge"]["traefik"]
 print(contract["platform_public_ipv4"])
 print(contract["edge_traefik_hostname"])
 print(contract["platform_edge_monitoring_network"])
-print(json.dumps(contract["platform_edge_networks"], sort_keys=True))
+# Traefik is attached to the catalog networks AND to the networks of
+# the applications that live outside the service catalog, so the
+# allowlist has to be the union of both maps.
+print(
+    json.dumps(
+        {
+            **contract["platform_edge_networks"],
+            **group_vars["edge_application_networks"],
+        },
+        sort_keys=True,
+    )
+)
 print(traefik["mode"])
 print(traefik["spec_exact"] or "")
 print(traefik["spec_pattern"])
@@ -82,7 +93,12 @@ mapfile -t expected_network_names < <(
     <<<"${edge_network_map_json}"
 )
 expected_network_names+=("${monitoring_network_name}")
-(( ${#expected_network_names[@]} == 9 )) ||
+expected_network_count=$((
+  $(jq 'length' <<<"${edge_network_map_json}") + 1
+))
+(( ${#expected_network_names[@]} == expected_network_count )) ||
+  fail "cannot read the isolated edge network allowlist"
+(( expected_network_count >= 9 )) ||
   fail "the isolated edge network allowlist is incomplete"
 
 network_ids=()

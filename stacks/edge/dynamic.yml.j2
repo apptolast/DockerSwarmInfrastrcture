@@ -110,6 +110,25 @@ http:
       service: organizationweb
       tls:
         certResolver: letsencrypt
+    racinggame:
+      rule: "Host(`{{ racinggame.hostname }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: racinggame
+      tls:
+        certResolver: letsencrypt
+    # The monitoring dashboard is deployed outside this repository. Its
+    # route is codified here so a reviewed edge apply reproduces the
+    # running state instead of deleting it.
+    monitorizacion:
+      rule: "Host(`monitor.apptolast.com`)"
+      entryPoints:
+        - websecure
+      service: monitorizacion
+      tls:
+        certResolver: letsencrypt
   middlewares:
     edge-security:
       headers:
@@ -145,6 +164,23 @@ http:
           - edge-security
 
   services:
+    # passHostHeader is load bearing: /info builds the phone-controller
+    # URL from the Host header, so without it the qr would point at the
+    # internal Swarm name and no phone could reach it.
+    racinggame:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://racinggame_web:3000
+        healthCheck:
+          path: /info
+          interval: 15s
+          timeout: 3s
+    monitorizacion:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://monitor-api:8080
     organizationweb:
       loadBalancer:
         passHostHeader: true

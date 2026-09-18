@@ -15,6 +15,10 @@ edge_monitoring_network: "{{ platform_edge_monitoring_network }}"
 edge_networks: "{{ platform_edge_networks }}"
 edge_application_networks:
   organizationweb: apptolast-edge-organizationweb
+  racinggame: apptolast-edge-racinggame
+  # The monitoring dashboard runs outside this repository; only its
+  # ingress is codified here, on the network it already uses.
+  observatorio: apptolast-edge-observatorio
 
 edge_traefik_image: >-
   traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8

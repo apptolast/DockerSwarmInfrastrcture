@@ -1,0 +1,24 @@
+---
+# Reviewed contract of the independent racing-game stack (stack
+# `racinggame`, service `web`). scripts/validate-racinggame.py pins every
+# value below and renders stacks/racinggame/stack.yml.j2.
+#
+# The game is a single stateless Node process: it serves the static client
+# and runs the authoritative race simulation in memory. It owns no volume,
+# no database and no secret, so a lost server is rebuilt from this commit
+# plus the published image alone.
+#
+# `images.web` is the reviewed baseline, kept as restore evidence. What the
+# service actually runs is the `:latest` channel in
+# config/image-channels.yml, which the watcher re-pins between deploys.
+racinggame:
+  schema_version: 1
+  stack_name: racinggame
+  # Commit of bauti-py/juegos-free the baseline image was built from; the
+  # image carries it as org.opencontainers.image.revision.
+  release: cc80aa0ce376d265a4e9885e39d178d547619575
+  hostname: racinggame.apptolast.com
+  edge_network: apptolast-edge-racinggame
+  images:
+    web: "ocholoko888/racinggame@sha256:\
+      ca8f7459852af20ef53c1913eb005f3e4536a420cdba0d9a7d50ccc4c3d69c95"

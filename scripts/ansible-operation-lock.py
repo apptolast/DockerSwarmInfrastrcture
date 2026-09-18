@@ -36,6 +36,7 @@ SAFE_PLAYBOOKS = {
     "workloads",
     "observability",
     "organizationweb",
+    "racinggame",
     "autoupdater",
     "backup",
     "bootstrap-host",

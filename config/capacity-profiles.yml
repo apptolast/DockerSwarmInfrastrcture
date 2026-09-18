@@ -1,4 +1,11 @@
 ---
+# Mutually exclusive capacity plans. `active` names the plan the host
+# actually runs; every plan is still checked against the host budget
+# on each run, so an inactive one can never drift out of reach.
+#
+# A plan is edge + workloads + its application stacks + autoupdater.
+# The active plan runs two applications, so `stacks` lists both; the
+# observability plan stays a single-application alternative.
 capacity_profiles:
   schema_version: 1
   active: organizationweb
@@ -9,12 +16,17 @@ capacity_profiles:
         reservations: {cpu_millicores: 3570, memory_mib: 7250}
         limits: {cpu_millicores: 17450, memory_mib: 12397}
     organizationweb:
-      stacks: [edge, workloads, organizationweb, autoupdater]
+      stacks: [edge, workloads, organizationweb, racinggame, autoupdater]
       aggregate:
-        reservations: {cpu_millicores: 3000, memory_mib: 6802}
-        limits: {cpu_millicores: 14600, memory_mib: 11501}
+        reservations: {cpu_millicores: 3200, memory_mib: 6930}
+        limits: {cpu_millicores: 15600, memory_mib: 11757}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:
       reservations: {cpu_millicores: 500, memory_mib: 800}
       limits: {cpu_millicores: 2250, memory_mib: 1600}
+  racinggame:
+    expected_services: [web]
+    aggregate:
+      reservations: {cpu_millicores: 200, memory_mib: 128}
+      limits: {cpu_millicores: 1000, memory_mib: 256}

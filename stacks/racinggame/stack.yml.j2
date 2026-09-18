@@ -1,0 +1,81 @@
+---
+version: "3.8"
+
+x-defaults: &defaults
+  init: true
+  logging:
+    driver: local
+    options:
+      max-file: "5"
+      max-size: 20m
+
+x-deploy: &deploy
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.labels.platform.workloads == true
+  restart_policy:
+    condition: any
+    delay: 5s
+    window: 60s
+  update_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: rollback
+    monitor: 120s
+    max_failure_ratio: 0
+  rollback_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: pause
+    monitor: 120s
+    max_failure_ratio: 0
+
+services:
+  web:
+    <<: *defaults
+    image: "{{ image_channels_map.racinggame['web'].reference }}"
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    # The process only reads /app. /tmp exists so nothing the runtime may
+    # want to write ever lands on a read-only root filesystem.
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 16777216}
+    # The image already defaults to these; declaring them here keeps the
+    # listening port a property of the reviewed stack, not of the image.
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3000"
+    networks: [edge]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/info')
+          .then(r=>process.exit(r.ok?0:1))
+          .catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.racinggame['web'].label }}
+      resources:
+        reservations: {cpus: "0.20", memory: 128M}
+        limits: {cpus: "1.00", memory: 256M}
+
+networks:
+  edge:
+    external: true
+    name: "{{ racinggame.edge_network }}"
+
+configs: {}

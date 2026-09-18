@@ -126,6 +126,7 @@ yamllint \
   config/capacity-profiles.yml \
   config/autoupdater.yml \
   config/organizationweb.yml \
+  config/racinggame.yml \
   config/host-security.yml \
   config/minecraft.yml \
   config/platform.yml \
@@ -178,6 +179,8 @@ scripts/validate-observability.sh
 scripts/validate-capacity.sh --reuse-rendered
 "${VENV_DIR}/bin/python" scripts/validate-organizationweb.py \
   --output .build/organizationweb/stack.yml
+"${VENV_DIR}/bin/python" scripts/validate-racinggame.py \
+  --output .build/racinggame/stack.yml
 "${VENV_DIR}/bin/python" scripts/validate-image-channels.py validate \
   --build-dir .build
 "${VENV_DIR}/bin/python" scripts/validate-capacity-profiles.py

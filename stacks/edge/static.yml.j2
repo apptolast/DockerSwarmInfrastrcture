@@ -40,8 +40,13 @@ entryPoints:
         certResolver: letsencrypt
     transport:
       respondingTimeouts:
-        readTimeout: 60s
-        writeTimeout: 60s
+        # readTimeout bounds the WHOLE request, and Go leaves that
+        # deadline on a connection hijacked for a WebSocket, so the
+        # 60s default cut every upgraded connection after a minute.
+        # An hour keeps a slow-body bound while letting a game or a
+        # push channel live. writeTimeout: 0s is Traefik's default.
+        readTimeout: 3600s
+        writeTimeout: 0s
         idleTimeout: 180s
   traefik:
     address: ":8080"

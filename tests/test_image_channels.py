@@ -122,7 +122,13 @@ class ChannelMapTests(unittest.TestCase):
         services = channel_map["services"]
         self.assertEqual(
             {stack: len(entries) for stack, entries in services.items()},
-            {"edge": 1, "workloads": 14, "organizationweb": 4, "observability": 12},
+            {
+                "edge": 1,
+                "workloads": 14,
+                "organizationweb": 4,
+                "racinggame": 1,
+                "observability": 12,
+            },
         )
         self.assertEqual(
             channel_map["exclusions"],
@@ -582,6 +588,7 @@ class RenderedCoverageTests(unittest.TestCase):
                 "edge",
                 "workloads",
                 "organizationweb",
+                "racinggame",
                 "observability",
                 "autoupdater",
             )
@@ -1040,7 +1047,13 @@ class ChannelResolverTests(unittest.TestCase):
 
 class ChannelWiringTests(unittest.TestCase):
     def test_stacks_render_images_and_labels_only_from_the_channel_map(self) -> None:
-        for stack in ("edge", "workloads", "organizationweb", "observability"):
+        for stack in (
+            "edge",
+            "workloads",
+            "organizationweb",
+            "racinggame",
+            "observability",
+        ):
             with self.subTest(stack=stack):
                 template = (
                     REPOSITORY_ROOT / f"stacks/{stack}/stack.yml.j2"
@@ -1055,6 +1068,7 @@ class ChannelWiringTests(unittest.TestCase):
             "ansible/roles/edge/tasks/deploy.yml",
             "ansible/roles/workloads/tasks/deploy.yml",
             "ansible/roles/organizationweb/tasks/deploy.yml",
+            "ansible/roles/racinggame/tasks/deploy.yml",
             "ansible/roles/observability/tasks/deploy.yml",
         ):
             with self.subTest(path=path):

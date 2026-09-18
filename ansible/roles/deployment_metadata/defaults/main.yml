@@ -35,6 +35,8 @@ deployment_metadata_components_by_playbook:
     - backup
   organizationweb:
     - organizationweb
+  racinggame:
+    - racinggame
   autoupdater:
     - autoupdater
   site:

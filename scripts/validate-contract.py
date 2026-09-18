@@ -275,6 +275,16 @@ expected_stack_networks["edge-organizationweb"] = {
     "external": True,
     "name": "apptolast-edge-organizationweb",
 }
+expected_stack_networks["edge-racinggame"] = {
+    "external": True,
+    "name": "apptolast-edge-racinggame",
+}
+# The monitoring dashboard lives outside this repository; only its
+# ingress is reviewed here.
+expected_stack_networks["edge-observatorio"] = {
+    "external": True,
+    "name": "apptolast-edge-observatorio",
+}
 if stack["networks"] != expected_stack_networks:
     fail("the rendered edge networks differ from the isolation contract")
 if set(traefik_service["networks"]) != set(expected_stack_networks):
@@ -349,10 +359,17 @@ if set(dynamic["http"]["routers"]) != {
     "edge-health",
     "edge-ping-internal",
     "organizationweb",
+    "racinggame",
+    "monitorizacion",
     *edge_routes,
 }:
     fail("the rendered edge router allowlist differs from the service catalog")
-if set(dynamic["http"]["services"]) != {*edge_routes, "organizationweb"}:
+if set(dynamic["http"]["services"]) != {
+    *edge_routes,
+    "organizationweb",
+    "racinggame",
+    "monitorizacion",
+}:
     fail("the rendered edge backend allowlist differs from the service catalog")
 organizationweb_route = dynamic["http"]["routers"]["organizationweb"]
 if organizationweb_route != {
@@ -374,6 +391,42 @@ if dynamic["http"]["services"]["organizationweb"] != {
     },
 }:
     fail("the OrganizationWeb upstream differs from its independent contract")
+racinggame_route = dynamic["http"]["routers"]["racinggame"]
+if racinggame_route != {
+    "rule": "Host(`racinggame.apptolast.com`)",
+    "entryPoints": ["websecure"],
+    "middlewares": ["edge-security"],
+    "service": "racinggame",
+    "tls": {"certResolver": "letsencrypt"},
+}:
+    fail("the RacingGame router differs from its independent contract")
+if dynamic["http"]["services"]["racinggame"] != {
+    "loadBalancer": {
+        "passHostHeader": True,
+        "servers": [{"url": "http://racinggame_web:3000"}],
+        "healthCheck": {
+            "path": "/info", "interval": "15s", "timeout": "3s",
+        },
+    },
+}:
+    fail("the RacingGame upstream differs from its independent contract")
+# Codified from the live Traefik configuration: the dashboard itself
+# is deployed outside this repository, so only its route is pinned.
+monitorizacion_route = dynamic["http"]["routers"]["monitorizacion"]
+if monitorizacion_route != {
+    "rule": "Host(`monitor.apptolast.com`)",
+    "entryPoints": ["websecure"],
+    "service": "monitorizacion",
+    "tls": {"certResolver": "letsencrypt"},
+}:
+    fail("the monitoring router differs from the reviewed ingress")
+if dynamic["http"]["services"]["monitorizacion"] != {
+    "loadBalancer": {
+        "passHostHeader": True,
+        "servers": [{"url": "http://monitor-api:8080"}],
+    },
+}:
+    fail("the monitoring upstream differs from the reviewed ingress")
 for route, (service_id, upstream) in edge_routes.items():
     expected_hostnames = approved_by_id[service_id]["hostnames"]
     if len(expected_hostnames) != 1:
