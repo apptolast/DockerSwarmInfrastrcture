@@ -165,6 +165,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   llevaba las etiquetas `com.apptolast.managed-by`, de modo que el siguiente
   apply del edge las habría borrado. El panel en sí sigue desplegándose
   fuera de este repositorio; aquí solo se revisa su entrada.
+- El contrato de redes edge admite una excepción revisada y acotada:
+  `edge_adopted_attachable_networks` enumera las redes que pueden ser
+  `attachable`, hoy solo `apptolast-edge-observatorio`. El panel de
+  monitorización es un contenedor suelto, no un servicio Swarm, y un
+  contenedor no-Swarm no puede unirse a una overlay no-attachable, de
+  modo que su red tiene que serlo para que su propia entrada
+  funcione. El resto del contrato sigue vigente para ella, cifrado
+  incluido, y la lista solo puede nombrar redes ya declaradas en
+  `edge_application_networks`, nunca una de las ocho del catálogo.
 - `scripts/validate-edge.sh` deriva la lista de redes esperadas de la unión
   de `platform_edge_networks` y `edge_application_networks` en lugar de
   exigir nueve fijas. Solo leía la primera, así que fallaba desde que entró

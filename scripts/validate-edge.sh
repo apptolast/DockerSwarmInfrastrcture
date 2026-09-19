@@ -73,9 +73,15 @@ print(traefik["mode"])
 print(traefik["spec_exact"] or "")
 print(traefik["spec_pattern"])
 print(group_vars["edge_traefik_cloudflare_secret_name"])
+print(
+    json.dumps(
+        group_vars.get("edge_adopted_attachable_networks", []),
+        sort_keys=True,
+    )
+)
 PY
 )
-(( ${#edge_contract[@]} == 8 )) ||
+(( ${#edge_contract[@]} == 9 )) ||
   fail "cannot read the edge contract"
 public_ipv4="${edge_contract[0]}"
 hostname="${edge_contract[1]}"
@@ -85,6 +91,7 @@ traefik_image_mode="${edge_contract[4]}"
 traefik_image_exact="${edge_contract[5]}"
 traefik_image_pattern="${edge_contract[6]}"
 secret_name="${edge_contract[7]}"
+adopted_attachable_json="${edge_contract[8]}"
 [[ "${traefik_image_mode}" == hold || "${traefik_image_mode}" == channel ]] ||
   fail "the Traefik image channel mode is invalid"
 
@@ -104,11 +111,17 @@ expected_network_count=$((
 network_ids=()
 for network_name in "${expected_network_names[@]}"; do
   network_json="$(docker network inspect "${network_name}")"
-  jq --exit-status '
+  jq --exit-status \
+    --argjson adopted "${adopted_attachable_json}" \
+    --arg name "${network_name}" \
+    '
     length == 1 and
     .[0].Driver == "overlay" and
     .[0].Scope == "swarm" and
-    .[0].Attachable == false and
+    (
+      .[0].Attachable == false or
+      ($adopted | index($name) != null)
+    ) and
     .[0].Internal == false and
     .[0].Options.encrypted == ""
   ' <<<"${network_json}" >/dev/null ||
