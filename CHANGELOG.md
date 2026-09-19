@@ -8,6 +8,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- La imagen del juego se re-fija a la build con calidad adaptativa
+  (`116db037`, digest `d9f272f1`). El cliente mide la maquina antes del
+  primer frame y ajusta resolucion, sombras y materiales para sostener
+  60 FPS; la imagen ademas declara ahora su commit de origen en
+  `org.opencontainers.image.revision`, que el apply ya exigia y que
+  hasta ahora dependia de acordarse de pasarlo en la linea de build.
 - Stack RacingGame independiente: catálogo `config/racinggame.yml`, canal
   `:latest` con auto-actualización, perfil de capacidad, ruta edge aislada,
   role, playbook, validador y runbook en
