@@ -42,6 +42,7 @@ ALLOWED_STACKS = (
     "edge",
     "workloads",
     "organizationweb",
+    "racinggame",
     "observability",
     "autoupdater",
 )
@@ -49,6 +50,7 @@ RENDERED_STACKS = (
     "edge",
     "workloads",
     "organizationweb",
+    "racinggame",
     "observability",
     "autoupdater",
 )
@@ -302,6 +304,7 @@ def load_baselines(
     root: Path = PROJECT_DIR,
     services: dict[str, Any] | None = None,
     organizationweb: dict[str, Any] | None = None,
+    racinggame: dict[str, Any] | None = None,
     group_vars: dict[str, Any] | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Index every reviewed baseline image by (catalog, component)."""
@@ -309,6 +312,8 @@ def load_baselines(
         services = load_unique_yaml(root / "config/services.yml")
     if organizationweb is None:
         organizationweb = load_unique_yaml(root / "config/organizationweb.yml")
+    if racinggame is None:
+        racinggame = load_unique_yaml(root / "config/racinggame.yml")
     if group_vars is None:
         group_vars = load_unique_yaml(root / "ansible/group_vars/all.yml")
     baselines: dict[tuple[str, str], dict[str, Any]] = {}
@@ -326,7 +331,11 @@ def load_baselines(
     for service in approved:
         if not isinstance(service, dict) or not isinstance(service.get("id"), str):
             raise ChannelError("service catalog entry is malformed")
-        if service["id"] in {"organizationweb", "observability"}:
+        if service["id"] in {
+            "organizationweb",
+            "observability",
+            "racinggame",
+        }:
             raise ChannelError("service catalog shadows a reserved baseline")
         for image in service.get("images", []):
             if not isinstance(image, dict):
@@ -343,6 +352,14 @@ def load_baselines(
         raise ChannelError("OrganizationWeb catalog has no images")
     for name, reference in app["images"].items():
         add(("organizationweb", str(name)), reference, None)
+
+    game = racinggame.get("racinggame")
+    if not isinstance(game, dict) or not isinstance(
+        game.get("images"), dict
+    ):
+        raise ChannelError("RacingGame catalog has no images")
+    for name, reference in game["images"].items():
+        add(("racinggame", str(name)), reference, None)
 
     components = (
         services.get("internal_platform", {})

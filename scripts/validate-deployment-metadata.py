@@ -32,6 +32,7 @@ PLAYBOOK_COMPONENTS = {
         "observability",
     ],
     "organizationweb": ["organizationweb"],
+    "racinggame": ["racinggame"],
     "autoupdater": ["autoupdater"],
     "backup": ["backup"],
     "site": [
@@ -128,6 +129,7 @@ contract_paths = [
     PROJECT_DIR / "config/capacity.yml",
     PROJECT_DIR / "config/capacity-profiles.yml",
     PROJECT_DIR / "config/organizationweb.yml",
+    PROJECT_DIR / "config/racinggame.yml",
     PROJECT_DIR / "config/host-security.yml",
     PROJECT_DIR / "config/minecraft.yml",
     PROJECT_DIR / "config/platform.yml",

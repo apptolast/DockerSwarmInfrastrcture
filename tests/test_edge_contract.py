@@ -260,12 +260,21 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             "edge_monitoring_network": "apptolast-edge-monitoring",
             "edge_networks": EDGE_NETWORKS,
             "edge_application_networks": {
-                "organizationweb": "apptolast-edge-organizationweb"
+                "organizationweb": "apptolast-edge-organizationweb",
+                "racinggame": "apptolast-edge-racinggame",
+                "observatorio": "apptolast-edge-observatorio",
             },
             "organizationweb": {
                 "hostname": "organizacion.apptolast.com",
                 "edge_network": "apptolast-edge-organizationweb",
             },
+            "racinggame": {
+                "hostname": "racinggame.apptolast.com",
+                "edge_network": "apptolast-edge-racinggame",
+            },
+            "edge_adopted_attachable_networks": [
+                "apptolast-edge-observatorio",
+            ],
             "edge_deployment_profile": "production",
             "edge_traefik_acme_ca_server": (
                 "https://acme-v02.api.letsencrypt.org/directory"

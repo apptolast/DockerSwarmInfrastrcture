@@ -1,16 +1,14 @@
 ---
-- name: Deploy the Traefik edge stack
+- name: Reconcile the independent RacingGame stack
   hosts: swarm_managers
   become: true
-  gather_facts: true
+  gather_facts: false
   serial: 1
   any_errors_fatal: true
 
   vars_files:
     - ../../config/capacity.yml
     - ../../config/platform.yml
-    - ../../config/services.yml
-    - ../../config/organizationweb.yml
     - ../../config/racinggame.yml
     - ../group_vars/all.yml
 
@@ -19,8 +17,5 @@
     - role: capacity_preflight
       tags:
         - capacity
-    - role: image_preflight
-      image_preflight_channel_stacks: [edge]
-    - role: workloads_runner_image
-    - role: edge
+    - role: racinggame
     - role: deployment_metadata

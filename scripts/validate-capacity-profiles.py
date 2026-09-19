@@ -19,12 +19,24 @@ SPEC = importlib.util.spec_from_file_location(
 capacity = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(capacity)
 
+# The independent application stacks: rendered from their own
+# config/<name>.yml plus stacks/<name>/stack.yml.j2, budgeted in
+# config/capacity-profiles.yml rather than in the v1 contract.
+APP_STACKS = ("organizationweb", "racinggame")
+APP_SERVICES = {
+    "organizationweb": ["backend", "postgres", "rabbitmq", "web"],
+    "racinggame": ["web"],
+}
+# A plan is always edge + workloads + applications + autoupdater.
+PLAN_HEAD = ["edge", "workloads"]
+PLAN_TAIL = ["autoupdater"]
+
 
 def validate_profile_contract(document):
     root = capacity.expect_mapping(document, {"capacity_profiles"}, "profiles")
     profiles = capacity.expect_mapping(
         root["capacity_profiles"],
-        {"schema_version", "active", "profiles", "organizationweb"},
+        {"schema_version", "active", "profiles", *APP_STACKS},
         "profiles",
     )
     if type(profiles["schema_version"]) is not int or profiles["schema_version"] != 1:
@@ -36,17 +48,38 @@ def validate_profile_contract(document):
     )
     for name, plan in plans.items():
         capacity.expect_mapping(plan, {"stacks", "aggregate"}, f"profile.{name}")
-        if plan["stacks"] != ["edge", "workloads", name, "autoupdater"]:
+        stacks = plan["stacks"]
+        if not isinstance(stacks, list):
+            raise capacity.CapacityError("profile stacks must be a list")
+        middle = stacks[len(PLAN_HEAD):-len(PLAN_TAIL)]
+        if (
+            stacks[:len(PLAN_HEAD)] != PLAN_HEAD
+            or stacks[-len(PLAN_TAIL):] != PLAN_TAIL
+            or len(set(stacks)) != len(stacks)
+            or name not in middle
+            or any(
+                stack not in APP_STACKS
+                and stack not in capacity.STACK_IDS
+                for stack in middle
+            )
+        ):
             raise capacity.CapacityError(
                 "profile must include edge, workloads, its own stack and autoupdater"
             )
         capacity.validate_resource_totals(plan["aggregate"], f"profile.{name}.aggregate")
-    app = capacity.expect_mapping(
-        profiles["organizationweb"], {"expected_services", "aggregate"}, "profile.application"
-    )
-    if app["expected_services"] != ["backend", "postgres", "rabbitmq", "web"]:
-        raise capacity.CapacityError("profile application services are not the reviewed set")
-    capacity.validate_resource_totals(app["aggregate"], "profile.application.aggregate")
+    for app_name in APP_STACKS:
+        app = capacity.expect_mapping(
+            profiles[app_name],
+            {"expected_services", "aggregate"},
+            f"profile.{app_name}",
+        )
+        if app["expected_services"] != APP_SERVICES[app_name]:
+            raise capacity.CapacityError(
+                "profile application services are not the reviewed set"
+            )
+        capacity.validate_resource_totals(
+            app["aggregate"], f"profile.{app_name}.aggregate"
+        )
     return profiles
 
 
@@ -56,24 +89,30 @@ def validate_profiles(base_document, profile_document, stacks):
         base, {name: stacks[name] for name in capacity.STACK_IDS}
     )
     profiles = validate_profile_contract(profile_document)
-    app_contract = profiles["organizationweb"]
-    services = stacks["organizationweb"]["services"]
-    if set(services) != set(app_contract["expected_services"]):
-        raise capacity.CapacityError("application services differ from reviewed set")
-    app_total = capacity.empty_resources()
-    for name in app_contract["expected_services"]:
-        plan = capacity.service_resources(
-            "organizationweb",
-            name,
-            services[name],
-            set(),
-            base["topology"]["eligible_nodes"],
-            base["policy"]["service_memory_limit_to_reservation_ratio"],
-        )
-        capacity.add_resources(app_total, plan)
-    if app_total != app_contract["aggregate"]:
-        raise capacity.CapacityError("application totals differ from reviewed budget")
-    totals = {**legacy, "organizationweb": app_total}
+    totals = dict(legacy)
+    for app_name in APP_STACKS:
+        app_contract = profiles[app_name]
+        services = stacks[app_name]["services"]
+        if set(services) != set(app_contract["expected_services"]):
+            raise capacity.CapacityError(
+                "application services differ from reviewed set"
+            )
+        app_total = capacity.empty_resources()
+        for name in app_contract["expected_services"]:
+            plan = capacity.service_resources(
+                app_name,
+                name,
+                services[name],
+                set(),
+                base["topology"]["eligible_nodes"],
+                base["policy"]["service_memory_limit_to_reservation_ratio"],
+            )
+            capacity.add_resources(app_total, plan)
+        if app_total != app_contract["aggregate"]:
+            raise capacity.CapacityError(
+                "application totals differ from reviewed budget"
+            )
+        totals[app_name] = app_total
     result = {}
     for name, profile in profiles["profiles"].items():
         aggregate = capacity.empty_resources()
@@ -94,8 +133,8 @@ def validate_live(base_document, profile_document, requested_stack, live_service
         for stack in profile["stacks"]:
             capacity.add_resources(
                 total,
-                profiles["organizationweb"]["aggregate"]
-                if stack == "organizationweb"
+                profiles[stack]["aggregate"]
+                if stack in APP_STACKS
                 else base["reviewed_totals"][stack],
             )
         if total != profile["aggregate"]:
@@ -110,8 +149,8 @@ def validate_live(base_document, profile_document, requested_stack, live_service
         (stack, f"{stack}_{service}")
         for stack in allowed_stacks
         for service in (
-            profiles["organizationweb"]["expected_services"]
-            if stack == "organizationweb"
+            profiles[stack]["expected_services"]
+            if stack in APP_STACKS
             else base["stacks"][stack]["expected_services"]
         )
     }
@@ -132,6 +171,7 @@ def main(argv=None):
             "workloads",
             "observability",
             "organizationweb",
+            "racinggame",
             "autoupdater",
             "site",
         ),
@@ -148,11 +188,6 @@ def main(argv=None):
                 raise capacity.CapacityError("live inventory must be a service list")
             validate_live(base, profiles, args.requested_stack, live_services)
         else:
-            variables = capacity.load_yaml(ROOT / "config/organizationweb.yml")
-            template = jinja2.Environment(
-                loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
-                undefined=jinja2.StrictUndefined,
-            ).get_template("stack.yml.j2")
             import yaml
 
             channel_spec = importlib.util.spec_from_file_location(
@@ -170,9 +205,22 @@ def main(argv=None):
                 for name, path in capacity.DEFAULT_STACKS.items()
                 if name != "autoupdater"
             }
-            stacks["organizationweb"] = yaml.safe_load(
-                template.render(**variables, image_channels_map=image_channels_map)
-            )
+            for app_name in APP_STACKS:
+                variables = capacity.load_yaml(
+                    ROOT / f"config/{app_name}.yml"
+                )
+                template = jinja2.Environment(
+                    loader=jinja2.FileSystemLoader(
+                        ROOT / f"stacks/{app_name}"
+                    ),
+                    undefined=jinja2.StrictUndefined,
+                ).get_template("stack.yml.j2")
+                stacks[app_name] = yaml.safe_load(
+                    template.render(
+                        **variables,
+                        image_channels_map=image_channels_map,
+                    )
+                )
             autoupdater_spec = importlib.util.spec_from_file_location(
                 "validate_autoupdater",
                 ROOT / "scripts/validate-autoupdater.py",

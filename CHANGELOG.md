@@ -8,6 +8,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Stack RacingGame independiente: catálogo `config/racinggame.yml`, canal
+  `:latest` con auto-actualización, perfil de capacidad, ruta edge aislada,
+  role, playbook, validador y runbook en
+  [`docs/RACINGGAME.md`](docs/RACINGGAME.md). Un único servicio Node sin
+  estado, sin volumen, sin secreto y sin puertos públicos nuevos; no entra
+  en `config/services.yml` porque nunca formó parte de la migración.
+- Los perfiles de capacidad admiten varias aplicaciones en el mismo plan.
+  `stacks` pasa de ser una lista fija de cuatro entradas a edge, workloads,
+  las aplicaciones del perfil y autoupdater, de modo que OrganizationWeb y
+  RacingGame conviven sin tocar el contrato v1.
 - Stack OrganizationWeb independiente, catálogo de imágenes y secrets,
   perfiles de capacidad excluyentes, ruta edge aislada y runbook de operación.
   Incluye pruebas de health, persistencia y usuarios sin privilegios;
@@ -141,6 +151,33 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- El entryPoint `websecure` pasa a `readTimeout: 3600s` y
+  `writeTimeout: 0s`. Traefik fijó en v2.11.2 un `readTimeout` por defecto
+  de 60s que acota la petición completa, y Go no limpia ese deadline en una
+  conexión secuestrada para un WebSocket, de modo que toda conexión larga
+  moría al minuto. `respondingTimeouts` solo existe por entryPoint, así que
+  el cambio alcanza a todos los hostnames; `0s` es el valor por defecto de
+  Traefik para escritura y `3600s` conserva un tope frente a cuerpos lentos.
+- La ruta `monitorizacion` (`monitor.apptolast.com`) y la red
+  `apptolast-edge-observatorio` quedan codificadas en
+  `stacks/edge/dynamic.yml.j2` y en el contrato. Estaban vivas en Traefik
+  pero no en el repositorio: la config en uso se había creado a mano y no
+  llevaba las etiquetas `com.apptolast.managed-by`, de modo que el siguiente
+  apply del edge las habría borrado. El panel en sí sigue desplegándose
+  fuera de este repositorio; aquí solo se revisa su entrada.
+- El contrato de redes edge admite una excepción revisada y acotada:
+  `edge_adopted_attachable_networks` enumera las redes que pueden ser
+  `attachable`, hoy solo `apptolast-edge-observatorio`. El panel de
+  monitorización es un contenedor suelto, no un servicio Swarm, y un
+  contenedor no-Swarm no puede unirse a una overlay no-attachable, de
+  modo que su red tiene que serlo para que su propia entrada
+  funcione. El resto del contrato sigue vigente para ella, cifrado
+  incluido, y la lista solo puede nombrar redes ya declaradas en
+  `edge_application_networks`, nunca una de las ocho del catálogo.
+- `scripts/validate-edge.sh` deriva la lista de redes esperadas de la unión
+  de `platform_edge_networks` y `edge_application_networks` en lugar de
+  exigir nueve fijas. Solo leía la primera, así que fallaba desde que entró
+  la entrada de OrganizationWeb.
 - Primera activación de la actualización automática: `kropia`,
   `minecraft-stats`, `portfolio-alberto`, `portfolio-pablo` y `selenium`
   pasan a `autoupdate: true`. Son los canales sin datos propios (como mucho

@@ -41,27 +41,38 @@ class CapacityProfileTests(unittest.TestCase):
         )
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
-        variables = yaml.safe_load((ROOT / "config/organizationweb.yml").read_text())
-        template = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(ROOT / "stacks/organizationweb"),
-            undefined=jinja2.StrictUndefined,
-        ).get_template("stack.yml.j2")
         self.base = yaml.safe_load((ROOT / "config/capacity.yml").read_text())
         self.profiles = yaml.safe_load((ROOT / "config/capacity-profiles.yml").read_text())
+        channel_map = load_image_channels_map()
         self.stacks = {
                 **{
                     name: yaml.safe_load((ROOT / f".build/{name}/stack.yml").read_text())
                     for name in ("edge", "workloads", "observability")
                 },
-                "organizationweb": yaml.safe_load(template.render(**variables, image_channels_map=load_image_channels_map())),
                 "autoupdater": load_autoupdater_stack(),
             }
+        # Every independent application renders from its own catalog
+        # and template, so the fixture follows APP_STACKS.
+        for app_name in self.module.APP_STACKS:
+            variables = yaml.safe_load(
+                (ROOT / f"config/{app_name}.yml").read_text()
+            )
+            template = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(ROOT / f"stacks/{app_name}"),
+                undefined=jinja2.StrictUndefined,
+            ).get_template("stack.yml.j2")
+            self.stacks[app_name] = yaml.safe_load(
+                template.render(
+                    **variables, image_channels_map=channel_map
+                )
+            )
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
-        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 11501)
-        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 6802)
-        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 14600)
+        # The active plan now carries the game as well.
+        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 11757)
+        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 6930)
+        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 15600)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 12397)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 17450)
 
@@ -86,9 +97,16 @@ class CapacityProfileTests(unittest.TestCase):
         live = [
             {"name": "edge_traefik", "stack": "edge"},
             {"name": "organizationweb_web", "stack": "organizationweb"},
+            {"name": "racinggame_web", "stack": "racinggame"},
             {"name": "autoupdater_shepherd", "stack": "autoupdater"},
         ]
-        for requested in ("autoupdater", "organizationweb", "edge", "workloads"):
+        for requested in (
+            "autoupdater",
+            "organizationweb",
+            "racinggame",
+            "edge",
+            "workloads",
+        ):
             with self.subTest(requested=requested):
                 self.module.validate_live(self.base, self.profiles, requested, live)
         for service in (
@@ -175,7 +193,14 @@ class CapacityProfileTests(unittest.TestCase):
         )
         self.assertIs(live_check["check_mode"], False)
         self.assertIs(live_check["changed_when"], False)
-        for name in ("edge", "workloads", "observability", "autoupdater", "site"):
+        for name in (
+            "edge",
+            "workloads",
+            "observability",
+            "autoupdater",
+            "racinggame",
+            "site",
+        ):
             play = yaml.safe_load((ROOT / f"ansible/playbooks/{name}.yml").read_text())[0]
             roles = [item["role"] for item in play["roles"]]
             self.assertLess(roles.index("operation_lock_guard"), roles.index("capacity_preflight"))

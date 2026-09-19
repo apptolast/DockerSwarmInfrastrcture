@@ -202,7 +202,14 @@ class OrganizationWebContractTests(unittest.TestCase):
         self.assertEqual(len(legacy), 8)
         self.assertEqual(
             set(dynamic["http"]["routers"]),
-            {*legacy, "edge-health", "edge-ping-internal", "organizationweb"},
+            {
+                *legacy,
+                "edge-health",
+                "edge-ping-internal",
+                "organizationweb",
+                "racinggame",
+                "monitorizacion",
+            },
         )
         router = dynamic["http"]["routers"]["organizationweb"]
         self.assertEqual(router["rule"], "Host(`organizacion.apptolast.com`)")
@@ -214,7 +221,13 @@ class OrganizationWebContractTests(unittest.TestCase):
         )
         self.assertEqual(
             set(edge["networks"]),
-            {*("edge-" + name for name in legacy), "edge-monitoring", "edge-organizationweb"},
+            {
+                *("edge-" + name for name in legacy),
+                "edge-monitoring",
+                "edge-organizationweb",
+                "edge-racinggame",
+                "edge-observatorio",
+            },
         )
 
     def test_operation_lock_accepts_only_the_new_versioned_playbook_identity(self):

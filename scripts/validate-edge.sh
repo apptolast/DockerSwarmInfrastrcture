@@ -57,14 +57,31 @@ traefik = channels.load_channel_map(root)["services"]["edge"]["traefik"]
 print(contract["platform_public_ipv4"])
 print(contract["edge_traefik_hostname"])
 print(contract["platform_edge_monitoring_network"])
-print(json.dumps(contract["platform_edge_networks"], sort_keys=True))
+# Traefik is attached to the catalog networks AND to the networks of
+# the applications that live outside the service catalog, so the
+# allowlist has to be the union of both maps.
+print(
+    json.dumps(
+        {
+            **contract["platform_edge_networks"],
+            **group_vars["edge_application_networks"],
+        },
+        sort_keys=True,
+    )
+)
 print(traefik["mode"])
 print(traefik["spec_exact"] or "")
 print(traefik["spec_pattern"])
 print(group_vars["edge_traefik_cloudflare_secret_name"])
+print(
+    json.dumps(
+        group_vars.get("edge_adopted_attachable_networks", []),
+        sort_keys=True,
+    )
+)
 PY
 )
-(( ${#edge_contract[@]} == 8 )) ||
+(( ${#edge_contract[@]} == 9 )) ||
   fail "cannot read the edge contract"
 public_ipv4="${edge_contract[0]}"
 hostname="${edge_contract[1]}"
@@ -74,6 +91,7 @@ traefik_image_mode="${edge_contract[4]}"
 traefik_image_exact="${edge_contract[5]}"
 traefik_image_pattern="${edge_contract[6]}"
 secret_name="${edge_contract[7]}"
+adopted_attachable_json="${edge_contract[8]}"
 [[ "${traefik_image_mode}" == hold || "${traefik_image_mode}" == channel ]] ||
   fail "the Traefik image channel mode is invalid"
 
@@ -82,17 +100,28 @@ mapfile -t expected_network_names < <(
     <<<"${edge_network_map_json}"
 )
 expected_network_names+=("${monitoring_network_name}")
-(( ${#expected_network_names[@]} == 9 )) ||
+expected_network_count=$((
+  $(jq 'length' <<<"${edge_network_map_json}") + 1
+))
+(( ${#expected_network_names[@]} == expected_network_count )) ||
+  fail "cannot read the isolated edge network allowlist"
+(( expected_network_count >= 9 )) ||
   fail "the isolated edge network allowlist is incomplete"
 
 network_ids=()
 for network_name in "${expected_network_names[@]}"; do
   network_json="$(docker network inspect "${network_name}")"
-  jq --exit-status '
+  jq --exit-status \
+    --argjson adopted "${adopted_attachable_json}" \
+    --arg name "${network_name}" \
+    '
     length == 1 and
     .[0].Driver == "overlay" and
     .[0].Scope == "swarm" and
-    .[0].Attachable == false and
+    (
+      .[0].Attachable == false or
+      ($adopted | index($name) != null)
+    ) and
     .[0].Internal == false and
     .[0].Options.encrypted == ""
   ' <<<"${network_json}" >/dev/null ||

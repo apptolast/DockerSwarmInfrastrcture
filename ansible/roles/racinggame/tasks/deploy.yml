@@ -1,0 +1,251 @@
+---
+# The image is never pulled ahead of the deploy: the stack renders the
+# config/image-channels.yml entry and the CLI resolves it with
+# `resolve_image: changed`. Identity is proven afterwards, against the exact
+# image the service ended up running.
+- name: Create the application install directory
+  ansible.builtin.file:
+    path: /opt/dockerswarm/racinggame
+    owner: root
+    group: root
+    mode: '0750'
+    state: directory
+
+- name: Render the exact reviewed stack
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../stacks/racinggame/stack.yml.j2"
+    dest: /opt/dockerswarm/racinggame/stack.yml
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Install the existing exact live-reference validator
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../scripts/validate-swarm-deployment.py"
+    dest: /opt/dockerswarm/racinggame/validate-swarm-deployment.py
+    owner: root
+    group: root
+    mode: '0755'
+
+# The CLI keeps the live digest when the rendered image equals the
+# `com.docker.stack.image` label, so a hold moved outside Git would survive
+# the deploy and only fail the identity check after it. Refuse it before.
+- name: Read the application service before the stack mutation
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "racinggame_{{ item }}"]
+  loop: [web]
+  register: racinggame_services_before_deploy
+  changed_when: false
+  failed_when: false
+
+- name: Require the live hold to run its reviewed identity
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0
+        or item.stderr is search('(?i)(no such service|not found)')
+      - >-
+        item.rc != 0
+        or image_channels_map.racinggame[item.item].mode != 'hold'
+        or (
+          (item.stdout | from_json | first).Spec.Labels | default({}, true)
+        ).get('com.docker.stack.image', '')
+        != image_channels_map.racinggame[item.item].reference
+        or (item.stdout | from_json | first)
+        .Spec.TaskTemplate.ContainerSpec.Image
+        == image_channels_map.racinggame[item.item].spec_exact
+    fail_msg: >-
+      Service {{ item.item }} runs an image outside its unchanged hold entry,
+      or could not be read. Record the live image in
+      config/image-channels.yml before deploying.
+    quiet: true
+  loop: "{{ racinggame_services_before_deploy.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Deploy only the independent application stack
+  community.docker.docker_stack:
+    name: racinggame
+    state: present
+    compose: [/opt/dockerswarm/racinggame/stack.yml]
+    detach: true
+    prune: true
+    # Unchanged rendered image: keep the live digest. Changed or new: resolve
+    # the channel against the registry.
+    resolve_image: changed
+
+- name: Require the single replica and no extra service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - services
+      - racinggame
+      - --format
+      - "{% raw %}{{.Name}}={{.Replicas}}{% endraw %}"
+  register: racinggame_replicas
+  changed_when: false
+  until: racinggame_replicas.stdout_lines | sort == ['racinggame_web=1/1']
+  retries: 36
+  delay: 10
+
+- name: Inspect the converged application service
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, service, inspect, "racinggame_{{ item }}"]
+  loop: [web]
+  register: racinggame_service_inspections
+  changed_when: false
+
+- name: Require the live image to match its reviewed channel entry
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          image_channels_map.racinggame[item.item].mode == 'hold'
+          and
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+          == image_channels_map.racinggame[item.item].spec_exact
+        )
+        or
+        (
+          image_channels_map.racinggame[item.item].mode == 'channel'
+          and
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+          is match(image_channels_map.racinggame[item.item].spec_pattern)
+        )
+    fail_msg: >-
+      The live image of {{ item.item }} differs from its channel entry.
+  loop: "{{ racinggame_service_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect the exact image the application service runs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - >-
+        {{
+          (item.stdout | from_json | first)
+          .Spec.TaskTemplate.ContainerSpec.Image
+        }}
+  loop: "{{ racinggame_service_inspections.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: racinggame_image_inspections
+  changed_when: false
+
+# A channel entry only requires a 40-hex OCI revision, which is recorded
+# below as an audit of what is deployed. A hold on its baseline reference
+# additionally has to carry the reviewed release commit.
+- name: Require the published Linux amd64 image
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | first).Os == 'linux'
+      - (item.stdout | from_json | first).Architecture == 'amd64'
+      - >-
+        (
+          image_channels_map.racinggame[item.item.item].repository_familiar
+          ~ '@'
+          ~ (
+            (item.item.stdout | from_json | first)
+            .Spec.TaskTemplate.ContainerSpec.Image
+            | regex_replace('^.*@', '')
+          )
+        ) in (item.stdout | from_json | first).RepoDigests
+      - >-
+        (item.stdout | from_json | first)
+        .Config.Labels['org.opencontainers.image.revision']
+        is match('^[a-f0-9]{40}$')
+      - >-
+        not image_channels_map.racinggame[item.item.item].is_baseline
+        or (
+          (item.stdout | from_json | first)
+          .Config.Labels['org.opencontainers.image.revision']
+          == racinggame.release
+        )
+    fail_msg: Image identity or architecture differs from the reviewed release.
+  loop: "{{ racinggame_image_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Collect the live image and revision of the application service
+  ansible.builtin.set_fact:
+    racinggame_observed_images: >-
+      {{
+        racinggame_observed_images | default({})
+        | combine({
+          item.item.item: {
+            'image': (item.item.stdout | from_json | first)
+              .Spec.TaskTemplate.ContainerSpec.Image,
+            'revision': (item.stdout | from_json | first)
+              .Config.Labels['org.opencontainers.image.revision']
+              | default('', true)
+          }
+        })
+      }}
+  loop: "{{ racinggame_image_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Record the live application images observed by this apply
+  ansible.builtin.copy:
+    dest: /opt/dockerswarm/racinggame/observed-images.yml
+    content: |
+      {{
+        {
+          'schema_version': 1,
+          'stack': 'racinggame',
+          'source_revision':
+            deployment_metadata_source_revision | default(''),
+          'images': racinggame_observed_images,
+        } | to_nice_yaml(indent=2, sort_keys=true)
+      }}
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Verify exact deployed config secret and network references
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /opt/dockerswarm/racinggame/validate-swarm-deployment.py
+      - --stack
+      - /opt/dockerswarm/racinggame/stack.yml
+      - --stack-name
+      - racinggame
+      - --verified-configs
+      - '{}'
+      - --verified-secrets
+      - '{}'
+      - --verified-external-networks
+      - >-
+        {{ {'edge': {
+          'id': (racinggame_edge_inspect.stdout | from_json | first).Id,
+          'name': racinggame.edge_network,
+          'internal': false
+        }} | to_json }}
+  changed_when: false
+
+- name: Require a healthy running container for the application service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --filter
+      - "label=com.docker.swarm.service.name=racinggame_{{ item }}"
+      - --filter
+      - status=running
+      - --format
+      - "{% raw %}{{.Status}}{% endraw %}"
+  loop: [web]
+  register: racinggame_health
+  changed_when: false
+  until:
+    - racinggame_health.stdout_lines | length == 1
+    - racinggame_health.stdout is search('\(healthy\)$')
+  retries: 36
+  delay: 10

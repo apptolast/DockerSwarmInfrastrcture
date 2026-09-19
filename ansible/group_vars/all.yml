@@ -15,6 +15,20 @@ edge_monitoring_network: "{{ platform_edge_monitoring_network }}"
 edge_networks: "{{ platform_edge_networks }}"
 edge_application_networks:
   organizationweb: apptolast-edge-organizationweb
+  racinggame: apptolast-edge-racinggame
+  # The monitoring dashboard runs outside this repository; only its
+  # ingress is codified here, on the network it already uses.
+  observatorio: apptolast-edge-observatorio
+
+# Edge networks allowed to be attachable, and only those. The
+# monitoring dashboard is a plain container, not a Swarm service, and
+# a non-Swarm container cannot join a non-attachable overlay, so its
+# network has to stay attachable for its own ingress to work. Every
+# other term of the edge contract still applies to it, encryption
+# included; joining an attachable overlay needs the Docker socket,
+# which is already root-equivalent on this host.
+edge_adopted_attachable_networks:
+  - apptolast-edge-observatorio
 
 edge_traefik_image: >-
   traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8

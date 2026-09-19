@@ -59,14 +59,20 @@
     that:
       - (item.stdout | from_json | first).Driver == "overlay"
       - (item.stdout | from_json | first).Scope == "swarm"
-      - not (item.stdout | from_json | first).Attachable
+      # Attachable is relaxed only for the reviewed adopted networks:
+      # an application deployed outside this repository as a plain
+      # container cannot join a non-attachable overlay.
+      - >-
+        not (item.stdout | from_json | first).Attachable
+        or item.item in edge_adopted_attachable_networks
       - not (item.stdout | from_json | first).Internal
       - >-
         (item.stdout | from_json | first).Options.encrypted
         | default(None) == ""
     fail_msg: >-
-      Edge network {{ item.item }} does not match the encrypted,
-      non-attachable Swarm contract.
+      Edge network {{ item.item }} does not match the encrypted
+      Swarm contract, or is attachable without being reviewed as an
+      adopted application network.
   loop: "{{ edge_networks_verified.results }}"
   loop_control:
     label: "{{ item.item }}"

@@ -38,13 +38,24 @@
       - edge_networks.values() | list | unique | length == 8
       - >-
         edge_application_networks == {
-          'organizationweb': 'apptolast-edge-organizationweb'
+          'organizationweb': 'apptolast-edge-organizationweb',
+          'racinggame': 'apptolast-edge-racinggame',
+          'observatorio': 'apptolast-edge-observatorio'
         }
       - >-
         edge_application_networks.values() | list
         | intersect(edge_networks.values() | list) | length == 0
       - organizationweb.hostname == 'organizacion.apptolast.com'
       - organizationweb.edge_network == 'apptolast-edge-organizationweb'
+      - racinggame.hostname == 'racinggame.apptolast.com'
+      - racinggame.edge_network == 'apptolast-edge-racinggame'
+      - >-
+        edge_adopted_attachable_networks
+        == ['apptolast-edge-observatorio']
+      - >-
+        edge_adopted_attachable_networks
+        | difference(edge_application_networks.values() | list)
+        | length == 0
       - edge_monitoring_network not in edge_networks.values()
       - edge_monitoring_network not in edge_application_networks.values()
       - edge_deployment_profile in ["production", "acme-staging"]
