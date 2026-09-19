@@ -8,6 +8,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- El juego se re-fija a la build que arregla el rendimiento sin GPU
+  (`2ea28466`, digest `a61822ad`). El filtrado anisotropico del suelo
+  costaba el 43% del frame en un rasterizador por software: ahora sigue al
+  nivel de calidad. El cielo se dibuja el ultimo en vez del primero, misma
+  imagen y 1,12 ms menos. El cliente detecta ademas un contexto degradado
+  con `failIfMajorPerformanceCaveat`, como lo define la spec de WebGL, y lo
+  dice en el menu en vez de verse mal en silencio.
 - La imagen del juego se re-fija a la build con calidad adaptativa
   (`116db037`, digest `d9f272f1`). El cliente mide la maquina antes del
   primer frame y ajusta resolucion, sombras y materiales para sostener
