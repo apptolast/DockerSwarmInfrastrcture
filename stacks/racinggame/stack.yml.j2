@@ -79,3 +79,8 @@ networks:
     name: "{{ racinggame.edge_network }}"
 
 configs: {}
+
+# Declared and empty on purpose: scripts/validate-swarm-deployment.py
+# compares the rendered mapping against what the live stack references,
+# so the key has to exist even when the game consumes neither.
+secrets: {}
