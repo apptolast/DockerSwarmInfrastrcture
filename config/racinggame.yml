@@ -16,9 +16,9 @@ racinggame:
   stack_name: racinggame
   # Commit of bauti-py/juegos-free the baseline image was built from; the
   # image carries it as org.opencontainers.image.revision.
-  release: c3787e354b5591f5ec1252e2c2aa7d9a6a7af264
+  release: 116db037bb8daa2c5783771201d8241ee7d67b01
   hostname: racinggame.apptolast.com
   edge_network: apptolast-edge-racinggame
   images:
     web: "ocholoko888/racinggame@sha256:\
-      8a61312487fa6152d421da9f5a8cb8bfb1325c4d9743bf01084a261d77dda51f"
+      d9f272f10b236c34f2ac6a7b29c44c65188a682a8d067aab95a4cbdac382c302"
