@@ -29,10 +29,13 @@ observability_installed_secret_catalog: >-
   {{ observability_install_root }}/secrets.yml
 
 observability_http_probe_paths:
+  # Atlas se sondea en `/healthz`: es la unica ruta sin autenticacion, y un
+  # healthcheck en stacks/workloads/stack.yml.j2. OpenClaw servia ademas
+  # `/healthz`, que no se hereda sin evidencia de la imagen nueva.
+  atlas: /healthz
   kropia: /health
   minecraft-stats: /actuator/health
   n8n: /healthz
-  openclaw-clean: /healthz
   passbolt: /healthcheck/status.json
   personal-website-alberto: /robots.txt
   personal-website-pablo: /placeholder-logo.svg

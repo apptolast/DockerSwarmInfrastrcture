@@ -186,7 +186,7 @@ class PrepareRuntimeTests(unittest.TestCase):
                 "passbolt/jwt/jwt.key",
                 "passbolt/postgres",
                 "shlink/postgres",
-                "openclaw-clean/home",
+                "atlas/home",
                 "recovery/databases/vectors.dump",
                 "recovery/edge/traefik-acme.json",
             )
@@ -239,7 +239,7 @@ class PrepareRuntimeTests(unittest.TestCase):
                 ),
                 "existing-salt\n",
             )
-            self.assertIn("openclaw_gateway_token", manifest["secretFiles"])
+            self.assertIn("atlas_gateway_token", manifest["secretFiles"])
             self.assertIn("n8n_encryption_key", manifest["secretFiles"])
             expected_secret_files = set(prepare_runtime.DIRECT_SECRET_NAMES)
             for mapping in prepare_runtime.SECRET_FILE_NAMES.values():

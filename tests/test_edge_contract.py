@@ -33,10 +33,10 @@ RESOLVED = "sha256:" + ("1" * 64)
 KEPT = "sha256:" + ("2" * 64)
 FOREIGN = "sha256:" + ("3" * 64)
 EDGE_NETWORKS = {
+    "atlas": "apptolast-edge-atlas",
     "kropia": "apptolast-edge-kropia",
     "minecraft-stats": "apptolast-edge-minecraft-stats",
     "n8n": "apptolast-edge-n8n",
-    "openclaw": "apptolast-edge-openclaw",
     "passbolt": "apptolast-edge-passbolt",
     "portfolio-alberto": "apptolast-edge-portfolio-alberto",
     "portfolio-pablo": "apptolast-edge-portfolio-pablo",

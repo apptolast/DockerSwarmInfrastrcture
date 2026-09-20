@@ -69,7 +69,7 @@ La configuración dinámica declara exactamente:
 - Kropia;
 - Minecraft Stats;
 - n8n;
-- OpenClaw limpio;
+- Atlas;
 - Passbolt;
 - portfolio Pablo;
 - portfolio Alberto;
@@ -100,9 +100,12 @@ instaladores de secrets comparan nombres e identidades HMAC contra manifests
 versionados; el contenido permanece fuera de Git. El despliegue exige un marker
 de restore ligado a catálogo, runtime manifest y checksums.
 
-OpenClaw se inicializa vacío y rechaza legado. n8n mantiene workflows sin
-publicar hasta completar aceptación OAuth. Minecraft mantiene
-`online-mode=false` y su gate público cerrado.
+Atlas releva a OpenClaw en el mismo hueco del catálogo, con sus mismos
+límites y reservas: se inicializa vacío y no importa estado heredado.
+Conserva el hostname `openclaw.apptolast.com` porque su registro DNS está
+congelado por `prevent_destroy`, así que la ruta cambia de carga pero no de
+nombre. n8n mantiene workflows sin publicar hasta completar aceptación OAuth.
+Minecraft mantiene `online-mode=false` y su gate público cerrado.
 
 ## Observabilidad
 

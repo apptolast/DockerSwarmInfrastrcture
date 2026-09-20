@@ -40,7 +40,7 @@ EXPECTED_APPROVED = frozenset(
         "minecraft-stats",
         "minecraft",
         "n8n",
-        "openclaw-clean",
+        "atlas",
         "passbolt",
         "personal-website-alberto",
         "personal-website-pablo",
@@ -53,7 +53,7 @@ EXPECTED_MIGRATIONS = {
     "minecraft-stats": "redeploy",
     "minecraft": "restore-state",
     "n8n": "restore-state",
-    "openclaw-clean": "clean-install",
+    "atlas": "clean-install",
     "passbolt": "restore-state",
     "personal-website-alberto": "redeploy",
     "personal-website-pablo": "redeploy",
@@ -65,7 +65,11 @@ EXPECTED_HOSTNAMES = {
     "minecraft-stats": frozenset({"minecraft-stats.apptolast.com"}),
     "minecraft": frozenset(),
     "n8n": frozenset({"n8n.apptolast.com"}),
-    "openclaw-clean": frozenset({"openclaw.apptolast.com"}),
+    # Atlas replaced openclaw-clean in the same slot but keeps the hostname
+    # it inherited: the Cloudflare record is frozen (STOP gate 1, dns.tf
+    # carries prevent_destroy), so the public name outlives the service that
+    # first claimed it. openclaw-legacy below stays denied, unrelated.
+    "atlas": frozenset({"openclaw.apptolast.com"}),
     "passbolt": frozenset({"passbolt.apptolast.com"}),
     "personal-website-alberto": frozenset(
         {"albertohidalgo.apptolast.com"}
@@ -714,18 +718,18 @@ def validate_catalog(
                 f"dataset {dataset_id} consumers differ from service references"
             )
 
-    openclaw = approved["openclaw-clean"]
-    if set(openclaw["datasets"]) != {"openclaw-clean-home"}:
+    atlas = approved["atlas"]
+    if set(atlas["datasets"]) != {"atlas-home"}:
         raise ValidationError(
-            "OpenClaw clean must use only openclaw-clean-home"
+            "Atlas must use only atlas-home"
         )
-    openclaw_dataset = datasets["openclaw-clean-home"]
+    atlas_dataset = datasets["atlas-home"]
     if (
-        openclaw_dataset["migration"] != "initialize-empty"
-        or openclaw_dataset["source_path"] is not None
+        atlas_dataset["migration"] != "initialize-empty"
+        or atlas_dataset["source_path"] is not None
     ):
         raise ValidationError(
-            "OpenClaw clean must not import any legacy state"
+            "Atlas must not import any legacy state"
         )
 
     internal_platform = expect_mapping(
@@ -953,13 +957,13 @@ def run_self_tests(
 
     cases.append(("allow/deny overlap", "overlap", scope_overlap))
 
-    def openclaw_legacy(candidate: dict[str, Any]) -> None:
+    def atlas_legacy(candidate: dict[str, Any]) -> None:
         for dataset in candidate["datasets"]:
-            if dataset["id"] == "openclaw-clean-home":
+            if dataset["id"] == "atlas-home":
                 dataset["migration"] = "restore"
                 dataset["source_path"] = "/srv/apptolast/openclaw"
 
-    cases.append(("clean OpenClaw", "OpenClaw clean", openclaw_legacy))
+    cases.append(("clean Atlas", "Atlas must not import", atlas_legacy))
 
     def exposed_observability(candidate: dict[str, Any]) -> None:
         port = candidate["internal_platform"]["observability"]["ports"][0]

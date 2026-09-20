@@ -169,10 +169,10 @@
       - >-
         observability_http_probe_paths.keys() | list | sort
         == [
+          "atlas",
           "kropia",
           "minecraft-stats",
           "n8n",
-          "openclaw-clean",
           "passbolt",
           "personal-website-alberto",
           "personal-website-pablo",

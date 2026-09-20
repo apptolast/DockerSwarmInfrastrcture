@@ -178,9 +178,13 @@ class ChannelMapTests(unittest.TestCase):
             services["edge"]["traefik"]["spec_pattern"],
             r"^traefik:v3@sha256:[a-f0-9]{64}$",
         )
+        # ghcr.io is not a familiar registry, so normalization keeps the
+        # whole reference. The Atlas hold is digest-only (the image is still
+        # being built), which the validator allows only when it repeats the
+        # config/services.yml baseline byte for byte.
         self.assertTrue(
-            services["workloads"]["openclaw"]["spec_exact"].startswith(
-                "ghcr.io/openclaw/openclaw:2026.7.1@sha256:"
+            services["workloads"]["atlas"]["spec_exact"].startswith(
+                "ghcr.io/apptolast/atlas@sha256:"
             )
         )
         kropia = services["workloads"]["kropia"]

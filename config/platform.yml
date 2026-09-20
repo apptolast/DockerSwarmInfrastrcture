@@ -38,10 +38,10 @@ platform_install_root: /opt/dockerswarm
 platform_state_root: /srv/dockerswarm
 platform_edge_monitoring_network: apptolast-edge-monitoring
 platform_edge_networks:
+  atlas: apptolast-edge-atlas
   kropia: apptolast-edge-kropia
   minecraft-stats: apptolast-edge-minecraft-stats
   n8n: apptolast-edge-n8n
-  openclaw: apptolast-edge-openclaw
   passbolt: apptolast-edge-passbolt
   portfolio-alberto: apptolast-edge-portfolio-alberto
   portfolio-pablo: apptolast-edge-portfolio-pablo

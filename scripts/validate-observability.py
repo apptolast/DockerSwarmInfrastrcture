@@ -152,10 +152,12 @@ EXPECTED_STATIC_TARGETS = {
     "n8n": {"workloads_n8n:5678"},
 }
 EXPECTED_PUBLIC_PROBE_PATHS = {
+    # Atlas is probed on /healthz (unauthenticated); see
+    # ansible/roles/observability/defaults/main.yml.
+    "atlas": "/healthz",
     "kropia": "/health",
     "minecraft-stats": "/actuator/health",
     "n8n": "/healthz",
-    "openclaw-clean": "/healthz",
     "passbolt": "/healthcheck/status.json",
     "personal-website-alberto": "/robots.txt",
     "personal-website-pablo": "/placeholder-logo.svg",

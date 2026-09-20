@@ -30,13 +30,13 @@ if str(HOST_LOCK_DIRECTORY) not in sys.path:
 from host_global_operation_lock import ensure_mutation_lock  # noqa: E402
 
 EXPECTED_STACK_SERVICES = {
+    "atlas",
     "kropia",
     "minecraft",
     "minecraft-stats",
     "n8n",
     "n8n-db",
     "n8n-runners",
-    "openclaw",
     "passbolt",
     "passbolt-db",
     "portfolio-alberto",

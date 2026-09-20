@@ -164,6 +164,48 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `atlas` sustituye a `openclaw-clean` en el mismo hueco del catálogo. El
+  servidor de agentes nuevo hereda la estrategia `clean-install`, el puerto
+  objetivo `18789/TCP` en HTTP plano dentro de la overlay —TLS sigue
+  terminando en Traefik— y exactamente los mismos límites y reservas
+  (512M/256M de memoria, 1.00/0.20 de CPU). Por eso los agregados de
+  `config/capacity-profiles.yml` no se mueven y ninguna compuerta de capacidad
+  cambia de valor. El dataset `openclaw-clean-home` pasa a `atlas-home` en
+  `/srv/dockerswarm/services/atlas/home`, se sigue creando vacío y sigue sin
+  `source_path`.
+- El renombrado recorre todo el contrato que nombraba el hueco, no solo el
+  stack. La overlay dedicada pasa de `apptolast-edge-openclaw` a
+  `apptolast-edge-atlas` en `config/platform.yml`, de modo que el despliegue
+  crea una red nueva y la anterior deja de estar contratada. Con ella van el
+  roster `capacity_contract.stacks.workloads.expected_services` —sin mover
+  una sola cifra de `reviewed_totals`—, el grupo de consistencia y el dataset
+  del contrato de backup en `backup/backupctl.py`, el mapa de sondas
+  públicas de `scripts/validate-observability.py`, que pasa a `atlas:
+  /readyz` porque la imagen nueva solo acredita ese endpoint, y los
+  contratos de `migration/scripts/`: fichero fuente del secreto
+  `atlas_gateway_token`, ruta `atlas/home`, directorio de logs y lista de
+  servicios del stack.
+- El hostname permanece en `openclaw.apptolast.com` pese al cambio de
+  servicio. Su registro A de Cloudflare está congelado con `prevent_destroy`,
+  de modo que renombrar el host exigiría destruir y recrear DNS: el nombre
+  público sobrevive al servicio que lo estrenó y solo cambia la carga que hay
+  detrás. Tanto `config/services.yml` como
+  [`docs/SERVICE_CATALOG.md`](docs/SERVICE_CATALOG.md) dejan escrito el
+  porqué, para que no se lea como un descuido de nomenclatura.
+- `openclaw-clean` no se añade a `denied_services` al salir del alcance. Esa
+  lista registra las cargas observadas en la auditoría de `MigracionNetCup`
+  que no se migran ni se recrean, y `openclaw-clean` nunca existió en el
+  origen: era una instalación limpia creada por este repositorio. La
+  identidad heredada ya está cubierta por `openclaw-legacy`, que sigue
+  denegada. El razonamiento queda en
+  [`docs/SERVICE_CATALOG.md`](docs/SERVICE_CATALOG.md).
+- La imagen de `atlas` queda fijada con un digest placeholder de sesenta y
+  cuatro ceros porque `ghcr.io/apptolast/atlas` todavía se está construyendo y
+  no tiene digest publicado. No es un despliegue válido y no pretende serlo:
+  un digest de ceros no resuelve en ningún registro, así que el intento falla
+  cerrado en lugar de traer otra imagen. Sustituirlo por el digest real es
+  requisito previo a cualquier despliegue y la entrada lleva su `TODO` al lado
+  en `config/services.yml`.
 - El entryPoint `websecure` pasa a `readTimeout: 3600s` y
   `writeTimeout: 0s`. Traefik fijó en v2.11.2 un `readTimeout` por defecto
   de 60s que acota la petición completa, y Go no limpia ese deadline en una
@@ -369,6 +411,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- El token de gateway pasa a un secreto Docker propio,
+  `apptolast-wl-atlas-gateway-token-v1`, que releva a
+  `apptolast-wl-openclaw-gateway-token-v1`. Los secretos de este repositorio
+  son inmutables: no se reescribe el valor de uno vivo, se declara otro con
+  nombre e identidad propios y el anterior deja de estar contratado. El sufijo
+  sigue atado a `workloads_secret_version`, y el instalador compara nombre e
+  identidad HMAC contra el manifest versionado antes de montar nada, así que
+  reutilizar el secreto de OpenClaw para Atlas no es una opción silenciosa.
 - El owner acepta un consumidor equivalente a root del socket Docker:
   `autoupdater_shepherd` lo monta en el único manager. El bind de solo
   lectura no limita la API. Solo ese stack puede montarlo, siempre de solo

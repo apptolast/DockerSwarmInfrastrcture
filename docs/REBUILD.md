@@ -69,7 +69,7 @@ El catálogo aprobado incluye:
 - Minecraft Stats;
 - Minecraft;
 - n8n;
-- OpenClaw limpio;
+- Atlas;
 - Passbolt;
 - webs personales de Alberto y Pablo;
 - Shlink.
@@ -88,7 +88,8 @@ Los datos restaurados bajo `/srv/dockerswarm` no se activan hasta que:
 - no hay writers anteriores concurrentes;
 - los smoke tests específicos pasan.
 
-OpenClaw se inicializa limpio y rechaza evidencia de import legacy. n8n conserva
+Atlas arranca con su home vacío y el marker sigue rechazando evidencia
+de import del OpenClaw legado. n8n conserva
 workflows no publicados hasta completar la aceptación funcional/OAuth.
 
 ## Backup

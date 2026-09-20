@@ -31,6 +31,19 @@ EXPECTED_MARKER_KEYS = {
     "approvedServices",
     "datasets",
     "databaseRestores",
+    # This key is deliberately NOT renamed with the service it mentions.
+    # openclaw-clean was decommissioned and Atlas took its slot, but the fact
+    # the flag asserts does not expire: no state from the legacy OpenClaw
+    # deployment was ever imported into this cluster, and Atlas starts from an
+    # empty atlas-home, so the assertion stays true and stays required. The
+    # name is also part of the marker schema. Renaming it would change that
+    # schema and therefore schemaVersion, which would force a coordinated
+    # off-Git migration of every marker and runtime manifest already written
+    # on the host. Four other readers expect this exact spelling:
+    # scripts/install-workload-secrets.py,
+    # migration/scripts/upgrade_secret_identity_contract.py,
+    # migration/scripts/finalize_restore.py and
+    # ansible/roles/workloads/tasks/deploy.yml.
     "openClawLegacyImported",
     "runtimeManifestSchemaVersion",
     "secretIdentityKeySha256",

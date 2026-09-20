@@ -409,7 +409,8 @@ Siguen en `false`, a propósito:
   `backend` (migraciones de esquema) y `organizationweb` `web` (avanza con su
   `backend`): una actualización no se deshace sin backup y no hay copia fuera
   del host (STOP gate 5).
-- `openclaw` y `n8n`: siguen en hold de versión.
+- `atlas` (hold por digest) y `n8n` (hold de versión): ninguno se
+  auto-actualiza.
 - Traefik: un fallo corta los diez hosts y su healthcheck no prueba el
   enrutado ni el TLS.
 

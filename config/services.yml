@@ -156,9 +156,14 @@ approved_services:
       - pinned-images
       - postgres-dump
 
-  - id: openclaw-clean
+  - id: atlas
     classification: migration-scope
     migration: clean-install
+    # Atlas replaces openclaw-clean in the same edge slot and keeps
+    # its hostname on purpose. The Cloudflare A record for openclaw is
+    # managed by infra/terraform with prevent_destroy, so renaming the
+    # host would require destroying a frozen DNS record. The legacy
+    # name outlives the legacy service; only the workload changes.
     hostnames:
       - openclaw.apptolast.com
     ports:
@@ -168,11 +173,16 @@ approved_services:
         protocol: tcp
         exposure: edge
     images:
+      # TODO: replace this placeholder digest before deploying. The
+      # Atlas image is still being built and has no published digest
+      # yet. An all-zero digest cannot resolve in any registry, so a
+      # deploy attempted with it fails closed instead of pulling
+      # something else.
       - component: app
-        reference: "ghcr.io/openclaw/openclaw:2026.7.1@sha256:\
-          6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c"
+        reference: "ghcr.io/apptolast/atlas@sha256:\
+          0000000000000000000000000000000000000000000000000000000000000000"
     datasets:
-      - openclaw-clean-home
+      - atlas-home
     source_artifacts:
       - pinned-image
 
@@ -371,14 +381,14 @@ datasets:
     source_path: /srv/apptolast/n8n/postgres
     target_path: /srv/dockerswarm/services/n8n/postgres
 
-  - id: openclaw-clean-home
-    owner: openclaw-clean
+  - id: atlas-home
+    owner: atlas
     consumers:
-      - openclaw-clean
+      - atlas
     read_only_consumers: []
     migration: initialize-empty
     source_path: null
-    target_path: /srv/dockerswarm/services/openclaw-clean/home
+    target_path: /srv/dockerswarm/services/atlas/home
 
   - id: passbolt-gpg
     owner: passbolt

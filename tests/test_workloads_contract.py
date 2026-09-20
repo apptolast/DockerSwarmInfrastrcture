@@ -1667,10 +1667,10 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "platform_dns_cutover": {"minecraft": True},
                 "platform_public_tcp_ports": [80, 443, 25565],
                 "workloads_edge_networks": {
+                    "atlas": "apptolast-edge-atlas",
                     "kropia": "apptolast-edge-kropia",
                     "minecraft-stats": "apptolast-edge-minecraft-stats",
                     "n8n": "apptolast-edge-n8n",
-                    "openclaw": "apptolast-edge-openclaw",
                     "passbolt": "apptolast-edge-passbolt",
                     "portfolio-alberto": "apptolast-edge-portfolio-alberto",
                     "portfolio-pablo": "apptolast-edge-portfolio-pablo",
@@ -1681,11 +1681,11 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "approved_services": [
                     {"id": service}
                     for service in [
+                        "atlas",
                         "kropia",
                         "minecraft",
                         "minecraft-stats",
                         "n8n",
-                        "openclaw-clean",
                         "passbolt",
                         "personal-website-alberto",
                         "personal-website-pablo",

@@ -33,7 +33,7 @@ The deployment role fails closed unless all of these conditions hold:
    exact Swarm database tasks can mount the three PostgreSQL paths.
 
 The marker verifies the three restored PostgreSQL databases, every restored
-dataset and a newly initialized OpenClaw home. Legacy OpenClaw state is
+dataset and a newly initialized Atlas home. Legacy OpenClaw state is
 explicitly rejected.
 
 ## Repository-native n8n runner

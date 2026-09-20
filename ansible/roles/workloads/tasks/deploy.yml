@@ -134,10 +134,18 @@
       - >-
         workloads_restore_marker.databaseRestores.keys() | list | sort
         == ["n8n", "passbolt", "shlink"]
+      # `openClawLegacyImported` no se renombra con Atlas: es la invariante
+      # historica de que el estado legado de OpenClaw nunca se importo, y es
+      # una clave obligatoria del esquema del marcador
+      # (scripts/validate-workloads-restore-marker.py). Atlas arranca con
+      # `atlas-home` vacio, de modo que la invariante sigue siendo cierta.
       - workloads_restore_marker.openClawLegacyImported is sameas false
       - workloads_restore_marker.databaseRestores.n8n == "verified"
       - workloads_restore_marker.databaseRestores.passbolt == "verified"
       - workloads_restore_marker.databaseRestores.shlink == "verified"
+      - >-
+        workloads_restore_marker.datasets["atlas-home"]
+        == "initialized-empty"
       - >-
         workloads_restore_marker.datasets["minecraft-mods"]
         == "restored-and-verified"
@@ -150,9 +158,6 @@
       - >-
         workloads_restore_marker.datasets["n8n-postgres"]
         == "restored-and-verified"
-      - >-
-        workloads_restore_marker.datasets["openclaw-clean-home"]
-        == "initialized-empty"
       - >-
         workloads_restore_marker.datasets["passbolt-gpg"]
         == "restored-and-verified"

@@ -1,7 +1,7 @@
+{% set atlas = approved_services | selectattr("id", "equalto", "atlas") | first %}
 {% set kropia = approved_services | selectattr("id", "equalto", "kropia") | first %}
 {% set minecraft_stats = approved_services | selectattr("id", "equalto", "minecraft-stats") | first %}
 {% set n8n = approved_services | selectattr("id", "equalto", "n8n") | first %}
-{% set openclaw = approved_services | selectattr("id", "equalto", "openclaw-clean") | first %}
 {% set passbolt = approved_services | selectattr("id", "equalto", "passbolt") | first %}
 {% set pablo = approved_services | selectattr("id", "equalto", "personal-website-pablo") | first %}
 {% set alberto = approved_services | selectattr("id", "equalto", "personal-website-alberto") | first %}
@@ -27,6 +27,27 @@ http:
       entryPoints:
         - traefik
       service: ping@internal
+    # El servicio detras de esta ruta es atlas, pero el nombre publico
+    # sigue siendo openclaw.apptolast.com: la puerta STOP 1 congela el DNS
+    # (infra/terraform/snapshot-recipients.json no existe y dns.tf:73 lleva
+    # prevent_destroy = true), de modo que atlas se sirve sobre el hostname
+    # que ya existe. La regla se toma del catalogo, que conserva ese
+    # hostname en la entrada `atlas`; no se escribe aqui a mano.
+    #
+    # El agente transmite por WebSocket. Nada de esta ruta rompe el
+    # upgrade: `edge-security` solo anade cabeceras de respuesta, no hay
+    # `edge-compress` en la cadena y el entryPoint websecure ya fija
+    # readTimeout 3600s en stacks/edge/static.yml.j2, que es el limite que
+    # cortaba las conexiones hijacked al minuto con el valor por defecto.
+    atlas:
+      rule: "Host(`{{ atlas.hostnames | first }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: atlas
+      tls:
+        certResolver: letsencrypt
     kropia:
       rule: "Host(`{{ kropia.hostnames | first }}`)"
       entryPoints:
@@ -52,15 +73,6 @@ http:
       middlewares:
         - edge-security
       service: n8n
-      tls:
-        certResolver: letsencrypt
-    openclaw:
-      rule: "Host(`{{ openclaw.hostnames | first }}`)"
-      entryPoints:
-        - websecure
-      middlewares:
-        - edge-security
-      service: openclaw
       tls:
         certResolver: letsencrypt
     passbolt:
@@ -191,6 +203,15 @@ http:
           hostname: "{{ organizationweb.hostname }}"
           interval: 15s
           timeout: 3s
+    atlas:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://workloads_atlas:18789
+        healthCheck:
+          path: /healthz
+          interval: 15s
+          timeout: 3s
     kropia:
       loadBalancer:
         servers:
@@ -224,15 +245,6 @@ http:
           - url: http://workloads_n8n:5678
         healthCheck:
           path: /healthz
-          interval: 15s
-          timeout: 3s
-    openclaw:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: http://workloads_openclaw:18789
-        healthCheck:
-          path: /readyz
           interval: 15s
           timeout: 3s
     passbolt:

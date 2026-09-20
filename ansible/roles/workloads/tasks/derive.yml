@@ -21,10 +21,10 @@
         workloads_edge_networks
         ==
         {
+          "atlas": "apptolast-edge-atlas",
           "kropia": "apptolast-edge-kropia",
           "minecraft-stats": "apptolast-edge-minecraft-stats",
           "n8n": "apptolast-edge-n8n",
-          "openclaw": "apptolast-edge-openclaw",
           "passbolt": "apptolast-edge-passbolt",
           "portfolio-alberto": "apptolast-edge-portfolio-alberto",
           "portfolio-pablo": "apptolast-edge-portfolio-pablo",
@@ -149,6 +149,7 @@
 - name: Derive workload images from the reviewed image channel map
   ansible.builtin.set_fact:
     workloads_images:
+      atlas: "{{ image_channels_map.workloads['atlas'].reference }}"
       kropia: "{{ image_channels_map.workloads['kropia'].reference }}"
       minecraft: "{{ image_channels_map.workloads['minecraft'].reference }}"
       minecraft_stats: >-
@@ -160,7 +161,6 @@
       n8n_redis: >-
         {{ image_channels_map.workloads['redis-coordinator'].reference }}
       n8n_browser: "{{ image_channels_map.workloads['selenium'].reference }}"
-      openclaw: "{{ image_channels_map.workloads['openclaw'].reference }}"
       passbolt_app: "{{ image_channels_map.workloads['passbolt'].reference }}"
       passbolt_database: >-
         {{ image_channels_map.workloads['passbolt-db'].reference }}
@@ -175,6 +175,8 @@
 - name: Derive bind paths only from the dataset catalog
   ansible.builtin.set_fact:
     workloads_paths:
+      atlas_home: >-
+        {{ workloads_dataset_by_id["atlas-home"].target_path }}
       minecraft_mods: >-
         {{ workloads_dataset_by_id["minecraft-mods"].target_path }}
       minecraft_worlds: >-
@@ -183,8 +185,6 @@
         {{ workloads_dataset_by_id["n8n-home"].target_path }}
       n8n_postgres: >-
         {{ workloads_dataset_by_id["n8n-postgres"].target_path }}
-      openclaw_home: >-
-        {{ workloads_dataset_by_id["openclaw-clean-home"].target_path }}
       passbolt_gpg: >-
         {{ workloads_dataset_by_id["passbolt-gpg"].target_path }}
       passbolt_jwt: >-
@@ -213,6 +213,15 @@
 - name: Derive exact post-deployment smoke targets
   ansible.builtin.set_fact:
     workloads_http_smoke_targets:
+      # Atlas releva a OpenClaw en el mismo hueco y conserva el hostname
+      # `openclaw.apptolast.com`: el DNS esta congelado (STOP gate 1,
+      # infra/terraform/.../dns.tf lleva `prevent_destroy = true` y no existe
+      # infra/terraform/snapshot-recipients.json), asi que el nombre publico
+      # no se renombra. La sonda lo toma del catalogo, nunca literal.
+      - service: atlas
+        hostname: "{{ workloads_approved_by_id.atlas.hostnames | first }}"
+        path: /healthz
+        status: "200"
       - service: kropia
         hostname: "{{ workloads_approved_by_id.kropia.hostnames | first }}"
         path: /health
@@ -225,11 +234,6 @@
       - service: n8n
         hostname: "{{ workloads_approved_by_id.n8n.hostnames | first }}"
         path: /healthz
-        status: "200"
-      - service: openclaw
-        hostname: >-
-          {{ workloads_approved_by_id["openclaw-clean"].hostnames | first }}
-        path: /readyz
         status: "200"
       - service: passbolt
         hostname: "{{ workloads_approved_by_id.passbolt.hostnames | first }}"
@@ -311,13 +315,13 @@
 - name: Derive the expected image for each Swarm service
   ansible.builtin.set_fact:
     workloads_expected_images:
+      atlas: "{{ workloads_images.atlas }}"
       kropia: "{{ workloads_images.kropia }}"
       minecraft: "{{ workloads_images.minecraft }}"
       minecraft-stats: "{{ workloads_images.minecraft_stats }}"
       n8n: "{{ workloads_images.n8n_app }}"
       n8n-db: "{{ workloads_images.n8n_database }}"
       n8n-runners: "{{ workloads_images.n8n_runner }}"
-      openclaw: "{{ workloads_images.openclaw }}"
       passbolt: "{{ workloads_images.passbolt_app }}"
       passbolt-db: "{{ workloads_images.passbolt_database }}"
       portfolio-alberto: "{{ workloads_images.portfolio_alberto }}"

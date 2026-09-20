@@ -216,11 +216,11 @@ class FinalizeRestoreTests(unittest.TestCase):
                     enforce_owners=False,
                 )
 
-    def test_refuses_nonempty_clean_openclaw_before_gate(self) -> None:
+    def test_refuses_nonempty_clean_atlas_before_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             services_root = create_runtime(Path(temporary))
             write_private(
-                services_root / "openclaw-clean/home/legacy-state",
+                services_root / "atlas/home/legacy-state",
                 b"forbidden",
             )
             with self.assertRaises(backup_safety.SafetyError):

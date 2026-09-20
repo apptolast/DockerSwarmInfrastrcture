@@ -100,8 +100,8 @@ backup_datasets:
   - id: minecraft-mods
     source: "{{ backup_services_root }}/minecraft/mods"
     consistency: minecraft-save
-  - id: openclaw-clean-home
-    source: "{{ backup_services_root }}/openclaw-clean/home"
+  - id: atlas-home
+    source: "{{ backup_services_root }}/atlas/home"
     consistency: quiesced
   - id: traefik-acme
     source: "{{ backup_state_root }}/traefik/acme.json"
@@ -150,12 +150,15 @@ backup_consistency_groups:
     databases:
       - shlink-postgres
     datasets: []
-  - id: openclaw
+  # Atlas es apatrida salvo por su home persistente: como shlink, no tiene
+  # base de datos propia, asi que el grupo solo quiesce el servicio y
+  # respalda su unico dataset.
+  - id: atlas
     services:
-      - workloads_openclaw
+      - workloads_atlas
     databases: []
     datasets:
-      - openclaw-clean-home
+      - atlas-home
   - id: traefik
     services:
       - edge_traefik

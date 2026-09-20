@@ -32,7 +32,7 @@ en un formato estable y la separa del estado objetivo de este repositorio.
 - `migration: redeploy` recupera la imagen o el código, sin estado runtime
   propio.
 - `migration: clean-install` crea estado vacío. Es el único modo permitido para
-  `openclaw-clean`.
+  `atlas`.
 
 Los consumidores de IaC deben cargar YAML y usar esos campos, no copiar sus
 valores a defaults o plantillas. Las referencias opcionales de origen nunca
@@ -49,7 +49,7 @@ deben alimentar el stack objetivo.
 | `minecraft-stats` | Redeploy | `minecraft-stats.apptolast.com` | Edge `8080/TCP` | Mundo Minecraft en solo lectura |
 | `minecraft` | Restore | Ninguno confirmado | Público `25565/TCP` | Unos 3,3 GB, mods y tres mundos |
 | `n8n` | Restore | `n8n.apptolast.com` | Edge `5678/TCP` | PostgreSQL, home y clave runtime |
-| `openclaw-clean` | Instalación limpia | `openclaw.apptolast.com` | Edge `18789/TCP` | Home vacío; estado legado prohibido |
+| `atlas` | Instalación limpia | `openclaw.apptolast.com` | Edge `18789/TCP` | Home vacío; estado heredado prohibido |
 | `passbolt` | Restore | `passbolt.apptolast.com` | Edge `80/TCP` | PostgreSQL y claves GPG/JWT |
 | `personal-website-alberto` | Redeploy | `albertohidalgo.apptolast.com` | Edge `3000/TCP` | Imagen y snapshot Git |
 | `personal-website-pablo` | Redeploy | `pablohurtadohg.apptolast.com` | Edge `3000/TCP` | Imagen y working tree capturado |
@@ -67,6 +67,24 @@ prueba y a una decisión explícita sobre `online-mode=false` antes de cambiar
 El hostname de Traefik expone únicamente el health endpoint versionado; no
 autoriza un dashboard público.
 
+`atlas` releva a `openclaw-clean` en el mismo hueco del catálogo: misma
+estrategia `clean-install`, mismo puerto objetivo `18789/TCP` en HTTP plano
+dentro de la overlay y los mismos límites y reservas de recursos, de modo que
+los agregados de `config/capacity-profiles.yml` no se mueven y ninguna compuerta
+de capacidad cambia de valor.
+
+Conserva el hostname `openclaw.apptolast.com` a propósito. Su registro DNS está
+congelado: el recurso Cloudflare declara `prevent_destroy`, así que renombrar el
+host exigiría destruirlo y recrearlo. El nombre público sobrevive al servicio
+que lo estrenó; solo cambia la carga que hay detrás.
+
+Su `images[].reference` es hoy un digest de ceros. La imagen
+`ghcr.io/apptolast/atlas` sigue en construcción y no tiene digest publicado. Un
+digest de ceros no resuelve en ningún registro, de modo que un despliegue
+intentado con él falla cerrado en lugar de traer otra imagen. Sustituirlo por el
+digest real es requisito previo a cualquier despliegue y el propio
+`config/services.yml` lleva el `TODO` junto a la entrada.
+
 ## Rutas de datos
 
 Las rutas de origen reflejan el layout del artefacto auditado. Las rutas de
@@ -81,7 +99,7 @@ destino pertenecen a `platform_state_root`.
 | `minecraft-mods` | `/srv/apptolast/minecraft/mods` | `/srv/dockerswarm/services/minecraft/mods` | Restore; montaje solo lectura |
 | `n8n-home` | `/srv/apptolast/n8n/data` | `/srv/dockerswarm/services/n8n/home` | Restore |
 | `n8n-postgres` | `/srv/apptolast/n8n/postgres` | `/srv/dockerswarm/services/n8n/postgres` | Restore |
-| `openclaw-clean-home` | Ninguno | `/srv/dockerswarm/services/openclaw-clean/home` | Crear vacío |
+| `atlas-home` | Ninguno | `/srv/dockerswarm/services/atlas/home` | Crear vacío |
 | `passbolt-gpg` | `/srv/apptolast/passbolt/gpg` | `/srv/dockerswarm/services/passbolt/gpg` | Restore |
 | `passbolt-jwt` | `/srv/apptolast/passbolt/jwt` | `/srv/dockerswarm/services/passbolt/jwt` | Restore |
 | `passbolt-postgres` | `/srv/apptolast/passbolt/postgres` | `/srv/dockerswarm/services/passbolt/postgres` | Restore |
@@ -118,6 +136,17 @@ Las demás exclusiones canónicas son `greenhouse`, `hermes`,
 `ficsit-monitor`, `gibbon`, `health-dashboard`, `keel`, `kube-system`,
 `langflow`, `longhorn-system`, `metal`, `monitoring-dozzle` y
 `openclaw-legacy`.
+
+`openclaw-clean` no se añade a esta lista al salir del alcance. La denylist
+registra las cargas observadas en la auditoría de `MigracionNetCup` que no se
+migran ni se recrean, más la excepción documentada de `uptime-kuma`.
+`openclaw-clean` nunca existió en el origen: era una instalación limpia creada
+por este repositorio (`clean-install`, `source_path: null`), sin estado heredado
+que proteger. La identidad legado ya está cubierta por `openclaw-legacy`, que
+sigue denegada y que los validadores de observabilidad siguen rechazando como
+objetivo de scrape. Denegar además al ocupante anterior de un hueco aprobado
+convertiría la denylist en un historial de renombrados, y sus entradas solo
+admiten un ID canónico y los aliases observados.
 
 Añadir una carga denegada a un stack, aunque su imagen exista o su namespace
 aparezca en un backup, es un cambio de alcance y requiere modificar este
@@ -157,7 +186,7 @@ El validador rechaza:
 - imágenes sin `@sha256:<64 hex>`;
 - rutas relativas, no canónicas, fuera de su root o solapadas;
 - referencias de dataset sin dueño o consumidores incoherentes;
-- cualquier importación de estado legado en `openclaw-clean`;
+- cualquier importación de estado legado en `atlas`;
 - observabilidad clasificada como migración o con hostname público;
 - divergencias con el state root, los puertos públicos, el hostname o la imagen
   target de Traefik declarados en las fuentes actuales de plataforma.

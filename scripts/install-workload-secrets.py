@@ -260,6 +260,10 @@ def validate_contract(
         raise SecretInstallError(
             "runtime-manifest.json secretFiles differs from secret catalog"
         )
+    # The key keeps the legacy name on purpose even though Atlas replaced
+    # openclaw-clean; see EXPECTED_MARKER_KEYS in
+    # scripts/validate-workloads-restore-marker.py for why it outlives the
+    # service it mentions.
     if runtime_manifest.get("openClawLegacyImported") is not False:
         raise SecretInstallError("runtime manifest does not exclude legacy OpenClaw")
     if runtime_manifest.get("secretIdentityKeyFile") != SECRET_IDENTITY_KEY_FILE:

@@ -14,11 +14,11 @@ from typing import Any
 import yaml
 
 EXPECTED_APPROVED_IDS = {
+    "atlas",
     "kropia",
     "minecraft",
     "minecraft-stats",
     "n8n",
-    "openclaw-clean",
     "passbolt",
     "personal-website-alberto",
     "personal-website-pablo",
@@ -26,13 +26,13 @@ EXPECTED_APPROVED_IDS = {
     "traefik-edge",
 }
 EXPECTED_STACK_SERVICES = {
+    "atlas",
     "kropia",
     "minecraft",
     "minecraft-stats",
     "n8n",
     "n8n-db",
     "n8n-runners",
-    "openclaw",
     "passbolt",
     "passbolt-db",
     "portfolio-alberto",
@@ -56,14 +56,17 @@ EXPECTED_DEDICATED_EGRESS_NETWORKS = {
     "minecraft-egress": {"minecraft"},
     "selenium-egress": {"selenium"},
 }
+# Atlas answers on openclaw.apptolast.com because DNS is frozen, but it owns
+# its Swarm identity: the dedicated edge network is renamed with the service
+# it isolates, and no DNS record depends on that name.
 EXPECTED_EDGE_NETWORKS = {
+    "edge-atlas": ("apptolast-edge-atlas", {"atlas"}),
     "edge-kropia": ("apptolast-edge-kropia", {"kropia"}),
     "edge-minecraft-stats": (
         "apptolast-edge-minecraft-stats",
         {"minecraft-stats"},
     ),
     "edge-n8n": ("apptolast-edge-n8n", {"n8n"}),
-    "edge-openclaw": ("apptolast-edge-openclaw", {"openclaw"}),
     "edge-passbolt": ("apptolast-edge-passbolt", {"passbolt"}),
     "edge-portfolio-alberto": (
         "apptolast-edge-portfolio-alberto",
@@ -76,6 +79,7 @@ EXPECTED_EDGE_NETWORKS = {
     "edge-shlink": ("apptolast-edge-shlink", {"shlink"}),
 }
 EXPECTED_SERVICE_NETWORKS = {
+    "atlas": {"edge-atlas"},
     "kropia": {"edge-kropia"},
     "minecraft": {"minecraft-egress", "minecraft-monitoring"},
     "minecraft-stats": {"edge-minecraft-stats"},
@@ -91,7 +95,6 @@ EXPECTED_SERVICE_NETWORKS = {
     "n8n-runners": {"n8n-runner-broker"},
     "redis-coordinator": {"n8n-coordination"},
     "selenium": {"n8n-browser", "selenium-egress"},
-    "openclaw": {"edge-openclaw"},
     "passbolt-db": {"passbolt-backend"},
     "passbolt": {"edge-passbolt", "passbolt-backend"},
     "portfolio-alberto": {"edge-portfolio-alberto"},
@@ -100,16 +103,17 @@ EXPECTED_SERVICE_NETWORKS = {
     "shlink": {"edge-shlink", "shlink-backend"},
 }
 EXPECTED_EDGE_CONSUMERS = {
+    "atlas",
     "kropia",
     "minecraft-stats",
     "n8n",
-    "openclaw",
     "passbolt",
     "portfolio-alberto",
     "portfolio-pablo",
     "shlink",
 }
 IMAGE_CONTRACT = {
+    "atlas": ("atlas", "app"),
     "kropia": ("kropia", "app"),
     "minecraft": ("minecraft", "server"),
     "minecraft-stats": ("minecraft-stats", "app"),
@@ -118,7 +122,6 @@ IMAGE_CONTRACT = {
     "n8n-runners": ("n8n", "runner"),
     "redis-coordinator": ("n8n", "workflow-cache"),
     "selenium": ("n8n", "browser"),
-    "openclaw": ("openclaw-clean", "app"),
     "passbolt": ("passbolt", "app"),
     "passbolt-db": ("passbolt", "database"),
     "portfolio-alberto": ("personal-website-alberto", "app"),
@@ -130,11 +133,13 @@ IMAGE_CONTRACT = {
 # map (config/image-channels.yml); every other service renders its entry.
 CHANNEL_EXCLUDED_SERVICES = {"n8n-runners"}
 AUTOUPDATE_LABEL = "apptolast.autoupdate"
+# Atlas declares no immutable Docker Config: it reads its gateway token from
+# the path in ATLAS_TOKEN_FILE, so the openclaw-entrypoint.sh wrapper that
+# only existed to export the value has no successor.
 CONFIG_SOURCE_BY_KEY = {
     "n8n_entrypoint": "n8n-entrypoint.sh",
     "n8n_runners_entrypoint": "n8n-runners-entrypoint.sh",
     "n8n_task_runners": "n8n-task-runners.json",
-    "openclaw_entrypoint": "openclaw-entrypoint.sh",
     "passbolt_entrypoint": "passbolt-entrypoint.sh",
     "portfolio_pablo_entrypoint": "portfolio-pablo-entrypoint.sh",
     "redis_config": "redis.conf",
@@ -544,13 +549,17 @@ def validate_stack(
         if actual_consumers != set(entry["consumers"]):
             raise ContractError(f"secret consumer drift: {key}")
 
+    # ATLAS_TOKEN is the plain-value counterpart of the ATLAS_TOKEN_FILE that
+    # Atlas actually reads; both spellings of the gateway token are forbidden
+    # so neither can reappear as an environment value.
     forbidden_secret_environment_keys = {
+        "ATLAS_GATEWAY_TOKEN",
+        "ATLAS_TOKEN",
         "DATASOURCES_DEFAULT_PASSWORD",
         "DB_PASSWORD",
         "DB_POSTGRESDB_PASSWORD",
         "N8N_ENCRYPTION_KEY",
         "N8N_RUNNERS_AUTH_TOKEN",
-        "OPENCLAW_GATEWAY_TOKEN",
         "SECURITY_SALT",
     }
     for name, service in services.items():
@@ -558,16 +567,19 @@ def validate_stack(
         if forbidden_secret_environment_keys & set(environment):
             raise ContractError(f"secret value environment key present in {name}")
 
-    openclaw = services["openclaw"]
-    openclaw_mounts = bind_sources(openclaw)
-    expected_openclaw = next(
-        item["target_path"] for item in datasets if item["id"] == "openclaw-clean-home"
+    # Atlas took over the decommissioned openclaw-clean slot and inherits its
+    # clean-state rule unchanged: exactly one dataset of its own, and nothing
+    # in the rendered service that imports legacy state.
+    atlas = services["atlas"]
+    atlas_mounts = bind_sources(atlas)
+    expected_atlas = next(
+        item["target_path"] for item in datasets if item["id"] == "atlas-home"
     )
-    if openclaw_mounts != [expected_openclaw]:
-        raise ContractError("OpenClaw does not use only clean state")
-    health_text = str(openclaw.get("healthcheck", {}).get("test", []))
-    if "/healthz" not in health_text or "legacy" in str(openclaw).lower():
-        raise ContractError("OpenClaw clean health/state contract changed")
+    if atlas_mounts != [expected_atlas]:
+        raise ContractError("Atlas does not use only clean state")
+    health_text = str(atlas.get("healthcheck", {}).get("test", []))
+    if "/healthz" not in health_text or "legacy" in str(atlas).lower():
+        raise ContractError("Atlas clean health/state contract changed")
 
     raw_stack = str(stack)
     if "docker.sock" in raw_stack or "observability" in services:

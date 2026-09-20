@@ -30,7 +30,7 @@ def configuration(base: Path) -> dict[str, object]:
         ("passbolt-jwt", "quiesced"),
         ("minecraft-data", "minecraft-save"),
         ("minecraft-mods", "minecraft-save"),
-        ("openclaw-clean-home", "quiesced"),
+        ("atlas-home", "quiesced"),
         ("traefik-acme", "quiesced"),
         ("runtime-secret-source", "immutable"),
         ("observability-secret-source", "immutable"),
@@ -156,10 +156,10 @@ def configuration(base: Path) -> dict[str, object]:
                 "datasets": [],
             },
             {
-                "id": "openclaw",
-                "services": ["workloads_openclaw"],
+                "id": "atlas",
+                "services": ["workloads_atlas"],
                 "databases": [],
-                "datasets": ["openclaw-clean-home"],
+                "datasets": ["atlas-home"],
             },
             {
                 "id": "traefik",

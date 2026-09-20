@@ -24,7 +24,7 @@ despliegue verde.
 | 5 bases lógicas / 3 PostgreSQL | `pg_dump` custom y `pg_restore --list` |
 | Home de n8n | Writers de n8n detenidos y tar local antes de reanudarlos |
 | GPG y JWT de Passbolt | Passbolt detenido y tar local |
-| OpenClaw limpio | OpenClaw detenido y tar local |
+| Home de Atlas | Atlas detenido y tar local |
 | Fuentes Secrets + clave HMAC | Tar cifrado de fuentes inmutables |
 | Prometheus/Alertmanager/Loki/Grafana | Writers detenidos por ventana |
 | Secretos de observabilidad | Tar cifrado de fuentes inmutables |
@@ -63,7 +63,7 @@ sin bloquear lectores ni escritores. Se detienen además los writers para que
 el dump y los ficheros asociados representen el mismo punto lógico.
 
 No existe una parada global: n8n y sus tres bases lógicas forman un grupo;
-Passbolt y sus claves otro; Shlink, OpenClaw, Traefik y cada almacén de
+Passbolt y sus claves otro; Shlink, Atlas, Traefik y cada almacén de
 observabilidad tienen ventanas independientes. Los dos árboles de fuentes de
 secretos, inmutables por contrato, se archivan en un grupo sin servicios. Esto
 limita el impacto y evita afirmar que datos sin relación pertenecen al mismo

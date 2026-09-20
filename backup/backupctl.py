@@ -782,7 +782,7 @@ class BackupConfig:
             "passbolt-jwt": "quiesced",
             "minecraft-data": "minecraft-save",
             "minecraft-mods": "minecraft-save",
-            "openclaw-clean-home": "quiesced",
+            "atlas-home": "quiesced",
             "traefik-acme": "quiesced",
             "runtime-secret-source": "immutable",
             "observability-secret-source": "immutable",
@@ -831,10 +831,10 @@ class BackupConfig:
                 "databases": ["shlink-postgres"],
                 "datasets": [],
             },
-            "openclaw": {
-                "services": ["workloads_openclaw"],
+            "atlas": {
+                "services": ["workloads_atlas"],
                 "databases": [],
-                "datasets": ["openclaw-clean-home"],
+                "datasets": ["atlas-home"],
             },
             "traefik": {
                 "services": ["edge_traefik"],

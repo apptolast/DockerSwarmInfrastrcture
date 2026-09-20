@@ -87,6 +87,10 @@ if str(legacy_ipv4) != contract["platform_dns_legacy_ipv4"]:
 if legacy_ipv4 == public_ipv4:
     fail("legacy and target public IPv4 addresses must differ")
 
+# These are DNS labels, not service names. "openclaw" stays after the
+# openclaw-clean workload was replaced by Atlas: the Cloudflare A record for
+# openclaw.apptolast.com is frozen (STOP gate 1, dns.tf carries
+# prevent_destroy), so Atlas is served on the hostname that already exists.
 reviewed_dns_keys = {
     "edge",
     "kropia",
@@ -246,10 +250,10 @@ if published != expected_published:
     fail(f"rendered edge ports differ from the contract: {published}")
 
 expected_edge_networks = {
+    "atlas": "apptolast-edge-atlas",
     "kropia": "apptolast-edge-kropia",
     "minecraft-stats": "apptolast-edge-minecraft-stats",
     "n8n": "apptolast-edge-n8n",
-    "openclaw": "apptolast-edge-openclaw",
     "passbolt": "apptolast-edge-passbolt",
     "portfolio-alberto": "apptolast-edge-portfolio-alberto",
     "portfolio-pablo": "apptolast-edge-portfolio-pablo",
@@ -336,14 +340,17 @@ service_catalog = load_yaml("config/services.yml")
 approved_by_id = {
     service["id"]: service for service in service_catalog["approved_services"]
 }
+# The route key and the Swarm upstream follow the service (atlas); the
+# hostname is read from the catalog, where the atlas entry still declares
+# openclaw.apptolast.com because DNS is frozen.
 edge_routes = {
+    "atlas": ("atlas", "http://workloads_atlas:18789"),
     "kropia": ("kropia", "http://workloads_kropia:80"),
     "minecraft-stats": (
         "minecraft-stats",
         "http://workloads_minecraft-stats:8080",
     ),
     "n8n": ("n8n", "http://workloads_n8n:5678"),
-    "openclaw": ("openclaw-clean", "http://workloads_openclaw:18789"),
     "passbolt": ("passbolt", "http://workloads_passbolt:80"),
     "portfolio-pablo": (
         "personal-website-pablo",

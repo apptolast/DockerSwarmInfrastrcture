@@ -25,41 +25,41 @@ EXPECTED_SERVICES = {
     "kropia",
     "minecraft",
     "minecraft-stats",
+    "atlas",
     "n8n",
-    "openclaw-clean",
     "passbolt",
     "personal-website-alberto",
     "personal-website-pablo",
     "shlink",
 }
 DATASET_STATUSES = {
+    "atlas-home": "initialized-empty",
     "minecraft-mods": "restored-and-verified",
     "minecraft-worlds": "restored-and-verified",
     "n8n-home": "restored-and-verified",
     "n8n-postgres": "restored-and-verified",
-    "openclaw-clean-home": "initialized-empty",
     "passbolt-gpg": "restored-and-verified",
     "passbolt-jwt": "restored-and-verified",
     "passbolt-postgres": "restored-and-verified",
     "shlink-postgres": "restored-and-verified",
 }
 EXPECTED_RELATIVE_PATHS = {
+    "atlas-home": "atlas/home",
     "minecraft-mods": "minecraft/mods",
     "minecraft-worlds": "minecraft/data",
     "n8n-home": "n8n/home",
     "n8n-postgres": "n8n/postgres",
-    "openclaw-clean-home": "openclaw-clean/home",
     "passbolt-gpg": "passbolt/gpg",
     "passbolt-jwt": "passbolt/jwt",
     "passbolt-postgres": "passbolt/postgres",
     "shlink-postgres": "shlink/postgres",
 }
 EXPECTED_OWNERS = {
+    "atlas-home": (1000, 1000),
     "minecraft-mods": (1000, 1000),
     "minecraft-worlds": (1000, 1000),
     "n8n-home": (1000, 1000),
     "n8n-postgres": (999, 999),
-    "openclaw-clean-home": (1000, 1000),
     "passbolt-gpg": (33, 33),
     "passbolt-jwt": (33, 33),
     "passbolt-postgres": (70, 70),
@@ -149,7 +149,7 @@ def validate_tree_types(root: Path, label: str) -> None:
         if not stat.S_ISREG(mode):
             raise SafetyError(f"Tipo o enlace no permitido en {label}: {path}")
         files += 1
-    if label != "openclaw-clean-home" and files == 0:
+    if label != "atlas-home" and files == 0:
         raise SafetyError(f"Dataset restaurado vacío: {label}")
 
 
@@ -347,9 +347,9 @@ def validate_datasets(
     )
     require_real_directory(n8n_binary_data, "n8n-home/storage")
 
-    openclaw_home = services_root / EXPECTED_RELATIVE_PATHS["openclaw-clean-home"]
-    if any(openclaw_home.iterdir()):
-        raise SafetyError("OpenClaw limpio contiene estado antes del despliegue")
+    atlas_home = services_root / EXPECTED_RELATIVE_PATHS["atlas-home"]
+    if any(atlas_home.iterdir()):
+        raise SafetyError("Atlas limpio contiene estado antes del despliegue")
 
 
 def write_ready_marker(

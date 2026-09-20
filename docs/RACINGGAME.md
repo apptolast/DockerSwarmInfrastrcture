@@ -102,7 +102,7 @@ Dos decisiones que no son cosméticas:
   la URL del mando desde la cabecera `Host`. Sin ella el código QR
   apuntaría a `http://racinggame_web:3000/pad.html`, un nombre interno de
   Swarm que ningún móvil puede alcanzar.
-- **`edge-security` a solas**, como n8n y OpenClaw. `edge-default` añadiría
+- **`edge-security` a solas**, como n8n y Atlas. `edge-default` añadiría
   compresión sobre una ruta con WebSockets, y `edge-rate-limit` cuenta por
   IP de cliente: varios jugadores compartiendo una conexión doméstica
   saldrían por la misma IP y se estrangularían entre ellos.

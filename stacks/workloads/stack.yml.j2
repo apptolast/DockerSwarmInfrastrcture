@@ -880,56 +880,60 @@ services:
           cpus: "0.05"
           memory: 64M
 
-  openclaw:
+  # atlas releva a openclaw-clean en el mismo hueco del stack: mismo puerto
+  # (18789, HTTP plano dentro de la overlay; el TLS termina en Traefik),
+  # misma red edge dedicada y exactamente el mismo presupuesto de recursos
+  # (512M/256M, 1.00/0.20), de modo que los agregados de
+  # config/capacity-profiles.yml no se mueven y ninguna puerta de capacidad
+  # se toca.
+  #
+  # TODO(atlas): antes de desplegar hay que confirmar contra la imagen ya
+  # construida tres cosas que aqui se heredan del hueco de openclaw y que
+  # hoy no se pueden verificar porque el digest sigue siendo el marcador
+  # de ceros de config/image-channels.yml: el uid:gid de ejecucion (1000),
+  # la existencia de /home/atlas como HOME y que `wget` exista en la imagen
+  # para la sonda. El digest real debe sustituir al marcador en el catalogo
+  # antes de cualquier apply.
+  atlas:
     <<: *service-defaults
-    init: false
-    image: "{{ workloads_images.openclaw }}"
-    entrypoint:
-      - /bin/sh
-      - /run/configs/openclaw-entrypoint.sh
+    image: "{{ workloads_images.atlas }}"
     environment:
-      HOME: /home/node
-      NODE_ENV: production
-      OPENCLAW_HOME: /home/node
-      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      # atlas no necesita entrypoint propio: su capa de configuracion lee
+      # cualquier secreto desde la ruta que declare <CLAVE>_FILE, asi que
+      # el token del gateway nunca llega al spec del servicio como valor.
+      # Por eso este bloque no declara `configs` y se borro el
+      # openclaw-entrypoint.sh que solo existia para exportar la variable.
+      ATLAS_TOKEN_FILE: /run/secrets/atlas_gateway_token
+      HOME: /home/atlas
       TZ: Europe/Madrid
-    configs:
-      - source: openclaw_entrypoint
-        target: /run/configs/openclaw-entrypoint.sh
-        uid: "1000"
-        gid: "1000"
-        mode: 0555
     secrets:
-      - source: openclaw_gateway_token
-        target: openclaw_gateway_token
+      - source: atlas_gateway_token
+        target: atlas_gateway_token
         uid: "1000"
         gid: "1000"
         mode: 0400
     volumes:
       - type: bind
-        source: "{{ workloads_paths.openclaw_home }}"
-        target: /home/node/.openclaw
+        source: "{{ workloads_paths.atlas_home }}"
+        target: /home/atlas/.atlas
     networks:
-      - edge-openclaw
+      - edge-atlas
     cap_drop:
       - ALL
     healthcheck:
       <<: *health-defaults
       test:
-        - CMD
-        - node
-        - -e
+        - CMD-SHELL
         - >-
-          fetch('http://127.0.0.1:18789/healthz')
-          .then(r=>process.exit(r.ok?0:1))
-          .catch(()=>process.exit(1))
+          wget -q --spider
+          http://127.0.0.1:18789/healthz || exit 1
       start_period: 45s
     deploy:
       <<: *deploy-defaults
       labels:
-        com.apptolast.catalog-service: openclaw-clean
+        com.apptolast.catalog-service: atlas
         com.apptolast.managed-by: ansible
-        apptolast.autoupdate: "{{ image_channels_map.workloads['openclaw'].label }}"
+        apptolast.autoupdate: "{{ image_channels_map.workloads['atlas'].label }}"
       resources:
         limits:
           cpus: "1.00"
@@ -939,6 +943,9 @@ services:
           memory: 256M
 
 networks:
+  edge-atlas:
+    external: true
+    name: "{{ workloads_edge_networks.atlas }}"
   edge-kropia:
     external: true
     name: "{{ workloads_edge_networks.kropia }}"
@@ -948,9 +955,6 @@ networks:
   edge-n8n:
     external: true
     name: "{{ workloads_edge_networks.n8n }}"
-  edge-openclaw:
-    external: true
-    name: "{{ workloads_edge_networks.openclaw }}"
   edge-passbolt:
     external: true
     name: "{{ workloads_edge_networks.passbolt }}"
@@ -1026,9 +1030,6 @@ configs:
   n8n_task_runners:
     external: true
     name: "{{ workloads_config_names.n8n_task_runners }}"
-  openclaw_entrypoint:
-    external: true
-    name: "{{ workloads_config_names.openclaw_entrypoint }}"
   passbolt_entrypoint:
     external: true
     name: "{{ workloads_config_names.passbolt_entrypoint }}"
@@ -1043,6 +1044,9 @@ configs:
     name: "{{ workloads_config_names.shlink_entrypoint }}"
 
 secrets:
+  atlas_gateway_token:
+    external: true
+    name: "{{ workloads_secret_names.atlas_gateway_token }}"
   n8n_db_password:
     external: true
     name: "{{ workloads_secret_names.n8n_db_password }}"
@@ -1076,9 +1080,6 @@ secrets:
   n8n_smtp_user:
     external: true
     name: "{{ workloads_secret_names.n8n_smtp_user }}"
-  openclaw_gateway_token:
-    external: true
-    name: "{{ workloads_secret_names.openclaw_gateway_token }}"
   pablo_emailjs_public_key:
     external: true
     name: "{{ workloads_secret_names.pablo_emailjs_public_key }}"

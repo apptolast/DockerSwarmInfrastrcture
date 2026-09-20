@@ -44,7 +44,7 @@ DIRECT_SECRET_NAMES = (
     "passbolt_db_password",
     "shlink_db_password",
     "n8n_runners_auth_token",
-    "openclaw_gateway_token",
+    "atlas_gateway_token",
 )
 SECRET_IDENTITY_KEY_FILE = "workloads_secret_identity_hmac_key"
 SECRET_IDENTITY_KEY_SIZE = 32
@@ -59,14 +59,14 @@ LOG_DIRECTORIES = (
     "passbolt-postgres",
     "shlink",
     "shlink-postgres",
-    "openclaw",
+    "atlas",
 )
 SERVICE_DATASET_DIRECTORIES = {
+    "atlas-home": "atlas/home",
     "minecraft-worlds": "minecraft/data",
     "minecraft-mods": "minecraft/mods",
     "n8n-home": "n8n/home",
     "n8n-postgres": "n8n/postgres",
-    "openclaw-clean-home": "openclaw-clean/home",
     "passbolt-gpg": "passbolt/gpg",
     "passbolt-jwt": "passbolt/jwt",
     "passbolt-postgres": "passbolt/postgres",
@@ -508,8 +508,8 @@ def apply_container_ownership(runtime: Path) -> None:
         ("logs/shlink-postgres", 70, 70, 0o750, 0o640),
         ("logs/shlink", 1001, 0, 0o750, 0o640),
         ("shlink/postgres", 70, 70, 0o700, 0o600),
-        ("openclaw-clean", 1000, 1000, 0o700, 0o600),
-        ("logs/openclaw", 1000, 1000, 0o750, 0o640),
+        ("atlas", 1000, 1000, 0o700, 0o600),
+        ("logs/atlas", 1000, 1000, 0o750, 0o640),
     )
     for relative, uid, gid, directory_mode, file_mode in policies:
         set_tree_access(

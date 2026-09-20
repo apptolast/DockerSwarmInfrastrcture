@@ -36,8 +36,31 @@ image_channel_services:
   # few minutes of downtime per attempt. Channels whose update can migrate
   # data (minecraft, passbolt, shlink, organizationweb backend and the web
   # that moves with it) stay `false` while no off-host backup exists (STOP
-  # gate 5); openclaw and n8n stay version holds; Traefik stays out for its
+  # gate 5); atlas and n8n stay digest holds; Traefik stays out for its
   # blast radius. See docs/AUTOUPDATE.md.
+  #
+  # Atlas replaces the decommissioned openclaw slot. It is our own image, but
+  # `class` is not a label of ownership: validate-image-channels.py derives it
+  # from OWNER_NAMESPACES, which lists Docker Hub namespaces only, so a
+  # `ghcr.io/apptolast` repository classifies as `third-party`. It is pinned
+  # by digest because we cut releases by hand and want the reviewed bytes, not
+  # a moving head; a hold can never auto-update, hence `autoupdate: false`.
+  # The reference is digest-only and therefore must stay byte-identical to the
+  # baseline in config/services.yml.
+  - stack: workloads
+    service: atlas
+    baseline: {catalog: atlas, component: app}
+    # TODO: replace this placeholder digest before deploying. The Atlas
+    # image is still being built and has no published digest yet. An
+    # all-zero digest resolves in no registry, so a deploy attempted with
+    # it fails closed. It must change together with the baseline in
+    # config/services.yml: a digest-only reference is accepted only when
+    # the two strings are byte-identical.
+    reference: "ghcr.io/apptolast/atlas@sha256:\
+      0000000000000000000000000000000000000000000000000000000000000000"
+    class: third-party
+    autoupdate: false
+
   - stack: workloads
     service: kropia
     baseline: {catalog: kropia, component: app}
@@ -91,14 +114,6 @@ image_channel_services:
     reference: docker.io/selenium/standalone-chrome:latest
     class: third-party
     autoupdate: true
-
-  - stack: workloads
-    service: openclaw
-    baseline: {catalog: openclaw-clean, component: app}
-    reference: "ghcr.io/openclaw/openclaw:2026.7.1@sha256:\
-      6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c"
-    class: third-party
-    autoupdate: false
 
   - stack: workloads
     service: passbolt

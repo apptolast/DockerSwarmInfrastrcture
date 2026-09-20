@@ -88,10 +88,10 @@ class BackupContractTests(unittest.TestCase):
                     "datasets": [],
                 },
                 {
-                    "id": "openclaw",
-                    "services": ["workloads_openclaw"],
+                    "id": "atlas",
+                    "services": ["workloads_atlas"],
                     "databases": [],
-                    "datasets": ["openclaw-clean-home"],
+                    "datasets": ["atlas-home"],
                 },
                 {
                     "id": "traefik",
@@ -211,7 +211,7 @@ class BackupContractTests(unittest.TestCase):
                 "passbolt-jwt",
                 "minecraft-data",
                 "minecraft-mods",
-                "openclaw-clean-home",
+                "atlas-home",
                 "traefik-acme",
                 "runtime-secret-source",
                 "observability-secret-source",
