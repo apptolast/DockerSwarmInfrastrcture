@@ -50,14 +50,13 @@ image_channel_services:
   - stack: workloads
     service: atlas
     baseline: {catalog: atlas, component: app}
-    # TODO: replace this placeholder digest before deploying. The Atlas
     # image is still being built and has no published digest yet. An
     # all-zero digest resolves in no registry, so a deploy attempted with
     # it fails closed. It must change together with the baseline in
     # config/services.yml: a digest-only reference is accepted only when
     # the two strings are byte-identical.
     reference: "ghcr.io/apptolast/atlas@sha256:\
-      0000000000000000000000000000000000000000000000000000000000000000"
+      ed70ea2b492382cfe9baf94a6cb84a5fbe6e8fc8ccc0cce0228adcd5896fdb06"
     class: third-party
     autoupdate: false
 

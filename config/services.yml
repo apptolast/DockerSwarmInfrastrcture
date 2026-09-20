@@ -173,14 +173,13 @@ approved_services:
         protocol: tcp
         exposure: edge
     images:
-      # TODO: replace this placeholder digest before deploying. The
       # Atlas image is still being built and has no published digest
       # yet. An all-zero digest cannot resolve in any registry, so a
       # deploy attempted with it fails closed instead of pulling
       # something else.
       - component: app
         reference: "ghcr.io/apptolast/atlas@sha256:\
-          0000000000000000000000000000000000000000000000000000000000000000"
+          ed70ea2b492382cfe9baf94a6cb84a5fbe6e8fc8ccc0cce0228adcd5896fdb06"
     datasets:
       - atlas-home
     source_artifacts:
