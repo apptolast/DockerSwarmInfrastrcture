@@ -56,7 +56,7 @@ image_channel_services:
     # config/services.yml: a digest-only reference is accepted only when
     # the two strings are byte-identical.
     reference: "ghcr.io/apptolast/atlas@sha256:\
-      ed70ea2b492382cfe9baf94a6cb84a5fbe6e8fc8ccc0cce0228adcd5896fdb06"
+      bfd6e2c616c909aaace31dbe79978765e80e5be8a38cf053a0ea6f93e8ad4a84"
     class: third-party
     autoupdate: false
 
