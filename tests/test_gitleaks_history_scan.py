@@ -11,7 +11,8 @@ GUARD = PROJECT_ROOT / "scripts/require-gitleaks-history-scan.sh"
 FIXTURES = PROJECT_ROOT / "tests/fixtures"
 # Both logs are real gitleaks v8.30.1 output from the pinned image: a scan of
 # a regular clone with 165 commits, and the scan of a linked worktree whose
-# common git directory was not mounted, which still exited 0.
+# common git directory was not mounted, which still exited 0 (its host path is
+# replaced by a placeholder).
 CLEAN_LOG = FIXTURES / "gitleaks-history-clean.log"
 UNMOUNTED_WORKTREE_LOG = FIXTURES / "gitleaks-history-unmounted-worktree.log"
 
@@ -57,10 +58,28 @@ class GitleaksHistoryScanGuardTests(unittest.TestCase):
             "gitleaks logged a warning or error during the history scan",
         )
 
-    def test_a_partial_scan_is_rejected_by_commit_count(self) -> None:
+    def test_fewer_scanned_commits_than_the_repository_pass(self) -> None:
+        # gitleaks counts only commits that yield a diff fragment: the merge
+        # commit actions/checkout tests a pull request on is not one of them
+        # (CI: "160 commits scanned." for 161 in `git rev-list --all`).
+        result = self.run_guard(CLEAN_LOG.read_text(encoding="utf-8"), "166")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_more_scanned_commits_than_the_repository_are_rejected(
+        self,
+    ) -> None:
         self.assert_rejected(
-            self.run_guard(CLEAN_LOG.read_text(encoding="utf-8"), "166"),
-            "gitleaks scanned 165 commits; the repository has 166",
+            self.run_guard(CLEAN_LOG.read_text(encoding="utf-8"), "164"),
+            "gitleaks scanned 165 commits; the repository has only 164",
+        )
+
+    def test_a_scan_that_read_no_commit_is_rejected(self) -> None:
+        log = colored("32", "INF", "0 commits scanned.") + colored(
+            "32", "INF", "no leaks found"
+        )
+        self.assert_rejected(
+            self.run_guard(log, "165"),
+            "gitleaks history scan read no commit",
         )
 
     def test_warning_and_fatal_levels_are_rejected(self) -> None:
@@ -98,13 +117,13 @@ class GitleaksHistoryScanGuardTests(unittest.TestCase):
         result = self.run_guard(log, "165")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_the_expected_count_must_be_a_positive_integer(self) -> None:
+    def test_the_repository_count_must_be_a_positive_integer(self) -> None:
         clean = CLEAN_LOG.read_text(encoding="utf-8")
         for argument in ("0", "-1", "165x", ""):
             with self.subTest(argument=argument):
                 self.assert_rejected(
                     self.run_guard(clean, argument),
-                    "expected commit count must be a positive integer",
+                    "repository commit count must be a positive integer",
                 )
         self.assert_rejected(self.run_guard(clean), "usage:")
 
@@ -116,10 +135,21 @@ class ValidatorGitContractTests(unittest.TestCase):
         lint = (PROJECT_ROOT / "scripts/lint.sh").read_text(encoding="utf-8")
         self.assertIn("--path-format=absolute --git-common-dir", lint)
         self.assertIn('--volume "${git_common_dir}:${git_common_dir}:ro"', lint)
-        self.assertIn('rev-list --all --count', lint)
-        self.assertIn('require-gitleaks-history-scan.sh" "${expected_commits}"', lint)
+        self.assertIn("rev-list --all --count", lint)
+        self.assertIn("rev-parse --is-shallow-repository)\" == false", lint)
+        self.assertIn(
+            'require-gitleaks-history-scan.sh" "${repository_commits}"',
+            lint,
+        )
 
     def test_validators_never_page_git_output(self) -> None:
+        # The lock supervisor gives both scripts a pseudo-terminal, so every
+        # git call they make, now or later, must be unable to page.
+        for relative in ("scripts/lint.sh", "scripts/validate-iac.sh"):
+            content = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+            lock = content.index("ensure_docker_validation_lock ")
+            pager = content.index("export GIT_PAGER=cat")
+            self.assertLess(lock, pager, relative)
         for relative, commands in (
             (
                 "scripts/lint.sh",

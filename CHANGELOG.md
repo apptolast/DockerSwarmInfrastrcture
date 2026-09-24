@@ -459,14 +459,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   leer nada. Desde un worktree enlazado, gitleaks v8.30.1 no encontraba el
   directorio git que nombra el fichero `.git`, registraba el error en `ERR`,
   escaneaba "0 commits" y salía con código 0. Ahora se monta el directorio
-  git común en su misma ruta y `scripts/require-gitleaks-history-scan.sh`
-  exige un log sin avisos ni errores, exactamente `git rev-list --all
-  --count` commits escaneados y un resultado limpio. Pruebas con los dos
-  logs reales como fixtures.
+  git común en su misma ruta, se rechaza un clon superficial y
+  `scripts/require-gitleaks-history-scan.sh` exige un log sin avisos ni
+  errores, entre uno y `git rev-list --all --count` commits escaneados y un
+  resultado limpio. El recuento solo acota: gitleaks no cuenta merges ni
+  commits sin fragmentos de diff, como el merge sintético de cada pull
+  request. Pruebas con los dos logs reales como fixtures.
 - `validate-iac.sh` y `lint.sh` ya no se cuelgan en el host productivo. Con
-  `Defaults use_pty` en sudoers, `git diff --check` recibía un terminal,
-  abría el paginador y esperaba una tecla para siempre con el lock
-  host-global tomado; ahora usan `git --no-pager`.
+  Swarm activo el supervisor del lock los ejecuta sobre un pseudo-terminal
+  (`scripts/run-locked-command.py`, `pty.fork`), igual que sudo con
+  `use_pty`: `git diff --check` abría el paginador y esperaba una tecla para
+  siempre con el lock host-global tomado. Ahora exportan `GIT_PAGER=cat`
+  tras tomar el lock y usan `git --no-pager`.
 - La búsqueda de mutadores de `ansible-operation-lock.py recover` reconoce
   los clientes `docker stack|service|swarm|node` detrás de `timeout`
   (coreutils o busybox, con `-s`, `-k` o `-t`) y de opciones globales de

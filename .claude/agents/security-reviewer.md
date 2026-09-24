@@ -40,8 +40,8 @@ Por eso: se te convoca en **todo** diff que toque `ansible/`, `config/`,
 **Secretos commiteados: ya los cubre `gitleaks`, y sobre árbol E historial.**
 `scripts/lint.sh` ejecuta dos pasadas con la imagen fijada por digest
 (`scripts/lint.sh:11`): un escaneo del árbol de trabajo completo
-(`gitleaks dir /repo`, `scripts/lint.sh:94-102`) y un escaneo del historial
-completo (`gitleaks git --log-opts=--all`, `scripts/lint.sh:104-115`), ambos
+(`gitleaks dir /repo`, `scripts/lint.sh:100-108`) y un escaneo del historial
+completo (`gitleaks git --log-opts=--all`, `scripts/lint.sh:110-144`), ambos
 con `--exit-code=1`. La configuración es la de por defecto extendida
 (`.gitleaks.toml:1-2`) y su única allowlist son rutas de tooling local
 descargado (`.gitleaks.toml:4-14`). La única excepción anotada en código es

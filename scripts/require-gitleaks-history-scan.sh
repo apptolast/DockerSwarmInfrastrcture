@@ -5,9 +5,15 @@
 # gitleaks v8 exits 0 when git itself fails inside its container: it logs
 # the git error at ERR level, reports "0 commits scanned." and then "no leaks
 # found". A linked worktree does exactly that when the directory its .git
-# file names is not mounted, so the exit code alone cannot prove a scan. The
-# scan only counts when its log has no warning-or-higher line, names exactly
-# the commits the repository has, and reports a clean result.
+# file names is not mounted, so the exit code alone cannot prove a scan.
+#
+# The commit count is only an upper bound. gitleaks counts a commit when it
+# yields at least one diff fragment, so merge commits (actions/checkout tests
+# a pull request on a synthetic one), empty commits and commits that only
+# delete, rename or touch binaries are left out, as its own debug note says.
+# The scan therefore counts when its log has no warning-or-higher line,
+# reports between one and REPOSITORY_COMMITS commits, and reports a clean
+# result.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -17,10 +23,10 @@ fail() {
   exit 1
 }
 
-(( $# == 1 )) || fail "usage: ${0##*/} EXPECTED_COMMITS < gitleaks.log"
-readonly EXPECTED_COMMITS="$1"
-[[ "${EXPECTED_COMMITS}" =~ ^[1-9][0-9]*$ ]] ||
-  fail "expected commit count must be a positive integer"
+(( $# == 1 )) || fail "usage: ${0##*/} REPOSITORY_COMMITS < gitleaks.log"
+readonly REPOSITORY_COMMITS="$1"
+[[ "${REPOSITORY_COMMITS}" =~ ^[1-9][0-9]*$ ]] ||
+  fail "repository commit count must be a positive integer"
 
 # zerolog console lines are "<time> <LEVEL> <message>"; drop the ANSI colors
 # and any carriage return a pseudo-terminal adds.
@@ -35,8 +41,10 @@ mapfile -t scanned_counts < <(
 )
 (( ${#scanned_counts[@]} == 1 )) ||
   fail "gitleaks history scan did not report exactly one commit count"
-[[ "${scanned_counts[0]}" == "${EXPECTED_COMMITS}" ]] ||
-  fail "gitleaks scanned ${scanned_counts[0]} commits; the repository has ${EXPECTED_COMMITS}"
+[[ "${scanned_counts[0]}" =~ ^[1-9][0-9]*$ ]] ||
+  fail "gitleaks history scan read no commit"
+(( scanned_counts[0] <= REPOSITORY_COMMITS )) ||
+  fail "gitleaks scanned ${scanned_counts[0]} commits; the repository has only ${REPOSITORY_COMMITS}"
 
 grep -Eq '^[^ ]+ INF no leaks found$' <<<"${scan_log}" ||
   fail "gitleaks history scan did not report a clean result"
