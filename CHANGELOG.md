@@ -369,6 +369,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Promueve el snapshot Ubuntu a `20260924T000000Z` para devolver a verde el
+  CI programado, que fallaba desde el 21 de septiembre por el SLO de 14
+  días. Cuatro índices InRelease verificados con la clave de archivo Ubuntu
+  y simulación APT conjunta de los trece paquetes Ubuntu fijados. Actualiza
+  curl, rsyslog y sudo a sus candidatos revisados; conserva el SLO y los
+  pins externos de CrowdSec. No aplica cambios al host. Evidencia:
+  `docs/SNAPSHOT_20260924.md`.
 - El owner acepta un consumidor equivalente a root del socket Docker:
   `autoupdater_shepherd` lo monta en el único manager. El bind de solo
   lectura no limita la API. Solo ese stack puede montarlo, siempre de solo
