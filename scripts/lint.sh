@@ -101,10 +101,22 @@ docker run \
   --redact \
   /repo
 
+# A linked worktree's .git is a file that names its git directory by absolute
+# host path, so the common directory is mounted at that same path. The scan
+# log then has to prove every commit was read: scripts/
+# require-gitleaks-history-scan.sh explains why the exit code cannot.
+git_common_dir="$(
+  git -C "${PROJECT_DIR}" rev-parse --path-format=absolute --git-common-dir
+)"
+expected_commits="$(git -C "${PROJECT_DIR}" rev-list --all --count)"
+history_scan_log="$(mktemp)"
+trap 'rm -f -- "${history_scan_log}"' EXIT
+
 docker run \
   --rm \
   --user "$(id -u):$(id -g)" \
   --volume "${PROJECT_DIR}:/repo:ro" \
+  --volume "${git_common_dir}:${git_common_dir}:ro" \
   --workdir /repo \
   "${GITLEAKS_IMAGE}" \
   git \
@@ -112,11 +124,20 @@ docker run \
   --log-opts=--all \
   --no-banner \
   --redact \
-  /repo
+  /repo 2>"${history_scan_log}" ||
+  {
+    cat -- "${history_scan_log}" >&2
+    fail "gitleaks history scan failed"
+  }
+cat -- "${history_scan_log}" >&2
+"${SCRIPT_DIR}/require-gitleaks-history-scan.sh" "${expected_commits}" \
+  <"${history_scan_log}"
 
+# sudoers `use_pty` hands git a terminal, and a pager would then wait forever
+# for a key while the host-global lock stays held.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git diff --check
-  git diff --cached --check
+  git --no-pager diff --check
+  git --no-pager diff --cached --check
 fi
 
 printf 'Repository lint and secret scan passed.\n'

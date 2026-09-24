@@ -455,6 +455,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El escaneo de secretos del historial en `lint.sh` ya no pasa en verde sin
+  leer nada. Desde un worktree enlazado, gitleaks v8.30.1 no encontraba el
+  directorio git que nombra el fichero `.git`, registraba el error en `ERR`,
+  escaneaba "0 commits" y salía con código 0. Ahora se monta el directorio
+  git común en su misma ruta y `scripts/require-gitleaks-history-scan.sh`
+  exige un log sin avisos ni errores, exactamente `git rev-list --all
+  --count` commits escaneados y un resultado limpio. Pruebas con los dos
+  logs reales como fixtures.
+- `validate-iac.sh` y `lint.sh` ya no se cuelgan en el host productivo. Con
+  `Defaults use_pty` en sudoers, `git diff --check` recibía un terminal,
+  abría el paginador y esperaba una tecla para siempre con el lock
+  host-global tomado; ahora usan `git --no-pager`.
 - La búsqueda de mutadores de `ansible-operation-lock.py recover` reconoce
   los clientes `docker stack|service|swarm|node` detrás de `timeout`
   (coreutils o busybox, con `-s`, `-k` o `-t`) y de opciones globales de

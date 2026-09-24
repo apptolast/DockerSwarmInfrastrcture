@@ -241,7 +241,9 @@ for shell_script in "${shell_scripts[@]}"; do
 done
 
 scripts/validate-traefik-config.sh
-git diff --check
+# sudoers `use_pty` hands git a terminal; a pager would wait forever for a
+# key while the host-global lock stays held.
+git --no-pager diff --check
 
 cleanup
 trap - EXIT
