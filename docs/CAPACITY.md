@@ -187,11 +187,78 @@ que retirarlos de `external_stacks` antes de aplicar (ver
 [REBUILD.md](REBUILD.md), paso 8). Caben porque Minecraft y OpenClaw están
 aparcados.
 
-El contrato solo cubre servicios Swarm. Los proyectos Compose `satisfactory`
-y `monitor-production` y el nodo kind del laboratorio AX, limitado a
-3 584 MiB, consumen memoria fuera de él. Ese nodo equivale a toda la reserva
-de 3 GiB más los 512 MiB de headroom, así que, con él en marcha, un
-preflight en verde no garantiza margen real en el host.
+Hoy el contrato solo cubre servicios Swarm. Los proyectos Compose
+`satisfactory` y `monitor-production` y el nodo kind del laboratorio AX,
+limitado a 3 584 MiB, consumen memoria fuera de él. Ese nodo equivale a toda
+la reserva de 3 GiB más los 512 MiB de headroom, así que, con él en marcha,
+un preflight en verde no garantiza margen real en el host. El contrato ya
+puede presupuestar contenedores sueltos como ese nodo (ver «Contenedores del
+host»), pero todavía no declara ninguno.
+
+## Contenedores del host
+
+Además de los servicios Swarm, el host puede ejecutar contenedores Docker
+sueltos, fuera de Swarm, como el nodo `kind-control-plane` y el registro
+`kind-registry` del laboratorio AX (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)). `config/capacity-profiles.yml`
+los presupuesta en `host_containers`, agrupados por lo que se ejecuta junto:
+cada grupo declara, por nombre de contenedor, `reservations` y `limits`
+(`cpu_millicores` y `memory_mib`) y `pids_limit`. Cada plan enumera en su
+propio `host_containers` los grupos que ejecuta. Solo esos grupos se suman a
+su agregado, que se sigue comprobando contra el presupuesto del host igual
+que el resto. Hoy no hay ninguno declarado: los dos planes dejan la lista
+vacía y el preflight no inspecciona ningún contenedor.
+
+El esquema es tan estricto como el de `external_stacks`, y rechaza cualquier
+clave desconocida:
+
+- el nombre de grupo usa minúsculas, dígitos y guiones, sin guion al
+  principio ni al final (el mismo formato que los identificadores de
+  `config/capacity.yml`), y el de contenedor es un nombre válido para Docker
+  (un carácter alfanumérico y al menos otro alfanumérico, `_`, `.` o `-`),
+  único entre todos los grupos;
+- los límites de CPU y memoria son de al menos 1, porque Docker lee un 0 como
+  ilimitado, y ninguna reserva supera su límite;
+- la relación límite/reserva de memoria no supera
+  `service_memory_limit_to_reservation_ratio` de `config/capacity.yml`
+  (2,50), así que la reserva de memoria tampoco puede ser 0;
+- `pids_limit` es de al menos 1;
+- un plan solo enumera grupos declarados y sin repetir.
+
+La reserva de CPU solo cuenta en el presupuesto: Docker no reserva CPU para
+un contenedor suelto, así que el preflight no puede comprobarla en vivo.
+
+En cada apply, `capacity_preflight` pide al validador los nombres declarados
+(`scripts/validate-capacity-profiles.py --host-container-names`, que antes
+valida el contrato) y lee cada uno con `docker container inspect`: el
+nombre, el estado y solo los cuatro campos de `HostConfig` que compara. Un
+contenedor que no existe no detiene esa lectura.
+Después, el validador exige:
+
+- que cada contenedor de un grupo del plan activo exista, esté `running` y
+  tenga exactamente los `Memory`, `MemoryReservation`, `NanoCpus` y
+  `PidsLimit` que corresponden a su límite y reserva de memoria, su límite
+  de CPU y su `pids_limit`;
+- que cada contenedor de un grupo que el plan activo no ejecuta esté
+  ausente o parado (`created`, `exited` o `dead`): cualquier otro estado
+  (`running`, `paused`, `restarting` o `removing`) detiene el apply.
+
+Los contenedores no declarados no se leen ni se comprueban. Un dato vivo que
+falte, sobre o no tenga la forma esperada también detiene el apply: solo
+cuenta como ausente un contenedor del que Docker responde que no existe
+(`No such container`), y cualquier otro error de lectura falla.
+
+Con `--live`, el validador lee de la entrada estándar
+`{"services": [...], "host_containers": [...]}`. `services` es la lista de
+servicios de siempre, y `host_containers` guarda, por cada contenedor
+declarado, los campos `item`, `rc`, `stdout` y `stderr` de su lectura. Es el
+único formato que acepta: una lista de servicios sola, sin las lecturas de
+los contenedores, no prueba su estado y se rechaza.
+
+Declarar un grupo no lo convierte en estado reconstruible, igual que ocurre
+con los stacks externos. En un host reconstruido, sus contenedores no
+existen, así que, si el plan activo ejecuta el grupo, el preflight se detiene
+hasta que un cambio revisado lo retire de ese plan.
 
 ## Gates
 

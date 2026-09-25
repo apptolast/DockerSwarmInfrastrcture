@@ -8,6 +8,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- `config/capacity-profiles.yml` admite `host_containers`: contenedores
+  Docker sueltos, fuera de Swarm, agrupados y con reserva, límite y
+  `pids_limit` explícitos. Cada plan enumera los grupos que ejecuta y solo
+  esos suman en su agregado y su presupuesto. El esquema es estricto:
+  límites de al menos 1, reservas no mayores que los límites, la relación
+  límite/reserva de memoria de `config/capacity.yml`, nombres de contenedor
+  válidos para Docker y únicos, y grupos declarados. En cada apply,
+  `capacity_preflight` lee cada contenedor declarado con
+  `docker container inspect`. Los del plan activo deben correr con
+  exactamente el límite y la reserva de memoria, el límite de CPU y el de
+  PIDs declarados; la reserva de CPU solo cuenta en el presupuesto, porque
+  Docker no la aplica a un contenedor suelto. Los de cualquier otro grupo
+  deben estar ausentes o parados. Un dato vivo
+  que falte o no tenga la forma esperada detiene el apply. Todavía no se
+  declara ningún contenedor, así que el preflight no inspecciona nada; el
+  laboratorio AX se declarará en su propio cambio. Ver
+  [`docs/CAPACITY.md`](docs/CAPACITY.md), «Contenedores del host».
 - `config/capacity-profiles.yml` declara en `external_stacks` los tres stacks
   Swarm que corren en el host fuera de este repositorio
   (`satisfactory-companions`, `satisfactory-events` y `sftp`), con réplicas y

@@ -28,6 +28,48 @@
   changed_when: false
   check_mode: false
 
+# Plain Docker containers outside Swarm, declared in the host_containers of
+# config/capacity-profiles.yml. The validator checks that contract before it
+# prints any name, so nothing unreviewed reaches Docker; with none declared
+# the list is empty and nothing is inspected.
+- name: List every host container the profile contract declares
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-capacity-profiles.py"
+      - --host-container-names
+  register: capacity_preflight_host_container_names
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+# A declared container may be absent, so a failed read does not stop the
+# play here: the validator accepts it as absent only when Docker says there
+# is no such container, and fails on any other error.
+- name: Read the name, state and resource limits of each declared host container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - >-
+        {% raw %}{"name":{{json .Name}},
+        "status":{{json .State.Status}},
+        "host_config":{"Memory":{{json .HostConfig.Memory}},
+        "MemoryReservation":{{json .HostConfig.MemoryReservation}},
+        "NanoCpus":{{json .HostConfig.NanoCPUs}},
+        "PidsLimit":{{json .HostConfig.PidsLimit}}}}{% endraw %}
+      - "{{ item }}"
+  loop: "{{ capacity_preflight_host_container_names.stdout | from_json }}"
+  register: capacity_preflight_host_container_specs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Each host container entry keeps only the item, rc, stdout and stderr of its
+# read; the validator's live_inventory documents the whole input.
 - name: Validate the requested profile without mutating the host
   ansible.builtin.command:
     argv:
@@ -38,8 +80,15 @@
       - "{{ deployment_metadata_playbook }}"
     stdin: >-
       {{
-        capacity_preflight_live_specs.results | default([])
-        | map(attribute='stdout') | map('from_json') | list | to_json
+        {
+          'services': capacity_preflight_live_specs.results | default([])
+          | map(attribute='stdout') | map('from_json') | list,
+          'host_containers':
+          capacity_preflight_host_container_specs.results | default([])
+          | map('dict2items')
+          | map('selectattr', 'key', 'in', ['item', 'rc', 'stdout', 'stderr'])
+          | map('list') | map('items2dict') | list
+        } | to_json
       }}
   delegate_to: localhost
   become: false
