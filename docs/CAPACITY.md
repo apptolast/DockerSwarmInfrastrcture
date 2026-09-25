@@ -134,6 +134,30 @@ No se debe elevar un límite basándose solo en memoria libre puntual o caché d
 página. Hay que revisar al menos el máximo sostenido, picos, OOM/throttling y
 la ventana de retención correspondiente.
 
+## Stacks externos
+
+Tres stacks Swarm corren en este host sin estar definidos en este
+repositorio: `satisfactory-companions` (`web`, `worker`, `radio`),
+`satisfactory-events` (`audit`, `publisher`) y `sftp` (`downloads`). El
+preflight de capacidad de cada playbook exige que todo servicio vivo
+pertenezca al plan activo, así que, sin declararlos, ningún apply podía
+pasar.
+
+`config/capacity-profiles.yml` los declara en `external_stacks`, con las
+réplicas y los recursos medidos en vivo el 2026-09-25: 50m y 16 MiB
+reservados y 2 050m y 896 MiB de límite en total. Todos los planes los suman
+en su agregado. En cada apply, el preflight inspecciona modo y recursos de
+cada servicio vivo y exige, solo para estos stacks, que coincidan
+exactamente con lo declarado y que no falte ni sobre ningún servicio. Un
+cambio en cualquiera de los dos lados detiene el siguiente apply hasta que el
+contrato vuelva a coincidir.
+
+Declararlos no los convierte en estado reconstruible: sus ficheros de stack,
+imágenes y datos siguen fuera del repositorio (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)). Caben porque Minecraft y
+OpenClaw están aparcados; desaparcarlos exige revisar la capacidad teniendo
+en cuenta estos stacks.
+
 ## Gates
 
 La validación completa, sin mutar Docker Swarm, es:

@@ -8,6 +8,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- `config/capacity-profiles.yml` declara en `external_stacks` los tres stacks
+  Swarm que corren en el host fuera de este repositorio
+  (`satisfactory-companions`, `satisfactory-events` y `sftp`), con réplicas y
+  recursos medidos en vivo. Todos los planes los suman, y el preflight de cada
+  apply exige que coincidan con los servicios vivos. Sin ellos, el preflight
+  rechazaba cualquier apply porque había servicios vivos fuera del perfil.
+  `docs/DEPLOYMENT_STATUS.md` inventaría el resto de la deriva: Compose,
+  reglas manuales del firewall y el laboratorio AX.
 - Estado «aparcado» para servicios del stack `workloads`:
   `platform_parked_workloads` en `config/platform.yml` renderiza
   `replicas: 0`, conserva imagen, datos, secretos, redes y ruta del edge, y

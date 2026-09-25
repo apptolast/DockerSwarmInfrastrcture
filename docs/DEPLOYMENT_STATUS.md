@@ -31,6 +31,27 @@ Seguimientos abiertos del aparcado:
 - Ninguna alerta avisa si alguien arranca a mano un servicio aparcado; el
   siguiente apply de `workloads` lo detecta y falla.
 
+## Deriva fuera del repositorio
+
+Inventario del 2026-09-25 de lo que corre en el host sin estar codificado
+aquí:
+
+- Stacks Swarm `satisfactory-companions` y `satisfactory-events` (creados el
+  2026-09-22) y `sftp` (2026-09-23), posteriores al último apply desde este
+  repositorio (2026-09-19). Sus recursos están declarados y se verifican en
+  `config/capacity-profiles.yml` (ver [CAPACITY.md](CAPACITY.md), «Stacks
+  externos»), pero sus ficheros de stack, imágenes locales y datos no están
+  aquí.
+- Proyectos Compose `satisfactory` (servidor del juego y sus servicios) y
+  `monitor-production` (observatorio de `monitor.apptolast.com`), fuera de
+  Swarm y del contrato de capacidad.
+- Reglas manuales en la cadena `DOCKERSWARM-INGRESS`: el 2222/tcp de `sftp`
+  pasa por una cadena propia `SFTP-SWARM`, y el 7777/tcp+udp y el 8888/tcp
+  del servidor de Satisfactory se admiten solo desde una IP de origen. El
+  render revisado de esa cadena solo admite 80, 443 y 25565, así que un apply
+  de `platform` las eliminaría. Hay que codificarlas antes de cualquier apply
+  de `platform`.
+
 ## Estado temporal fuera del repositorio
 
 - Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent

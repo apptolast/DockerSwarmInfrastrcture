@@ -30,13 +30,112 @@ APP_SERVICES = {
 # A plan is always edge + workloads + applications + autoupdater.
 PLAN_HEAD = ["edge", "workloads"]
 PLAN_TAIL = ["autoupdater"]
+MIB = 1024 * 1024
+NANO_CPUS_PER_MILLICORE = 1_000_000
+
+
+def validate_external_stacks(document):
+    """Swarm stacks run here but defined elsewhere, counted in every plan."""
+    if not isinstance(document, dict):
+        raise capacity.CapacityError("external_stacks must be a mapping")
+    external = {}
+    for stack, services in document.items():
+        if (
+            not isinstance(stack, str)
+            or not capacity.IDENTIFIER_RE.fullmatch(stack)
+            or stack in capacity.STACK_IDS
+            or stack in APP_STACKS
+        ):
+            raise capacity.CapacityError(f"external stack name is invalid: {stack!r}")
+        if not isinstance(services, dict) or not services:
+            raise capacity.CapacityError(f"external stack {stack} has no services")
+        external[stack] = {}
+        for name, service in services.items():
+            context = f"external_stacks.{stack}.{name}"
+            if not isinstance(name, str) or not capacity.IDENTIFIER_RE.fullmatch(name):
+                raise capacity.CapacityError(f"{context} is not a service name")
+            declared = capacity.expect_mapping(
+                service, {"replicas", "reservations", "limits"}, context
+            )
+            replicas = capacity.expect_int(
+                declared["replicas"], f"{context}.replicas", minimum=1
+            )
+            resources = capacity.validate_resource_totals(
+                {key: declared[key] for key in ("reservations", "limits")}, context
+            )
+            for resource_name in ("cpu_millicores", "memory_mib"):
+                if (
+                    resources["reservations"][resource_name]
+                    > resources["limits"][resource_name]
+                ):
+                    raise capacity.CapacityError(
+                        f"{context} reserves more {resource_name} than its limit"
+                    )
+            external[stack][name] = {"replicas": replicas, "resources": resources}
+    return external
+
+
+def external_totals(profiles):
+    total = capacity.empty_resources()
+    for services in profiles["external_stacks"].values():
+        for service in services.values():
+            capacity.add_resources(
+                total,
+                capacity.scaled_resources(service["resources"], service["replicas"]),
+            )
+    return total
+
+
+def live_plan(service):
+    """Replicas and per-task resources of one inspected live service."""
+    mode = service.get("mode")
+    replicated = mode.get("Replicated") if isinstance(mode, dict) else None
+    if (
+        not isinstance(mode, dict)
+        or set(mode) != {"Replicated"}
+        or not isinstance(replicated, dict)
+    ):
+        raise capacity.CapacityError("external live service is not replicated")
+    replicas = replicated.get("Replicas")
+    if isinstance(replicas, bool) or not isinstance(replicas, int):
+        raise capacity.CapacityError("external live replicas are invalid")
+    resources = service.get("resources")
+    if resources is None:
+        resources = {}
+    if not isinstance(resources, dict) or not set(resources) <= {
+        "Limits",
+        "Reservations",
+    }:
+        raise capacity.CapacityError("external live resources are invalid")
+    plan = capacity.empty_resources()
+    for resource_class, key in (("limits", "Limits"), ("reservations", "Reservations")):
+        values = resources.get(key) or {}
+        if not isinstance(values, dict) or not set(values) <= {
+            "NanoCPUs",
+            "MemoryBytes",
+        }:
+            raise capacity.CapacityError("external live resources are invalid")
+        for field, unit, name in (
+            ("NanoCPUs", NANO_CPUS_PER_MILLICORE, "cpu_millicores"),
+            ("MemoryBytes", MIB, "memory_mib"),
+        ):
+            value = values.get(field, 0)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value % unit
+            ):
+                raise capacity.CapacityError("external live resources are invalid")
+            plan[resource_class][name] = value // unit
+    return replicas, plan
 
 
 def validate_profile_contract(document):
     root = capacity.expect_mapping(document, {"capacity_profiles"}, "profiles")
     profiles = capacity.expect_mapping(
         root["capacity_profiles"],
-        {"schema_version", "active", "profiles", *APP_STACKS},
+        {"schema_version", "active", "profiles", "external_stacks", *APP_STACKS},
         "profiles",
     )
     if type(profiles["schema_version"]) is not int or profiles["schema_version"] != 1:
@@ -80,7 +179,11 @@ def validate_profile_contract(document):
         capacity.validate_resource_totals(
             app["aggregate"], f"profile.{app_name}.aggregate"
         )
-    return profiles
+    # A validated copy: the caller's document is never rewritten.
+    return {
+        **profiles,
+        "external_stacks": validate_external_stacks(profiles["external_stacks"]),
+    }
 
 
 def validate_profiles(base_document, profile_document, stacks):
@@ -115,7 +218,7 @@ def validate_profiles(base_document, profile_document, stacks):
         totals[app_name] = app_total
     result = {}
     for name, profile in profiles["profiles"].items():
-        aggregate = capacity.empty_resources()
+        aggregate = external_totals(profiles)
         for stack in profile["stacks"]:
             capacity.add_resources(aggregate, totals[stack])
         if aggregate != profile["aggregate"]:
@@ -129,7 +232,7 @@ def validate_live(base_document, profile_document, requested_stack, live_service
     base = capacity.validate_contract(base_document)
     profiles = validate_profile_contract(profile_document)
     for name, profile in profiles["profiles"].items():
-        total = capacity.empty_resources()
+        total = external_totals(profiles)
         for stack in profile["stacks"]:
             capacity.add_resources(
                 total,
@@ -154,9 +257,27 @@ def validate_live(base_document, profile_document, requested_stack, live_service
             else base["stacks"][stack]["expected_services"]
         )
     }
+    external_names = {
+        (stack, f"{stack}_{service}"): declared
+        for stack, services in profiles["external_stacks"].items()
+        for service, declared in services.items()
+    }
+    seen_external = set()
     for service in live_services:
-        if (service.get("stack"), service.get("name")) not in allowed_names:
-            raise capacity.CapacityError("live service is outside the reviewed active profile")
+        identity = (service.get("stack"), service.get("name"))
+        if identity in external_names:
+            declared = external_names[identity]
+            if live_plan(service) != (declared["replicas"], declared["resources"]):
+                raise capacity.CapacityError(
+                    f"external live service differs from its declaration: {identity[1]}"
+                )
+            seen_external.add(identity)
+        elif identity not in allowed_names:
+            raise capacity.CapacityError(
+                "live service is outside the reviewed active profile"
+            )
+    if seen_external != set(external_names):
+        raise capacity.CapacityError("a declared external service is not live")
 
 
 def main(argv=None):
