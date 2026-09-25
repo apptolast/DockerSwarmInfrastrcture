@@ -73,96 +73,281 @@
     quiet: true
   no_log: true
 
-# Sin `check_mode: false`, por el mismo motivo que en security.yml: `-t`
-# retira CROWDSEC_CHAIN al salir y un ensayo no puede dejar el host sin
-# filtrado.
-- name: Parse the credential-bearing bouncer candidate in memory
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/crowdsec-firewall-bouncer
-      - -c
-      - /dev/stdin
-      - -t
-    stdin: "{{ host_baseline_crowdsec_bouncer_candidate }}"
-    stdin_add_newline: true
-  changed_when: false
-  no_log: true
+# Todas las pruebas `-t` de host_baseline van en este bloque: la del fichero
+# en disco, la del candidato en memoria y la de `validate:` del lineinfile.
+# Cada una arranca el backend real, destruye los ipsets de bloqueo y al salir
+# retira CROWDSEC_CHAIN de ambas familias, tambien cuando falla despues de
+# arrancarlo (cmd/root.go de cs-firewall-bouncer v0.0.34 ejecuta backend.Init
+# y aplaza su limpieza antes de ConfigReader y bouncer.Init). El `always:`
+# reinicia el bouncer si falta su gancho de INPUT, de modo que ninguna tarea
+# que falle entre una prueba y ese reinicio deja el host sin filtrar hasta el
+# siguiente apply. El reinicio solo repone las cadenas si la configuracion en
+# disco pasa el `-t` que systemd ejecuta antes de cada arranque
+# (ExecStartPre):
+# - si fallo el candidato o la copia de `validate:`, el fichero en disco es el
+#   que ya habia pasado, y el reinicio repone las cadenas antes de que el
+#   apply se detenga;
+# - si fallo el propio fichero en disco despues de arrancar el backend (por
+#   ejemplo con un api_key vacio), el reinicio falla igual, CrowdSec queda sin
+#   filtrar hasta que se corrija y el apply se detiene en "Require the
+#   restored CrowdSec bouncer to start";
+# - una configuracion que se rechaza antes de arrancar el backend (YAML
+#   invalido, sin `mode`) deja las cadenas y el bouncer en marcha intactos.
+- name: Test the CrowdSec bouncer and register DOCKER-USER
+  block:
+    # Sin `check_mode: false` en ninguna prueba ni en el bloque: con el, un
+    # simple ensayo `--check` ejecutaba `-t` y dejaba el host sin filtrado de
+    # CrowdSec. Un ensayo no puede mutar el cortafuegos vivo, asi que en modo
+    # comprobacion las pruebas se omiten.
+    #
+    # La prueba del fichero en disco no repite la que host_security ya hizo en
+    # este apply: alli corre si se instalo o actualizo un paquete o si la
+    # configuracion, su `.local`, su directorio o el binario son posteriores
+    # al arranque del bouncer vivo, y su restauracion reinicia el bouncer, de
+    # modo que al llegar aqui nada es posterior a ese arranque. Aqui corre si
+    # host_security no se ejecuto en el play, porque nada prueba entonces que
+    # el paquete no cambiara, o si algo sigue siendo posterior al arranque del
+    # bouncer vivo (misma comprobacion y mismos limites que en host_security).
+    # `failed_when: false` para que su resultado se exija en la tarea
+    # siguiente con un mensaje propio, ya dentro del bloque.
+    - name: Inspect the CrowdSec bouncer files the running instance loaded
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        follow: false
+        get_checksum: false
+      loop:
+        - path: "{{ host_baseline_crowdsec_bouncer_config }}"
+          type: file
+          required: true
+        - path: "{{ host_baseline_crowdsec_bouncer_config }}.local"
+          type: file
+          required: false
+        - path: "{{ host_baseline_crowdsec_bouncer_config | dirname }}"
+          type: directory
+          required: true
+        - path: /usr/bin/crowdsec-firewall-bouncer
+          type: file
+          required: true
+      loop_control:
+        label: "{{ item.path }}"
+      register: host_baseline_crowdsec_bouncer_files
 
-- name: Register DOCKER-USER with the CrowdSec firewall bouncer
-  ansible.builtin.lineinfile:
-    path: "{{ host_baseline_crowdsec_bouncer_config }}"
-    insertafter: "^[ ]{2}- INPUT$"
-    line: "  - DOCKER-USER"
-    state: present
-    owner: root
-    group: root
-    mode: "0600"
-    validate: /usr/bin/crowdsec-firewall-bouncer -c %s -t
-  no_log: true
-  notify:
-    - Host baseline restart CrowdSec firewall bouncer
-    - Host baseline restart Docker ingress ordering
+    - name: Read when the running CrowdSec bouncer started
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - show
+          - --timestamp=us+utc
+          - --property=ExecMainStartTimestamp
+          - --value
+          - crowdsec-firewall-bouncer.service
+      environment:
+        LC_ALL: C
+      register: host_baseline_crowdsec_bouncer_start
+      changed_when: false
+      check_mode: false
 
-# Las pruebas `-t` anteriores, incluida la de `validate:` de la tarea previa,
-# retiran CROWDSEC_CHAIN al salir. Los handlers solo se disparan si el fichero
-# cambio, de modo que en un host ya convergido nadie repone las cadenas y la
-# comprobacion de orden de DOCKER-USER que viene despues fallaria sobre un
-# cortafuegos que las pruebas acababan de desmontar. Se reconcilia aqui.
-- name: Read the live CrowdSec IPv4 enforcement after the bouncer tests
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/iptables
-      - -w
-      - -S
-  register: host_baseline_crowdsec_ipv4
-  changed_when: false
-  when: not ansible_check_mode
+    - name: Detect CrowdSec bouncer files the running instance never validated
+      ansible.builtin.set_fact:
+        host_baseline_crowdsec_bouncer_unvalidated: >-
+          {{
+            host_baseline_crowdsec_bouncer_start.stdout
+            is not match(host_baseline_crowdsec_bouncer_start_format)
+            or host_baseline_crowdsec_bouncer_files.results
+            | selectattr("item.required")
+            | rejectattr("stat.exists")
+            | list | length > 0
+            or host_baseline_crowdsec_bouncer_files.results
+            | selectattr("stat.exists")
+            | selectattr("item.type", "equalto", "file")
+            | rejectattr("stat.isreg")
+            | list | length > 0
+            or host_baseline_crowdsec_bouncer_files.results
+            | selectattr("stat.exists")
+            | selectattr("item.type", "equalto", "directory")
+            | rejectattr("stat.isdir")
+            | list | length > 0
+            or host_baseline_crowdsec_bouncer_files.results
+            | selectattr("stat.exists")
+            | map(attribute="stat.ctime")
+            | select("ge", host_baseline_crowdsec_bouncer_started_at)
+            | list | length > 0
+          }}
+      vars:
+        host_baseline_crowdsec_bouncer_start_format: >-
+          ^\w{3} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d[.]\d{6} UTC$
+        host_baseline_crowdsec_bouncer_started_at: >-
+          {{
+            (
+              (
+                host_baseline_crowdsec_bouncer_start.stdout[4:-4]
+                | to_datetime("%Y-%m-%d %H:%M:%S.%f")
+              )
+              - ("1970-01-01 00:00:00" | to_datetime)
+            ).total_seconds()
+          }}
 
-- name: Read the live CrowdSec IPv6 enforcement after the bouncer tests
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/ip6tables
-      - -w
-      - -S
-  register: host_baseline_crowdsec_ipv6
-  changed_when: false
-  when: not ansible_check_mode
+    - name: Validate the CrowdSec firewall-bouncer configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/crowdsec-firewall-bouncer
+          - -c
+          - "{{ host_baseline_crowdsec_bouncer_config }}"
+          - -t
+      register: host_baseline_crowdsec_bouncer_test
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: >-
+        host_security_package_install is not defined
+        or host_baseline_crowdsec_bouncer_unvalidated
 
-- name: Restore CrowdSec enforcement torn down by the bouncer tests
-  ansible.builtin.systemd_service:
-    name: crowdsec-firewall-bouncer
-    state: restarted
-  when:
-    - not ansible_check_mode
-    - >-
-      "CROWDSEC_CHAIN" not in host_baseline_crowdsec_ipv4.stdout
-      or "CROWDSEC_CHAIN" not in host_baseline_crowdsec_ipv6.stdout
+    # Exigir el resultado antes de seguir: sobre una configuracion que ya se
+    # sabe rota no se prueba el candidato, no se reescribe el fichero y no se
+    # notifica el reinicio del bouncer.
+    - name: Require a passing CrowdSec bouncer configuration test
+      ansible.builtin.assert:
+        that:
+          - >-
+            host_baseline_crowdsec_bouncer_test is skipped
+            or host_baseline_crowdsec_bouncer_test.rc == 0
+        fail_msg: >-
+          crowdsec-firewall-bouncer -t rejected the on-disk bouncer
+          configuration or binary. If it failed after the backend started, it
+          removed CROWDSEC_CHAIN: the bouncer is restarted next, but that
+          restart runs the same test (ExecStartPre) and fails too, so CrowdSec
+          stays down until the configuration is fixed. A configuration
+          rejected before the backend starts leaves the running bouncer
+          filtering, but its next start would fail: fix it before then.
+        quiet: true
 
-- name: Wait for CrowdSec IPv4 enforcement to return
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/iptables
-      - -w
-      - -S
-  register: host_baseline_crowdsec_ipv4_final
-  changed_when: false
-  retries: 12
-  delay: 5
-  until: "'CROWDSEC_CHAIN' in host_baseline_crowdsec_ipv4_final.stdout"
-  when: not ansible_check_mode
+    # Solo corre cuando falta el gancho, con la misma comparacion por linea
+    # exacta que construye el candidato: es entonces cuando la tarea
+    # siguiente reescribe el fichero. En un host convergido el candidato es el
+    # fichero sin cambios y probarlo solo desmontaria las cadenas.
+    - name: Parse the credential-bearing bouncer candidate in memory
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/crowdsec-firewall-bouncer
+          - -c
+          - /dev/stdin
+          - -t
+        stdin: "{{ host_baseline_crowdsec_bouncer_candidate }}"
+        stdin_add_newline: true
+      changed_when: false
+      no_log: true
+      when: >-
+        (host_baseline_crowdsec_bouncer_source.content | b64decode)
+        .splitlines()
+        | select("equalto", "  - DOCKER-USER")
+        | list | length != 1
 
-- name: Wait for CrowdSec IPv6 enforcement to return
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/ip6tables
-      - -w
-      - -S
-  register: host_baseline_crowdsec_ipv6_final
-  changed_when: false
-  retries: 12
-  delay: 5
-  until: "'CROWDSEC_CHAIN' in host_baseline_crowdsec_ipv6_final.stdout"
-  when: not ansible_check_mode
+    - name: Register DOCKER-USER with the CrowdSec firewall bouncer
+      ansible.builtin.lineinfile:
+        path: "{{ host_baseline_crowdsec_bouncer_config }}"
+        insertafter: "^[ ]{2}- INPUT$"
+        line: "  - DOCKER-USER"
+        state: present
+        owner: root
+        group: root
+        mode: "0600"
+        validate: /usr/bin/crowdsec-firewall-bouncer -c %s -t
+      no_log: true
+      notify:
+        - Host baseline restart CrowdSec firewall bouncer
+        - Host baseline restart Docker ingress ordering
+
+  # Los handlers solo se disparan si el fichero cambio, de modo que nadie mas
+  # repondria las cadenas que una prueba haya retirado y la comprobacion de
+  # orden de DOCKER-USER que viene despues fallaria sobre un cortafuegos
+  # desmontado. Se reconcilia aqui, haya corrido o no alguna prueba y haya
+  # pasado o no: si INPUT no salta a CROWDSEC_CHAIN en alguna familia, por
+  # cualquier causa, se reinicia el bouncer. Se exige la regla exacta, no el
+  # nombre de la cadena, por lo mismo que en host_security: una cadena
+  # vaciada o el salto de DOCKER-USER que repone el script de ordenacion
+  # contienen el nombre aunque INPUT ya no filtre. En un host convergido la
+  # regla esta y el reinicio se omite.
+  always:
+    - name: Read the live CrowdSec IPv4 enforcement after the bouncer tests
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/iptables
+          - -w
+          - -S
+      register: host_baseline_crowdsec_ipv4
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Read the live CrowdSec IPv6 enforcement after the bouncer tests
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/ip6tables
+          - -w
+          - -S
+      register: host_baseline_crowdsec_ipv6
+      changed_when: false
+      when: not ansible_check_mode
+
+    # `ignore_errors` con `register` solo para que un reinicio fallido se
+    # explique en la tarea siguiente, que detiene el apply igual que antes.
+    - name: Restore CrowdSec enforcement when its INPUT hook is missing
+      ansible.builtin.systemd_service:
+        name: crowdsec-firewall-bouncer
+        state: restarted
+      register: host_baseline_crowdsec_bouncer_restore
+      ignore_errors: true
+      when:
+        - not ansible_check_mode
+        - >-
+          "-A INPUT -j CROWDSEC_CHAIN"
+          not in host_baseline_crowdsec_ipv4.stdout_lines
+          or "-A INPUT -j CROWDSEC_CHAIN"
+          not in host_baseline_crowdsec_ipv6.stdout_lines
+
+    - name: Require the restored CrowdSec bouncer to start
+      ansible.builtin.assert:
+        that:
+          - host_baseline_crowdsec_bouncer_restore is not failed
+        fail_msg: >-
+          Restarting crowdsec-firewall-bouncer to restore its INPUT hook
+          failed, so CrowdSec is not filtering. systemd runs
+          crowdsec-firewall-bouncer -t on the on-disk configuration before
+          every start (ExecStartPre). If that configuration failed the bouncer
+          test of this apply after the backend started, the test removed
+          CROWDSEC_CHAIN and every start fails the same way: CrowdSec stays
+          down until the configuration is fixed, and the packaged unit keeps
+          retrying the start (Restart=always).
+        quiet: true
+
+    - name: Wait for CrowdSec IPv4 enforcement to return
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/iptables
+          - -w
+          - -S
+      register: host_baseline_crowdsec_ipv4_final
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_baseline_crowdsec_ipv4_final.stdout_lines
+      when: not ansible_check_mode
+
+    - name: Wait for CrowdSec IPv6 enforcement to return
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/ip6tables
+          - -w
+          - -S
+      register: host_baseline_crowdsec_ipv6_final
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_baseline_crowdsec_ipv6_final.stdout_lines
+      when: not ansible_check_mode
 
 - name: Install the CrowdSec and Docker ordering helper
   ansible.builtin.template:
@@ -251,5 +436,48 @@
     fail_msg: >-
       CrowdSec must be the first DOCKER-USER jump and DOCKERSWARM-INGRESS the
       second for both IPv4 and IPv6.
+    quiet: true
+  when: not ansible_check_mode
+
+# Los handlers de flush_handlers pueden haber reiniciado el bouncer despues
+# del `always:` de arriba, y la comprobacion de orden no prueba que INPUT
+# siga filtrando: el script de ordenacion repone el salto de DOCKER-USER con
+# que CROWDSEC_CHAIN exista, y el bouncer, si no puede crear la cadena o
+# insertar el salto de INPUT, solo lo registra y sigue arrancando (setupChain
+# en pkg/iptables/iptables_context.go). systemd no da el reinicio por
+# terminado hasta que el bouncer avisa de que esta listo, despues de
+# backend.Init (cmd/root.go), asi que no hace falta esperar.
+- name: Read the live IPv4 ruleset after the ordering handlers
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv4_ordered
+  changed_when: false
+  check_mode: false
+
+- name: Read the live IPv6 ruleset after the ordering handlers
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip6tables
+      - -w
+      - -S
+  register: host_baseline_crowdsec_ipv6_ordered
+  changed_when: false
+  check_mode: false
+
+- name: Verify CrowdSec still filters INPUT after the ordering handlers
+  ansible.builtin.assert:
+    that:
+      - >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_baseline_crowdsec_ipv4_ordered.stdout_lines
+      - >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_baseline_crowdsec_ipv6_ordered.stdout_lines
+    fail_msg: >-
+      CrowdSec is not filtering: INPUT does not jump to CROWDSEC_CHAIN in the
+      live iptables or ip6tables ruleset after the ordering handlers ran.
     quiet: true
   when: not ansible_check_mode

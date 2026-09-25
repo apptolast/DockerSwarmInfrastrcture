@@ -218,9 +218,7 @@ Git. La salida es manual:
 6. Aplicar Ansible mediante `deploy-ansible.sh`.
 7. Repetir Ansible y exigir `changed=0` (si un servicio activado sigue en
    `updating`, el guard espera; ver «Apply rechazado por un update en
-   curso»). `host-baseline` tiene excepciones conocidas: su README
-   (`ansible/roles/host_baseline/README.md`) nombra las tareas que siguen
-   informando `changed` en un host convergido.
+   curso»).
 8. Validar firewall, servicios, TLS, DNS, logs, backups y unidades fallidas.
 9. Registrar aceptación y rollback.
 

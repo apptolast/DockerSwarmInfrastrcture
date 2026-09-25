@@ -1,4 +1,4 @@
-"""Run one reviewed Ansible task against synthetic facts, never Docker.
+"""Run reviewed Ansible tasks against synthetic facts, never Docker.
 
 The task is copied unchanged from its role task file into a disposable
 playbook, so the Jinja expression under test is exactly the one production
@@ -49,21 +49,30 @@ def run_task_definition(
     variables: dict[str, Any],
 ) -> subprocess.CompletedProcess[str]:
     """Run an already loaded task, still refusing side effects."""
-    if len(SIDE_EFFECT_FREE_MODULES.intersection(task)) != 1:
-        raise AssertionError(f"{task.get('name')!r} is not a side-effect-free task")
+    return run_task_definitions([task], variables)
+
+
+def run_task_definitions(
+    tasks: list[dict[str, Any]],
+    variables: dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    """Run already loaded tasks in one play, still refusing side effects."""
+    for task in tasks:
+        if len(SIDE_EFFECT_FREE_MODULES.intersection(task)) != 1:
+            raise AssertionError(f"{task.get('name')!r} is not a side-effect-free task")
     with tempfile.TemporaryDirectory() as temporary:
         playbook = Path(temporary) / "task.yml"
         playbook.write_text(
             yaml.safe_dump(
                 [
                     {
-                        "name": "Exercise one reviewed task",
+                        "name": "Exercise reviewed tasks",
                         "hosts": "localhost",
                         "connection": "local",
                         "gather_facts": False,
                         "become": False,
                         "vars": variables,
-                        "tasks": [task],
+                        "tasks": tasks,
                     }
                 ],
                 sort_keys=False,

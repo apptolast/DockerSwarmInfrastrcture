@@ -172,6 +172,115 @@ anything and UFW is never stopped. When a default policy or `before*.rules`
 really has to change, UFW is still stopped and started, because `ufw` applies
 those changes no other way.
 
+### No changed task on a converged host
+
+Three more actions reported a change on every run, or tore something down,
+even when nothing differed. Each one now reads the current state first:
+
+- `ufw logging low` rewrites `/etc/ufw/ufw.conf`, flushes and refills UFW's
+  logging chains and always answers "Logging enabled" (`set_loglevel()` in
+  `ufw/backend.py`). `host_security` reads `/etc/ufw/ufw.conf` with `slurp`
+  and skips the command only when the file sets `LOGLEVEL=` at least once and
+  every such line is `low` or `"low"`. Any other file, including a missing,
+  upper-case, single-quoted or commented level or a second line with another
+  level, still gets `ufw logging low`: `set_default()` rewrites every
+  `^LOGLEVEL=` line and appends one when there is none, so one run converges
+  it. It rewrites duplicates rather than removing them, which is why several
+  `LOGLEVEL=low` lines count as converged. ufw also reads the key
+  case-insensitively (`_get_defaults()`), but `set_default()` only rewrites
+  `LOGLEVEL=`, so a key spelled differently, such as `loglevel=`, cannot be
+  converged: the apply stops before it touches UFW until someone removes
+  that line.
+- The CrowdSec repository key was downloaded into a new temporary directory
+  under `/etc/apt/keyrings` on every run. `host_security` now fetches the
+  published key into memory with `ansible.builtin.uri`, which never reports a
+  change for a `GET` without `dest`, and reads both it and the installed
+  keyring with `gpg --show-keys`. The published key must have exactly one
+  primary key with the reviewed fingerprint, or the apply stops. The download
+  to disk, fingerprint check and atomic install are skipped only when the
+  installed keyring is a `root:root` `0644` regular file whose only primary
+  key has the reviewed fingerprint and whose gpg records, including subkeys
+  and their validity and expiry fields, match the published key record for
+  record. A revocation, a new signing subkey or a new expiry published under
+  the same primary key therefore reaches the host on the next apply, as it
+  did when every apply reinstalled the key. Any other keyring, including a
+  missing one, goes through the same download, fingerprint check and atomic
+  install as before. Anything other than a regular file at that path stops
+  the apply. Like the old download, this needs the key URL to be reachable
+  on every apply.
+- `crowdsec-firewall-bouncer -t` is not a dry run. It starts the real
+  iptables backend, destroys the live ban ipsets and removes `CROWDSEC_CHAIN`
+  when it exits (`cmd/root.go` and `pkg/iptables` in cs-firewall-bouncer
+  v0.0.34), so the running bouncer stays active but stops filtering. The
+  running daemon never rereads its configuration (`HandleSignals()` only
+  handles `SIGTERM` and `SIGINT`), and systemd validates it with `-t` before
+  every start (`ExecStartPre`). So `host_security` stats the configuration,
+  its `.local` override (merged by `MergedConfig()` in `pkg/cfg/config.go`),
+  the directory that holds them and the binary, and reads the running
+  instance's `ExecMainStartTimestamp`. It runs `-t` only when this apply
+  installed or upgraded a package, or when it cannot prove the running
+  bouncer already validated those paths: one of them has a ctime at or after
+  that start, a required one is missing, one is not a regular file (or, for
+  the directory, not a directory), or the start cannot be read. A file
+  edited, or only re-owned or chmodded, since the bouncer started is
+  therefore tested before any restart in the apply can load it. Creating,
+  removing or renaming an entry changes the directory's ctime, so a `.local`
+  removed since the start, which leaves no file to stat, is caught too.
+  `host_baseline` does not repeat a test `host_security` ran in the same
+  play: a passed test removes the chains, the restore restarts the bouncer,
+  and every path is then older than the running instance. It runs `-t` when
+  `host_security` did not run in the play, because nothing then proves that
+  the package did not change, or when a path is still newer than the running
+  bouncer. The in-memory candidate and the `lineinfile` `validate` run only
+  when the `DOCKER-USER` hook is missing.
+
+  The check has two known gaps. It does not stat the certificate, key or CA
+  files that `cert_path`, `key_path` or `ca_cert_path` may name; the
+  production configuration authenticates with an API key and names none. It
+  also compares ctimes with a wall-clock timestamp, so a clock stepped back
+  past the bouncer's start can hide a later edit until the next restart.
+
+After the bouncer tests, whether or not they ran, both roles read the live
+IPv4 and IPv6 rulesets. If either lacks the exact rule the bouncer inserts,
+`-A INPUT -j CROWDSEC_CHAIN`, for any reason, they restart the bouncer, wait
+for the rule to return and then require it. Looking for the chain name alone
+is not enough: a flushed `CROWDSEC_CHAIN` that could not be deleted, or the
+`DOCKER-USER` jump that the ordering helper puts back, contains the name
+while INPUT filters nothing. On a converged host the rule is present and
+nothing is restarted. `host_baseline` requires the rule once more after its
+handlers, which may restart the bouncer again: the `DOCKER-USER` order check
+would pass without it, because the ordering helper re-inserts that jump
+whenever the chain exists, and the bouncer only logs a failed INPUT jump.
+
+A failed `-t` does not stop the apply on the spot. `cmd/root.go` starts the
+backend and defers its shutdown before it reads the API settings, so a test
+that fails there, for example on an empty `api_key`, has already removed the
+chains. `host_security` records the result, restarts the bouncer if its
+INPUT hook is gone, and only then requires the test to have passed. In
+`host_baseline`, every bouncer test, including the one on the file on disk,
+runs inside one block whose `always:` does the same check and restart. What
+the restart can do depends on what failed:
+
+- A configuration rejected before the backend starts, such as invalid YAML
+  or a missing `mode`, leaves the chains untouched. The running bouncer
+  keeps filtering with the configuration it loaded at start, and the apply
+  stops on the recorded result.
+- When the in-memory candidate or the `lineinfile` `validate` copy fails,
+  the file on disk is still the one the running bouncer loaded. The restart
+  restores the chains before the apply stops.
+- When the file on disk fails after the backend started, the restart fails
+  too, because systemd runs the same `-t` on the same file before every
+  start (`ExecStartPre`). The apply stops at "Require the restored CrowdSec
+  bouncer to start", and CrowdSec stays down until the configuration is
+  fixed. The packaged unit sets `Restart=always` and `RestartSec=10`, so
+  systemd keeps retrying the start and the bouncer comes back once the file
+  passes; run the apply again to verify it.
+
+On an apply that installs or upgrades a package, edits the bouncer files or
+their directory, or adds the `DOCKER-USER` hook, the test still runs and
+still leaves CrowdSec without filtering for the few seconds until the
+bouncer is restarted.
+
 ## First production run
 
 From the repository root, validate before any privileged execution:
@@ -194,16 +303,8 @@ keep an authenticated second SSH session and the Netcup console open, then run:
   --ask-become-pass
 ```
 
-Run it a second time. On a converged host only these tasks still report
-`changed`, because their tools always say so:
-
-- `Enable bounded UFW logging`: `ufw logging` always answers "Logging
-  enabled" and only rebuilds UFW's logging chains; nothing is opened;
-- the CrowdSec firewall bouncer `-t` checks and restarts in `host_security`
-  and `crowdsec-docker.yml`, which leave a gap of a few seconds without
-  CrowdSec filtering.
-
-Any other changed task on the second run is drift to investigate.
+Run it a second time. On a converged host the second run must report
+`changed=0`. Any changed task on the second run is drift to investigate.
 
 Relevant primary documentation:
 

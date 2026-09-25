@@ -259,8 +259,125 @@
     group: root
     mode: "0755"
 
-- name: Authenticate and install the CrowdSec repository key
+# Cada apply creaba un directorio temporal en /etc/apt/keyrings, volvia a
+# descargar la clave con `force: true` y borraba el directorio: tres tareas
+# `changed` aunque el keyring no cambiara. Ahora se lee sin efectos el keyring
+# que apt usa (`signed-by`) y la clave publicada, que se descarga solo en
+# memoria con `uri` (un GET sin `dest` nunca informa `changed`). La descarga
+# a disco, la autenticacion y la instalacion solo se omiten cuando el keyring
+# ya es un fichero regular root:root 0644 con exactamente una clave primaria,
+# la de la huella revisada, en el registro `fpr` que sigue a `pub`, y cuando
+# gpg lo describe registro a registro igual que a la clave publicada: mismas
+# subclaves, mismos uid y mismos campos de validez y caducidad. Asi una
+# revocacion, una subclave de firma nueva o una caducidad nueva publicada bajo
+# la misma clave primaria llegan al host en el siguiente apply, como antes.
+# Un keyring ausente, que gpg no lee, con otra clave, con varias, con otros
+# permisos o distinto de la clave publicada vuelve a la instalacion
+# autenticada; nunca se da por bueno sin comprobar la huella. Si en esa ruta
+# hay otra cosa (un enlace, un directorio), el apply se detiene sin tocarla.
+# `gpg --show-keys` solo muestra la clave: no la importa en ningun anillo.
+- name: Inspect the installed CrowdSec repository keyring
+  ansible.builtin.stat:
+    path: "{{ host_security_crowdsec_keyring }}"
+    follow: false
+  register: host_security_crowdsec_keyring_file
+
+- name: Require the CrowdSec keyring to be absent or a regular file
+  ansible.builtin.assert:
+    that:
+      - >-
+        not host_security_crowdsec_keyring_file.stat.exists
+        or host_security_crowdsec_keyring_file.stat.isreg
+    fail_msg: >-
+      {{ host_security_crowdsec_keyring }} exists but is not a regular file.
+      The installed CrowdSec key cannot be proven, so it is left untouched.
+    quiet: true
+
+- name: Read the installed CrowdSec keyring identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/gpg
+      - --batch
+      - --show-keys
+      - --with-colons
+      - "{{ host_security_crowdsec_keyring }}"
+  register: host_security_crowdsec_installed_key_identity
+  changed_when: false
+  failed_when: false
+  when: host_security_crowdsec_keyring_file.stat.isreg | default(false)
+
+- name: Fetch the published CrowdSec repository key in memory
+  ansible.builtin.uri:
+    url: "{{ host_security_crowdsec_repository_key_url }}"
+    method: GET
+    return_content: true
+    status_code: 200
+  register: host_security_crowdsec_published_key
   when: not ansible_check_mode
+
+- name: Read the published CrowdSec key identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/gpg
+      - --batch
+      - --show-keys
+      - --with-colons
+    stdin: "{{ host_security_crowdsec_published_key.content }}"
+  register: host_security_crowdsec_published_key_identity
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Authenticate the published CrowdSec key
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_published_key_identity.stdout_lines
+        | select("match", "^pub:")
+        | list | length == 1
+      - >-
+        (
+          host_security_crowdsec_published_key_identity.stdout_lines
+          | select("match", "^fpr:")
+          | first
+        ).split(":")[9]
+        == host_security_crowdsec_repository_key_fingerprint
+    fail_msg: >-
+      The published CrowdSec key differs from the reviewed fingerprint.
+      The installed keyring was not modified.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Recognize an already authenticated CrowdSec keyring
+  ansible.builtin.set_fact:
+    host_security_crowdsec_keyring_current: >-
+      {{
+        host_security_crowdsec_keyring_file.stat.isreg | default(false)
+        and host_security_crowdsec_keyring_file.stat.uid | default(-1) == 0
+        and host_security_crowdsec_keyring_file.stat.gid | default(-1) == 0
+        and host_security_crowdsec_keyring_file.stat.mode | default("")
+        == "0644"
+        and host_security_crowdsec_installed_key_identity.rc | default(1) == 0
+        and host_security_crowdsec_installed_key_identity.stdout
+        | default("")
+        | regex_findall("^pub:", multiline=true)
+        | length == 1
+        and host_security_crowdsec_installed_key_identity.stdout
+        | default("")
+        is search(
+          "^pub:[^\n]*\nfpr:(?:[^:]*:){8}"
+          ~ host_security_crowdsec_repository_key_fingerprint ~ ":",
+          multiline=true
+        )
+        and host_security_crowdsec_installed_key_identity.stdout_lines
+        | default([])
+        == host_security_crowdsec_published_key_identity.stdout_lines
+        | default(none)
+      }}
+
+- name: Authenticate and install the CrowdSec repository key
+  when:
+    - not ansible_check_mode
+    - not host_security_crowdsec_keyring_current
   block:
     - name: Allocate private CrowdSec key staging
       ansible.builtin.tempfile:
@@ -362,6 +479,7 @@
     allow_downgrade: false
     update_cache: >-
       {{ host_security_crowdsec_repository.changed | default(false) }}
+  register: host_security_package_install
   when: not ansible_check_mode
 
 - name: Read exact installed host-security package versions
@@ -923,6 +1041,52 @@
       current UFW policy cannot be proven, so UFW is left untouched.
     quiet: true
 
+# `ufw logging` reescribe LOGLEVEL en /etc/ufw/ufw.conf, regenera
+# user.rules/user6.rules y vacia y rellena las cadenas de logging de UFW
+# aunque el nivel no cambie, y siempre responde "Logging enabled"
+# (ufw/backend.py, set_loglevel): la tarea informaba `changed` en cada apply.
+# No toca las politicas ni para el firewall. Se lee sin efectos el LOGLEVEL
+# persistido, el que UFW vuelve a aplicar a sus cadenas en cada arranque, y
+# `ufw logging low` solo se omite cuando el fichero declara LOGLEVEL al menos
+# una vez y todas valen `low` o `"low"`. En cualquier otro caso (ausente,
+# otro nivel, `LOW`, comillas simples, un comentario detras, vacio) se
+# ejecuta, porque `set_default` reescribe cada linea `^LOGLEVEL=` y anade una
+# si no hay ninguna (ufw/backend.py). No elimina duplicados, de ahi que varias
+# lineas `LOGLEVEL=low` cuenten como convergidas. UFW lee la clave sin
+# distinguir mayusculas y se queda con la ultima, pero `set_default` solo
+# reescribe `LOGLEVEL=` en mayusculas: una clave escrita de otra forma
+# (`loglevel=`) no se puede converger y el apply se detiene antes de tocar UFW.
+- name: Read the persisted UFW log level without touching UFW
+  ansible.builtin.slurp:
+    src: /etc/ufw/ufw.conf
+  register: host_security_ufw_conf_file
+
+- name: Parse the persisted UFW log level
+  ansible.builtin.set_fact:
+    host_security_ufw_loglevel_lines: >-
+      {{
+        host_security_ufw_conf_file.content
+        | b64decode
+        | regex_findall(
+            "^(loglevel)=(.*)$",
+            multiline=true,
+            ignorecase=true
+          )
+      }}
+
+- name: Require a UFW log-level key that ufw logging can rewrite
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_ufw_loglevel_lines | map("first")
+        | reject("equalto", "LOGLEVEL") | list | length == 0
+    fail_msg: >-
+      /etc/ufw/ufw.conf sets the log level with a key spelled other than
+      LOGLEVEL. ufw reads that key too, but `ufw logging` only rewrites
+      LOGLEVEL= lines, so the UFW log level cannot be proven or converged.
+      UFW is left untouched.
+    quiet: true
+
 - name: Set fail-closed UFW defaults
   ansible.builtin.command:
     argv:
@@ -1019,10 +1183,11 @@
       - /usr/sbin/ufw
       - logging
       - low
-  register: host_security_ufw_logging
-  changed_when: >-
-    "Logging enabled" in host_security_ufw_logging.stdout
-    or "Logging changed" in host_security_ufw_logging.stdout
+  when: >-
+    host_security_ufw_loglevel_lines | length == 0
+    or host_security_ufw_loglevel_lines | map("last")
+    | reject("in", ["low", '"low"']) | list | length > 0
+  changed_when: true
 
 - name: Enable the fail-closed firewall
   ansible.builtin.command:
@@ -1134,6 +1299,123 @@
   no_log: true
   when: not ansible_check_mode
 
+# `-t` esta documentado como "test config and exit", pero el bouncer
+# inicializa el backend real, borra los ipsets de bloqueo y al salir retira
+# las cadenas (cmd/root.go y pkg/iptables de cs-firewall-bouncer v0.0.34).
+# Las cadenas de iptables son globales, no por proceso, de modo que la
+# instancia de prueba desmonta las de la instancia viva y nadie las vuelve a
+# poner: el servicio sigue `active` mientras CROWDSEC_CHAIN ha desaparecido de
+# ambas familias y el host deja de filtrar sin que nada lo señale. Ocurrio el
+# 2026-07-28 y dejo la maquina ~20 h sin bloqueo alguno de CrowdSec. Por eso
+# la prueba solo corre cuando hay algo que la instancia viva no ha validado:
+# - este apply ha instalado o actualizado paquetes (el postinst del paquete
+#   puede reescribir la configuracion), o
+# - la configuracion, su `.local` (el bouncer fusiona ambas,
+#   pkg/cfg/config.go), su directorio o el binario tienen un ctime igual o
+#   posterior al arranque de la instancia viva, falta alguno de los
+#   obligatorios, no son del tipo esperado (fichero regular o directorio), o
+#   ese arranque no se puede leer.
+# El daemon no relee su configuracion (HandleSignals solo atiende SIGTERM y
+# SIGINT) y systemd la valida con `-t` antes de cada arranque (ExecStartPre),
+# asi que lo que no ha cambiado desde el arranque ya esta validado. Un fichero
+# tocado despues, aunque solo cambien su dueño o sus permisos, se prueba aqui
+# antes de que un reinicio posterior de este apply (la restauracion de mas
+# abajo o el handler de host_baseline) lo cargue. El directorio cubre un
+# `.local` borrado, que ya no deja fichero que comparar: crear, borrar o
+# renombrar una entrada cambia el ctime del directorio. No cubre los
+# certificados que la configuracion nombre en cert_path, key_path o
+# ca_cert_path, ni un reloj que retroceda por debajo de ese arranque. En un
+# host convergido no se ejecuta y no desmonta nada.
+- name: Inspect the CrowdSec bouncer files the running instance loaded
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - path: "{{ host_security_crowdsec_bouncer_config }}"
+      type: file
+      required: true
+    - path: "{{ host_security_crowdsec_bouncer_config }}.local"
+      type: file
+      required: false
+    - path: "{{ host_security_crowdsec_bouncer_config | dirname }}"
+      type: directory
+      required: true
+    - path: /usr/bin/crowdsec-firewall-bouncer
+      type: file
+      required: true
+  loop_control:
+    label: "{{ item.path }}"
+  register: host_security_crowdsec_bouncer_files
+
+- name: Read when the running CrowdSec bouncer started
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - --timestamp=us+utc
+      - --property=ExecMainStartTimestamp
+      - --value
+      - crowdsec-firewall-bouncer.service
+  environment:
+    LC_ALL: C
+  register: host_security_crowdsec_bouncer_start
+  changed_when: false
+  check_mode: false
+
+- name: Detect CrowdSec bouncer files the running instance never validated
+  ansible.builtin.set_fact:
+    host_security_crowdsec_bouncer_unvalidated: >-
+      {{
+        host_security_crowdsec_bouncer_start.stdout
+        is not match(host_security_crowdsec_bouncer_start_format)
+        or host_security_crowdsec_bouncer_files.results
+        | selectattr("item.required")
+        | rejectattr("stat.exists")
+        | list | length > 0
+        or host_security_crowdsec_bouncer_files.results
+        | selectattr("stat.exists")
+        | selectattr("item.type", "equalto", "file")
+        | rejectattr("stat.isreg")
+        | list | length > 0
+        or host_security_crowdsec_bouncer_files.results
+        | selectattr("stat.exists")
+        | selectattr("item.type", "equalto", "directory")
+        | rejectattr("stat.isdir")
+        | list | length > 0
+        or host_security_crowdsec_bouncer_files.results
+        | selectattr("stat.exists")
+        | map(attribute="stat.ctime")
+        | select("ge", host_security_crowdsec_bouncer_started_at)
+        | list | length > 0
+      }}
+  vars:
+    host_security_crowdsec_bouncer_start_format: >-
+      ^\w{3} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d[.]\d{6} UTC$
+    host_security_crowdsec_bouncer_started_at: >-
+      {{
+        (
+          (
+            host_security_crowdsec_bouncer_start.stdout[4:-4]
+            | to_datetime("%Y-%m-%d %H:%M:%S.%f")
+          )
+          - ("1970-01-01 00:00:00" | to_datetime)
+        ).total_seconds()
+      }}
+
+# `failed_when: false`: un `-t` que falla despues de arrancar el backend ya ha
+# retirado las cadenas (cmd/root.go ejecuta backend.Init y aplaza su limpieza
+# antes de ConfigReader y bouncer.Init, que rechazan por ejemplo un api_key
+# vacio), y parar aqui las dejaria retiradas sin intentar reponerlas. Las
+# tareas siguientes reinician el bouncer si falta su gancho de INPUT, y el
+# resultado se exige al final, en "Require a passing CrowdSec bouncer test".
+# Ese reinicio no siempre repone las cadenas: systemd ejecuta el mismo `-t`
+# sobre este mismo fichero antes de cada arranque (ExecStartPre), de modo que
+# si el fichero fallo despues de arrancar el backend el reinicio falla igual,
+# CrowdSec queda sin filtrar hasta que se corrija y el apply se detiene en
+# "Require the restored CrowdSec bouncer to start". Una configuracion que se
+# rechaza antes de arrancar el backend (YAML invalido, sin `mode`) deja las
+# cadenas intactas.
 - name: Validate the credential-bearing CrowdSec bouncer
   ansible.builtin.command:
     argv:
@@ -1141,19 +1423,26 @@
       - -c
       - "{{ host_security_crowdsec_bouncer_config }}"
       - -t
+  register: host_security_crowdsec_bouncer_test
   changed_when: false
+  failed_when: false
   check_mode: false
   no_log: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - >-
+      host_security_package_install is changed
+      or host_security_crowdsec_bouncer_unvalidated
 
-# `-t` esta documentado como "test config and exit", pero el bouncer
-# inicializa el backend real y al salir retira las cadenas. Las cadenas de
-# iptables son globales, no por proceso, de modo que la instancia de prueba
-# desmonta las de la instancia viva y nadie las vuelve a poner: el servicio
-# sigue `active` mientras CROWDSEC_CHAIN ha desaparecido de ambas familias y
-# el host deja de filtrar sin que nada lo señale. Ocurrio el 2026-07-28 y
-# dejo la maquina ~20 h sin bloqueo alguno de CrowdSec. Se reconcilia aqui,
-# justo despues de la prueba, en lugar de confiar en que no pase.
+# Red de seguridad, haya corrido o no la prueba anterior y haya pasado o no:
+# si INPUT no salta a CROWDSEC_CHAIN en alguna de las dos familias, por la
+# prueba o por cualquier otra causa, se reinicia el bouncer y se espera a que
+# vuelva. Se exige la regla exacta que inserta el bouncer (setupChain en
+# pkg/iptables/iptables_context.go), no solo el nombre de la cadena: una
+# `-N CROWDSEC_CHAIN` vaciada que no se pudo borrar, o el salto de
+# DOCKER-USER que repone el script de ordenacion de host_baseline, contienen
+# el nombre aunque INPUT ya no filtre. En un host convergido la regla esta en
+# ambas familias y el reinicio se omite.
 - name: Read the live CrowdSec IPv4 firewall enforcement
   ansible.builtin.command:
     argv:
@@ -1176,15 +1465,35 @@
   check_mode: false
   when: not ansible_check_mode
 
-- name: Restore CrowdSec enforcement torn down by the configuration test
+# `ignore_errors` con `register` solo para que un reinicio fallido se explique
+# en la tarea siguiente, que detiene el apply igual que antes.
+- name: Restore CrowdSec enforcement when its INPUT hook is missing
   ansible.builtin.systemd_service:
     name: crowdsec-firewall-bouncer
     state: restarted
+  register: host_security_crowdsec_bouncer_restore
+  ignore_errors: true
   when:
     - not ansible_check_mode
     - >-
-      "CROWDSEC_CHAIN" not in host_security_crowdsec_chain_ipv4.stdout
-      or "CROWDSEC_CHAIN" not in host_security_crowdsec_chain_ipv6.stdout
+      "-A INPUT -j CROWDSEC_CHAIN"
+      not in host_security_crowdsec_chain_ipv4.stdout_lines
+      or "-A INPUT -j CROWDSEC_CHAIN"
+      not in host_security_crowdsec_chain_ipv6.stdout_lines
+
+- name: Require the restored CrowdSec bouncer to start
+  ansible.builtin.assert:
+    that:
+      - host_security_crowdsec_bouncer_restore is not failed
+    fail_msg: >-
+      Restarting crowdsec-firewall-bouncer to restore its INPUT hook failed,
+      so CrowdSec is not filtering. systemd runs crowdsec-firewall-bouncer -t
+      on the on-disk configuration before every start (ExecStartPre). If that
+      configuration failed the bouncer test of this apply after the backend
+      started, the test removed CROWDSEC_CHAIN and every start fails the same
+      way: CrowdSec stays down until the configuration is fixed, and the
+      packaged unit keeps retrying the start (Restart=always).
+    quiet: true
 
 - name: Re-read the live CrowdSec IPv4 firewall enforcement
   ansible.builtin.command:
@@ -1197,7 +1506,9 @@
   check_mode: false
   retries: 12
   delay: 5
-  until: "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv4_final.stdout"
+  until: >-
+    "-A INPUT -j CROWDSEC_CHAIN"
+    in host_security_crowdsec_chain_ipv4_final.stdout_lines
   when: not ansible_check_mode
 
 - name: Re-read the live CrowdSec IPv6 firewall enforcement
@@ -1211,19 +1522,38 @@
   check_mode: false
   retries: 12
   delay: 5
-  until: "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv6_final.stdout"
+  until: >-
+    "-A INPUT -j CROWDSEC_CHAIN"
+    in host_security_crowdsec_chain_ipv6_final.stdout_lines
   when: not ansible_check_mode
 
 - name: Verify CrowdSec is enforcing on both address families
   ansible.builtin.assert:
     that:
-      - "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv4_final.stdout"
-      - "'CROWDSEC_CHAIN' in host_security_crowdsec_chain_ipv6_final.stdout"
+      - >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_security_crowdsec_chain_ipv4_final.stdout_lines
+      - >-
+        "-A INPUT -j CROWDSEC_CHAIN"
+        in host_security_crowdsec_chain_ipv6_final.stdout_lines
     fail_msg: >-
-      CrowdSec is not filtering: CROWDSEC_CHAIN is absent from the live
-      iptables or ip6tables ruleset even after restarting the bouncer.
+      CrowdSec is not filtering: INPUT does not jump to CROWDSEC_CHAIN in the
+      live iptables or ip6tables ruleset even after restarting the bouncer.
     quiet: true
   when: not ansible_check_mode
+
+- name: Require a passing CrowdSec bouncer test
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_bouncer_test is skipped
+        or host_security_crowdsec_bouncer_test.rc == 0
+    fail_msg: >-
+      crowdsec-firewall-bouncer -t rejected the bouncer configuration or
+      binary. INPUT jumps to CROWDSEC_CHAIN in both families (checked
+      above), but the bouncer's next start runs the same test and would fail:
+      fix the configuration before it.
+    quiet: true
 
 - name: Verify Fail2ban and its SSH jail
   ansible.builtin.command:
