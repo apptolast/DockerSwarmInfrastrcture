@@ -142,9 +142,8 @@ Nunca aplica `sysctl --system`, que solo simula con `--dry-run` para
 comprobar el valor de arranque: aplicarlo recargaría también ficheros que
 este repositorio no gestiona, como `/etc/sysctl.d/99-hardening.conf`, que
 pone `net.ipv6.conf.all.forwarding = 0` mientras el host corre con 1. Las
-claves no se añaden a `host_baseline_sysctl` porque aplicar `host-baseline`
-hoy aplicaría también el snapshot de paquetes pendiente (ver
-`DEPLOYMENT_STATUS.md`).
+claves no están en `host_baseline_sysctl` porque solo las necesita el
+laboratorio y se retiran con él (ver «Verificación»).
 
 ### Binarios
 

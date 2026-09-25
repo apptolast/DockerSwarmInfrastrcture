@@ -232,6 +232,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `docs/DEPLOYMENT_STATUS.md` registra los applies de `ax-lab` y
+  `host-baseline` del 2026-09-25: el paso al snapshot `20260924T000000Z`
+  con 19 paquetes, `fs.suid_dumpable=0` y `kernel.core_pattern=|/bin/false`
+  con Apport deshabilitado, el firewall y `sshd` sin cambios efectivos, y la
+  repetición de cada playbook. Los límites de inotify salen del estado
+  temporal porque ya persisten. `docs/AX.md` deja de citar el snapshot
+  pendiente como razón para no gestionar esas claves en `host-baseline`.
+
 - `docs/DEPLOYMENT_STATUS.md` registra los applies del 2026-09-25 (aparcado
   de Minecraft y OpenClaw, runners de n8n y memoria de `portfolio-alberto`),
   los SHA-256 de los archivos en frío, las unidades systemd del host que el
