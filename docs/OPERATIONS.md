@@ -244,6 +244,112 @@ ningún push a Docker Hub puede iniciarlo por sí solo.
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.
 
+## Aparcar un servicio
+
+`platform_parked_workloads` (`config/platform.yml`) detiene servicios del
+stack `workloads` sin borrar nada: se renderizan con `replicas: 0` y conservan
+imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes y ruta del
+edge, pero liberan su presupuesto de capacidad. La lista va ordenada, sin
+duplicados, se escribe `[]` cuando no queda ningún servicio aparcado (una
+clave vacía es `null` y todas las capas la rechazan) y solo admite
+`minecraft` y `openclaw`, los dos servicios que ningún otro necesita para
+funcionar: `minecraft-stats` solo lee el mundo de Minecraft en modo lectura y
+sigue sirviendo las últimas estadísticas. Aparcar una base de datos dejaría a
+sus consumidores sin backend, así que los validadores lo rechazan.
+
+Qué cambia en cada capa mientras un servicio está aparcado:
+
+- `workloads`: la convergencia exige `0/0` y ninguna tarea viva del servicio;
+  las comprobaciones de salud recorren solo los servicios en marcha y el
+  smoke de OpenClaw espera el `503` del edge. El helper de publicación de n8n
+  (`migration/scripts/manage_n8n_workflows.py`) acepta `0/0` solo para los
+  servicios aparcados.
+- `edge` (solo OpenClaw): el router y su certificado siguen, pero el backend
+  no tiene servidores ni sonda y Traefik responde `503 no available server`
+  sin registrar nada. Con la sonda activa y sin tarea, Traefik registra un
+  WARN `Health check failed.` en cada intervalo de 15 s (ver
+  [EDGE.md](EDGE.md)).
+- Minecraft conserva su compuerta pública y UFW sigue admitiendo el 25565.
+  Con la tarea en marcha, dockerd reserva ese puerto (escucha en `0.0.0.0`) y
+  lo redirige al contenedor. Aparcado no hay reserva ni redirección y el
+  tráfico llega al propio host: el apply de `workloads` falla si algún
+  proceso escucha entonces en el 25565, y sin proceso el kernel rechaza la
+  conexión. Cerrar el puerto en el firewall mientras Minecraft está aparcado
+  exigiría hacer la lista efectiva de puertos consciente del aparcado y
+  aplicar `platform` y `host-baseline`, que hoy aplicarían además el snapshot
+  de paquetes pendiente; queda como cambio aparte.
+- `observability`: no se renderizan la sonda TCP de Minecraft ni la sonda
+  HTTPS pública de OpenClaw; la regla `MinecraftEndpointDown` sigue cargada
+  sin series.
+- `backup`: copia los datos en reposo, sin detener nada ni usar RCON (ver
+  [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md), «Servicios aparcados»).
+- Capacidad: el servicio deja de contar en `config/capacity.yml` y
+  `config/capacity-profiles.yml` (ver [CAPACITY.md](CAPACITY.md)), así que
+  su RAM y su CPU quedan libres también en el contrato. Desaparcarlo exige
+  devolver su reserva y su límite a esos dos ficheros en el mismo cambio, y
+  el validador comprueba que el plan sigue cabiendo en el host.
+
+Para aparcar o desaparcar se edita la lista y se sigue la secuencia de
+cambio. El orden de los applies protege dos cosas: que ninguna alerta salte
+por una sonda que ya no aplica, y que el smoke de `workloads` encuentre en
+OpenClaw la respuesta que corresponde (`503` si está aparcado, `200` si no):
+
+- Para aparcar: `observability` si está desplegado (retira las sondas),
+  después `edge` y después `workloads`.
+- Para desaparcar: `edge`, después `workloads` y después `observability` si
+  está desplegado (repone las sondas cuando el servicio ya responde). Traefik
+  sondea OpenClaw desde el apply de `edge` y registra ese WARN hasta que el de
+  `workloads` arranca la tarea.
+
+Si `backup` está desplegado, se aplica también para renderizar la lista
+nueva. Cada apply de `edge` que cambia la configuración dinámica reemplaza la
+tarea de Traefik (`stop-first`), con un corte breve de todas las rutas
+públicas.
+
+La compuerta del 25565 solo se comprueba durante un apply de `workloads`.
+Entre dos applies, un proceso local sin privilegios podría escuchar en ese
+puerto y quedar expuesto a Internet. El propietario acepta ese hueco hasta que
+el firewall cierre el puerto mientras Minecraft está aparcado, y tampoco hay
+alerta si alguien arranca a mano un servicio aparcado. Los dos seguimientos
+figuran en [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md).
+
+Mientras no exista el backup externo (ver «Backup y autolock»), al aparcar
+se archiva el estado en frío en el propio host, bajo el lock host-global, en
+cuanto el servicio está en `0/0` (datos en reposo), y se registra su SHA-256.
+Las rutas son `minecraft/data` y `minecraft/mods` para Minecraft y
+`openclaw-clean/home` para OpenClaw. El nombre lleva la hora UTC, fijada una
+sola vez, y la orden se niega a sobrescribir un archivo existente:
+
+```bash
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+sudo -- install -d -o root -g root -m 0700 /var/backups/dockerswarm/parked
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation parked-cold-archive -- \
+  /bin/sh -c 'umask 077 && out="$1" && shift &&
+    test ! -e "$out" && exec /usr/bin/tar --create --zstd \
+    --numeric-owner --acls --xattrs --file "$out" \
+    -C /srv/dockerswarm/services "$@"' sh \
+  "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst" \
+  minecraft/data minecraft/mods
+sudo -- tar --list --zstd \
+  --file "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst" \
+  >/dev/null
+sudo -- sha256sum \
+  "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst"
+```
+
+Para OpenClaw se repite con `openclaw-cold-${stamp}.tar.zst` y la ruta
+`openclaw-clean/home`.
+
+El archivo es `0600 root:root` dentro de un directorio `0700` y contiene el
+estado en claro, incluido el de OpenClaw. Convive con los datos en el mismo
+disco: protege frente a un error al desaparcar, no frente a la pérdida del
+servidor. Se conserva hasta que el servicio vuelve a estar en marcha y sano y
+existe un backup externo verificado que lo cubra; entonces se borra. Para
+restaurar, con el servicio aún aparcado, se extrae en un directorio vacío de
+staging, se compara con el dataset y solo después se sustituye el dataset
+completo, sin extraer nunca sobre datos vivos.
+
 ## Reinicios
 
 Antes:

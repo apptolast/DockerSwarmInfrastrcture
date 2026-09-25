@@ -52,6 +52,12 @@ workloads_expected_stack_services:
   - shlink
   - shlink-db
 
+# Services that config/platform.yml may park (`replicas: 0`). Only services
+# nothing else depends on: parking a database would break its consumers.
+workloads_parkable_services:
+  - minecraft
+  - openclaw
+
 # Catalog baseline of every channel-managed workload service. n8n-runners is
 # excluded from channels: it is built locally from images/n8n-runners.
 workloads_image_baselines:

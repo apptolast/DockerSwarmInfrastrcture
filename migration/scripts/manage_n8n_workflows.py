@@ -475,6 +475,32 @@ def load_expected_ipv4(platform_contract: Path) -> str:
     return str(address)
 
 
+# Services config/platform.yml may park at `replicas: 0`; n8n needs neither.
+PARKABLE_STACK_SERVICES = frozenset({"minecraft", "openclaw"})
+
+
+def load_parked_workloads(platform_contract: Path) -> frozenset[str]:
+    if platform_contract.is_symlink() or not platform_contract.is_file():
+        raise WorkflowActivationError("platform contract is absent or unsafe")
+    try:
+        document = yaml.safe_load(platform_contract.read_text(encoding="utf-8"))
+        parked = document["platform_parked_workloads"]
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError) as exc:
+        raise WorkflowActivationError(
+            "platform contract has no parked workload list"
+        ) from exc
+    if (
+        not isinstance(parked, list)
+        or any(not isinstance(name, str) for name in parked)
+        or parked != sorted(set(parked))
+        or not set(parked) <= PARKABLE_STACK_SERVICES
+    ):
+        raise WorkflowActivationError(
+            "platform parked workloads are outside the reviewed parkable set"
+        )
+    return frozenset(parked)
+
+
 def publication_plan(
     current: list[dict[str, str]],
     expected: list[dict[str, str]],
@@ -510,7 +536,12 @@ def rollback_plan(
     return sorted(current_ids)
 
 
-def parse_stack_replicas(output: str, stack_name: str) -> dict[str, str]:
+def parse_stack_replicas(
+    output: str,
+    stack_name: str,
+    *,
+    parked: frozenset[str],
+) -> dict[str, str]:
     observed: dict[str, str] = {}
     prefix = f"{stack_name}_"
     for line in output.splitlines():
@@ -520,7 +551,13 @@ def parse_stack_replicas(output: str, stack_name: str) -> dict[str, str]:
         observed[parts[0][len(prefix) :]] = parts[1]
     if set(observed) != EXPECTED_STACK_SERVICES:
         raise WorkflowActivationError("workloads stack service set is incomplete")
-    if any(replicas != "1/1" for replicas in observed.values()):
+    if not parked <= PARKABLE_STACK_SERVICES:
+        raise WorkflowActivationError("parked workloads are outside the reviewed set")
+    # A parked service is converged at 0/0; every other one only at 1/1.
+    if any(
+        replicas != ("0/0" if service in parked else "1/1")
+        for service, replicas in observed.items()
+    ):
         raise WorkflowActivationError("workloads stack has unconverged replicas")
     return observed
 
@@ -883,6 +920,8 @@ def stack_smoke(
     runner: CommandRunner,
     stack_name: str,
     expected_ipv4: str,
+    *,
+    parked: frozenset[str],
 ) -> tuple[str, str]:
     result = runner.run(
         [
@@ -894,7 +933,7 @@ def stack_smoke(
             "{{.Name}}\t{{.Replicas}}",
         ]
     )
-    parse_stack_replicas(result.stdout, stack_name)
+    parse_stack_replicas(result.stdout, stack_name, parked=parked)
     n8n_container = unique_running_container(runner, f"{stack_name}_n8n")
     database_container = unique_running_container(runner, f"{stack_name}_n8n-db")
     require_healthy_container(runner, n8n_container)
@@ -1200,11 +1239,13 @@ def publish(
     inventory_path: Path,
     expected_ipv4: str,
     timeout: int,
+    parked: frozenset[str],
 ) -> Path | None:
     n8n_container, database_container = stack_smoke(
         runner,
         stack_name,
         expected_ipv4,
+        parked=parked,
     )
     current = current_inventory(runner, database_container)
     missing = publication_plan(current, expected)
@@ -1358,6 +1399,7 @@ def rollback(
     inventory_path: Path,
     expected_ipv4: str,
     timeout: int,
+    parked: frozenset[str],
 ) -> Path | None:
     result = runner.run(
         [
@@ -1369,7 +1411,7 @@ def rollback(
             "{{.Name}}\t{{.Replicas}}",
         ]
     )
-    parse_stack_replicas(result.stdout, stack_name)
+    parse_stack_replicas(result.stdout, stack_name, parked=parked)
     database_container = unique_running_container(runner, f"{stack_name}_n8n-db")
     current = current_inventory(runner, database_container)
     if not rollback_plan(current, expected):
@@ -1509,6 +1551,7 @@ def main() -> int:
             )
         expected = load_inventory(inventory_path)
         expected_ipv4 = load_expected_ipv4(args.platform_contract)
+        parked = load_parked_workloads(args.platform_contract)
         runner = CommandRunner()
         if args.action in {"publish", "rollback"}:
             with transactional_signal_handlers():
@@ -1520,6 +1563,7 @@ def main() -> int:
                         inventory_path=inventory_path,
                         expected_ipv4=expected_ipv4,
                         timeout=args.timeout,
+                        parked=parked,
                     )
                 else:
                     evidence = rollback(
@@ -1529,12 +1573,14 @@ def main() -> int:
                         inventory_path=inventory_path,
                         expected_ipv4=expected_ipv4,
                         timeout=args.timeout,
+                        parked=parked,
                     )
         else:
             _, database_container = stack_smoke(
                 runner,
                 args.stack,
                 expected_ipv4,
+                parked=parked,
             )
             current = current_inventory(runner, database_container)
             missing = publication_plan(current, expected)

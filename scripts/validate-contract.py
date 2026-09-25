@@ -52,6 +52,7 @@ required_keys = {
     "platform_public_tcp_ports",
     "platform_minecraft_public_enabled",
     "platform_minecraft_offline_public_accepted",
+    "platform_parked_workloads",
     "platform_public_ipv6_tcp_ports",
     "edge_cloudflare_zone",
     "edge_traefik_hostname",
@@ -192,6 +193,19 @@ if (
     fail(
         "Minecraft cannot cut over publicly while online_mode is false "
         "unless platform_minecraft_offline_public_accepted is true"
+    )
+# Aparcar deja un servicio en `replicas: 0`. Solo se admiten servicios sin
+# dependientes: aparcar una base de datos romperia a sus consumidores.
+parked_workloads = contract["platform_parked_workloads"]
+if (
+    not isinstance(parked_workloads, list)
+    or any(not isinstance(name, str) for name in parked_workloads)
+    or parked_workloads != sorted(set(parked_workloads))
+    or not set(parked_workloads) <= {"minecraft", "openclaw"}
+):
+    fail(
+        "platform_parked_workloads must be a sorted, duplicate-free subset "
+        "of the reviewed parkable services [minecraft, openclaw]"
     )
 if contract["platform_public_ipv6_tcp_ports"] != []:
     fail("public application TCP over IPv6 is outside the reviewed contract")
@@ -436,8 +450,13 @@ for route, (service_id, upstream) in edge_routes.items():
         != f"Host(`{expected_hostnames[0]}`)"
     ):
         fail(f"the rendered {route} hostname differs from the service catalog")
-    servers = dynamic["http"]["services"][route]["loadBalancer"]["servers"]
-    if servers != [{"url": upstream}]:
+    load_balancer = dynamic["http"]["services"][route]["loadBalancer"]
+    # Una ruta aparcada conserva router y certificado, pero su backend no
+    # tiene servidores (Traefik responde 503) ni sonda de salud.
+    if route in parked_workloads:
+        if load_balancer != {"passHostHeader": True, "servers": []}:
+            fail(f"the parked {route} backend must have no server nor probe")
+    elif load_balancer["servers"] != [{"url": upstream}]:
         fail(f"the rendered {route} upstream differs from the Swarm contract")
 
 static = load_yaml(".build/edge/static.yml")

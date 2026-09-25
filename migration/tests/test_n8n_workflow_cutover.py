@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,7 +85,9 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
             f"workloads_{name}\t1/1"
             for name in sorted(workflow_manager.EXPECTED_STACK_SERVICES)
         )
-        observed = workflow_manager.parse_stack_replicas(output, "workloads")
+        observed = workflow_manager.parse_stack_replicas(
+            output, "workloads", parked=frozenset()
+        )
         self.assertEqual(
             set(observed),
             workflow_manager.EXPECTED_STACK_SERVICES,
@@ -91,7 +96,122 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
             workflow_manager.parse_stack_replicas(
                 output.replace("workloads_n8n\t1/1", "workloads_n8n\t0/1"),
                 "workloads",
+                parked=frozenset(),
             )
+
+    def test_stack_smoke_accepts_only_reviewed_parked_services_at_zero(self) -> None:
+        parked = frozenset({"minecraft", "openclaw"})
+        lines = {
+            name: "0/0" if name in parked else "1/1"
+            for name in workflow_manager.EXPECTED_STACK_SERVICES
+        }
+
+        def output(replicas: dict[str, str]) -> str:
+            return "\n".join(
+                f"workloads_{name}\t{value}" for name, value in sorted(replicas.items())
+            )
+
+        observed = workflow_manager.parse_stack_replicas(
+            output(lines), "workloads", parked=parked
+        )
+        self.assertEqual(observed["minecraft"], "0/0")
+        for name, value, parked_set in (
+            ("minecraft", "1/1", parked),
+            ("openclaw", "0/1", parked),
+            ("n8n-db", "0/0", parked),
+            ("minecraft", "0/0", frozenset()),
+        ):
+            with self.subTest(service=name, replicas=value, parked=sorted(parked_set)):
+                candidate = dict(lines, **{name: value})
+                if not parked_set:
+                    candidate = {
+                        key: "1/1" if key != name else value for key in candidate
+                    }
+                with self.assertRaises(workflow_manager.WorkflowActivationError):
+                    workflow_manager.parse_stack_replicas(
+                        output(candidate), "workloads", parked=parked_set
+                    )
+        with self.assertRaises(workflow_manager.WorkflowActivationError):
+            workflow_manager.parse_stack_replicas(
+                output(dict(lines, **{"n8n-db": "0/0"})),
+                "workloads",
+                parked=parked | {"n8n-db"},
+            )
+
+    def test_parked_workloads_are_read_from_the_reviewed_platform_contract(
+        self,
+    ) -> None:
+        platform = REPOSITORY_ROOT / "config/platform.yml"
+        parked = workflow_manager.load_parked_workloads(platform)
+        self.assertLessEqual(parked, workflow_manager.PARKABLE_STACK_SERVICES)
+        document = platform.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "platform.yml"
+            for replacement in (
+                "platform_parked_workloads: [n8n-db]",
+                "platform_parked_workloads: [openclaw, minecraft]",
+                "platform_parked_workloads: [minecraft, minecraft]",
+                "platform_parked_workloads: minecraft",
+                "platform_parked_workloads_missing: []",
+            ):
+                with self.subTest(replacement=replacement):
+                    start = document.index("platform_parked_workloads:")
+                    end = document.index("platform_public_ipv6_tcp_ports:")
+                    candidate.write_text(
+                        document[:start] + replacement + "\n" + document[end:],
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(workflow_manager.WorkflowActivationError):
+                        workflow_manager.load_parked_workloads(candidate)
+
+    def test_main_hands_the_reviewed_parked_list_to_every_path(self) -> None:
+        platform = REPOSITORY_ROOT / "config/platform.yml"
+        parked = workflow_manager.load_parked_workloads(platform)
+        with tempfile.TemporaryDirectory() as temporary:
+            services_root = Path(temporary)
+            (services_root / "restore-state").mkdir()
+            base = [
+                "--services-root",
+                str(services_root),
+                "--platform-contract",
+                str(platform),
+            ]
+            for action, target, extra in (
+                ("status", "stack_smoke", []),
+                (
+                    "publish",
+                    "publish",
+                    [
+                        "--confirm-google-oauth-consent",
+                        workflow_manager.PUBLISH_CONFIRMATION,
+                    ],
+                ),
+                ("rollback", "rollback", []),
+            ):
+                with (
+                    self.subTest(action=action),
+                    mock.patch.object(
+                        workflow_manager, "load_inventory", return_value=self.expected
+                    ),
+                    mock.patch.object(workflow_manager, "ensure_mutation_lock"),
+                    mock.patch.object(workflow_manager.os, "geteuid", return_value=0),
+                    mock.patch.object(
+                        workflow_manager,
+                        "current_inventory",
+                        return_value=self.expected,
+                    ),
+                    mock.patch.object(
+                        workflow_manager,
+                        target,
+                        return_value=("n8n", "db") if action == "status" else None,
+                    ) as called,
+                    mock.patch.object(
+                        sys, "argv", ["manage_n8n_workflows.py", action, *base, *extra]
+                    ),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(workflow_manager.main(), 0)
+                    self.assertEqual(called.call_args.kwargs["parked"], parked)
 
     def test_cli_uses_exact_version_and_never_interpolates_identifiers(self) -> None:
         class FakeRunner:
@@ -454,7 +574,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
         rollback.assert_called_once()
         evidence.assert_called_once()
@@ -498,7 +618,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
         rollback.assert_called_once()
         evidence.assert_called_once()
@@ -561,7 +681,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=Path("/private/n8n-active-workflows.json"),
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
         rollback.assert_called_once()
 
@@ -606,7 +726,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=Path("/private/n8n-active-workflows.json"),
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
         quarantine.assert_called_once()
 
@@ -679,7 +799,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
             self.assertEqual(cli_calls, ["alpha", "beta"])
             evidence = list(state_directory.glob("n8n-workflows-unpublished-*.json"))
@@ -750,7 +870,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                 expected=self.expected,
                 inventory_path=Path("/private/n8n-active-workflows.json"),
                 expected_ipv4="159.195.156.57",
-                timeout=300,
+                timeout=300,                parked=frozenset(),
             )
         self.assertEqual(cli.call_count, 4)
         quarantine.assert_called_once()
@@ -809,7 +929,7 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,
+                    timeout=300,                    parked=frozenset(),
                 )
             quarantine.assert_not_called()
             evidence = list(

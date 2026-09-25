@@ -69,12 +69,13 @@ class CapacityProfileTests(unittest.TestCase):
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
-        # The active plan now carries the game as well.
-        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 11757)
-        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 6930)
-        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 15600)
-        self.assertEqual(totals["observability"]["limits"]["memory_mib"], 12397)
-        self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 17450)
+        # The active plan now carries the game as well; both plans leave out
+        # Minecraft and OpenClaw while config/platform.yml parks them.
+        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 7149)
+        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 3602)
+        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 12100)
+        self.assertEqual(totals["observability"]["limits"]["memory_mib"], 7789)
+        self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 13950)
 
     def test_every_profile_must_include_the_watcher(self):
         for name in ("observability", "organizationweb"):

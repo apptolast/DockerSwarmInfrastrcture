@@ -229,12 +229,20 @@ http:
     openclaw:
       loadBalancer:
         passHostHeader: true
+{% if "openclaw" in platform_parked_workloads %}
+        # Aparcado (config/platform.yml platform_parked_workloads): sin
+        # servidores Traefik responde 503 "no available server" y no lanza la
+        # sonda de salud, que sin tarea fallaria y registraria un WARN
+        # "Health check failed." cada 15 s. La ruta y su certificado siguen.
+        servers: []
+{% else %}
         servers:
           - url: http://workloads_openclaw:18789
         healthCheck:
           path: /readyz
           interval: 15s
           timeout: 3s
+{% endif %}
     passbolt:
       loadBalancer:
         passHostHeader: true

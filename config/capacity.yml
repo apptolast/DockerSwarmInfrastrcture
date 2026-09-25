@@ -50,6 +50,9 @@ capacity_contract:
       expected_services:
         - traefik
       global_services: []
+    # minecraft and openclaw may be parked at replicas 0 by
+    # config/platform.yml platform_parked_workloads; a parked service releases
+    # its budget (scripts/validate-capacity.py PARKABLE_SERVICES).
     workloads:
       expected_services:
         - kropia
@@ -101,13 +104,16 @@ capacity_contract:
       limits:
         cpu_millicores: 500
         memory_mib: 128
+    # Both parked: minecraft (3072/4096 MiB, 500m/2500m) and openclaw
+    # (256/512 MiB, 200m/1000m) are not counted. Unparking one adds its
+    # reservation and limit back here and in config/capacity-profiles.yml.
     workloads:
       reservations:
-        cpu_millicores: 2300
-        memory_mib: 5920
+        cpu_millicores: 1600
+        memory_mib: 2592
       limits:
-        cpu_millicores: 11600
-        memory_mib: 9728
+        cpu_millicores: 8100
+        memory_mib: 5120
     observability:
       reservations:
         cpu_millicores: 1070
@@ -115,9 +121,9 @@ capacity_contract:
       limits:
         cpu_millicores: 5100
         memory_mib: 2496
-    # 45 MiB is the whole memory-limit headroom left by the full platform:
-    # 15981 - 3072 reserve - 512 headroom = 12397 MiB, and the other stacks
-    # already limit 12352 MiB.
+    # The full platform used the whole memory-limit budget, 15981 - 3072
+    # reserve - 512 headroom = 12397 MiB, until minecraft and openclaw were
+    # parked: their 4608 MiB of limits are free while they stay parked.
     autoupdater:
       reservations:
         cpu_millicores: 100
@@ -127,8 +133,8 @@ capacity_contract:
         memory_mib: 45
     aggregate:
       reservations:
-        cpu_millicores: 3570
-        memory_mib: 7250
+        cpu_millicores: 2870
+        memory_mib: 3922
       limits:
-        cpu_millicores: 17450
-        memory_mib: 12397
+        cpu_millicores: 13950
+        memory_mib: 7789

@@ -59,6 +59,22 @@ platform_minecraft_public_enabled: true
 # acepto. La compuerta no se elimina: sigue existiendo y falla en cerrado
 # mientras esta bandera valga `false`, que es su valor por defecto.
 platform_minecraft_offline_public_accepted: true
+# Servicios del stack `workloads` aparcados por decision del propietario
+# (2026-09-25) para liberar RAM y CPU del host. Un servicio aparcado se
+# renderiza con `replicas: 0`: no corre ninguna tarea ni reserva recursos en
+# Swarm y libera su presupuesto en config/capacity.yml, pero conserva imagen,
+# datos, secretos, redes y ruta del edge. Volver a arrancarlo es quitarlo de
+# esta lista, devolver su presupuesto a config/capacity.yml y
+# config/capacity-profiles.yml en el mismo cambio y aplicar `--playbook edge`
+# y despues `--playbook workloads`. Lista ordenada y sin
+# duplicados, `[]` si no hay ninguno (un valor vacio se rechaza); solo admite
+# los servicios que ningun otro necesita para funcionar (minecraft, openclaw).
+# La compuerta publica de Minecraft no cambia: el firewall sigue admitiendo el
+# 25565 y el apply de workloads exige que ningun proceso del host escuche en
+# el mientras esta aparcado.
+platform_parked_workloads:
+  - minecraft
+  - openclaw
 platform_public_ipv6_tcp_ports: []
 edge_cloudflare_zone: apptolast.com
 edge_traefik_hostname: edge.apptolast.com

@@ -177,6 +177,12 @@ Los paths son `/health`, `/actuator/health`, `/healthz`,
 `/rest/health`, según cada imagen fijada. Blackbox exige exactamente HTTP 200,
 sin aceptar redirects como sustituto de salud.
 
+Un servicio aparcado por `platform_parked_workloads` (`config/platform.yml`)
+no tiene tarea que sondear: no se renderizan la sonda TCP de Minecraft ni la
+sonda HTTPS de OpenClaw. La regla `MinecraftEndpointDown` sigue cargada y no
+tiene series mientras Minecraft está aparcado; vuelve a evaluarse en cuanto
+se desaparca y se aplica `observability`.
+
 Las reglas cubren targets, endpoints, capacidad de host, memoria de
 contenedores, backups obsoletos/fallidos y fallos internos de Prometheus/Loki.
 Prometheus envía alertas a Alertmanager según la

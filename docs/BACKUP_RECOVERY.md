@@ -46,12 +46,13 @@ El ciclo diario de aplicaciones es:
 1. validar configuración, permisos, checksum de restic, manager y repositorio;
 2. adquirir `/run/lock/dockerswarm-backup.lock` sin esperar;
 3. recorrer diez grupos de consistencia declarados y cerrados;
-4. para cada grupo, comprobar y detener solo sus writers;
+4. para cada grupo, comprobar y detener solo sus writers; los aparcados solo
+   se comprueban en reposo;
 5. producir y validar sus dumps y datasets mientras esos writers están a cero;
 6. recuperar ese grupo en orden inverso, incluso si hubo un error, antes de
    continuar con el siguiente;
 7. ejecutar por separado el protocolo RCON de Minecraft y recuperar siempre
-   `save-on`;
+   `save-on`, salvo que Minecraft esté aparcado;
 8. crear un manifiesto con grupos, ventanas, hashes, tamaños, imágenes,
    extensiones y réplicas;
 9. subir el staging ya inmutable con restic, confirmar el snapshot y aplicar
@@ -78,6 +79,37 @@ ya recuperado. Un fallo intenta recuperar Docker antes de devolver error.
 Docker indica expresamente que una copia caliente del estado del manager no es
 recomendable: hay que detener Docker y copiar todo
 `/var/lib/docker/swarm`. Esa carpeta contiene las claves de los logs Raft.
+
+## Servicios aparcados
+
+`platform_parked_workloads` (`config/platform.yml`) puede aparcar Minecraft y
+OpenClaw: el stack los renderiza con `replicas: 0`, pero conservan imagen,
+datos, secretos, redes y ruta. El role backup exige que esa lista esté
+ordenada, sin duplicados y dentro de `backup_parkable_services`, y la
+renderiza como `parked_services` con los nombres Swarm `workloads_minecraft`
+y `workloads_openclaw`.
+
+Un servicio aparcado se sigue copiando, pero en reposo:
+
+- el controlador exige `0/0` réplicas antes y después de su ventana y falla
+  cerrado si encuentra una tarea; nunca lo escala ni lo recupera, de modo que
+  el backup no puede arrancarlo como efecto secundario;
+- el grupo `openclaw` archiva `openclaw-clean-home` sin detener nada;
+- Minecraft se archiva sin `docker exec` ni RCON y el manifiesto registra el
+  protocolo `service-parked-at-rest` en lugar de
+  `rcon-save-off-save-all-flush-save-on`; el grupo de sus artefactos sigue
+  llamándose `minecraft-rcon`;
+- los metadatos de servicio registran `0/0` y la imagen fijada por digest.
+
+La verificación no lee el `parked_services` vigente. Solo admite `0/0` para
+los servicios de `PARKABLE_SERVICES`, fijado en el controlador, y exige el
+protocolo aparcado si y solo si Minecraft quedó registrado en `0/0`. Un
+snapshot tomado con un servicio aparcado sigue siendo verificable y
+restaurable después de desaparcarlo, y al revés.
+
+Aparcar o desaparcar exige aplicar también el playbook `backup` para
+renderizar la lista nueva. Mientras la configuración del backup no coincida
+con el estado de Swarm, el job falla cerrado en vez de escalar nada.
 
 ## Credenciales y bootstrap
 
@@ -358,7 +390,8 @@ El job falla sin subir un snapshot si:
 
 - falta un servicio, dataset, dump o credencial;
 - un writer no tiene todas sus réplicas;
-- hay más o menos de un contenedor para una base o Minecraft;
+- un servicio aparcado no está en `0/0` antes o después de su copia;
+- hay más o menos de un contenedor para una base o un Minecraft no aparcado;
 - el checksum/version de restic difiere;
 - el repositorio no existe o R2 no responde;
 - el dump o tar no pasa validación;

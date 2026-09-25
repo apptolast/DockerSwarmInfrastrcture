@@ -126,6 +126,9 @@ IMAGE_CONTRACT = {
     "shlink": ("shlink", "app"),
     "shlink-db": ("shlink", "database"),
 }
+# Services config/platform.yml may park at `replicas: 0`: nothing depends on
+# them, so stopping their only task cannot break another workload.
+PARKABLE_SERVICES = frozenset({"minecraft", "openclaw"})
 # n8n-runners is built locally and is the only workload outside the channel
 # map (config/image-channels.yml); every other service renders its entry.
 CHANNEL_EXCLUDED_SERVICES = {"n8n-runners"}
@@ -333,6 +336,14 @@ def validate_stack(
     services = stack.get("services")
     if not isinstance(services, dict) or set(services) != EXPECTED_STACK_SERVICES:
         raise ContractError("rendered Swarm service set changed")
+    parked = platform.get("platform_parked_workloads")
+    if (
+        not isinstance(parked, list)
+        or any(not isinstance(name, str) for name in parked)
+        or parked != sorted(set(parked))
+        or not set(parked) <= PARKABLE_SERVICES
+    ):
+        raise ContractError("parked workloads are outside the reviewed parkable set")
 
     for stack_service, (catalog_id, component) in IMAGE_CONTRACT.items():
         catalog_image = find_image_entry(services_by_id, catalog_id, component)
@@ -375,7 +386,10 @@ def validate_stack(
         constraints = deploy.get("placement", {}).get("constraints", [])
         if "node.labels.platform.workloads == true" not in constraints:
             raise ContractError(f"placement constraint missing for {stack_service}")
-        if deploy.get("replicas") != 1:
+        expected_replicas = 0 if stack_service in parked else 1
+        if type(deploy.get("replicas")) is not int or (
+            deploy["replicas"] != expected_replicas
+        ):
             raise ContractError(f"replica count drift for {stack_service}")
         if deploy.get("update_config", {}).get("failure_action") != "rollback":
             raise ContractError(f"rollback-on-update missing for {stack_service}")

@@ -57,12 +57,12 @@ class CapacityContractTests(unittest.TestCase):
             totals["aggregate"],
             {
                 "reservations": {
-                    "cpu_millicores": 3570,
-                    "memory_mib": 7250,
+                    "cpu_millicores": 2870,
+                    "memory_mib": 3922,
                 },
                 "limits": {
-                    "cpu_millicores": 17450,
-                    "memory_mib": 12397,
+                    "cpu_millicores": 13950,
+                    "memory_mib": 7789,
                 },
             },
         )
@@ -73,13 +73,16 @@ class CapacityContractTests(unittest.TestCase):
                 "limits": {"cpu_millicores": 250, "memory_mib": 45},
             },
         )
-        # The full platform now uses the whole memory-limit budget.
+        # With Minecraft (4096 MiB) and OpenClaw (512 MiB) running, the full
+        # platform uses the whole memory-limit budget; parked, they free it.
         allocatable = (
             contract["host"]["minimum_memory_mib"]
             - contract["system_reserve"]["memory_mib"]
             - contract["operational_headroom"]["memory_mib"]
         )
-        self.assertEqual(totals["aggregate"]["limits"]["memory_mib"], allocatable)
+        self.assertEqual(
+            totals["aggregate"]["limits"]["memory_mib"] + 4096 + 512, allocatable
+        )
 
     def test_the_four_stacks_are_all_required(self) -> None:
         self.assertEqual(
@@ -95,7 +98,7 @@ class CapacityContractTests(unittest.TestCase):
         with self.assertRaises(capacity.CapacityError):
             capacity.validate_contract(document)
 
-    def test_only_the_watcher_kill_switch_may_render_zero_replicas(self) -> None:
+    def test_only_reviewed_kill_switches_may_render_zero_replicas(self) -> None:
         contract = self.normalized_contract()
         documents = copy.deepcopy(self.stack_documents)
         documents["autoupdater"]["services"]["shepherd"]["deploy"]["replicas"] = 0
@@ -103,6 +106,39 @@ class CapacityContractTests(unittest.TestCase):
         # A disabled watcher keeps its reviewed budget reserved.
         self.assertEqual(
             totals["autoupdater"], contract["reviewed_totals"]["autoupdater"]
+        )
+        # A parked workload releases its budget instead: the reviewed totals
+        # match the parked state, so running it needs a reviewed re-budget.
+        documents = copy.deepcopy(self.stack_documents)
+        totals = capacity.validate_stacks(contract, documents)
+        self.assertEqual(totals["workloads"], contract["reviewed_totals"]["workloads"])
+        for service in ("minecraft", "openclaw"):
+            with self.subTest(unparked=service):
+                documents = copy.deepcopy(self.stack_documents)
+                documents["workloads"]["services"][service]["deploy"]["replicas"] = 1
+                with self.assertRaisesRegex(
+                    capacity.CapacityError, "differ from reviewed_totals"
+                ):
+                    capacity.validate_stacks(contract, documents)
+        # Every other replicated service must keep exactly one replica.
+        for stack_id, document in self.stack_documents.items():
+            for name, service in document["services"].items():
+                if (
+                    stack_id,
+                    name,
+                ) in capacity.SUSPENDABLE_SERVICES | capacity.PARKABLE_SERVICES or (
+                    service["deploy"].get("mode") == "global"
+                ):
+                    continue
+                with self.subTest(service=f"{stack_id}/{name}"):
+                    documents = copy.deepcopy(self.stack_documents)
+                    documents[stack_id]["services"][name]["deploy"]["replicas"] = 0
+                    with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
+                        capacity.validate_stacks(contract, documents)
+        self.assertEqual(capacity.SUSPENDABLE_SERVICES, {("autoupdater", "shepherd")})
+        self.assertEqual(
+            capacity.PARKABLE_SERVICES,
+            {("workloads", "minecraft"), ("workloads", "openclaw")},
         )
         for replicas in (2, True, "1", None):
             with self.subTest(replicas=replicas):
@@ -133,14 +169,24 @@ class CapacityContractTests(unittest.TestCase):
                     capacity.CapacityError, "autoupdater rendered totals differ"
                 ):
                     capacity.validate_stacks(contract, documents)
-        # Re-reviewing the totals cannot buy memory beyond the host budget.
+        # Re-reviewing the totals cannot buy memory beyond the host budget. With
+        # Minecraft and OpenClaw running again the full platform fills it.
         document = copy.deepcopy(self.contract_document)
         totals = document["capacity_contract"]["reviewed_totals"]
+        for stack_id in ("workloads", "aggregate"):
+            for resource_class, cpu, memory in (
+                ("reservations", 700, 3328),
+                ("limits", 3500, 4608),
+            ):
+                totals[stack_id][resource_class]["cpu_millicores"] += cpu
+                totals[stack_id][resource_class]["memory_mib"] += memory
         for resource_class, delta in (("limits", 1), ("reservations", 1)):
             totals["autoupdater"][resource_class]["memory_mib"] += delta
             totals["aggregate"][resource_class]["memory_mib"] += delta
         contract = capacity.validate_contract(document)
         documents = copy.deepcopy(self.stack_documents)
+        for service in ("minecraft", "openclaw"):
+            documents["workloads"]["services"][service]["deploy"]["replicas"] = 1
         resources = documents["autoupdater"]["services"]["shepherd"]["deploy"][
             "resources"
         ]

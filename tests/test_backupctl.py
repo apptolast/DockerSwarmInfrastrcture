@@ -66,6 +66,7 @@ def configuration(base: Path) -> dict[str, object]:
         "services": {
             "minecraft": "workloads_minecraft",
         },
+        "parked_services": [],
         "databases": [
             {
                 "id": "n8n-postgres",
@@ -223,6 +224,176 @@ def write_config(base: Path, document: dict[str, object]) -> Path:
     return path
 
 
+PARKED_SERVICES = ["workloads_minecraft", "workloads_openclaw"]
+IMAGE_DIGEST = "a" * 64
+
+
+def application_manifest(
+    document: dict[str, object],
+    *,
+    at_rest: frozenset[str] = frozenset(),
+    protocol: str = backupctl.MINECRAFT_RCON_PROTOCOL,
+) -> dict[str, object]:
+    """Build the manifest a successful application backup would record."""
+
+    groups = document["consistency_groups"]
+    group_of = {
+        identifier: group["id"]
+        for group in groups
+        for identifier in [*group["databases"], *group["datasets"]]
+    }
+    artifacts: list[dict[str, object]] = [
+        {
+            "id": database["id"],
+            "type": "postgres-custom-dump",
+            "service": database["service"],
+            "database": database["database"],
+            "image": f"registry.invalid/{database['service']}@sha256:{IMAGE_DIGEST}",
+            "rehearsal_image": database["rehearsal_image"],
+            "extensions": database["extensions"],
+            "consistency_group": group_of[database["id"]],
+        }
+        for database in document["databases"]
+    ]
+    artifacts.extend(
+        {
+            "id": dataset["id"],
+            "type": "filesystem-tar",
+            "source": dataset["source"],
+            "consistency_group": group_of.get(dataset["id"], "minecraft-rcon"),
+        }
+        for dataset in document["datasets"]
+    )
+    services = [service for group in groups for service in group["services"]]
+    services.append(document["services"]["minecraft"])
+    services.extend(database["service"] for database in document["databases"])
+    return {
+        "schema_version": 1,
+        "kind": "application",
+        "artifacts": artifacts,
+        "metadata": {
+            "consistency_groups": [
+                {
+                    "id": group["id"],
+                    "services": group["services"],
+                    "artifacts": [*group["databases"], *group["datasets"]],
+                    "started_at": "2026-09-25T02:15:00Z",
+                    "finished_at": "2026-09-25T02:16:00Z",
+                }
+                for group in groups
+            ],
+            "minecraft_consistency": {
+                "service": document["services"]["minecraft"],
+                "artifacts": ["minecraft-data", "minecraft-mods"],
+                "protocol": protocol,
+            },
+            "services": {
+                service: {
+                    "desired_replicas": 0 if service in at_rest else 1,
+                    "running_replicas": 0 if service in at_rest else 1,
+                    "image": f"registry.invalid/{service}@sha256:{IMAGE_DIGEST}",
+                }
+                for service in dict.fromkeys(services)
+            },
+        },
+    }
+
+
+class FakeReplicaSwarm:
+    """Swarm double whose replica counts follow the scale calls it receives."""
+
+    docker = "/usr/bin/docker"
+
+    def __init__(self, replicas: dict[str, tuple[int, int]]) -> None:
+        self.state = dict(replicas)
+        self.scaled: list[tuple[str, int]] = []
+
+    def assert_manager(self) -> None:
+        return None
+
+    def replicas(self, service: str) -> tuple[int, int]:
+        return self.state[service]
+
+    def scale(self, service: str, replicas: int) -> None:
+        self.scaled.append((service, replicas))
+        self.state[service] = (replicas, replicas)
+
+    def service_image(self, service: str) -> str:
+        return f"registry.invalid/{service}@sha256:{IMAGE_DIGEST}"
+
+    def one_container(self, service: str) -> str:
+        raise AssertionError(f"a parked service has no container: {service}")
+
+
+def reviewed_replicas(document: dict[str, object]) -> dict[str, tuple[int, int]]:
+    """Every managed service at rest if parked, fully available otherwise."""
+
+    services = {
+        *(
+            service
+            for group in document["consistency_groups"]
+            for service in group["services"]
+        ),
+        document["services"]["minecraft"],
+        *(database["service"] for database in document["databases"]),
+    }
+    return {
+        service: (0, 0) if service in document["parked_services"] else (1, 1)
+        for service in services
+    }
+
+
+def contract_database_artifact(
+    _swarm: object,
+    database: dict[str, object],
+    destination: Path,
+) -> dict[str, object]:
+    """dump_database stand-in returning the reviewed artifact contract."""
+
+    return {
+        "id": database["id"],
+        "type": "postgres-custom-dump",
+        "service": database["service"],
+        "database": database["database"],
+        "image": f"registry.invalid/{database['service']}@sha256:{IMAGE_DIGEST}",
+        "rehearsal_image": database["rehearsal_image"],
+        "extensions": database["extensions"],
+        "file": f"databases/{destination.name}",
+    }
+
+
+def contract_filesystem_artifact(
+    identifier: str, source: Path, destination: Path
+) -> dict[str, object]:
+    """archive_source stand-in returning the reviewed artifact contract."""
+
+    return {
+        "id": identifier,
+        "type": "filesystem-tar",
+        "source": str(source),
+        "file": f"filesystems/{destination.name}",
+    }
+
+
+class ManifestRepository:
+    """Repository double that keeps the manifest it was asked to upload."""
+
+    def __init__(self) -> None:
+        self.manifest: dict[str, object] | None = None
+
+    def check_exists(self) -> None:
+        return None
+
+    def backup(self, source: Path, _tag: str, _hostname: str) -> str:
+        self.manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        return "c" * 64
+
+    def apply_retention(self, _tag: str, _hostname: str) -> None:
+        return None
+
+
 class ConfigurationTests(unittest.TestCase):
     def test_reviewed_configuration_is_valid_offline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -279,6 +450,70 @@ class ConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 backupctl.BackupError,
                 "database allowlist",
+            ):
+                backupctl.BackupConfig.load(write_config(base, document))
+
+    def test_reviewed_parkable_services_are_accepted(self) -> None:
+        for parked in (
+            [],
+            ["workloads_minecraft"],
+            ["workloads_openclaw"],
+            PARKED_SERVICES,
+        ):
+            with (
+                self.subTest(parked=parked),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                document["parked_services"] = parked
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                self.assertEqual(config.document["parked_services"], parked)
+
+    def test_parked_services_outside_the_contract_are_rejected(self) -> None:
+        cases: list[tuple[str, object, str]] = [
+            ("missing", None, "parked_services must be a list"),
+            ("scalar", "workloads_minecraft", "parked_services must be a list"),
+            ("non-string", [1], "parked_services must be a list"),
+            (
+                "unknown",
+                ["workloads_n8n"],
+                "outside the reviewed parkable set",
+            ),
+            (
+                "unsorted",
+                ["workloads_openclaw", "workloads_minecraft"],
+                "parked_services must be sorted",
+            ),
+            (
+                "duplicate",
+                ["workloads_minecraft", "workloads_minecraft"],
+                "must not repeat",
+            ),
+        ]
+        for label, parked, message in cases:
+            with (
+                self.subTest(label),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                if parked is None:
+                    del document["parked_services"]
+                else:
+                    document["parked_services"] = parked
+                with self.assertRaisesRegex(backupctl.BackupError, message):
+                    backupctl.BackupConfig.load(write_config(base, document))
+
+    def test_parked_service_must_be_managed_by_the_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            document = configuration(base)
+            document["services"]["minecraft"] = "workloads_minecraft-legacy"
+            document["parked_services"] = ["workloads_minecraft"]
+            with self.assertRaisesRegex(
+                backupctl.BackupError,
+                "outside the backup contract",
             ):
                 backupctl.BackupConfig.load(write_config(base, document))
 
@@ -384,13 +619,22 @@ class ApplicationBackupTests(unittest.TestCase):
 
                 def backup(self, source: Path, tag: str, hostname: str) -> str:
                     self.backup_call = (source, tag, hostname)
+                    self.manifest = json.loads(
+                        (source / "manifest.json").read_text(encoding="utf-8")
+                    )
                     return "b" * 64
 
                 def apply_retention(self, tag: str, hostname: str) -> None:
                     self.retention_call = (tag, hostname)
 
             @contextlib.contextmanager
-            def fake_quiesce(_swarm: object, service_names: list[str]) -> object:
+            def fake_quiesce(
+                _swarm: object,
+                service_names: list[str],
+                *,
+                parked: frozenset[str],
+            ) -> object:
+                events.append(("parked", parked))
                 events.append(("quiesce-enter", tuple(service_names)))
                 try:
                     yield
@@ -462,8 +706,412 @@ class ApplicationBackupTests(unittest.TestCase):
             self.assertIn(("dataset", "minecraft-data"), events)
             self.assertIn(("dataset", "minecraft-mods"), events)
             self.assertIn(("minecraft-exit", "workloads_minecraft"), events)
+            self.assertEqual(
+                {event[1] for event in events if event[0] == "parked"},
+                {frozenset()},
+            )
+            self.assertEqual(
+                repository.manifest["metadata"]["minecraft_consistency"]["protocol"],
+                "rcon-save-off-save-all-flush-save-on",
+            )
             self.assertEqual(repository.backup_call[1], "application")
             self.assertEqual(repository.retention_call[0], "application")
+
+    def test_parked_workloads_are_archived_at_rest_without_exec(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            document = configuration(base)
+            document["parked_services"] = PARKED_SERVICES
+            for dataset in document["datasets"]:
+                Path(dataset["source"]).mkdir(parents=True)
+            config = backupctl.BackupConfig.load(write_config(base, document))
+            swarm = FakeReplicaSwarm(reviewed_replicas(document))
+            commands: list[list[str]] = []
+
+            def forbidden_run(arguments: list[str], **_kwargs: object) -> object:
+                commands.append(list(arguments))
+                raise AssertionError(f"unexpected command: {arguments!r}")
+
+            repository = ManifestRepository()
+            with (
+                mock.patch.object(backupctl, "Swarm", return_value=swarm),
+                mock.patch.object(backupctl, "run", side_effect=forbidden_run),
+                mock.patch.object(
+                    backupctl, "dump_database", contract_database_artifact
+                ),
+                mock.patch.object(
+                    backupctl, "archive_source", contract_filesystem_artifact
+                ),
+            ):
+                snapshot = backupctl.command_application(config, repository)
+
+            self.assertEqual(snapshot, "c" * 64)
+            self.assertEqual(commands, [])
+            archived = {
+                artifact["id"]
+                for artifact in repository.manifest["artifacts"]
+                if artifact["type"] == "filesystem-tar"
+            }
+            self.assertIn("minecraft-data", archived)
+            self.assertIn("minecraft-mods", archived)
+            self.assertIn("openclaw-clean-home", archived)
+            scaled_services = {service for service, _ in swarm.scaled}
+            self.assertFalse(scaled_services & set(PARKED_SERVICES))
+            self.assertIn(("workloads_n8n", 0), swarm.scaled)
+            self.assertIn(("workloads_n8n", 1), swarm.scaled)
+            metadata = repository.manifest["metadata"]
+            self.assertEqual(
+                metadata["minecraft_consistency"],
+                {
+                    "service": "workloads_minecraft",
+                    "artifacts": ["minecraft-data", "minecraft-mods"],
+                    "protocol": "service-parked-at-rest",
+                },
+            )
+            for service in PARKED_SERVICES:
+                self.assertEqual(
+                    (
+                        metadata["services"][service]["desired_replicas"],
+                        metadata["services"][service]["running_replicas"],
+                    ),
+                    (0, 0),
+                )
+            self.assertEqual(
+                metadata["services"]["workloads_n8n"]["running_replicas"], 1
+            )
+
+            # The parked snapshot stays verifiable after the owner unparks.
+            document["parked_services"] = []
+            unparked = backupctl.BackupConfig.load(write_config(base, document))
+            backupctl.validate_restored_contract(unparked, repository.manifest)
+
+    def test_unavailable_service_is_never_recorded_or_uploaded(self) -> None:
+        # Database services sit outside every quiesce window, so the metadata
+        # read is the first to observe one that is degraded or stopped.
+        for replicas in ((1, 0), (0, 0), (2, 1)):
+            with (
+                self.subTest(replicas=replicas),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                document["parked_services"] = PARKED_SERVICES
+                for dataset in document["datasets"]:
+                    Path(dataset["source"]).mkdir(parents=True)
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                swarm = FakeReplicaSwarm(reviewed_replicas(document))
+                swarm.state["workloads_n8n-db"] = replicas
+                repository = ManifestRepository()
+                with (
+                    mock.patch.object(backupctl, "Swarm", return_value=swarm),
+                    mock.patch.object(
+                        backupctl, "dump_database", contract_database_artifact
+                    ),
+                    mock.patch.object(
+                        backupctl, "archive_source", contract_filesystem_artifact
+                    ),
+                    self.assertRaisesRegex(
+                        backupctl.BackupError,
+                        "service is not fully available while recording metadata "
+                        rf"\(desired={replicas[0]}, running={replicas[1]}\): "
+                        "workloads_n8n-db",
+                    ),
+                ):
+                    backupctl.command_application(config, repository)
+                self.assertIsNone(repository.manifest)
+
+    def test_running_parked_minecraft_fails_before_archiving(self) -> None:
+        swarm = FakeReplicaSwarm({"workloads_minecraft": (1, 1)})
+        with self.assertRaisesRegex(
+            backupctl.BackupError,
+            "parked service is not at rest before backup",
+        ):
+            with backupctl.parked_minecraft_at_rest(swarm, "workloads_minecraft"):
+                self.fail("a running parked server must not be archived")
+        self.assertEqual(swarm.scaled, [])
+
+    def test_draining_parked_minecraft_is_rejected_before_archiving(self) -> None:
+        # (0, 1): a task still stopping after the scale to zero; (1, 0): the
+        # service was unparked and its task has not started yet.
+        for desired, running in ((0, 1), (1, 0)):
+            with self.subTest(replicas=(desired, running)):
+                swarm = FakeReplicaSwarm({"workloads_minecraft": (desired, running)})
+                with self.assertRaisesRegex(
+                    backupctl.BackupError,
+                    "parked service is not at rest before backup "
+                    rf"\(desired={desired}, running={running}\): "
+                    "workloads_minecraft",
+                ):
+                    with backupctl.parked_minecraft_at_rest(
+                        swarm, "workloads_minecraft"
+                    ):
+                        self.fail("a draining parked server must not be archived")
+                self.assertEqual(swarm.scaled, [])
+
+    def test_parked_minecraft_started_mid_archive_fails(self) -> None:
+        swarm = FakeReplicaSwarm({"workloads_minecraft": (0, 0)})
+        with self.assertRaisesRegex(
+            backupctl.BackupError,
+            "parked service is not at rest after backup "
+            r"\(desired=1, running=1\): workloads_minecraft",
+        ):
+            with backupctl.parked_minecraft_at_rest(swarm, "workloads_minecraft"):
+                swarm.state["workloads_minecraft"] = (1, 1)
+        self.assertEqual(swarm.scaled, [])
+
+    def test_parked_minecraft_started_during_backup_is_never_uploaded(self) -> None:
+        class StartedBeforeMetadata(FakeReplicaSwarm):
+            """Minecraft starts after its window closed, before metadata."""
+
+            def service_image(self, service: str) -> str:
+                # Database dumps are faked, so only the metadata loop reads
+                # images, after every backup window has closed.
+                self.state["workloads_minecraft"] = (1, 1)
+                return super().service_image(service)
+
+        scenarios = (
+            (
+                "started while archiving",
+                FakeReplicaSwarm,
+                True,
+                (
+                    "parked service is not at rest after backup "
+                    r"\(desired=1, running=1\): workloads_minecraft"
+                ),
+            ),
+            (
+                "started before metadata",
+                StartedBeforeMetadata,
+                False,
+                (
+                    "parked service is not at rest while recording metadata "
+                    r"\(desired=1, running=1\): workloads_minecraft"
+                ),
+            ),
+        )
+        for label, swarm_class, start_while_archiving, message in scenarios:
+            with (
+                self.subTest(label),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                document["parked_services"] = PARKED_SERVICES
+                for dataset in document["datasets"]:
+                    Path(dataset["source"]).mkdir(parents=True)
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                swarm = swarm_class(reviewed_replicas(document))
+
+                def archive(
+                    identifier: str,
+                    source: Path,
+                    destination: Path,
+                    swarm: FakeReplicaSwarm = swarm,
+                    start: bool = start_while_archiving,
+                ) -> dict[str, object]:
+                    if start and identifier == "minecraft-mods":
+                        swarm.state["workloads_minecraft"] = (1, 1)
+                    return contract_filesystem_artifact(identifier, source, destination)
+
+                repository = ManifestRepository()
+                with (
+                    mock.patch.object(backupctl, "Swarm", return_value=swarm),
+                    mock.patch.object(
+                        backupctl, "dump_database", contract_database_artifact
+                    ),
+                    mock.patch.object(backupctl, "archive_source", archive),
+                    self.assertRaisesRegex(backupctl.BackupError, message),
+                ):
+                    backupctl.command_application(config, repository)
+                self.assertIsNone(repository.manifest)
+                self.assertNotIn(
+                    "workloads_minecraft", {name for name, _ in swarm.scaled}
+                )
+
+
+class QuiesceWindowTests(unittest.TestCase):
+    def test_parked_group_service_is_never_scaled(self) -> None:
+        swarm = FakeReplicaSwarm(
+            {"workloads_n8n": (1, 1), "workloads_openclaw": (0, 0)}
+        )
+        with backupctl.quiesced_services(
+            swarm,
+            ["workloads_n8n", "workloads_openclaw"],
+            parked=frozenset({"workloads_openclaw"}),
+        ):
+            self.assertEqual(swarm.state["workloads_n8n"], (0, 0))
+            self.assertEqual(swarm.state["workloads_openclaw"], (0, 0))
+        self.assertEqual(
+            swarm.scaled,
+            [("workloads_n8n", 0), ("workloads_n8n", 1)],
+        )
+        self.assertEqual(swarm.state["workloads_openclaw"], (0, 0))
+
+    def test_running_parked_service_fails_closed(self) -> None:
+        swarm = FakeReplicaSwarm(
+            {"workloads_n8n": (1, 1), "workloads_openclaw": (1, 1)}
+        )
+        with self.assertRaisesRegex(
+            backupctl.BackupError,
+            "parked service is not at rest before backup",
+        ):
+            with backupctl.quiesced_services(
+                swarm,
+                ["workloads_n8n", "workloads_openclaw"],
+                parked=frozenset({"workloads_openclaw"}),
+            ):
+                self.fail("the window must not open around a running service")
+        self.assertNotIn(("workloads_n8n", 0), swarm.scaled)
+        self.assertNotIn("workloads_openclaw", {name for name, _ in swarm.scaled})
+        self.assertEqual(swarm.state["workloads_n8n"], (1, 1))
+
+    def test_draining_parked_group_service_is_rejected_before_any_scale(
+        self,
+    ) -> None:
+        # The parked service is listed first so a rejection leaves no writer
+        # to recover: the window must refuse before touching anything.
+        for desired, running in ((0, 1), (1, 0)):
+            with self.subTest(replicas=(desired, running)):
+                swarm = FakeReplicaSwarm(
+                    {
+                        "workloads_openclaw": (desired, running),
+                        "workloads_n8n": (1, 1),
+                    }
+                )
+                with self.assertRaisesRegex(
+                    backupctl.BackupError,
+                    "parked service is not at rest before backup "
+                    rf"\(desired={desired}, running={running}\): "
+                    "workloads_openclaw",
+                ):
+                    with backupctl.quiesced_services(
+                        swarm,
+                        ["workloads_openclaw", "workloads_n8n"],
+                        parked=frozenset({"workloads_openclaw"}),
+                    ):
+                        self.fail("the window must not open around a draining task")
+                self.assertEqual(swarm.scaled, [])
+                self.assertEqual(swarm.state["workloads_n8n"], (1, 1))
+
+    def test_parked_service_started_during_window_fails_and_restores_writers(
+        self,
+    ) -> None:
+        swarm = FakeReplicaSwarm(
+            {"workloads_n8n": (1, 1), "workloads_openclaw": (0, 0)}
+        )
+        with self.assertRaisesRegex(
+            backupctl.BackupError,
+            "parked service is not at rest after backup",
+        ):
+            with backupctl.quiesced_services(
+                swarm,
+                ["workloads_n8n", "workloads_openclaw"],
+                parked=frozenset({"workloads_openclaw"}),
+            ):
+                swarm.state["workloads_openclaw"] = (1, 1)
+        self.assertEqual(
+            swarm.scaled,
+            [("workloads_n8n", 0), ("workloads_n8n", 1)],
+        )
+
+
+class ParkedSnapshotVerificationTests(unittest.TestCase):
+    def test_consistent_snapshots_verify_whatever_is_parked_now(self) -> None:
+        scenarios = [
+            (frozenset(), backupctl.MINECRAFT_RCON_PROTOCOL),
+            (frozenset({"workloads_openclaw"}), backupctl.MINECRAFT_RCON_PROTOCOL),
+            (
+                frozenset({"workloads_minecraft"}),
+                backupctl.MINECRAFT_PARKED_PROTOCOL,
+            ),
+            (frozenset(PARKED_SERVICES), backupctl.MINECRAFT_PARKED_PROTOCOL),
+        ]
+        # Verification never reads the current parked_services: a snapshot
+        # taken while parked verifies after unparking, and the reverse.
+        for parked_now in ([], PARKED_SERVICES):
+            for at_rest, protocol in scenarios:
+                with (
+                    self.subTest(parked_now=parked_now, at_rest=sorted(at_rest)),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    base = Path(temporary)
+                    document = configuration(base)
+                    manifest = application_manifest(
+                        document,
+                        at_rest=at_rest,
+                        protocol=protocol,
+                    )
+                    document["parked_services"] = parked_now
+                    config = backupctl.BackupConfig.load(write_config(base, document))
+                    backupctl.validate_restored_contract(config, manifest)
+
+    def test_non_parkable_service_at_rest_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            document = configuration(base)
+            config = backupctl.BackupConfig.load(write_config(base, document))
+            manifest = application_manifest(
+                document,
+                at_rest=frozenset({"workloads_n8n"}),
+            )
+            with self.assertRaisesRegex(
+                backupctl.BackupError,
+                "non-parkable service at rest: workloads_n8n",
+            ):
+                backupctl.validate_restored_contract(config, manifest)
+
+    def test_parked_protocol_with_running_minecraft_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            document = configuration(base)
+            document["parked_services"] = PARKED_SERVICES
+            config = backupctl.BackupConfig.load(write_config(base, document))
+            manifest = application_manifest(
+                document,
+                protocol=backupctl.MINECRAFT_PARKED_PROTOCOL,
+            )
+            with self.assertRaisesRegex(
+                backupctl.BackupError,
+                "Minecraft consistency metadata differs",
+            ):
+                backupctl.validate_restored_contract(config, manifest)
+
+    def test_rcon_protocol_with_parked_minecraft_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            document = configuration(base)
+            config = backupctl.BackupConfig.load(write_config(base, document))
+            manifest = application_manifest(
+                document,
+                at_rest=frozenset({"workloads_minecraft"}),
+                protocol=backupctl.MINECRAFT_RCON_PROTOCOL,
+            )
+            with self.assertRaisesRegex(
+                backupctl.BackupError,
+                "Minecraft consistency metadata differs",
+            ):
+                backupctl.validate_restored_contract(config, manifest)
+
+    def test_partially_stopped_or_boolean_replicas_are_rejected(self) -> None:
+        # False == 0 and True == 1 in Python: without the bool guard a
+        # recorded (False, False) would read as parked and (True, True) as
+        # available, so both must be refused as malformed metadata.
+        for replicas in ((0, 1), (1, 0), (2, 1), (False, False), (True, True)):
+            with (
+                self.subTest(replicas=replicas),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                manifest = application_manifest(document)
+                recorded = manifest["metadata"]["services"]["workloads_openclaw"]
+                recorded["desired_replicas"], recorded["running_replicas"] = replicas
+                with self.assertRaisesRegex(
+                    backupctl.BackupError,
+                    "service metadata is invalid: workloads_openclaw",
+                ):
+                    backupctl.validate_restored_contract(config, manifest)
 
 
 class ArchiveSafetyTests(unittest.TestCase):

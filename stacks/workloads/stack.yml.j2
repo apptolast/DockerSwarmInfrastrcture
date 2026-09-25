@@ -132,6 +132,9 @@ services:
       start_period: 2m
     deploy:
       <<: *deploy-defaults
+      # 0 mientras config/platform.yml lo aparque (platform_parked_workloads):
+      # sin tarea ni presupuesto, pero con datos, puerto y redes intactos.
+      replicas: {{ 0 if "minecraft" in platform_parked_workloads else 1 }}
       labels:
         com.apptolast.catalog-service: minecraft
         com.apptolast.managed-by: ansible
@@ -926,6 +929,9 @@ services:
       start_period: 45s
     deploy:
       <<: *deploy-defaults
+      # 0 mientras config/platform.yml lo aparque; el edge conserva entonces
+      # la ruta, sin backend, y responde 503.
+      replicas: {{ 0 if "openclaw" in platform_parked_workloads else 1 }}
       labels:
         com.apptolast.catalog-service: openclaw-clean
         com.apptolast.managed-by: ansible

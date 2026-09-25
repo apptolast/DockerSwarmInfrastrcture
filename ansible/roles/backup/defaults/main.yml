@@ -44,6 +44,9 @@ backup_restic_locks:
       2fb45ac6f9071b6f20eb883953a188f9e7c7cb6bbe43c67a2e47ada4e85ee7f0
 
 backup_minecraft_service: workloads_minecraft
+backup_parkable_services:
+  minecraft: workloads_minecraft
+  openclaw: workloads_openclaw
 
 backup_databases:
   - id: n8n-postgres

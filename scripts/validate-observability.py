@@ -161,6 +161,9 @@ EXPECTED_PUBLIC_PROBE_PATHS = {
     "personal-website-pablo": "/placeholder-logo.svg",
     "shlink": "/rest/health",
 }
+# Catalog ID of each workload config/platform.yml may park. A parked service
+# has no task, so its Blackbox probes are not rendered.
+PARKABLE_CATALOG_IDS = {"minecraft": "minecraft", "openclaw": "openclaw-clean"}
 EXPECTED_HEALTH_MARKERS = {
     "prometheus": "http://127.0.0.1:9090/-/ready",
     "alertmanager": "http://127.0.0.1:9093/-/ready",
@@ -587,11 +590,26 @@ def validate_stack(
             raise ContractError(f"legacy component leaked into stack: {forbidden}")
 
 
+def parked_workloads(platform: dict[str, Any]) -> list[str]:
+    parked = platform.get("platform_parked_workloads")
+    if (
+        not isinstance(parked, list)
+        or any(not isinstance(name, str) for name in parked)
+        or parked != sorted(set(parked))
+        or not set(parked) <= set(PARKABLE_CATALOG_IDS)
+    ):
+        raise ContractError("parked workloads are outside the reviewed parkable set")
+    return parked
+
+
 def validate_configs(
     stack: dict[str, Any],
     service_catalog: dict[str, Any],
     config_dir: Path,
+    platform: dict[str, Any],
 ) -> None:
+    parked = parked_workloads(platform)
+    parked_catalog_ids = {PARKABLE_CATALOG_IDS[name] for name in parked}
     declarations = stack.get("configs")
     if not isinstance(declarations, dict) or set(declarations) != set(
         EXPECTED_CONFIG_DESTINATIONS
@@ -616,7 +634,10 @@ def validate_configs(
     if not isinstance(scrape_configs, list):
         raise ContractError("Prometheus scrape_configs is absent")
     jobs = {item.get("job_name"): item for item in scrape_configs}
-    if set(jobs) != EXPECTED_JOBS:
+    expected_jobs = set(EXPECTED_JOBS)
+    if "minecraft" in parked:
+        expected_jobs.discard("blackbox-minecraft-tcp")
+    if set(jobs) != expected_jobs:
         raise ContractError("Prometheus scrape job set changed")
     for job_name, expected_targets in EXPECTED_STATIC_TARGETS.items():
         if static_targets(jobs[job_name]) != expected_targets:
@@ -664,16 +685,15 @@ def validate_configs(
     expected_public_targets = {
         f"https://{hostname}{EXPECTED_PUBLIC_PROBE_PATHS[service_id]}"
         for service_id, service in catalog_probe_services.items()
+        if service_id not in parked_catalog_ids
         for hostname in service["hostnames"]
     }
     if public_targets != expected_public_targets:
         raise ContractError("public blackbox probes differ from service catalog")
-    minecraft_targets = (
-        jobs["blackbox-minecraft-tcp"]
-        .get("static_configs", [{}])[0]
-        .get("targets")
-    )
-    if minecraft_targets != ["workloads_minecraft:25565"]:
+    if "minecraft" not in parked and (
+        jobs["blackbox-minecraft-tcp"].get("static_configs", [{}])[0].get("targets")
+        != ["workloads_minecraft:25565"]
+    ):
         raise ContractError("Minecraft TCP probe drift")
 
     rules = load_yaml(config_dir / "prometheus-alerts.yml")
@@ -914,7 +934,7 @@ def main() -> int:
         secrets = load_yaml(args.secrets)
         platform = load_yaml(args.platform)
         validate_stack(stack, services, secrets, platform)
-        validate_configs(stack, services, args.config_dir)
+        validate_configs(stack, services, args.config_dir, platform)
         validate_operational_helpers(Path(__file__).resolve().parents[1])
     except (OSError, UnicodeDecodeError, ContractError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

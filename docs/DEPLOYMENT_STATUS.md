@@ -4,6 +4,49 @@ Instantánea comprobada el 28 de julio de 2026 sobre `159.195.156.57`. Sustituye
 a la sección «Estado observado» de [`README.md`](../README.md), que describe el
 host antes del primer despliegue real de este árbol.
 
+## Servicios aparcados
+
+Por decisión del propietario (2026-09-25), `config/platform.yml` declara
+Minecraft y OpenClaw aparcados (`platform_parked_workloads`) para liberar RAM
+y CPU del host. Es estado declarado: se aplica con `edge` y después
+`workloads`, y la evidencia del apply y los SHA-256 de los archivos en frío
+bajo `/var/backups/dockerswarm/parked` se añaden aquí cuando se verifican.
+Sus datos siguen en `/srv/dockerswarm/services`. Procedimiento en
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
+
+Antes de aparcar se tomó además un archivo en caliente de Minecraft con el
+protocolo RCON del backup (`save-off`, `save-all flush`, `save-on`), sin
+jugadores conectados:
+`/var/backups/dockerswarm/parked/minecraft-hot-20260925T070501Z.tar.zst`,
+2 352 303 106 bytes, 2 601 entradas, SHA-256
+`fef4bf8b4675c63ee6445d718ce8967b4ad2d65511d6d2337dc724f3fee9e1c7`.
+
+Seguimientos abiertos del aparcado:
+
+- Cerrar el 25565 en el firewall mientras Minecraft está aparcado. Exige
+  aplicar `platform` y `host-baseline`, que aplicarían también el snapshot de
+  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`). Hasta entonces el
+  apply de `workloads` exige que ningún proceso del host escuche en ese
+  puerto, pero solo en el momento del apply.
+- Ninguna alerta avisa si alguien arranca a mano un servicio aparcado; el
+  siguiente apply de `workloads` lo detecta y falla.
+
+## Estado temporal fuera del repositorio
+
+- Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent
+  Substrate) en `/opt/ax-lab`: nodo `kind-control-plane` limitado con
+  `docker update` a 3 584 MiB y registro local `kind-registry`, fuera de
+  Swarm y del contrato de capacidad. Es un ensayo manual pendiente de
+  codificarse en su propio cambio revisado; hasta entonces no forma parte del
+  estado reconstruible. Sale de esta lista cuando ese cambio lo codifique o,
+  si se descarta, cuando se borren el clúster, el registro y `/opt/ax-lab`.
+- Límites `fs.inotify.max_user_watches=524288` y
+  `fs.inotify.max_user_instances=512`, aplicados en caliente para kind; se
+  pierden al reiniciar hasta que ese cambio los codifique.
+- `/swap-ax-build`, swap temporal de 4 GiB creado para compilar el
+  laboratorio (fuera de `fstab`). Incumple `required_swap_mib: 0` y se retira
+  antes de cualquier apply, porque el preflight de capacidad lo rechaza.
+
 ## Aplicado y verificado
 
 | Capa | Resultado |

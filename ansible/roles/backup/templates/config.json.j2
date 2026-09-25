@@ -25,6 +25,11 @@
     "services": {
       "minecraft": backup_minecraft_service
     },
+    "parked_services": (
+      platform_parked_workloads
+      | map("extract", backup_parkable_services)
+      | sort
+    ),
     "databases": backup_databases,
     "datasets": backup_datasets,
     "consistency_groups": backup_consistency_groups,

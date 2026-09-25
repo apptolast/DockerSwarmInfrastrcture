@@ -582,13 +582,11 @@
   changed_when: false
   failed_when: false
   check_mode: false
+  # Exacto por servicio: 1/1 en marcha y 0/0 si esta aparcado.
   until:
-    - workloads_stack_replicas.stdout_lines | length
-      == workloads_expected_stack_services | length
     - >-
-      workloads_stack_replicas.stdout_lines
-      | reject("match", "^" + workloads_stack_name + "_.+=1/1$")
-      | list | length == 0
+      workloads_stack_replicas.stdout_lines | sort
+      == workloads_expected_replica_lines
   retries: 36
   delay: 10
 
@@ -654,12 +652,9 @@
   ansible.builtin.assert:
     that:
       - workloads_stack_replicas.rc == 0
-      - workloads_stack_replicas.stdout_lines | length
-        == workloads_expected_stack_services | length
       - >-
-        workloads_stack_replicas.stdout_lines
-        | reject("match", "^" + workloads_stack_name + "_.+=1/1$")
-        | list | length == 0
+        workloads_stack_replicas.stdout_lines | sort
+        == workloads_expected_replica_lines
       - >-
         workloads_service_ps_diagnostics.results
         | selectattr("rc", "equalto", 0)
@@ -686,7 +681,7 @@
           workloads_stack_name }}_{{ item }}
       - --filter
       - status=running
-  loop: "{{ workloads_expected_stack_services }}"
+  loop: "{{ workloads_running_stack_services }}"
   loop_control:
     label: "{{ item }}"
   register: workloads_task_container_ids
@@ -711,6 +706,39 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Locate any running task container of a parked workload service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - list
+      - --quiet
+      - --no-trunc
+      - --filter
+      - >-
+        label=com.docker.swarm.service.name={{
+          workloads_stack_name }}_{{ item }}
+      - --filter
+      - status=running
+  loop: "{{ platform_parked_workloads }}"
+  loop_control:
+    label: "{{ item }}"
+  register: workloads_parked_task_container_ids
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Enforce that every parked workload service runs no task
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines | length == 0
+    fail_msg: >-
+      Parked service {{ item.item }} still runs a task container.
+  loop: "{{ workloads_parked_task_container_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Index running workload task containers
   ansible.builtin.set_fact:
     workloads_task_container_by_service: >-
@@ -729,7 +757,7 @@
       - container
       - inspect
       - "{{ workloads_task_container_by_service[item] }}"
-  loop: "{{ workloads_expected_stack_services }}"
+  loop: "{{ workloads_running_stack_services }}"
   loop_control:
     label: "{{ item }}"
   register: workloads_healthy_task_inspections
@@ -969,7 +997,8 @@
         (item.stdout | from_json | first).
         Spec.TaskTemplate.Placement.Constraints
       - >-
-        (item.stdout | from_json | first).Spec.Mode.Replicated.Replicas == 1
+        (item.stdout | from_json | first).Spec.Mode.Replicated.Replicas
+        == (0 if item.item.key in platform_parked_workloads else 1)
       - >-
         (item.stdout | from_json | first).Spec.UpdateConfig.Order
         == "stop-first"
@@ -1084,6 +1113,47 @@
       Minecraft Swarm ingress, firewall/DNS contract and the reviewed public
       gate are not in the same state. Internal TCP health is probed only by
       Blackbox on apptolast-minecraft-monitoring.
+
+# Con la tarea en marcha dockerd reserva el 25565 (escucha en 0.0.0.0) y lo
+# redirige al contenedor. Aparcado no queda reserva ni redireccion, pero la
+# compuerta publica sigue admitiendo el puerto en el firewall del host: ningun
+# proceso local puede estar escuchando en el.
+- name: List host TCP listeners on the port a parked Minecraft leaves open
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ss
+      - --no-header
+      - --tcp
+      - --listening
+      - --numeric
+      - --processes
+      - "sport = :25565"
+  register: workloads_parked_minecraft_listeners
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  # dockerd suelta su reserva al terminar la tarea; se le da un margen acotado.
+  until:
+    - workloads_parked_minecraft_listeners.rc == 0
+    - workloads_parked_minecraft_listeners.stdout_lines | length == 0
+  retries: 6
+  delay: 5
+  when:
+    - "'minecraft' in platform_parked_workloads"
+    - platform_minecraft_public_enabled | bool
+
+- name: Refuse a host listener on the port a parked Minecraft leaves open
+  ansible.builtin.assert:
+    that:
+      - workloads_parked_minecraft_listeners.rc == 0
+      - workloads_parked_minecraft_listeners.stdout_lines | length == 0
+    fail_msg: >-
+      A host process listens on TCP 25565 while Minecraft is parked and the
+      public firewall still admits that port:
+      {{ workloads_parked_minecraft_listeners.stdout_lines }}
+  when:
+    - "'minecraft' in platform_parked_workloads"
+    - platform_minecraft_public_enabled | bool
 
 - name: Locate the running n8n runner task container
   ansible.builtin.command:

@@ -10,16 +10,18 @@ capacity_profiles:
   schema_version: 1
   active: organizationweb
   profiles:
+    # Both totals leave out the budget of minecraft and openclaw while
+    # config/platform.yml parks them (config/capacity.yml reviewed_totals).
     observability:
       stacks: [edge, workloads, observability, autoupdater]
       aggregate:
-        reservations: {cpu_millicores: 3570, memory_mib: 7250}
-        limits: {cpu_millicores: 17450, memory_mib: 12397}
+        reservations: {cpu_millicores: 2870, memory_mib: 3922}
+        limits: {cpu_millicores: 13950, memory_mib: 7789}
     organizationweb:
       stacks: [edge, workloads, organizationweb, racinggame, autoupdater]
       aggregate:
-        reservations: {cpu_millicores: 3200, memory_mib: 6930}
-        limits: {cpu_millicores: 15600, memory_mib: 11757}
+        reservations: {cpu_millicores: 2500, memory_mib: 3602}
+        limits: {cpu_millicores: 12100, memory_mib: 7149}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:

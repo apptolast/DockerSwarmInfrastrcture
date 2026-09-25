@@ -122,6 +122,41 @@
       redis_exporter: >-
         {{ image_channels_map.observability["redis-exporter"].reference }}
 
+- name: Require a reviewed parked workload list
+  ansible.builtin.assert:
+    that:
+      - platform_parked_workloads is sequence
+      - platform_parked_workloads is not string
+      - platform_parked_workloads is not mapping
+      - >-
+        platform_parked_workloads
+        == platform_parked_workloads | unique | sort
+      - >-
+        platform_parked_workloads
+        | reject("in", observability_parkable_catalog_ids)
+        | list | length == 0
+    fail_msg: >-
+      platform_parked_workloads is outside the reviewed parkable services.
+
+- name: Derive the probes that parked workloads do not need
+  ansible.builtin.set_fact:
+    observability_parked_catalog_ids: >-
+      {{
+        platform_parked_workloads
+        | map("extract", observability_parkable_catalog_ids)
+        | list
+      }}
+    observability_active_scrape_jobs: >-
+      {{
+        observability_expected_scrape_jobs
+        | reject(
+          "in",
+          ["blackbox-minecraft-tcp"]
+          if "minecraft" in platform_parked_workloads else []
+        )
+        | list
+      }}
+
 - name: Initialize the public HTTPS probe target list
   ansible.builtin.set_fact:
     observability_public_probe_targets: []
@@ -139,7 +174,9 @@
   loop: "{{ approved_services | subelements('hostnames') }}"
   loop_control:
     label: "{{ item.0.id }}"
-  when: item.0.id != "traefik-edge"
+  when:
+    - item.0.id != "traefik-edge"
+    - item.0.id not in observability_parked_catalog_ids
 
 - name: Validate derived images, paths, secrets and probes
   ansible.builtin.assert:
@@ -185,13 +222,21 @@
           "^[a-z0-9-]+-" + observability_secret_version + "$"
         )
         | list | length == 5
-      - observability_public_probe_targets | length == 8
+      # Eight probed services minus the parked ones that have a hostname.
       - >-
-        observability_public_probe_targets | unique | length == 8
+        observability_public_probe_targets | length
+        == 8 - (
+          observability_parked_catalog_ids
+          | select("in", observability_http_probe_paths)
+          | list | length
+        )
+      - >-
+        observability_public_probe_targets | unique | length
+        == observability_public_probe_targets | length
       - >-
         observability_public_probe_targets
         | select("match", "^https://[^/]+/.+")
-        | list | length == 8
+        | list | length == observability_public_probe_targets | length
     fail_msg: >-
       Derived observability images, state paths, secrets or public probes are
       ambiguous or outside the reviewed contract.

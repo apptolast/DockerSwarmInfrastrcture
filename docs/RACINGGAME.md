@@ -84,6 +84,9 @@ presupuesto                         lim 17500 / 12397
 Queda margen, pero es un sizing nominal, no una garantía de carga sostenida.
 El perfil `observability` sigue siendo la alternativa excluyente y no
 incluye el juego: su agregado permanece intacto en el techo de 12397 MiB.
+Estas eran las cifras al añadir el juego. Desde el 2026-09-25 Minecraft y
+OpenClaw están aparcados y liberan su presupuesto; las cifras vigentes están
+en [CAPACITY.md](CAPACITY.md).
 
 ## Ruta edge
 
