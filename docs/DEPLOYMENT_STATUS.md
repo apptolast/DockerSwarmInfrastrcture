@@ -65,7 +65,8 @@ aquí:
   - proyecto Compose `monitor-production` y servicio `node-exporter`;
   - no es una ejecución `oneoff`;
   - `/` montado en `/host` como bind de solo lectura;
-  - usuario no root;
+  - usuario `nobody`, escrito exactamente `nobody`, `65534` o
+    `65534:65534`;
   - sin etiquetas de servicio, tarea ni stack de Swarm.
 
   El contenedor vivo usa `prom/node-exporter:v1.12.1`, corre como `nobody`
