@@ -136,6 +136,8 @@ class ValidatorGitContractTests(unittest.TestCase):
         self.assertIn("--path-format=absolute --git-common-dir", lint)
         self.assertIn('--volume "${git_common_dir}:${git_common_dir}:ro"', lint)
         self.assertIn("rev-list --all --count", lint)
+        # A bound, unlike an equality, would not notice a narrowed scan.
+        self.assertIn("--log-opts=--all", lint)
         self.assertIn("rev-parse --is-shallow-repository)\" == false", lint)
         self.assertIn(
             'require-gitleaks-history-scan.sh" "${repository_commits}"',
