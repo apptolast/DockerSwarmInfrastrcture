@@ -51,6 +51,19 @@ aquí:
   render revisado de esa cadena solo admite 80, 443 y 25565, así que un apply
   de `platform` las eliminaría. Hay que codificarlas antes de cualquier apply
   de `platform`.
+- Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
+  Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
+  las rutas de `satisfactory.apptolast.com` (web, websocket y
+  `/companions`) y `logs-satisfactory.apptolast.com`, esta última con un
+  middleware `basicAuth` cuyo hash no debe publicarse en este repositorio.
+  Además usa el secret `cloudflare_dns_api_token_v3` y está conectado a la
+  red `apptolast-edge-satisfactory`. Un apply de `edge` desde este
+  repositorio revertiría las tres cosas y dejaría Satisfactory sin ruta, así
+  que no se aplica `edge` hasta codificarlas, con el `basicAuth` como Docker
+  Secret. Mientras tanto, con OpenClaw aparcado, la sonda de salud del Traefik
+  vivo lo marca caído (su ruta responde `503`) y registra un WARN
+  `Health check failed.` cada 15 s, que el backend sin servidores de este
+  repositorio elimina en cuanto `edge` pueda aplicarse.
 
 ## Estado temporal fuera del repositorio
 
