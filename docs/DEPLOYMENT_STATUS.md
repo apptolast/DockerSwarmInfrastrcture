@@ -52,8 +52,8 @@ jugadores conectados:
 Seguimientos abiertos del aparcado:
 
 - Cerrar el 25565 en el firewall mientras Minecraft está aparcado. Exige
-  aplicar `platform` y `host-baseline`, que aplicarían también el snapshot de
-  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`), y el de
+  aplicar `platform` y `host-baseline`. El snapshot de paquetes 20260924 ya
+  está aplicado (ver «`host-baseline` (2026-09-25)»), pero el apply de
   `platform` cortaría SFTP y Satisfactory (ver abajo). Hasta entonces el
   apply de `workloads` exige que ningún proceso del host escuche en ese
   puerto, pero solo en el momento del apply.
@@ -205,12 +205,6 @@ arriba.
   esta lista cuando el último de esos cambios se haya aplicado y verificado
   o, si se descarta, cuando se borren el clúster, el registro y
   `/opt/ax-lab`.
-- Límites `fs.inotify.max_user_watches=524288` y
-  `fs.inotify.max_user_instances=512`, aplicados en caliente para kind. El
-  playbook `ax-lab` ya los codifica (ver [AX.md](AX.md)), pero hasta que se
-  aplique se pierden al reiniciar. El apply los deja persistentes en
-  `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf`, y entonces salen de esta
-  lista.
 - El swap temporal `/swap-ax-build` (4 GiB, fuera de `fstab`) que se creó
   para compilar el laboratorio se desactivó y se borró el 2026-09-25, antes
   de cualquier apply. El host vuelve a cumplir `required_swap_mib: 0`.
@@ -246,6 +240,70 @@ tasa durante todo el proceso.
 - `workloads_portfolio-alberto` tiene 256 MiB de límite y 128 MiB de reserva.
 - Todos los servicios siguen en `1/1`, salvo los aparcados en `0/0`, y todas
   las rutas públicas responden igual que antes.
+
+### `ax-lab` (2026-09-25)
+
+`--playbook ax-lab --local` desde `main` en `6b1f10f` (#67):
+
+- `--check`: `ok=24 changed=4 failed=0`.
+- `--confirm-production`: `ok=35 changed=5 failed=0`; repetido:
+  `ok=35 changed=0 failed=0`. Ninguna operación dejó marker.
+- `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf` es `root:root 0644` y solo
+  contiene las dos claves de inotify, que siguen en `524288` y `512`. Ya no
+  se pierden al reiniciar.
+- `kind` v0.33.0 y `kubectl` v1.37.0 están en `/opt/dockerswarm/ax-lab/bin`
+  con el sha256 de `config/ax-lab.yml`.
+- `/opt/dockerswarm/deployments/ax-lab.yml` registra `6b1f10f`.
+- El laboratorio manual no se tocó: 27 pods `Running` y uno `Completed`.
+
+### `host-baseline` (2026-09-25)
+
+`--playbook host-baseline --local --confirm-production` desde `main` en
+`fd71235` (#66 y #68), en ventana exclusiva, sin otras operaciones sobre el
+lock:
+
+- Apply (13:30-13:37 UTC): `ok=210 changed=16 failed=0`, sin handlers y sin
+  marker.
+- El pin de APT pasa del snapshot `20260726T000000Z` al `20260924T000000Z`,
+  con 19 paquetes actualizados y ninguno instalado ni retirado:
+  - `openssh-server`, `openssh-client` y `openssh-sftp-server`
+    `1:10.2p1-2ubuntu3.5` a `3.6`;
+  - `sudo` `1.9.17p2-1ubuntu3` a `3.1`;
+  - `curl`, `libcurl4t64` y `libcurl3t64-gnutls` `8.18.0-1ubuntu2.3` a
+    `2.5`;
+  - `apparmor` y `libapparmor1` `5.0.0~beta1-0ubuntu7` a
+    `5.0.2-0ubuntu1~26.04.1`;
+  - `rsyslog` `8.2512.0-1ubuntu4.1` a `4.2`;
+  - `gpg` y otros ocho paquetes de GnuPG `2.4.8-4ubuntu3` a `3.1`.
+
+  `crowdsec` 1.7.8 y su bouncer 0.0.34 no cambian.
+- `fs.suid_dumpable` pasa de `2` a `0` y `kernel.core_pattern` de `core` a
+  `|/bin/false`. `apport.service` queda deshabilitado e inactivo.
+- La configuración efectiva de `sshd` (puerto, `AllowUsers`,
+  `PermitRootLogin`, autenticación por clave y por contraseña) es idéntica a
+  la de antes, y `ssh.socket` y `ssh.service` siguen activos.
+- Firewall:
+  - `INPUT`, `FORWARD` y `OUTPUT` siguen en `DROP` en IPv4 y en IPv6;
+  - `DOCKER-USER`, `DOCKERSWARM-INGRESS` y `SFTP-SWARM` son idénticas byte a
+    byte a las de antes del apply;
+  - las reglas `LOG` siguen siendo 2 por familia, sin duplicar;
+  - UFW sigue activo, con `logging low` y `deny` por defecto en las tres
+    direcciones.
+- 0 unidades fallidas. `crowdsec`, su bouncer, `fail2ban`, `docker` y
+  `containerd` activos. El nodo sigue `Ready` y `Leader`, y todos los
+  servicios Swarm convergidos.
+- Las seis rutas públicas comprobadas responden: `n8n`, `kropia`,
+  `passbolt`, `satisfactory` y `monitor` con `200`, y `organizacion` con
+  `204` en `/healthz`.
+- El recolector del Observatorio conserva su PID, 0 reinicios y el perfil
+  `docker-default`.
+- Repetido (13:37-13:41 UTC): `ok=209 changed=6 failed=0`, sin handlers ni
+  avisos. Informan `changed`:
+  - `Enable bounded UFW logging`;
+  - las dos restauraciones de CrowdSec tras las pruebas `-t`;
+  - las tres tareas del directorio temporal de la clave de CrowdSec: crearlo,
+    descargar la clave y borrarlo. La tarea que instala el keyring no
+    informa cambios.
 
 ## Runtime regenerado
 
