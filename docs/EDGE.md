@@ -31,8 +31,12 @@ etiquetas
 la base fijada, y
 [v3.7.13](https://github.com/traefik/traefik/blob/v3.7.13/pkg/healthcheck/healthcheck.go),
 la que ejecuta el canal `traefik:v3` a 2026-09-25. Se comprobó el 2026-09-25
-con ambas imágenes por digest y el backend renderizado: `503` y ninguna línea
-de sonda en 20 s; con la sonda activa y sin backend, tres WARN en 50 s.
+en contenedores aislados con el backend renderizado y ambas imágenes por
+digest: `traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8`
+(3.7.9) y `traefik@sha256:f86a2cab1b5c649070c49f883c743dd32d8485a56e3368c5f93b9e91f1e91259`
+(3.7.13). Resultado: `503` y ninguna línea de sonda en 20 s; con la sonda
+activa y sin backend, tres WARN en 50 s. La evidencia está en el pull request
+apptolast/DockerSwarmInfrastrcture#59.
 Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`, antes
 que `workloads` en los dos sentidos.
 

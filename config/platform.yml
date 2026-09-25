@@ -62,10 +62,11 @@ platform_minecraft_offline_public_accepted: true
 # Servicios del stack `workloads` aparcados por decision del propietario
 # (2026-09-25) para liberar RAM y CPU del host. Un servicio aparcado se
 # renderiza con `replicas: 0`: no corre ninguna tarea ni reserva recursos en
-# Swarm, pero conserva imagen, datos, secretos, redes, ruta del edge y su
-# presupuesto en config/capacity.yml, de modo que volver a arrancarlo es
-# quitarlo de esta lista y aplicar `--playbook edge` y despues
-# `--playbook workloads`, sin revision de capacidad. Lista ordenada y sin
+# Swarm y libera su presupuesto en config/capacity.yml, pero conserva imagen,
+# datos, secretos, redes y ruta del edge. Volver a arrancarlo es quitarlo de
+# esta lista, devolver su presupuesto a config/capacity.yml y
+# config/capacity-profiles.yml en el mismo cambio y aplicar `--playbook edge`
+# y despues `--playbook workloads`. Lista ordenada y sin
 # duplicados, `[]` si no hay ninguno (un valor vacio se rechaza); solo admite
 # los servicios que ningun otro necesita para funcionar (minecraft, openclaw).
 # La compuerta publica de Minecraft no cambia: el firewall sigue admitiendo el

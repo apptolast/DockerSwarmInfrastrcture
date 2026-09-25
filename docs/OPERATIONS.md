@@ -248,14 +248,14 @@ paralelo si afectan al mismo servidor o ventana de cutover.
 
 `platform_parked_workloads` (`config/platform.yml`) detiene servicios del
 stack `workloads` sin borrar nada: se renderizan con `replicas: 0` y conservan
-imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes, ruta del edge
-y presupuesto de capacidad. La lista va ordenada, sin duplicados, se escribe
-`[]` cuando no queda ningún servicio aparcado (una clave vacía es `null` y
-todas las capas la rechazan) y solo admite `minecraft` y `openclaw`, los dos
-servicios que ningún otro necesita para funcionar: `minecraft-stats` solo lee
-el mundo de Minecraft en modo lectura y sigue sirviendo las últimas
-estadísticas. Aparcar una base de datos dejaría a sus consumidores sin
-backend, así que los validadores lo rechazan.
+imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes y ruta del
+edge, pero liberan su presupuesto de capacidad. La lista va ordenada, sin
+duplicados, se escribe `[]` cuando no queda ningún servicio aparcado (una
+clave vacía es `null` y todas las capas la rechazan) y solo admite
+`minecraft` y `openclaw`, los dos servicios que ningún otro necesita para
+funcionar: `minecraft-stats` solo lee el mundo de Minecraft en modo lectura y
+sigue sirviendo las últimas estadísticas. Aparcar una base de datos dejaría a
+sus consumidores sin backend, así que los validadores lo rechazan.
 
 Qué cambia en cada capa mientras un servicio está aparcado:
 
@@ -283,38 +283,63 @@ Qué cambia en cada capa mientras un servicio está aparcado:
   sin series.
 - `backup`: copia los datos en reposo, sin detener nada ni usar RCON (ver
   [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md), «Servicios aparcados»).
-- Capacidad: el presupuesto sigue reservado, así que desaparcar no requiere
-  revisión de capacidad; lo que se libera es la RAM y CPU reales del host.
+- Capacidad: el servicio deja de contar en `config/capacity.yml` y
+  `config/capacity-profiles.yml` (ver [CAPACITY.md](CAPACITY.md)), así que
+  su RAM y su CPU quedan libres también en el contrato. Desaparcarlo exige
+  devolver su reserva y su límite a esos dos ficheros en el mismo cambio, y
+  el validador comprueba que el plan sigue cabiendo en el host.
 
 Para aparcar o desaparcar se edita la lista y se sigue la secuencia de
-cambio. En los dos sentidos se aplica primero `edge` y después `workloads`: el
-smoke de `workloads` exige a OpenClaw el `503` del edge si está aparcado y el
-`200` si no lo está, así que el edge ya debe servir el backend que
-corresponde. Al desaparcar, Traefik sondea OpenClaw desde el apply de `edge`
-y registra ese WARN hasta que el de `workloads` arranca la tarea. Si
-`observability` o `backup` están desplegados, se aplican también para
-renderizar la lista nueva. Cada apply de `edge` que cambia la configuración
-dinámica reemplaza la tarea de Traefik (`stop-first`), con un corte breve de
-todas las rutas públicas.
+cambio. El orden de los applies protege dos cosas: que ninguna alerta salte
+por una sonda que ya no aplica, y que el smoke de `workloads` encuentre en
+OpenClaw la respuesta que corresponde (`503` si está aparcado, `200` si no):
+
+- Para aparcar: `observability` si está desplegado (retira las sondas),
+  después `edge` y después `workloads`.
+- Para desaparcar: `edge`, después `workloads` y después `observability` si
+  está desplegado (repone las sondas cuando el servicio ya responde). Traefik
+  sondea OpenClaw desde el apply de `edge` y registra ese WARN hasta que el de
+  `workloads` arranca la tarea.
+
+Si `backup` está desplegado, se aplica también para renderizar la lista
+nueva. Cada apply de `edge` que cambia la configuración dinámica reemplaza la
+tarea de Traefik (`stop-first`), con un corte breve de todas las rutas
+públicas.
+
+La compuerta del 25565 solo se comprueba durante un apply de `workloads`.
+Entre dos applies, un proceso local sin privilegios podría escuchar en ese
+puerto y quedar expuesto a Internet. El propietario acepta ese hueco hasta que
+el firewall cierre el puerto mientras Minecraft está aparcado, y tampoco hay
+alerta si alguien arranca a mano un servicio aparcado. Los dos seguimientos
+figuran en [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md).
 
 Mientras no exista el backup externo (ver «Backup y autolock»), al aparcar
-se archiva el estado en frío en el propio host en cuanto el servicio está en
-`0/0` (datos en reposo), bajo el lock host-global, y se registra su SHA-256.
+se archiva el estado en frío en el propio host, bajo el lock host-global, en
+cuanto el servicio está en `0/0` (datos en reposo), y se registra su SHA-256.
 Las rutas son `minecraft/data` y `minecraft/mods` para Minecraft y
-`openclaw-clean/home` para OpenClaw:
+`openclaw-clean/home` para OpenClaw. El nombre lleva la hora UTC, fijada una
+sola vez, y la orden se niega a sobrescribir un archivo existente:
 
 ```bash
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 sudo -- install -d -o root -g root -m 0700 /var/backups/dockerswarm/parked
 sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
   --operation parked-cold-archive -- \
-  /bin/sh -c 'umask 077 && exec /usr/bin/tar --create --zstd \
-    --numeric-owner --acls --xattrs \
-    --file /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst \
-    -C /srv/dockerswarm/services minecraft/data minecraft/mods'
+  /bin/sh -c 'umask 077 && out="$1" && shift &&
+    test ! -e "$out" && exec /usr/bin/tar --create --zstd \
+    --numeric-owner --acls --xattrs --file "$out" \
+    -C /srv/dockerswarm/services "$@"' sh \
+  "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst" \
+  minecraft/data minecraft/mods
 sudo -- tar --list --zstd \
-  --file /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst >/dev/null
-sudo -- sha256sum /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst
+  --file "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst" \
+  >/dev/null
+sudo -- sha256sum \
+  "/var/backups/dockerswarm/parked/minecraft-cold-${stamp}.tar.zst"
 ```
+
+Para OpenClaw se repite con `openclaw-cold-${stamp}.tar.zst` y la ruta
+`openclaw-clean/home`.
 
 El archivo es `0600 root:root` dentro de un directorio `0700` y contiene el
 estado en claro, incluido el de OpenClaw. Convive con los datos en el mismo

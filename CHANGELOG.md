@@ -10,16 +10,21 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 - Estado «aparcado» para servicios del stack `workloads`:
   `platform_parked_workloads` en `config/platform.yml` renderiza
-  `replicas: 0` y conserva imagen, datos, secretos, redes, ruta del edge y
-  presupuesto de capacidad. Solo admite los servicios que ningún otro
-  necesita para funcionar (`minecraft`, `openclaw`), y cada capa lo aplica:
-  la convergencia exige `0/0` y ninguna tarea viva, la ruta de OpenClaw queda
-  sin servidores (Traefik responde 503 sin lanzar una sonda que registraría
-  un WARN cada 15 s), Blackbox deja de sondear lo aparcado, el backup copia
-  en reposo sin RCON, el helper de n8n acepta `0/0` solo en lo aparcado y el
-  apply falla si un proceso del host escucha en el 25565 de un Minecraft
-  aparcado. Por decisión del propietario, Minecraft y OpenClaw quedan
-  aparcados para liberar RAM y CPU del host; runbook en
+  `replicas: 0`, conserva imagen, datos, secretos, redes y ruta del edge, y
+  libera su presupuesto de capacidad. Solo admite los servicios que ningún
+  otro necesita para funcionar (`minecraft`, `openclaw`). Cada capa lo aplica:
+  - la convergencia exige `0/0` y ninguna tarea viva;
+  - la ruta de OpenClaw queda sin servidores: Traefik responde 503 sin lanzar
+    una sonda que registraría un WARN cada 15 s;
+  - Blackbox deja de sondear lo aparcado;
+  - el helper de n8n acepta `0/0` solo en lo aparcado;
+  - el apply falla si un proceso del host escucha en el 25565 de un Minecraft
+    aparcado;
+  - el backup copia lo aparcado en reposo, sin RCON, y ya no registra ni sube
+    un snapshot si algún servicio no aparcado está incompleto.
+
+  Por decisión del propietario, Minecraft y OpenClaw quedan aparcados para
+  liberar RAM y CPU del host; runbook en
   [`docs/OPERATIONS.md`](docs/OPERATIONS.md) («Aparcar un servicio»).
 - El juego se re-fija a la build que arregla el rendimiento sin GPU
   (`2ea28466`, digest `a61822ad`). El filtrado anisotropico del suelo

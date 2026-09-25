@@ -1,9 +1,10 @@
 """Parked workloads (config/platform.yml platform_parked_workloads).
 
-A parked workload renders `replicas: 0` and keeps its image, data, secrets,
-networks, edge route and capacity budget. Every layer that reacts to parking
-is rendered here for both reviewed states, nothing parked and both parkable
-services parked, into disposable directories so `.build` is never touched.
+A parked workload renders `replicas: 0`, releases its capacity budget and
+keeps its image, data, secrets, networks and edge route. Every layer that
+reacts to parking is rendered here for the four reviewed states (nothing,
+either or both parkable services parked) into disposable directories, so
+`.build` is never touched.
 """
 
 from __future__ import annotations
@@ -231,6 +232,20 @@ class ParkedRenderTests(unittest.TestCase):
                 ),
             ):
                 validate(self.stack("both", "workloads"), parked)
+        # A platform contract without the key is refused, never read as [].
+        missing = platform_with([])
+        del missing["platform_parked_workloads"]
+        with self.assertRaisesRegex(
+            workload_validator.ContractError, "outside the reviewed parkable set"
+        ):
+            workload_validator.validate_stack(
+                self.stack("both", "workloads"),
+                services,
+                channels,
+                secrets,
+                runner_metadata,
+                missing,
+            )
         # A boolean is not a replica count, even where it compares equal.
         for service, replicas in (("kropia", True), ("minecraft", False)):
             stack = self.stack("both", "workloads")
@@ -345,23 +360,83 @@ class ParkedRenderTests(unittest.TestCase):
             ):
                 validate("both", parked)
 
-    def test_parking_keeps_the_reviewed_capacity_budget(self) -> None:
+    def test_observability_refuses_a_platform_without_the_parked_list(self) -> None:
+        missing = platform_with([])
+        del missing["platform_parked_workloads"]
+        root = self.roots["none"] / "observability"
+        with self.assertRaisesRegex(
+            observability_validator.ContractError, "outside the reviewed parkable set"
+        ):
+            observability_validator.validate_configs(
+                load_yaml(root / "stack.yml"),
+                load_yaml(REPOSITORY_ROOT / "config/services.yml"),
+                root / "config",
+                missing,
+            )
+
+    def test_parking_releases_exactly_the_parked_budget(self) -> None:
         contract = capacity.validate_contract(
             load_yaml(REPOSITORY_ROOT / "config/capacity.yml")
         )
-        totals = []
+        workloads = contract["stacks"]["workloads"]
+
+        def plans(variant: str) -> dict[str, Any]:
+            services = self.stack(variant, "workloads")["services"]
+            return {
+                name: capacity.service_plan(
+                    "workloads",
+                    name,
+                    services[name],
+                    set(workloads["global_services"]),
+                    contract["topology"]["eligible_nodes"],
+                    contract["policy"]["service_memory_limit_to_reservation_ratio"],
+                )
+                for name in workloads["expected_services"]
+            }
+
+        def total(variant: str) -> dict[str, dict[str, int]]:
+            result = capacity.empty_resources()
+            for unit, instances in plans(variant).values():
+                capacity.add_resources(
+                    result, capacity.scaled_resources(unit, instances)
+                )
+            return result
+
+        running = total("none")
+        for variant, parked in VARIANTS.items():
+            with self.subTest(variant=variant):
+                expected = copy.deepcopy(running)
+                for name in parked:
+                    unit, _ = plans("none")[name]
+                    for resource_class, values in unit.items():
+                        for key, value in values.items():
+                            expected[resource_class][key] -= value
+                self.assertEqual(total(variant), expected)
+        # The reviewed totals describe the parked state config/platform.yml
+        # declares; any other state needs a reviewed capacity change.
+        declared = load_yaml(REPOSITORY_ROOT / "config/platform.yml")[
+            "platform_parked_workloads"
+        ]
+        declared_variant = next(
+            variant for variant, parked in VARIANTS.items() if parked == declared
+        )
+        self.assertEqual(
+            total(declared_variant), contract["reviewed_totals"]["workloads"]
+        )
         for variant in VARIANTS:
             documents = {
                 stack_id: load_yaml(path)
                 for stack_id, path in capacity.DEFAULT_STACKS.items()
             }
             documents["workloads"] = self.stack(variant, "workloads")
-            totals.append(capacity.validate_stacks(contract, documents))
-        for variant_totals in totals:
-            self.assertEqual(variant_totals, totals[0])
-            self.assertEqual(
-                variant_totals["workloads"], contract["reviewed_totals"]["workloads"]
-            )
+            with self.subTest(budget_variant=variant):
+                if variant == declared_variant:
+                    capacity.validate_stacks(contract, documents)
+                else:
+                    with self.assertRaisesRegex(
+                        capacity.CapacityError, "differ from reviewed_totals"
+                    ):
+                        capacity.validate_stacks(contract, documents)
 
 
 class UnreviewedParkingRenderTests(unittest.TestCase):
@@ -377,7 +452,11 @@ class UnreviewedParkingRenderTests(unittest.TestCase):
                 "observability_render_root",
                 "outside the reviewed parkable services",
             ),
-            ("render-edge", "edge_render_dir", "Assertion failed"),
+            (
+                "render-edge",
+                "edge_render_dir",
+                "outside the reviewed parkable services",
+            ),
         ):
             with self.subTest(playbook=playbook), tempfile.TemporaryDirectory() as root:
                 for parked in (["n8n-db"], "openclaw", {"openclaw": True}):
@@ -408,11 +487,15 @@ class ParkableSetTests(unittest.TestCase):
         self.assertEqual(
             {
                 name
-                for stack, name in capacity.SUSPENDABLE_SERVICES
+                for stack, name in capacity.PARKABLE_SERVICES
                 if stack == "workloads"
             },
             set(PARKABLE),
         )
+        render_edge = (REPOSITORY_ROOT / "ansible/playbooks/render-edge.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"difference({json.dumps(PARKABLE)})", render_edge)
         self.assertEqual(
             observability["observability_parkable_catalog_ids"],
             observability_validator.PARKABLE_CATALOG_IDS,

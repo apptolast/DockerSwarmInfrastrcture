@@ -23,16 +23,13 @@ DEFAULT_STACKS = {
     "autoupdater": PROJECT_DIR / ".build/autoupdater/stack.yml",
 }
 STACK_IDS = frozenset(DEFAULT_STACKS)
-# Replicated services whose kill switch may render `replicas: 0`: the image
-# watcher and the workloads config/platform.yml may park. Their budget stays
-# reserved as one instance, so re-enabling needs no capacity review.
-SUSPENDABLE_SERVICES = frozenset(
-    {
-        ("autoupdater", "shepherd"),
-        ("workloads", "minecraft"),
-        ("workloads", "openclaw"),
-    }
-)
+# Replicated services whose kill switch may render `replicas: 0`. Their budget
+# stays reserved as one instance, so re-enabling needs no capacity review.
+SUSPENDABLE_SERVICES = frozenset({("autoupdater", "shepherd")})
+# Workloads config/platform.yml may park at `replicas: 0`. A parked service
+# releases its budget: the reviewed totals count it only while it runs, so
+# unparking it must fit the budget again in a reviewed capacity change.
+PARKABLE_SERVICES = frozenset({("workloads", "minecraft"), ("workloads", "openclaw")})
 IDENTIFIER_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 CPU_RE = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]{2}")
 MEMORY_RE = re.compile(r"([1-9][0-9]*)M")
@@ -754,6 +751,37 @@ def service_resources(
     eligible_nodes: int,
     maximum_memory_ratio: Decimal,
 ) -> dict[str, dict[str, int]]:
+    unit, instances = service_plan(
+        stack_id,
+        service_name,
+        service,
+        global_services,
+        eligible_nodes,
+        maximum_memory_ratio,
+    )
+    return scaled_resources(unit, instances)
+
+
+def scaled_resources(
+    unit: dict[str, dict[str, int]], instances: int
+) -> dict[str, dict[str, int]]:
+    return {
+        resource_class: {
+            name: value * instances for name, value in values.items()
+        }
+        for resource_class, values in unit.items()
+    }
+
+
+def service_plan(
+    stack_id: str,
+    service_name: str,
+    service: Any,
+    global_services: set[str],
+    eligible_nodes: int,
+    maximum_memory_ratio: Decimal,
+) -> tuple[dict[str, dict[str, int]], int]:
+    """Return one instance's resources and how many instances are budgeted."""
     context = f"{stack_id}.services.{service_name}"
     if not isinstance(service, dict):
         raise CapacityError(f"{context} must be a mapping")
@@ -771,7 +799,9 @@ def service_resources(
     else:
         replicas = deploy.get("replicas")
         allowed_replicas = (
-            {0, 1} if (stack_id, service_name) in SUSPENDABLE_SERVICES else {1}
+            {0, 1}
+            if (stack_id, service_name) in SUSPENDABLE_SERVICES | PARKABLE_SERVICES
+            else {1}
         )
         if (
             mode != "replicated"
@@ -781,7 +811,8 @@ def service_resources(
             raise CapacityError(
                 f"{context} must use replicated mode with exactly one replica"
             )
-        instances = 1
+        # A suspended watcher keeps its budget; a parked workload releases it.
+        instances = replicas if (stack_id, service_name) in PARKABLE_SERVICES else 1
 
     resources = expect_mapping(
         deploy.get("resources"),
@@ -799,13 +830,11 @@ def service_resources(
             "cpu_millicores": parse_cpu(
                 values["cpus"],
                 f"{context}.deploy.resources.{resource_class}.cpus",
-            )
-            * instances,
+            ),
             "memory_mib": parse_memory(
                 values["memory"],
                 f"{context}.deploy.resources.{resource_class}.memory",
-            )
-            * instances,
+            ),
         }
 
     for resource_name in ("cpu_millicores", "memory_mib"):
@@ -821,7 +850,7 @@ def service_resources(
             f"{context} memory limit/reservation ratio {memory_ratio} "
             f"exceeds {maximum_memory_ratio}"
         )
-    return parsed
+    return parsed, instances
 
 
 def validate_stacks(
@@ -862,7 +891,7 @@ def validate_stacks(
         stack_total = empty_resources()
         stack_plans: dict[str, dict[str, dict[str, int]]] = {}
         for service_name in sorted(expected_services):
-            plan = service_resources(
+            unit, instances = service_plan(
                 stack_id,
                 service_name,
                 services[service_name],
@@ -870,8 +899,9 @@ def validate_stacks(
                 contract["topology"]["eligible_nodes"],
                 contract["policy"]["service_memory_limit_to_reservation_ratio"],
             )
-            stack_plans[service_name] = plan
-            add_resources(stack_total, plan)
+            # Application guards judge one instance, even while it is parked.
+            stack_plans[service_name] = unit
+            add_resources(stack_total, scaled_resources(unit, instances))
         if stack_total != contract["reviewed_totals"][stack_id]:
             raise CapacityError(
                 f"{stack_id} rendered totals differ from reviewed_totals: "

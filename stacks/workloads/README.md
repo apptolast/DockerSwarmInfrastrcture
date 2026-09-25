@@ -176,12 +176,13 @@ is retained in Ansible failure diagnostics.
 `platform_parked_workloads` in `config/platform.yml` parks `minecraft` and/or
 `openclaw`, the only services no other service needs in order to work
 (`minecraft-stats` only reads the Minecraft world read-only and keeps serving
-the last statistics). A parked service renders `replicas: 0` and keeps its
-image, bind-mounted data, secrets, networks, edge route and capacity budget,
-so unparking is removing it from the list and applying `--playbook edge`
-first and then `--playbook workloads`, the same order as parking: the
-workloads smoke expects OpenClaw's edge answer (503 parked, 200 running) to
-already match. While Minecraft is parked the apply also fails if any host
-process listens on TCP 25565, which its public gate keeps admitted. The
-procedure and the effect on every layer are in
+the last statistics). A parked service renders `replicas: 0`, releases its
+capacity budget and keeps its image, bind-mounted data, secrets, networks and
+edge route. Unparking it means removing it from the list, adding its budget
+back to `config/capacity.yml` and `config/capacity-profiles.yml` in the same
+change, and applying `--playbook edge` first and then `--playbook workloads`,
+the same order as parking: the workloads smoke expects OpenClaw's edge answer
+(503 parked, 200 running) to already match. While Minecraft is parked the
+apply also fails if any host process listens on TCP 25565, which its public
+gate keeps admitted. The procedure and the effect on every layer are in
 [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md) ("Aparcar un servicio").

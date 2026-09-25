@@ -1130,7 +1130,14 @@
       - "sport = :25565"
   register: workloads_parked_minecraft_listeners
   changed_when: false
+  failed_when: false
   check_mode: false
+  # dockerd suelta su reserva al terminar la tarea; se le da un margen acotado.
+  until:
+    - workloads_parked_minecraft_listeners.rc == 0
+    - workloads_parked_minecraft_listeners.stdout_lines | length == 0
+  retries: 6
+  delay: 5
   when:
     - "'minecraft' in platform_parked_workloads"
     - platform_minecraft_public_enabled | bool

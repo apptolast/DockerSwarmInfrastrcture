@@ -56,29 +56,30 @@ cuentan una vez porque el esquema v1 solo admite un nodo elegible.
 | Capa | RAM reservada | RAM límite | CPU reservada | CPU límite |
 | --- | ---: | ---: | ---: | ---: |
 | edge | 64 MiB | 128 MiB | 100m | 500m |
-| workloads | 5 920 MiB | 9 728 MiB | 2 300m | 11 600m |
+| workloads | 2 592 MiB | 5 120 MiB | 1 600m | 8 100m |
 | observability | 1 248 MiB | 2 496 MiB | 1 070m | 5 100m |
 | autoupdater | 18 MiB | 45 MiB | 100m | 250m |
-| **Total** | **7 250 MiB** | **12 397 MiB** | **3 570m** | **17 450m** |
+| **Total** | **3 922 MiB** | **7 789 MiB** | **2 870m** | **13 950m** |
 
-El vigilante `autoupdater` consume los 45 MiB que quedaban dentro del
-presupuesto de stacks: la suma de límites iguala los 12 397 MiB. Ese 0 no es
-el margen total del host: se siguen preservando por separado 3 GiB para el
-host y 512 MiB de headroom operativo (3 584 MiB protegidos). Cualquier
-aumento futuro de un límite exige reducir otro en la misma revisión. Su
-interruptor `enabled: false` renderiza `replicas: 0` sin liberar el
-presupuesto. En el perfil activo `organizationweb` las sumas son 6 802 MiB
-reservados y 11 501 MiB de límite.
+Las cifras de `workloads` excluyen Minecraft y OpenClaw, aparcados por
+`platform_parked_workloads` en `config/platform.yml` (ver
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»). Un servicio aparcado
+renderiza `replicas: 0` y el validador no lo cuenta (`PARKABLE_SERVICES`), así
+que libera su presupuesto: 3 328 MiB y 700m de CPU reservados y 4 608 MiB y
+3 500m de límite (3 072/4 096 MiB y 500m/2 500m de Minecraft; 256/512 MiB y
+200m/1 000m de OpenClaw). Desaparcar uno vuelve a sumar su reserva y su límite
+en `config/capacity.yml` y `config/capacity-profiles.yml` dentro del mismo
+cambio revisado, y el validador exige que siga cabiendo en el presupuesto.
+Con los dos en marcha, `workloads` suma 5 920/9 728 MiB y 2 300m/11 600m, y el
+total de la plataforma completa llega exactamente a los 12 397 MiB de límite.
 
-Minecraft y OpenClaw siguen la misma regla cuando `config/platform.yml` los
-aparca (`platform_parked_workloads`, ver
-[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»): renderizan
-`replicas: 0` y el validador los cuenta como una instancia
-(`SUSPENDABLE_SERVICES`), así que los totales revisados no cambian y
-desaparcarlos no exige revisión de capacidad. Lo que se libera es el consumo
-real del host y la reserva que Swarm deja de aplicar sin tarea: 3 328 MiB y
-700m de CPU reservados (3 072 MiB y 500m de Minecraft, 256 MiB y 200m de
-OpenClaw).
+Ese techo no es el margen total del host: se siguen preservando por separado
+3 GiB para el host y 512 MiB de headroom operativo (3 584 MiB protegidos).
+Cualquier aumento futuro de un límite exige reducir otro en la misma
+revisión. El vigilante `autoupdater` es distinto: su interruptor
+`enabled: false` renderiza `replicas: 0` sin liberar el presupuesto
+(`SUSPENDABLE_SERVICES`). En el perfil activo `organizationweb` las sumas son
+3 602 MiB reservados y 7 149 MiB de límite, con 2 500m y 12 100m de CPU.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
@@ -151,7 +152,8 @@ swap:
 El validador:
 
 - exige exactamente los 29 servicios revisados en los cuatro renders;
-- cuenta réplicas y los tres servicios globales de observabilidad;
+- cuenta réplicas y los tres servicios globales de observabilidad: cero
+  instancias para un servicio aparcado y una para el vigilante suspendido;
 - rechaza recursos ausentes, unidades ambiguas y reservas mayores que límites;
 - compara los totales renderizados con los totales revisados;
 - conserva 3 GiB, 512 MiB de headroom y 1 CPU fuera de los stacks;

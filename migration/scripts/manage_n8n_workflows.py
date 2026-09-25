@@ -539,7 +539,8 @@ def rollback_plan(
 def parse_stack_replicas(
     output: str,
     stack_name: str,
-    parked: frozenset[str] = frozenset(),
+    *,
+    parked: frozenset[str],
 ) -> dict[str, str]:
     observed: dict[str, str] = {}
     prefix = f"{stack_name}_"
@@ -919,7 +920,8 @@ def stack_smoke(
     runner: CommandRunner,
     stack_name: str,
     expected_ipv4: str,
-    parked: frozenset[str] = frozenset(),
+    *,
+    parked: frozenset[str],
 ) -> tuple[str, str]:
     result = runner.run(
         [
@@ -931,7 +933,7 @@ def stack_smoke(
             "{{.Name}}\t{{.Replicas}}",
         ]
     )
-    parse_stack_replicas(result.stdout, stack_name, parked)
+    parse_stack_replicas(result.stdout, stack_name, parked=parked)
     n8n_container = unique_running_container(runner, f"{stack_name}_n8n")
     database_container = unique_running_container(runner, f"{stack_name}_n8n-db")
     require_healthy_container(runner, n8n_container)
@@ -1237,13 +1239,13 @@ def publish(
     inventory_path: Path,
     expected_ipv4: str,
     timeout: int,
-    parked: frozenset[str] = frozenset(),
+    parked: frozenset[str],
 ) -> Path | None:
     n8n_container, database_container = stack_smoke(
         runner,
         stack_name,
         expected_ipv4,
-        parked,
+        parked=parked,
     )
     current = current_inventory(runner, database_container)
     missing = publication_plan(current, expected)
@@ -1397,7 +1399,7 @@ def rollback(
     inventory_path: Path,
     expected_ipv4: str,
     timeout: int,
-    parked: frozenset[str] = frozenset(),
+    parked: frozenset[str],
 ) -> Path | None:
     result = runner.run(
         [
@@ -1409,7 +1411,7 @@ def rollback(
             "{{.Name}}\t{{.Replicas}}",
         ]
     )
-    parse_stack_replicas(result.stdout, stack_name, parked)
+    parse_stack_replicas(result.stdout, stack_name, parked=parked)
     database_container = unique_running_container(runner, f"{stack_name}_n8n-db")
     current = current_inventory(runner, database_container)
     if not rollback_plan(current, expected):
@@ -1578,7 +1580,7 @@ def main() -> int:
                 runner,
                 args.stack,
                 expected_ipv4,
-                parked,
+                parked=parked,
             )
             current = current_inventory(runner, database_container)
             missing = publication_plan(current, expected)
