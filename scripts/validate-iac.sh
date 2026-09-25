@@ -42,6 +42,12 @@ fi
 
 ensure_docker_validation_lock iac-docker-validation "${SCRIPT_PATH}" "$@"
 
+# Under an active Swarm the lock supervisor runs this script on a
+# pseudo-terminal (scripts/run-locked-command.py, pty.fork), and so does sudo
+# with `use_pty`: git would then page into a prompt that waits forever while
+# the host-global lock stays held.
+export GIT_PAGER=cat
+
 export ANSIBLE_CONFIG="${PROJECT_DIR}/ansible/ansible.cfg"
 export PATH="${VENV_DIR}/bin:${PATH}"
 export TF_IN_AUTOMATION=1
@@ -241,7 +247,7 @@ for shell_script in "${shell_scripts[@]}"; do
 done
 
 scripts/validate-traefik-config.sh
-git diff --check
+git --no-pager diff --check
 
 cleanup
 trap - EXIT

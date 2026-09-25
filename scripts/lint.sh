@@ -45,6 +45,12 @@ fi
 
 ensure_docker_validation_lock repository-lint-docker "${SCRIPT_PATH}" "$@"
 
+# Under an active Swarm the lock supervisor runs this script on a
+# pseudo-terminal (scripts/run-locked-command.py, pty.fork), and so does sudo
+# with `use_pty`: git would then page into a prompt that waits forever while
+# the host-global lock stays held.
+export GIT_PAGER=cat
+
 jq --exit-status '
   . == {
     "log-driver": "local",
@@ -101,10 +107,26 @@ docker run \
   --redact \
   /repo
 
+# A linked worktree's .git is a file that names its git directory by absolute
+# host path, so the common directory is mounted at that same path. The scan
+# log then has to prove the history was read, bounded by the commits the
+# repository has: scripts/require-gitleaks-history-scan.sh explains why the
+# exit code cannot. A shallow clone would bound both sides to the truncated
+# history, so it is refused.
+[[ "$(git -C "${PROJECT_DIR}" rev-parse --is-shallow-repository)" == false ]] ||
+  fail "the history secret scan needs a complete clone, not a shallow one"
+git_common_dir="$(
+  git -C "${PROJECT_DIR}" rev-parse --path-format=absolute --git-common-dir
+)"
+repository_commits="$(git -C "${PROJECT_DIR}" rev-list --all --count)"
+history_scan_log="$(mktemp)"
+trap 'rm -f -- "${history_scan_log}"' EXIT
+
 docker run \
   --rm \
   --user "$(id -u):$(id -g)" \
   --volume "${PROJECT_DIR}:/repo:ro" \
+  --volume "${git_common_dir}:${git_common_dir}:ro" \
   --workdir /repo \
   "${GITLEAKS_IMAGE}" \
   git \
@@ -112,11 +134,18 @@ docker run \
   --log-opts=--all \
   --no-banner \
   --redact \
-  /repo
+  /repo 2>"${history_scan_log}" ||
+  {
+    cat -- "${history_scan_log}" >&2
+    fail "gitleaks history scan failed"
+  }
+cat -- "${history_scan_log}" >&2
+"${SCRIPT_DIR}/require-gitleaks-history-scan.sh" "${repository_commits}" \
+  <"${history_scan_log}"
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git diff --check
-  git diff --cached --check
+  git --no-pager diff --check
+  git --no-pager diff --cached --check
 fi
 
 printf 'Repository lint and secret scan passed.\n'
