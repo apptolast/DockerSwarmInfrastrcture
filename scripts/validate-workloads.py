@@ -315,23 +315,37 @@ def bind_sources(service: dict[str, Any]) -> list[str]:
 
 DOCKERFILE_FROM = re.compile(
     r"^[ \t]*FROM[ \t]+(?:--platform=\S+[ \t]+)?(?P<image>\S+)"
-    r"(?:[ \t]+AS[ \t]+\S+)?[ \t]*$",
+    r"(?:[ \t]+AS[ \t]+\S+)?(?<!\\)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
+)
+# Every line that starts a FROM instruction, however it is spelled or
+# continued: each must also be one the strict pattern above parsed, which
+# takes no line continuation.
+DOCKERFILE_FROM_LINE = re.compile(r"^\s*from\b", re.IGNORECASE | re.MULTILINE)
+# Parser directives change how the whole file is read (`escape`) or which
+# frontend builds it (`syntax`); the reviewed Dockerfile uses none.
+DOCKERFILE_DIRECTIVE = re.compile(
+    r"^\s*#\s*(?:syntax|escape|check)\s*=", re.IGNORECASE | re.MULTILINE
 )
 RUNNER_BASE_PATTERN = re.compile(
     r"docker\.io/n8nio/runners:(?P<tag>[^@\s]+)@(?P<digest>sha256:[0-9a-f]{64})"
 )
 RUNNER_LABEL_PATTERN = re.compile(
-    r'org\.opencontainers\.image\.description="n8n (?P<tag>\S+) task runners'
+    r"org\.opencontainers\.image\.description=[\"']?n8n (?P<tag>\S+) task runners"
 )
 N8N_APP_PATTERN = re.compile(
     r"docker\.io/n8nio/n8n:(?P<tag>[^@\s]+)@sha256:[0-9a-f]{64}"
 )
-# Reviewed n8nio/runners index digest for each n8n hold version. A tag is
-# only text (docs/AUTOUPDATE.md): moving the n8n hold adds its reviewed
-# runners digest here in the same change.
+# Reviewed pairs: each n8n hold, tag and digest, with the n8nio/runners
+# index it runs with. A tag is only text (docs/AUTOUPDATE.md): moving the
+# n8n hold, even its digest alone, adds its reviewed pair here in the same
+# change.
 REVIEWED_RUNNER_BASES = {
-    "2.31.5": "sha256:ac5ed40759bfe754cc8ab91ed2a1db6795015173084411f4392bc2dc608833b3",
+    "docker.io/n8nio/n8n:2.31.5@sha256:"
+    "cda6bafc7bb4873533e7affb82d1bd47282a7614bdf83242c2293f8ff281261a": (
+        "docker.io/n8nio/runners:2.31.5@sha256:"
+        "ac5ed40759bfe754cc8ab91ed2a1db6795015173084411f4392bc2dc608833b3"
+    ),
 }
 
 
@@ -342,18 +356,30 @@ def validate_runner_base(dockerfile: Path, n8n_reference: str) -> None:
     ("the n8nio/runners image version must match that of the n8nio/n8n
     image"). Nothing at runtime rejects a mismatch, so the contract does.
     """
+    app = N8N_APP_PATTERN.fullmatch(n8n_reference)
+    if app is None:
+        raise ContractError(
+            "n8n hold must be docker.io/n8nio/n8n:<version>@sha256:<digest>"
+        )
     try:
         text = dockerfile.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise ContractError("cannot read the n8n runner Dockerfile") from exc
-    images = [match["image"] for match in DOCKERFILE_FROM.finditer(text)]
-    app = N8N_APP_PATTERN.fullmatch(n8n_reference)
-    # Any other mention, even in a continued line or another stage, would be
-    # a second runners base the FROM parser could miss.
-    if app is None or not images or text.lower().count("n8nio/runners") != 1:
+    froms = list(DOCKERFILE_FROM.finditer(text))
+    images = [match["image"] for match in froms]
+    # A FROM the strict pattern could not read (a continued line, another
+    # whitespace, a variable) could be the real final stage; any other
+    # mention of the runners image could be a second base.
+    if (
+        not images
+        or len(DOCKERFILE_FROM_LINE.findall(text)) != len(images)
+        or DOCKERFILE_DIRECTIVE.search(text)
+        or any("$" in image for image in images)
+        or text.lower().count("n8nio/runners") != 1
+    ):
         raise ContractError(
             "n8n runner image must build its final stage on the only "
-            "n8nio/runners base"
+            "n8nio/runners base, with plain FROM instructions"
         )
     base = RUNNER_BASE_PATTERN.fullmatch(images[-1])
     if base is None:
@@ -365,11 +391,13 @@ def validate_runner_base(dockerfile: Path, n8n_reference: str) -> None:
             f"n8n runner base {base['tag']} differs from n8n {app['tag']}; "
             "n8n requires the same version"
         )
-    if REVIEWED_RUNNER_BASES.get(base["tag"]) != base["digest"]:
+    if REVIEWED_RUNNER_BASES.get(n8n_reference) != images[-1]:
         raise ContractError(
-            f"n8n runner base {base['tag']} is not the reviewed index digest"
+            f"n8n {app['tag']} and runner base {base['tag']} are not a reviewed pair"
         )
-    if RUNNER_LABEL_PATTERN.findall(text) != [base["tag"]]:
+    # Only the final stage's labels reach the image.
+    final_stage = text[froms[-1].end() :]
+    if RUNNER_LABEL_PATTERN.findall(final_stage) != [base["tag"]]:
         raise ContractError("n8n runner image label names another n8n version")
 
 

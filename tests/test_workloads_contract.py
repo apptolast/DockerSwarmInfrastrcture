@@ -1421,13 +1421,16 @@ class N8nRunnerBaseVersionTests(unittest.TestCase):
             for line in self.original.splitlines()
             if line.startswith("FROM docker.io/n8nio/runners:")
         )
-        self.digest = workload_validator.REVIEWED_RUNNER_BASES[self.tag]
+        self.pair = workload_validator.REVIEWED_RUNNER_BASES[self.reference]
+        self.digest = self.pair.split("@", 1)[1]
 
-    def assert_rejected(self, text: str, reference: str | None = None) -> None:
+    def assert_rejected(
+        self, text: str, cause: str, reference: str | None = None
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Dockerfile"
             path.write_text(text, encoding="utf-8")
-            with self.assertRaises(workload_validator.ContractError):
+            with self.assertRaisesRegex(workload_validator.ContractError, cause):
                 workload_validator.validate_runner_base(
                     path, self.reference if reference is None else reference
                 )
@@ -1450,65 +1453,147 @@ class N8nRunnerBaseVersionTests(unittest.TestCase):
     def test_mismatched_or_ambiguous_runner_base_is_rejected(self) -> None:
         other = "@sha256:" + "a" * 64
         runners = "docker.io/n8nio/runners"
-        appended_stage = "\nFROM {} AS final\nUSER runner\n"
+        plain = "plain FROM instructions"
+        pinned = "must be docker.io/n8nio/runners"
+        label_block = self.original[self.original.index("LABEL ") :].split("\n\n", 1)[0]
         dockerfiles = {
-            "newer runners": self.original.replace(
-                self.base, f"FROM {runners}:9.99.9{other}"
+            "newer runners": (
+                self.original.replace(self.base, f"FROM {runners}:9.99.9{other}"),
+                f"9.99.9 differs from n8n {self.tag}",
             ),
-            "unpinned runners": self.original.replace(
-                self.base, f"FROM {runners}:{self.tag}"
+            "unpinned runners": (
+                self.original.replace(self.base, f"FROM {runners}:{self.tag}"),
+                pinned,
             ),
-            "same tag, unreviewed digest": self.original.replace(
-                self.digest, "sha256:" + "b" * 64
+            "same tag, unreviewed digest": (
+                self.original.replace(self.digest, "sha256:" + "b" * 64),
+                "not a reviewed pair",
             ),
-            "two runners bases": f"{self.original}\n{self.base}\n",
-            "no runners base": self.original.replace(
-                self.base, f"FROM docker.io/library/node:26{other}"
+            "two runners bases": (f"{self.original}\n{self.base}\n", plain),
+            "no runners base": (
+                self.original.replace(
+                    self.base, f"FROM docker.io/library/node:26{other}"
+                ),
+                plain,
             ),
             "runners not in the final stage": (
-                f"{self.original}\nFROM docker.io/library/node:26{other}\n"
+                f"{self.original}\nFROM docker.io/library/node:26{other}\n",
+                pinned,
             ),
-            "label names another version": self.original.replace(
-                f'"n8n {self.tag} task runners', '"n8n 9.99.9 task runners'
+            "label names another version": (
+                self.original.replace(
+                    f'"n8n {self.tag} task runners', '"n8n 9.99.9 task runners'
+                ),
+                "label names another",
             ),
-            "continued FROM line": self.original.replace(
-                self.base, self.base.replace("FROM ", "FROM \\\n  ")
+            "label only in an earlier stage": (
+                self.original.replace(label_block + "\n", "").replace(
+                    "WORKDIR /dependencies", f"WORKDIR /dependencies\n{label_block}"
+                ),
+                "label names another",
             ),
-            "only a continued FROM": self.base.replace("FROM ", "FROM \\\n  "),
-            "no FROM at all": "# docker.io/n8nio/runners\nUSER runner\n",
-            "uppercase runners stage before the base": self.original.replace(
-                self.base, f"FROM N8NIO/RUNNERS:2.32.6{other} AS extra\n{self.base}"
+            "single-quoted label for another version": (
+                f"{self.original}LABEL org.opencontainers.image.description="
+                "'n8n 9.99.9 task runners'\n",
+                "label names another",
             ),
-            "runners under another registry": self.original.replace(
-                self.base, self.base.replace("FROM ", "FROM mirror.example/")
+            "continued FROM line": (
+                self.original.replace(
+                    self.base, self.base.replace("FROM ", "FROM \\\n  ")
+                ),
+                plain,
             ),
+            "only a continued FROM": (
+                self.base.replace("FROM ", "FROM \\\n  "),
+                plain,
+            ),
+            "no FROM at all": ("# docker.io/n8nio/runners\nUSER runner\n", plain),
+            "uppercase runners stage before the base": (
+                self.original.replace(
+                    self.base, f"FROM N8NIO/RUNNERS:2.32.6{other} AS extra\n{self.base}"
+                ),
+                plain,
+            ),
+            "runners under another registry": (
+                self.original.replace(
+                    self.base, self.base.replace("FROM ", "FROM mirror.example/")
+                ),
+                pinned,
+            ),
+            "final FROM continued right after the image": (
+                f"{self.original}\nFROM docker.io/library/busybox:1\\\n  AS final\n",
+                plain,
+            ),
+            "final stage continued onto its alias": (
+                f"{self.original}\nFROM docker.io/library/busybox:1 \\\n  AS final\n",
+                plain,
+            ),
+            "runners name split by an ARG": (
+                "ARG R=docker.io/n8nio/run\n"
+                + self.original
+                + f"\nFROM ${{R}}ners:2.32.6{other} \\\n  AS final\n",
+                plain,
+            ),
+            "final stage named through a variable": (
+                "ARG R=docker.io/n8nio/run\n"
+                + self.original
+                + f"\nFROM ${{R}}ners:2.32.6{other} AS final\n",
+                plain,
+            ),
+            "form feed before a final FROM": (
+                f"{self.original}\n\fFROM docker.io/library/busybox:1\n",
+                plain,
+            ),
+            "no-break space before a final FROM": (
+                f"{self.original}\n\u00a0FROM docker.io/library/busybox:1\n",
+                plain,
+            ),
+            "syntax parser directive": (
+                "# syntax=docker/dockerfile:1\n" + self.original,
+                plain,
+            ),
+            "escape parser directive": ("# escape=`\n" + self.original, plain),
         }
-        for label, image in {
-            "appended stage without registry": f"n8nio/runners:2.32.6{other}",
-            "appended lowercase stage": f"{runners}:2.32.6{other}",
-            "appended unpinned stage": f"{runners}:2.32.6",
-            "appended stage with alias": f"{runners}:2.32.6{other}",
-        }.items():
-            text = self.original + appended_stage.format(image)
-            if label == "appended lowercase stage":
-                text = text.replace("\nFROM " + image, "\nfrom " + image)
-            dockerfiles[label] = text
-        for label, text in dockerfiles.items():
+        for image in (
+            f"n8nio/runners:2.32.6{other}",
+            f"{runners}:2.32.6",
+            f"{runners}:2.32.6{other} AS final",
+        ):
+            dockerfiles[f"appended stage {image}"] = (
+                f"{self.original}\nFROM {image}\nUSER runner\n",
+                plain,
+            )
+        dockerfiles["appended lowercase stage"] = (
+            f"{self.original}\nfrom {runners}:2.32.6{other}\nUSER runner\n",
+            plain,
+        )
+        for label, (text, cause) in dockerfiles.items():
             with self.subTest(case=label):
-                self.assert_rejected(text)
-        for label, reference in {
-            "newer n8n": self.reference.replace(f":{self.tag}@", ":9.99.9@"),
-            "n8n without tag": self.reference.replace(f":{self.tag}@", "@"),
-            "n8n from another image": self.reference.replace(
-                "n8nio/n8n:", "n8nio/runners:"
+                self.assert_rejected(text, cause)
+        hold = "n8n hold must be"
+        for label, (reference, cause) in {
+            "newer n8n": (
+                self.reference.replace(f":{self.tag}@", ":9.99.9@"),
+                f"differs from n8n 9.99.9",
             ),
-            "n8n under another registry": f"mirror.example/{self.reference}",
+            "n8n digest moved alone": (
+                self.reference.split("@", 1)[0] + "@sha256:" + "d" * 64,
+                "not a reviewed pair",
+            ),
+            "n8n without tag": (self.reference.replace(f":{self.tag}@", "@"), hold),
+            "n8n from another image": (
+                self.reference.replace("n8nio/n8n:", "n8nio/runners:"),
+                hold,
+            ),
+            "n8n under another registry": (f"mirror.example/{self.reference}", hold),
         }.items():
             with self.subTest(case=label):
-                self.assert_rejected(self.original, reference)
+                self.assert_rejected(self.original, cause, reference)
         with self.subTest(case="missing Dockerfile"):
             with tempfile.TemporaryDirectory() as directory:
-                with self.assertRaises(workload_validator.ContractError):
+                with self.assertRaisesRegex(
+                    workload_validator.ContractError, "cannot read"
+                ):
                     workload_validator.validate_runner_base(
                         Path(directory) / "absent", self.reference
                     )

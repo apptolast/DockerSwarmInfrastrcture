@@ -154,11 +154,12 @@ The runners base image stays on the exact n8n version, as
 nothing rejects a mismatch at connection time, so
 `scripts/validate-workloads.py` does. It compares the final `FROM` of
 `images/n8n-runners/Dockerfile` with the rendered n8n hold in
-`config/image-channels.yml`, requires the reviewed index digest for that
-version (`REVIEWED_RUNNER_BASES`) and the same version in the image label, and
-rejects any other `n8nio/runners` reference. Dependabot ignores
-`n8nio/runners`: upgrade it together with the n8n hold, in one reviewed change
-that also adds the new reviewed digest.
+`config/image-channels.yml`: the pair of full references, tags and digests,
+must be one reviewed in `REVIEWED_RUNNER_BASES`, and the final stage's label
+must name the same version. Every `FROM` must be a plain one-line
+instruction without variables or parser directives, and the file may mention
+`n8nio/runners` only there. Dependabot ignores `n8nio/runners`: upgrade it
+together with the n8n hold, in one reviewed change that adds the new pair.
 
 `ONLINE_MODE=false` is retained solely as restored application behavior while
 the host/perimeter gate keeps public Minecraft disabled. Do not set
