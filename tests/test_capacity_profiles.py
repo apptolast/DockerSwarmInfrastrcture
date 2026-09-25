@@ -107,7 +107,7 @@ class CapacityProfileTests(unittest.TestCase):
         # Minecraft and OpenClaw while config/platform.yml parks them and
         # count the external stacks (16/896 MiB, 50m/2050m).
         self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 8301)
-        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 3618)
+        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 3746)
         self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 14150)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 8941)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 16000)

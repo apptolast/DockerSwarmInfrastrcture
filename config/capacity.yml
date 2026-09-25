@@ -100,7 +100,7 @@ capacity_contract:
     edge:
       reservations:
         cpu_millicores: 100
-        memory_mib: 64
+        memory_mib: 128
       limits:
         cpu_millicores: 500
         memory_mib: 256
@@ -112,7 +112,7 @@ capacity_contract:
     workloads:
       reservations:
         cpu_millicores: 1600
-        memory_mib: 2592
+        memory_mib: 2656
       limits:
         cpu_millicores: 8100
         memory_mib: 5248
@@ -136,7 +136,7 @@ capacity_contract:
     aggregate:
       reservations:
         cpu_millicores: 2870
-        memory_mib: 3922
+        memory_mib: 4050
       limits:
         cpu_millicores: 13950
         memory_mib: 8045
