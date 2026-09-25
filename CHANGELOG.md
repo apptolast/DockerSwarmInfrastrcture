@@ -12,10 +12,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   Swarm que corren en el host fuera de este repositorio
   (`satisfactory-companions`, `satisfactory-events` y `sftp`), con réplicas y
   recursos medidos en vivo. Todos los planes los suman, y el preflight de cada
-  apply exige que coincidan con los servicios vivos. Sin ellos, el preflight
-  rechazaba cualquier apply porque había servicios vivos fuera del perfil.
-  `docs/DEPLOYMENT_STATUS.md` inventaría el resto de la deriva: Compose,
-  reglas manuales del firewall y el laboratorio AX.
+  apply exige que coincidan con los servicios vivos: límites de al menos 1,
+  sin faltar ni sobrar servicios. Sin ellos, el preflight rechazaba cualquier
+  apply porque había servicios vivos fuera del perfil. El preflight también
+  rechaza un servicio aparcado que corra, salvo en los playbooks que lo
+  devuelven a `0/0`. `docs/DEPLOYMENT_STATUS.md` inventaría el resto de la
+  deriva: Compose, reglas manuales del firewall, el Traefik modificado a mano
+  el 2026-09-22 (compuerta STOP 10 de `CLAUDE.md`: no aplicar `edge`) y el
+  laboratorio AX.
 - Estado «aparcado» para servicios del stack `workloads`:
   `platform_parked_workloads` en `config/platform.yml` renderiza
   `replicas: 0`, conserva imagen, datos, secretos, redes y ruta del edge, y

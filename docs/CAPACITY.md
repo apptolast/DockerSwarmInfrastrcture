@@ -70,6 +70,10 @@ que libera su presupuesto: 3 328 MiB y 700m de CPU reservados y 4 608 MiB y
 200m/1 000m de OpenClaw). Desaparcar uno vuelve a sumar su reserva y su límite
 en `config/capacity.yml` y `config/capacity-profiles.yml` dentro del mismo
 cambio revisado, y el validador exige que siga cabiendo en el presupuesto.
+Con los stacks externos declarados (ver «Stacks externos») ya no cabe sin
+más: Minecraft llevaría el plan `observability` a 12 781 MiB de límite y los
+dos juntos llevarían el activo a 12 653 MiB, por encima de 12 397. Volver a
+arrancarlos exige antes una decisión de capacidad del propietario.
 Con los dos en marcha, `workloads` suma 5 920/9 728 MiB y 2 300m/11 600m, y el
 total de la plataforma completa llega exactamente a los 12 397 MiB de límite.
 
@@ -78,8 +82,9 @@ Ese techo no es el margen total del host: se siguen preservando por separado
 Cualquier aumento futuro de un límite exige reducir otro en la misma
 revisión. El vigilante `autoupdater` es distinto: su interruptor
 `enabled: false` renderiza `replicas: 0` sin liberar el presupuesto
-(`SUSPENDABLE_SERVICES`). En el perfil activo `organizationweb` las sumas son
-3 602 MiB reservados y 7 149 MiB de límite, con 2 500m y 12 100m de CPU.
+(`SUSPENDABLE_SERVICES`). En el perfil activo `organizationweb`, con los
+stacks externos, las sumas son 3 618 MiB reservados y 8 045 MiB de límite,
+con 2 550m y 14 150m de CPU.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
@@ -152,11 +157,28 @@ exactamente con lo declarado y que no falte ni sobre ningún servicio. Un
 cambio en cualquiera de los dos lados detiene el siguiente apply hasta que el
 contrato vuelva a coincidir.
 
+Cada servicio externo debe declarar límites de CPU y memoria de al menos 1,
+porque Docker lee un límite 0 como ilimitado y ningún presupuesto puede
+contarlo. Quedan fuera de las reglas por servicio de los stacks propios: la
+relación límite/reserva y la reserva explícita, que Swarm no les exige.
+
+El preflight también impide que un servicio aparcado corra fuera de
+presupuesto. Si `config/platform.yml` lo aparca y el Swarm vivo le da
+réplicas, cualquier playbook salvo `workloads` y `site`, los que lo llevan a
+`0/0`, falla con «parked live service runs over the budget».
+
 Declararlos no los convierte en estado reconstruible: sus ficheros de stack,
 imágenes y datos siguen fuera del repositorio (ver
-[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)). Caben porque Minecraft y
-OpenClaw están aparcados; desaparcarlos exige revisar la capacidad teniendo
-en cuenta estos stacks.
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)), y en un Swarm reconstruido hay
+que retirarlos de `external_stacks` antes de aplicar (ver
+[REBUILD.md](REBUILD.md), paso 8). Caben porque Minecraft y OpenClaw están
+aparcados.
+
+El contrato solo cubre servicios Swarm. Los proyectos Compose `satisfactory`
+y `monitor-production` y el nodo kind del laboratorio AX, limitado a
+3 584 MiB, consumen memoria fuera de él. Ese nodo equivale a toda la reserva
+de 3 GiB más los 512 MiB de headroom, así que, con él en marcha, un
+preflight en verde no garantiza margen real en el host.
 
 ## Gates
 

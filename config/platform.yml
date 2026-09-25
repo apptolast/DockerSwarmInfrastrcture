@@ -65,8 +65,9 @@ platform_minecraft_offline_public_accepted: true
 # Swarm y libera su presupuesto en config/capacity.yml, pero conserva imagen,
 # datos, secretos, redes y ruta del edge. Volver a arrancarlo es quitarlo de
 # esta lista, devolver su presupuesto a config/capacity.yml y
-# config/capacity-profiles.yml en el mismo cambio y aplicar `--playbook edge`
-# y despues `--playbook workloads`. Lista ordenada y sin
+# config/capacity-profiles.yml en el mismo cambio (hoy exige ademas una
+# decision de capacidad: con los stacks externos no cabe sin mas) y aplicar
+# `--playbook edge` y despues `--playbook workloads`. Lista ordenada y sin
 # duplicados, `[]` si no hay ninguno (un valor vacio se rechaza); solo admite
 # los servicios que ningun otro necesita para funcionar (minecraft, openclaw).
 # La compuerta publica de Minecraft no cambia: el firewall sigue admitiendo el

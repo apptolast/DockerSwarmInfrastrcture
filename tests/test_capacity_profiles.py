@@ -74,6 +74,9 @@ class CapacityProfileTests(unittest.TestCase):
         spec.loader.exec_module(self.module)
         self.base = yaml.safe_load((ROOT / "config/capacity.yml").read_text())
         self.profiles = yaml.safe_load((ROOT / "config/capacity-profiles.yml").read_text())
+        self.parked = self.module.parked_workloads(
+            yaml.safe_load((ROOT / "config/platform.yml").read_text())
+        )
         channel_map = load_image_channels_map()
         self.stacks = {
                 **{
@@ -142,7 +145,9 @@ class CapacityProfileTests(unittest.TestCase):
             "workloads",
         ):
             with self.subTest(requested=requested):
-                self.module.validate_live(self.base, self.profiles, requested, live)
+                self.module.validate_live(
+                    self.base, self.profiles, requested, live, parked=self.parked
+                )
         for service in (
             {"name": "autoupdater_gantry", "stack": "autoupdater"},
             {"name": "autoupdater_shepherd", "stack": None},
@@ -151,7 +156,11 @@ class CapacityProfileTests(unittest.TestCase):
             with self.subTest(service=service):
                 with self.assertRaisesRegex(self.module.capacity.CapacityError, "live"):
                     self.module.validate_live(
-                        self.base, self.profiles, "autoupdater", [*live, service]
+                        self.base,
+                        self.profiles,
+                        "autoupdater",
+                        [*live, service],
+                        parked=self.parked,
                     )
 
     def test_unaccounted_application_service_is_rejected(self):
@@ -185,6 +194,7 @@ class CapacityProfileTests(unittest.TestCase):
                             {"name": f"{other}_{service}", "stack": other},
                             *external_live(self.profiles),
                         ],
+                        parked=self.parked,
                     )
 
     def test_live_name_must_belong_to_its_claimed_stack(self):
@@ -195,6 +205,7 @@ class CapacityProfileTests(unittest.TestCase):
                     {"name": "workloads_kropia", "stack": "edge"},
                     *external_live(self.profiles),
                 ],
+                parked=self.parked,
             )
 
     def test_external_stacks_must_match_their_live_services(self):
@@ -202,7 +213,9 @@ class CapacityProfileTests(unittest.TestCase):
             {"name": "edge_traefik", "stack": "edge"},
             *external_live(self.profiles),
         ]
-        self.module.validate_live(self.base, self.profiles, "edge", live)
+        self.module.validate_live(
+            self.base, self.profiles, "edge", live, parked=self.parked
+        )
 
         def mutated(change):
             candidate = json.loads(json.dumps(live))
@@ -256,6 +269,33 @@ class CapacityProfileTests(unittest.TestCase):
                 "resources are invalid",
             ),
             (
+                "empty limits list",
+                set_path(("resources", "Limits"), []),
+                "resources are invalid",
+            ),
+            (
+                "false resources",
+                lambda _c, service: service.update(resources=False),
+                "resources are invalid",
+            ),
+            (
+                "fractional millicore",
+                set_path(("resources", "Limits", "NanoCPUs"), 500_000_001),
+                "resources are invalid",
+            ),
+            (
+                "replicated job",
+                lambda _c, service: service.update(
+                    mode={"ReplicatedJob": {"MaxConcurrent": 1}}
+                ),
+                "not replicated",
+            ),
+            (
+                "negative replicas",
+                set_path(("mode", "Replicated", "Replicas"), -1),
+                "replicas are invalid",
+            ),
+            (
                 "declared service gone",
                 lambda candidate, service: candidate.remove(service),
                 "declared external service is not live",
@@ -273,7 +313,11 @@ class CapacityProfileTests(unittest.TestCase):
                     self.module.capacity.CapacityError, message
                 ):
                     self.module.validate_live(
-                        self.base, self.profiles, "edge", mutated(change)
+                        self.base,
+                        self.profiles,
+                        "edge",
+                        mutated(change),
+                        parked=self.parked,
                     )
 
     def test_external_stack_contract_is_fail_closed(self):
@@ -283,6 +327,32 @@ class CapacityProfileTests(unittest.TestCase):
                 "stack named like a reviewed stack",
                 lambda stacks: stacks.update(workloads=stacks.pop("sftp")),
                 "external stack name is invalid",
+            ),
+            (
+                "stack named like an application stack",
+                lambda stacks: stacks.update(racinggame=stacks.pop("sftp")),
+                "external stack name is invalid",
+            ),
+            (
+                "invalid service name",
+                lambda stacks: stacks["sftp"].update(
+                    {"Downloads!": stacks["sftp"].pop("downloads")}
+                ),
+                "is not a service name",
+            ),
+            (
+                "unlimited memory",
+                lambda stacks: stacks["sftp"]["downloads"]["limits"].update(
+                    memory_mib=0
+                ),
+                "positive memory_mib limit",
+            ),
+            (
+                "unlimited cpu",
+                lambda stacks: stacks["satisfactory-events"]["audit"]["limits"].update(
+                    cpu_millicores=0
+                ),
+                "positive cpu_millicores limit",
             ),
             (
                 "zero replicas",
@@ -325,6 +395,69 @@ class CapacityProfileTests(unittest.TestCase):
         self.assertEqual(
             set(external), {"satisfactory-companions", "satisfactory-events", "sftp"}
         )
+
+    def test_contract_validation_never_rewrites_its_input(self):
+        before = json.dumps(self.profiles, sort_keys=True)
+        self.module.validate_profile_contract(self.profiles)
+        self.module.validate_profiles(self.base, self.profiles, self.stacks)
+        self.assertEqual(json.dumps(self.profiles, sort_keys=True), before)
+
+    def test_hand_started_parked_service_blocks_every_other_playbook(self):
+        parked = frozenset({"minecraft", "openclaw"})
+
+        def workload(name, replicas):
+            return {
+                "name": f"workloads_{name}",
+                "stack": "workloads",
+                "mode": {"Replicated": {"Replicas": replicas}},
+                "resources": {},
+            }
+
+        at_rest = [
+            workload("minecraft", 0),
+            workload("openclaw", 0),
+            workload("kropia", 1),
+            *external_live(self.profiles),
+        ]
+        running = [workload("minecraft", 1), *at_rest[1:]]
+        for requested in ("edge", "autoupdater", "organizationweb", "workloads"):
+            with self.subTest(requested=requested, state="parked"):
+                self.module.validate_live(
+                    self.base, self.profiles, requested, at_rest, parked=parked
+                )
+        # Only the playbooks that converge it to 0/0 may start while it runs.
+        for requested in ("workloads", "site"):
+            profiles = json.loads(json.dumps(self.profiles))
+            if requested == "site":
+                profiles["capacity_profiles"]["active"] = "observability"
+            with self.subTest(requested=requested, state="running"):
+                self.module.validate_live(
+                    self.base, profiles, requested, running, parked=parked
+                )
+        for requested in ("edge", "autoupdater", "organizationweb", "racinggame"):
+            with self.subTest(requested=requested, state="running"):
+                with self.assertRaisesRegex(
+                    self.module.capacity.CapacityError,
+                    "parked live service runs over the budget: workloads_minecraft",
+                ):
+                    self.module.validate_live(
+                        self.base, self.profiles, requested, running, parked=parked
+                    )
+        # An unparked service is not checked here: the stack owns its replicas.
+        self.module.validate_live(
+            self.base, self.profiles, "edge", running, parked=frozenset({"openclaw"})
+        )
+        for platform in (
+            {"platform_parked_workloads": ["n8n-db"]},
+            {"platform_parked_workloads": ["openclaw", "minecraft"]},
+            {"platform_parked_workloads": "minecraft"},
+            {},
+        ):
+            with self.subTest(platform=platform):
+                with self.assertRaisesRegex(
+                    self.module.capacity.CapacityError, "parkable set"
+                ):
+                    self.module.parked_workloads(platform)
 
     def test_cli_blocks_an_inactive_requested_stack_before_any_mutation(self):
         completed = subprocess.run(

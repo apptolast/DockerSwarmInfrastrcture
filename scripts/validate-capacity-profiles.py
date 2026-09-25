@@ -64,6 +64,12 @@ def validate_external_stacks(document):
                 {key: declared[key] for key in ("reservations", "limits")}, context
             )
             for resource_name in ("cpu_millicores", "memory_mib"):
+                # Docker reads a zero limit as "unlimited", which no budget
+                # can count; every external service must be bounded.
+                if resources["limits"][resource_name] < 1:
+                    raise capacity.CapacityError(
+                        f"{context} must declare a positive {resource_name} limit"
+                    )
                 if (
                     resources["reservations"][resource_name]
                     > resources["limits"][resource_name]
@@ -86,8 +92,8 @@ def external_totals(profiles):
     return total
 
 
-def live_plan(service):
-    """Replicas and per-task resources of one inspected live service."""
+def live_replicas(service):
+    """Desired replicas of one inspected replicated live service."""
     mode = service.get("mode")
     replicated = mode.get("Replicated") if isinstance(mode, dict) else None
     if (
@@ -95,10 +101,37 @@ def live_plan(service):
         or set(mode) != {"Replicated"}
         or not isinstance(replicated, dict)
     ):
-        raise capacity.CapacityError("external live service is not replicated")
+        raise capacity.CapacityError("live service is not replicated")
     replicas = replicated.get("Replicas")
-    if isinstance(replicas, bool) or not isinstance(replicas, int):
-        raise capacity.CapacityError("external live replicas are invalid")
+    if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 0:
+        raise capacity.CapacityError("live replicas are invalid")
+    return replicas
+
+
+def parked_workloads(platform_document):
+    """The reviewed parked list of config/platform.yml, validated."""
+    parked = (
+        platform_document.get("platform_parked_workloads")
+        if isinstance(platform_document, dict)
+        else None
+    )
+    parkable = {name for stack, name in capacity.PARKABLE_SERVICES}
+    if (
+        not isinstance(parked, list)
+        or any(not isinstance(name, str) for name in parked)
+        or parked != sorted(set(parked))
+        or not set(parked) <= parkable
+    ):
+        raise capacity.CapacityError(
+            "platform_parked_workloads is outside the reviewed parkable set"
+        )
+    return frozenset(parked)
+
+
+def live_plan(service):
+    """Replicas and per-task resources of one inspected live service."""
+    replicas = live_replicas(service)
+    # Docker prints `null` for an unset block; any other non-mapping is invalid.
     resources = service.get("resources")
     if resources is None:
         resources = {}
@@ -109,7 +142,9 @@ def live_plan(service):
         raise capacity.CapacityError("external live resources are invalid")
     plan = capacity.empty_resources()
     for resource_class, key in (("limits", "Limits"), ("reservations", "Reservations")):
-        values = resources.get(key) or {}
+        values = resources.get(key)
+        if values is None:
+            values = {}
         if not isinstance(values, dict) or not set(values) <= {
             "NanoCPUs",
             "MemoryBytes",
@@ -228,8 +263,21 @@ def validate_profiles(base_document, profile_document, stacks):
     return result
 
 
-def validate_live(base_document, profile_document, requested_stack, live_services):
+# The playbooks that converge a parked service to 0/0 may start while it still
+# runs; every other one requires it already parked, or it runs over budget.
+PARKING_PLAYBOOKS = frozenset({"workloads", "site"})
+
+
+def validate_live(
+    base_document,
+    profile_document,
+    requested_stack,
+    live_services,
+    *,
+    parked,
+):
     base = capacity.validate_contract(base_document)
+    converging = requested_stack in PARKING_PLAYBOOKS
     profiles = validate_profile_contract(profile_document)
     for name, profile in profiles["profiles"].items():
         total = external_totals(profiles)
@@ -276,6 +324,15 @@ def validate_live(base_document, profile_document, requested_stack, live_service
             raise capacity.CapacityError(
                 "live service is outside the reviewed active profile"
             )
+        elif (
+            identity[0] == "workloads"
+            and identity[1].removeprefix("workloads_") in parked
+            and not converging
+            and live_replicas(service) != 0
+        ):
+            raise capacity.CapacityError(
+                f"parked live service runs over the budget: {identity[1]}"
+            )
     if seen_external != set(external_names):
         raise capacity.CapacityError("a declared external service is not live")
 
@@ -284,6 +341,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-contract", type=Path, default=ROOT / "config/capacity.yml")
     parser.add_argument("--profile-contract", type=Path, default=ROOT / "config/capacity-profiles.yml")
+    parser.add_argument(
+        "--platform-contract", type=Path, default=ROOT / "config/platform.yml"
+    )
     parser.add_argument("--live", action="store_true")
     parser.add_argument(
         "--requested-stack",
@@ -307,7 +367,13 @@ def main(argv=None):
             live_services = json.load(sys.stdin)
             if not isinstance(live_services, list) or not all(isinstance(item, dict) for item in live_services):
                 raise capacity.CapacityError("live inventory must be a service list")
-            validate_live(base, profiles, args.requested_stack, live_services)
+            validate_live(
+                base,
+                profiles,
+                args.requested_stack,
+                live_services,
+                parked=parked_workloads(capacity.load_yaml(args.platform_contract)),
+            )
         else:
             import yaml
 

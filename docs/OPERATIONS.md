@@ -287,7 +287,10 @@ Qué cambia en cada capa mientras un servicio está aparcado:
   `config/capacity-profiles.yml` (ver [CAPACITY.md](CAPACITY.md)), así que
   su RAM y su CPU quedan libres también en el contrato. Desaparcarlo exige
   devolver su reserva y su límite a esos dos ficheros en el mismo cambio, y
-  el validador comprueba que el plan sigue cabiendo en el host.
+  el validador comprueba que el plan sigue cabiendo en el host. Con los
+  stacks externos declarados hoy, ni Minecraft ni los dos juntos caben sin
+  una decisión de capacidad previa. Mientras está aparcado, el preflight de
+  cualquier playbook salvo `workloads` y `site` falla si el servicio corre.
 
 Para aparcar o desaparcar se edita la lista y se sigue la secuencia de
 cambio. El orden de los applies protege dos cosas: que ninguna alerta salte
