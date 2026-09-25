@@ -485,6 +485,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La compuerta de contenedores del apply de `workloads` rechazaba el
+  `node-exporter` del Observatorio (`monitor-production`, fuera de este
+  repositorio), que monta la raíz del host en solo lectura, y bloqueaba todo
+  apply. Ahora lo admite como observador externo revisado, con la misma forma
+  exacta que los exportadores del stack de observabilidad; cualquier otra
+  variante sigue rechazada.
+
 - El escaneo de secretos del historial en `lint.sh` ya no pasa en verde sin
   leer nada. Desde un worktree enlazado, gitleaks v8.30.1 no encontraba el
   directorio git que nombra el fichero `.git`, registraba el error en `ERR`,

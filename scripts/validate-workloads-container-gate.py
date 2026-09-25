@@ -18,6 +18,14 @@ READ_ONLY_OBSERVER_TARGETS = {
     "observability_cadvisor": "/rootfs",
     "observability_node-exporter": "/host",
 }
+COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
+# Compose observers the owner runs outside this repository with the same
+# read-only host-root bind as the exporters above (docs/DEPLOYMENT_STATUS.md,
+# "Deriva fuera del repositorio"). Keyed by Compose project and service.
+EXTERNAL_READ_ONLY_OBSERVER_TARGETS = {
+    ("monitor-production", "node-exporter"): "/host",
+}
 
 
 class ContainerGateError(RuntimeError):
@@ -97,6 +105,27 @@ def validate_containers(
             service_name = labels.get(SWARM_SERVICE_LABEL)
             task_id = labels.get(SWARM_TASK_ID_LABEL)
             task_name = labels.get(SWARM_TASK_NAME_LABEL)
+            external_target = EXTERNAL_READ_ONLY_OBSERVER_TARGETS.get(
+                (
+                    labels.get(COMPOSE_PROJECT_LABEL),
+                    labels.get(COMPOSE_SERVICE_LABEL),
+                )
+            )
+            if external_target is not None:
+                if (
+                    source == "/"
+                    and mount.get("Destination") == external_target
+                    and mount.get("Type") == "bind"
+                    and mount.get("RW") is False
+                    and service_name is None
+                    and task_id is None
+                    and labels.get(SWARM_STACK_LABEL) is None
+                ):
+                    continue
+                raise ContainerGateError(
+                    f"external observer container {container_id} has an unsafe "
+                    "database-overlapping mount"
+                )
             observer_target = READ_ONLY_OBSERVER_TARGETS.get(service_name)
             if observer_target is not None:
                 if (

@@ -57,7 +57,13 @@ aquí:
   `monitor-production` (observatorio de `monitor.apptolast.com`), fuera de
   Swarm y del contrato de capacidad. Ninguno monta el socket de Docker ni es
   privilegiado; el colector de procesos de `monitor-production` comparte el
-  espacio de PID del host (`pid: host`, sin red).
+  espacio de PID del host (`pid: host`, sin red), y su `node-exporter` monta
+  la raíz del host en solo lectura en `/host`. Como puede leer los datos de
+  PostgreSQL restaurados, la compuerta de contenedores del apply de
+  `workloads` lo rechazaba. Desde el 2026-09-25 lo admite como observador
+  externo revisado, solo con esa forma exacta: proyecto Compose
+  `monitor-production`, servicio `node-exporter`, `/` en `/host`, bind de
+  solo lectura y sin identidad de tarea Swarm.
 - Reglas manuales en la cadena `DOCKERSWARM-INGRESS`: el 2222/tcp de `sftp`
   pasa por una cadena propia `SFTP-SWARM` (jail manual de Fail2ban
   `/etc/fail2ban/jail.d/95-sftp-swarm.local`), y el 7777/tcp+udp y el

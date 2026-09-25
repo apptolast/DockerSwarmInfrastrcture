@@ -543,6 +543,64 @@ class WorkloadContainerGateTests(unittest.TestCase):
                 container_gate.validate_containers([inspected], self.contract)
 
 
+    def test_external_observatorio_node_exporter_is_accepted_read_only(
+        self,
+    ) -> None:
+        labels = {
+            "com.docker.compose.project": "monitor-production",
+            "com.docker.compose.service": "node-exporter",
+        }
+        inspected = self.container(
+            "observatorio-node-exporter",
+            labels=labels,
+            source="/",
+            destination="/host",
+            read_write=False,
+        )
+        container_gate.validate_containers([inspected], self.contract)
+        database_path = next(iter(self.contract))
+        for label, candidate_labels, source, destination, read_write in (
+            ("writable root", labels, "/", "/host", True),
+            ("other destination", labels, "/", "/rootfs", False),
+            ("database path itself", labels, database_path, "/host", False),
+            (
+                "other service of the project",
+                {**labels, "com.docker.compose.service": "api"},
+                "/",
+                "/host",
+                False,
+            ),
+            (
+                "other project",
+                {**labels, "com.docker.compose.project": "monitor-staging"},
+                "/",
+                "/host",
+                False,
+            ),
+            (
+                "also claims a Swarm task",
+                {
+                    **labels,
+                    "com.docker.swarm.service.name": "workloads_n8n-db",
+                    "com.docker.swarm.task.id": "task-id",
+                },
+                "/",
+                "/host",
+                False,
+            ),
+        ):
+            with self.subTest(case=label):
+                inspected = self.container(
+                    "observer",
+                    labels=candidate_labels,
+                    source=source,
+                    destination=destination,
+                    read_write=read_write,
+                )
+                with self.assertRaises(container_gate.ContainerGateError):
+                    container_gate.validate_containers([inspected], self.contract)
+
+
 class WorkloadNetworkIsolationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
