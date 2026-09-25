@@ -133,12 +133,12 @@ línea.
 
 **(c) CrowdSec: orden e ipsets.** El contrato es exacto: primer salto
 `CROWDSEC_CHAIN`, segundo `DOCKERSWARM-INGRESS`, en IPv4 y en IPv6
-(`ansible/roles/host_baseline/tasks/crowdsec-docker.yml:232-255`;
-`ansible/roles/host_baseline/templates/crowdsec-docker-order.sh.j2:27-28` para
-la inserción y `:40-41` para la comprobación). El arranque espera a que
+(`ansible/roles/host_baseline/tasks/crowdsec-docker.yml:417-440`;
+`ansible/roles/host_baseline/templates/crowdsec-docker-order.sh.j2:25-26` para
+la inserción y `:39-40` para la comprobación). El arranque espera a que
 existan los ipsets `crowdsec-blacklists-<n>` y `crowdsec6-blacklists-<n>`
 (`crowdsec-ipset-ready.sh.j2:6-7`, timeout de 90 s en
-`ansible/roles/host_baseline/defaults/main.yml:91`). El gancho del bouncer
+`ansible/roles/host_baseline/defaults/main.yml:100`). El gancho del bouncer
 debe seguir siendo **exactamente una** línea igual a `- DOCKER-USER` con dos
 espacios de indentación (`crowdsec-docker.yml:45-74`; el comentario de
 `:32-40` documenta el fallo real de comparación por subcadena que dejó el
@@ -147,7 +147,9 @@ host a medio converger).
 Modos de fallo: invertir el orden (la allowlist aceptaría antes de que
 CrowdSec pueda bloquear); reducir o hacer no fatal la espera de ipsets
 (ventana de arranque sin bloqueo); perder la reconciliación que repone
-`CROWDSEC_CHAIN` tras las pruebas `-t` (`crowdsec-docker.yml:110-165`).
+`CROWDSEC_CHAIN` tras las pruebas `-t` (`crowdsec-docker.yml:260-350`) o la
+comprobación de su gancho de INPUT tras los handlers
+(`crowdsec-docker.yml:442-483`).
 
 ### 2. ¿Mete a alguien en el grupo `docker`?
 
@@ -156,9 +158,9 @@ los humanos, `admin` incluido (`docs/OPERATIONS.md:25-26`, `CLAUDE.md:115-116`,
 `README.md:131`).
 
 - Reconciliación con `append: false` a exactamente `sudo` + `sshusers`
-  (`ansible/roles/host_security/tasks/main.yml:109-115`) y `assert` que
+  (`ansible/roles/host_security/tasks/main.yml:108-115`) y `assert` que
   compara **conjuntos ordenados**, no pertenencia
-  (`.../main.yml:129-139`).
+  (`.../main.yml:128-138`).
 - Alta inicial idéntica en el bootstrap
   (`ansible/roles/host_bootstrap/tasks/main.yml:320-338`, `append: false` en
   `:328`, `no_log: true` en `:336`).
@@ -221,7 +223,7 @@ esa decisión es incoherencia, no endurecimiento.
   token debe ser regular, no symlink y sin bits de grupo/otros (`:177-183`), y
   se niega a sobrescribir un secret existente (`:199-201`).
 - Ansible marca `no_log: true` donde se manipula material con credenciales
-  (`crowdsec-docker.yml:30,63,74,89,101`;
+  (`crowdsec-docker.yml:30,63,74,200,238,255`;
   `host_bootstrap/tasks/main.yml:336`). Quitarlo filtra al log del playbook.
 
 Modo de fallo crítico: mover el token a `-H "Authorization: Bearer ..."` en la
@@ -315,7 +317,7 @@ marca por la mera existencia de un fichero en Git.
 - Los `check_mode: false` legítimos están justificados en el propio repo con
   comentario, porque las pruebas `-t` retiran `CROWDSEC_CHAIN` al salir y un
   ensayo no puede dejar el host sin filtrado
-  (`ansible/roles/host_baseline/tasks/crowdsec-docker.yml:76-78`). Un
+  (`ansible/roles/host_baseline/tasks/crowdsec-docker.yml:98-101`). Un
   `check_mode: false` nuevo y sin justificar es hallazgo.
 - También cambian el radio: convertir una `assert` en un `command` que
   corrige; un `changed_when: false` que deja de serlo; un handler nuevo que

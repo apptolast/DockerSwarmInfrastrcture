@@ -454,6 +454,74 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Un apply de `host-baseline` sobre un host convergido, y en su parte de
+  `host_security` también de `platform` y `site`, ya no deja el host sin
+  filtrado de CrowdSec. La prueba `crowdsec-firewall-bouncer -t` no es un
+  ensayo: arranca el backend real de iptables, destruye los ipsets de
+  bloqueo del bouncer en marcha y al salir retira `CROWDSEC_CHAIN` de IPv4 e
+  IPv6, y el bouncer sigue `active` sin volver a crearla (`cmd/root.go` y
+  `pkg/iptables` de cs-firewall-bouncer v0.0.34). Tres de esas pruebas
+  corrían en cada apply y dejaban el host unos segundos sin filtrar hasta
+  que dos tareas reiniciaban el bouncer. El bouncer en marcha no relee su
+  configuración y systemd la valida con `-t` antes de cada arranque, así que
+  ahora la prueba de `host_security` solo corre si ese apply ha instalado o
+  actualizado un paquete, o si no puede demostrar que el bouncer en marcha
+  ya validó lo que cargaría: la configuración, su `.local`, el directorio
+  que los contiene o el binario tienen un ctime igual o posterior a su
+  arranque (`ExecMainStartTimestamp`), falta alguno de los obligatorios,
+  alguno no es un fichero regular (o, el directorio, no es un directorio),
+  o ese arranque no se puede leer. Un fichero editado, o al que solo se le
+  cambió el dueño o los permisos, se sigue probando antes de que ningún
+  reinicio del apply lo cargue, y el ctime del directorio delata un `.local`
+  borrado, que ya no deja fichero que comparar. No cubre los certificados
+  que nombren `cert_path`, `key_path` o `ca_cert_path` (la configuración de
+  producción usa una clave de API y no nombra ninguno) ni un reloj que
+  retroceda por debajo del arranque. La prueba del fichero de
+  `host_baseline` ya no repite la de `host_security`: corre si
+  `host_security` no se ejecutó en el play o si algo sigue siendo posterior
+  al arranque. La del candidato de `crowdsec-docker.yml`, igual que ya hacía
+  el `validate` de `lineinfile`, solo corre cuando falta el gancho
+  `DOCKER-USER`. En un apply que instala o actualiza un paquete, que cambia
+  esos ficheros o su directorio o que añade el gancho, la prueba sigue
+  corriendo y el hueco de unos segundos sin filtrar sigue existiendo hasta
+  el reinicio.
+- Tras las pruebas del bouncer, corran o no, se lee la regla exacta
+  `-A INPUT -j CROWDSEC_CHAIN` en IPv4 e IPv6, y si falta en alguna, por
+  cualquier motivo, se reinicia el bouncer, se espera a que vuelva y se
+  exige. Antes bastaba con que apareciera el nombre `CROWDSEC_CHAIN`, que
+  también está en una cadena vaciada que no se pudo borrar o en el salto de
+  `DOCKER-USER` que repone el script de ordenación, aunque INPUT ya no
+  filtre. Las dos tareas de reinicio pasan a llamarse «Restore CrowdSec
+  enforcement when its INPUT hook is missing». `host_baseline` vuelve a
+  exigir esa regla después de sus handlers, que pueden reiniciar el bouncer
+  otra vez: la comprobación de orden de `DOCKER-USER` pasaba sin ella,
+  porque el script de ordenación repone ese salto con que la cadena exista
+  y el bouncer solo registra en el log un salto de INPUT que no pudo
+  insertar.
+- Una prueba `-t` que falla ya no detiene el apply antes de intentar reponer
+  las cadenas. Si falla después de arrancar el backend, por ejemplo con un
+  `api_key` vacío, ya las ha retirado (`cmd/root.go` arranca el backend y
+  aplaza su limpieza antes de leer la configuración de la API). Ahora
+  `host_security` guarda su resultado con `failed_when: false`, reinicia el
+  bouncer si falta su gancho de INPUT y solo después exige la prueba. En
+  `host_baseline` todas las pruebas, también la del fichero en disco, que
+  antes corría en `security.yml` fuera de cualquier bloque, van en un bloque
+  de `crowdsec-docker.yml` cuyo `always:` hace esa misma comprobación y ese
+  reinicio. Si la prueba del fichero ya ha fallado, el bloque no vuelve a
+  probar ni reescribe la configuración, ni notifica el reinicio del bouncer.
+  El reinicio no siempre repone las cadenas:
+  - una configuración que se rechaza antes de arrancar el backend (YAML
+    inválido, sin `mode`) no las toca, y el bouncer en marcha sigue
+    filtrando;
+  - si falló el candidato en memoria o la copia de `validate`, el fichero en
+    disco es el que ya había pasado, y el reinicio las repone antes de que el
+    apply se detenga;
+  - si falló el propio fichero en disco después de arrancar el backend,
+    systemd ejecuta ese mismo `-t` antes de cada arranque (`ExecStartPre`) y
+    el reinicio falla igual. El apply se detiene en «Require the restored
+    CrowdSec bouncer to start», que lo explica, y CrowdSec queda sin filtrar
+    hasta que se corrija la configuración; la unidad del paquete
+    (`Restart=always`, `RestartSec=10`) sigue reintentando el arranque.
 - Un apply de `host-baseline`, y también de `platform` y `site`, que aplican
   el mismo rol `host_security`, ya no detiene UFW en un host convergido. Con
   UFW activo, `ufw default` hace siempre un stop/start aunque la política no
@@ -563,6 +631,46 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
 ### Fixed
+
+- Un segundo apply de `host-baseline` sobre un host convergido debe informar
+  `changed=0`; el 2026-09-25 informó `changed=6`. Todavía no se ha medido
+  con este cambio. Además de las pruebas del bouncer de CrowdSec (ver
+  «Security»), dos partes de `host_security`, que también aplican `platform`
+  y `site`, informaban de cambios en cada apply:
+  - `ufw logging low` reescribe `/etc/ufw/ufw.conf` y las cadenas de logging
+    de UFW y siempre responde «Logging enabled», así que la tarea siempre
+    informaba de un cambio. Ahora se lee `/etc/ufw/ufw.conf` con `slurp` y
+    el comando solo se omite si declara `LOGLEVEL=` al menos una vez y todas
+    valen `low` o `"low"`. En cualquier otro caso (ausente, repetido con
+    otro nivel, `LOW`, entre comillas simples, con un comentario detrás) se
+    ejecuta como antes, y una sola ejecución lo converge. Solo una clave
+    escrita con otras mayúsculas, como `loglevel=`, que UFW lee pero
+    `ufw logging` no reescribe, detiene el apply antes de tocar UFW.
+  - La clave del repositorio de CrowdSec se volvía a descargar en un
+    directorio temporal nuevo de `/etc/apt/keyrings` en cada apply (tres
+    tareas `changed`). Ahora cada apply descarga la clave publicada solo en
+    memoria con `uri`, exige que su única clave primaria tenga la huella
+    revisada y la compara con el keyring instalado, ambos leídos con
+    `gpg --show-keys`. La descarga a disco, la autenticación y la instalación
+    atómica solo se omiten si el keyring es un fichero regular `root:root`
+    `0644` cuya única clave primaria tiene la huella revisada y cuyos
+    registros, con subclaves, validez y caducidad, coinciden uno a uno con
+    los de la clave publicada. Así una revocación, una subclave nueva o una
+    caducidad nueva publicadas bajo la misma clave primaria siguen llegando
+    al host en el siguiente apply. Cualquier otro keyring, también uno
+    ausente, se vuelve a instalar autenticado como antes; si en su ruta hay
+    algo que no es un fichero regular, el apply se detiene.
+
+  El README de `host_baseline` y `docs/OPERATIONS.md` dejan de admitir
+  excepciones a `changed=0`; el README ni siquiera citaba las tareas de la
+  clave. `tests/test_host_bootstrap_contract.py` ejecuta las condiciones
+  reales de cada tarea para un host convergido, uno con deriva, uno recién
+  instalado, una prueba del bouncer fallida y ficheros que no se pueden leer
+  sin ambigüedad. La comprobación de que ninguna prueba del bouncer corre
+  sin condición recorre también las tareas de los playbooks y los módulos
+  `shell`, y exige además que ninguna, ni el `validate` de `lineinfile`,
+  corra en un ensayo `--check` por un `check_mode: false` propio o heredado
+  de su bloque.
 
 - La comprobación de integridad del journal de `host-baseline` solo lee los
   ficheros cerrados (`*@*.journal`). `journalctl --verify` sobre los activos,
