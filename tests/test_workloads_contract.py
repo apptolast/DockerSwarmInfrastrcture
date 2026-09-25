@@ -546,57 +546,71 @@ class WorkloadContainerGateTests(unittest.TestCase):
     def test_external_observatorio_node_exporter_is_accepted_read_only(
         self,
     ) -> None:
+        database_path = next(iter(self.contract))
         labels = {
             "com.docker.compose.project": "monitor-production",
             "com.docker.compose.service": "node-exporter",
+            "com.docker.compose.oneoff": "False",
         }
-        inspected = self.container(
-            "observatorio-node-exporter",
-            labels=labels,
-            source="/",
-            destination="/host",
-            read_write=False,
-        )
-        container_gate.validate_containers([inspected], self.contract)
-        database_path = next(iter(self.contract))
-        for label, candidate_labels, source, destination, read_write in (
-            ("writable root", labels, "/", "/host", True),
-            ("other destination", labels, "/", "/rootfs", False),
-            ("database path itself", labels, database_path, "/host", False),
-            (
-                "other service of the project",
-                {**labels, "com.docker.compose.service": "api"},
-                "/",
-                "/host",
-                False,
-            ),
-            (
-                "other project",
-                {**labels, "com.docker.compose.project": "monitor-staging"},
-                "/",
-                "/host",
-                False,
-            ),
-            (
-                "also claims a Swarm task",
-                {
-                    **labels,
-                    "com.docker.swarm.service.name": "workloads_n8n-db",
-                    "com.docker.swarm.task.id": "task-id",
+        root = {"Type": "bind", "Source": "/", "Destination": "/host", "RW": False}
+        unrelated = {
+            "Type": "bind",
+            "Source": "/srv/observer-captures",
+            "Destination": "/captures",
+            "RW": False,
+        }
+        writable_database = {
+            "Type": "bind",
+            "Source": database_path,
+            "Destination": "/data",
+            "RW": True,
+        }
+
+        def observer(mounts, *, user="nobody", **label_changes):
+            candidate_labels = {**labels, **label_changes}
+            return {
+                "Id": "observatorio-node-exporter",
+                "Config": {
+                    "User": user,
+                    "Labels": {
+                        key: value
+                        for key, value in candidate_labels.items()
+                        if value is not None
+                    },
                 },
-                "/",
-                "/host",
-                False,
-            ),
+                "Mounts": mounts,
+            }
+
+        # The live shape: the host root read-only plus an unrelated mount.
+        container_gate.validate_containers([observer([root, unrelated])], self.contract)
+        container_gate.validate_containers(
+            [observer([root], user="65534:65534")], self.contract
+        )
+        without_rw = {key: value for key, value in root.items() if key != "RW"}
+        rejected = [
+            ("writable root", observer([{**root, "RW": True}])),
+            ("RW missing", observer([without_rw])),
+            ("volume instead of bind", observer([{**root, "Type": "volume"}])),
+            ("other destination", observer([{**root, "Destination": "/rootfs"}])),
+            ("database path itself", observer([{**root, "Source": database_path}])),
+            ("root then writable database", observer([root, writable_database])),
+            ("writable database then root", observer([writable_database, root])),
+            ("runs as root", observer([root], user="root")),
+            ("runs as uid 0", observer([root], user="0:0")),
+            ("runs as the image default user", observer([root], user="")),
+        ]
+        for key, value in (
+            ("com.docker.compose.oneoff", "True"),
+            ("com.docker.compose.service", "api"),
+            ("com.docker.compose.project", "monitor-staging"),
+            ("com.docker.swarm.service.name", "workloads_n8n-db"),
+            ("com.docker.swarm.task.id", "task-id"),
+            ("com.docker.swarm.task.name", "x.1.task-id"),
+            ("com.docker.stack.namespace", "observability"),
         ):
+            rejected.append((f"label {key}={value}", observer([root], **{key: value})))
+        for label, inspected in rejected:
             with self.subTest(case=label):
-                inspected = self.container(
-                    "observer",
-                    labels=candidate_labels,
-                    source=source,
-                    destination=destination,
-                    read_write=read_write,
-                )
                 with self.assertRaises(container_gate.ContainerGateError):
                     container_gate.validate_containers([inspected], self.contract)
 

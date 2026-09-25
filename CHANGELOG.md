@@ -488,9 +488,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - La compuerta de contenedores del apply de `workloads` rechazaba el
   `node-exporter` del Observatorio (`monitor-production`, fuera de este
   repositorio), que monta la raíz del host en solo lectura, y bloqueaba todo
-  apply. Ahora lo admite como observador externo revisado, con la misma forma
-  exacta que los exportadores del stack de observabilidad; cualquier otra
-  variante sigue rechazada.
+  apply. Ahora lo admite como observador externo revisado solo con esta forma
+  exacta:
+  - proyecto `monitor-production` y servicio `node-exporter`;
+  - no `oneoff`;
+  - `/` en `/host` en solo lectura, como el `node-exporter` del stack de
+    observabilidad;
+  - usuario no root;
+  - sin identidad Swarm.
+
+  Cualquier otra variante sigue rechazada.
 
 - El escaneo de secretos del historial en `lint.sh` ya no pasa en verde sin
   leer nada. Desde un worktree enlazado, gitleaks v8.30.1 no encontraba el

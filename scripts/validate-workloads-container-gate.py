@@ -20,9 +20,12 @@ READ_ONLY_OBSERVER_TARGETS = {
 }
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
-# Compose observers the owner runs outside this repository with the same
-# read-only host-root bind as the exporters above (docs/DEPLOYMENT_STATUS.md,
-# "Deriva fuera del repositorio"). Keyed by Compose project and service.
+COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff"
+ROOT_USERS = frozenset({"", "0", "root"})
+# Compose observers the owner runs outside this repository with a read-only
+# host-root bind like the observability node-exporter's (docs/
+# DEPLOYMENT_STATUS.md, "Deriva fuera del repositorio"). Keyed by Compose
+# project and service; renaming either blocks the workloads apply again.
 EXTERNAL_READ_ONLY_OBSERVER_TARGETS = {
     ("monitor-production", "node-exporter"): "/host",
 }
@@ -79,7 +82,7 @@ def validate_containers(
         labels = container.get("Config", {}).get("Labels") or {}
         if not isinstance(labels, dict):
             raise ContainerGateError(f"container {container_id} has invalid labels")
-        if labels.get("com.docker.compose.project") == RESTORE_COMPOSE_PROJECT:
+        if labels.get(COMPOSE_PROJECT_LABEL) == RESTORE_COMPOSE_PROJECT:
             raise ContainerGateError(
                 f"restore Compose container still exists: {container_id}"
             )
@@ -112,13 +115,18 @@ def validate_containers(
                 )
             )
             if external_target is not None:
+                user = container.get("Config", {}).get("User")
                 if (
                     source == "/"
                     and mount.get("Destination") == external_target
                     and mount.get("Type") == "bind"
                     and mount.get("RW") is False
+                    and labels.get(COMPOSE_ONEOFF_LABEL) == "False"
+                    and isinstance(user, str)
+                    and user.split(":", 1)[0] not in ROOT_USERS
                     and service_name is None
                     and task_id is None
+                    and task_name is None
                     and labels.get(SWARM_STACK_LABEL) is None
                 ):
                     continue

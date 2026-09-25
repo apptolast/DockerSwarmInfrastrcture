@@ -61,9 +61,17 @@ aquí:
   la raíz del host en solo lectura en `/host`. Como puede leer los datos de
   PostgreSQL restaurados, la compuerta de contenedores del apply de
   `workloads` lo rechazaba. Desde el 2026-09-25 lo admite como observador
-  externo revisado, solo con esa forma exacta: proyecto Compose
-  `monitor-production`, servicio `node-exporter`, `/` en `/host`, bind de
-  solo lectura y sin identidad de tarea Swarm.
+  externo revisado, solo con esa forma exacta:
+  - proyecto Compose `monitor-production` y servicio `node-exporter`;
+  - no es una ejecución `oneoff`;
+  - `/` montado en `/host` como bind de solo lectura;
+  - usuario no root;
+  - sin etiquetas de servicio, tarea ni stack de Swarm.
+
+  El contenedor vivo usa `prom/node-exporter:v1.12.1`, corre como `nobody`
+  con el sistema de ficheros raíz en solo lectura y sin capacidades añadidas.
+  Si el Observatorio renombra el proyecto o el servicio, la compuerta vuelve
+  a bloquear el apply de `workloads`.
 - Reglas manuales en la cadena `DOCKERSWARM-INGRESS`: el 2222/tcp de `sftp`
   pasa por una cadena propia `SFTP-SWARM` (jail manual de Fail2ban
   `/etc/fail2ban/jail.d/95-sftp-swarm.local`), y el 7777/tcp+udp y el
