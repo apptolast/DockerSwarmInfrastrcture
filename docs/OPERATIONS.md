@@ -244,6 +244,58 @@ ningún push a Docker Hub puede iniciarlo por sí solo.
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.
 
+## Aparcar un servicio
+
+`platform_parked_workloads` (`config/platform.yml`) detiene servicios del
+stack `workloads` sin borrar nada: se renderizan con `replicas: 0` y conservan
+imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes, ruta del edge
+y presupuesto de capacidad. La lista va ordenada, sin duplicados, y solo
+admite `minecraft` y `openclaw`, los dos servicios de los que no depende
+ningún otro. Aparcar una base de datos dejaría a sus consumidores sin backend,
+así que los validadores lo rechazan.
+
+Qué cambia en cada capa mientras un servicio está aparcado:
+
+- `workloads`: la convergencia exige `0/0` y ninguna tarea viva del servicio;
+  las comprobaciones de salud recorren solo los servicios en marcha.
+- `edge` (solo OpenClaw): el router y su certificado siguen, pero el backend
+  no tiene servidores ni sonda y Traefik responde `503 no available server`.
+  Con la sonda activa y sin tarea, Traefik registraría un WARN
+  `Health check failed.` cada 15 s.
+- Minecraft conserva su compuerta pública: el 25565 sigue permitido en el
+  firewall, pero sin tarea no escucha nada y el host responde con un reset.
+- `observability`: no se renderizan la sonda TCP de Minecraft ni la sonda
+  HTTPS pública de OpenClaw; la regla `MinecraftEndpointDown` sigue cargada
+  sin series.
+- `backup`: copia los datos en reposo, sin detener nada ni usar RCON (ver
+  [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md), «Servicios aparcados»).
+- Capacidad: el presupuesto sigue reservado, así que desaparcar no requiere
+  revisión de capacidad; lo que se libera es la RAM y CPU reales del host.
+
+Para aparcar, se añade el servicio a la lista y se sigue la secuencia de
+cambio. Para OpenClaw se aplica primero `edge` y después `workloads`: así la
+ruta ya no tiene sonda cuando la tarea se detiene. Para desaparcar, el orden
+es el inverso (`workloads` y después `edge`), de modo que Traefik recupera el
+backend cuando la tarea ya está sana. Si `observability` o `backup` están
+desplegados, se aplican también para renderizar la lista nueva.
+
+Mientras no exista el backup externo (ver «Backup y autolock»), al aparcar
+se archiva el estado en frío en el propio host en cuanto el servicio está en
+`0/0` (datos en reposo), se comprueba el archivo y se registra su SHA-256:
+
+```bash
+sudo -- install -d -o root -g root -m 0700 /var/backups/dockerswarm/parked
+sudo -- tar --create --zstd --numeric-owner --acls --xattrs \
+  --file /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst \
+  -C /srv/dockerswarm/services <ruta-del-dataset>
+sudo -- tar --list --zstd \
+  --file /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst >/dev/null
+sudo -- sha256sum /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst
+```
+
+Ese archivo convive con los datos en el mismo disco: protege frente a un
+error al desaparcar, no frente a la pérdida del servidor.
+
 ## Reinicios
 
 Antes:

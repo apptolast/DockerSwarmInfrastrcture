@@ -70,6 +70,16 @@ interruptor `enabled: false` renderiza `replicas: 0` sin liberar el
 presupuesto. En el perfil activo `organizationweb` las sumas son 6 802 MiB
 reservados y 11 501 MiB de límite.
 
+Minecraft y OpenClaw siguen la misma regla cuando `config/platform.yml` los
+aparca (`platform_parked_workloads`, ver
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»): renderizan
+`replicas: 0` y el validador los cuenta como una instancia
+(`SUSPENDABLE_SERVICES`), así que los totales revisados no cambian y
+desaparcarlos no exige revisión de capacidad. Lo que se libera es el consumo
+real del host y la reserva que Swarm deja de aplicar sin tarea: 3 328 MiB y
+700m de CPU reservados (3 072 MiB y 500m de Minecraft, 256 MiB y 200m de
+OpenClaw).
+
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
 proceso nativo. `MEMORY`, `INIT_MEMORY` y `MAX_MEMORY` se mantienen iguales,

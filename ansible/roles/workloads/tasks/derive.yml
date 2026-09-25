@@ -14,6 +14,14 @@
       - >-
         platform_dns_cutover.minecraft
         == platform_minecraft_public_enabled
+      - platform_parked_workloads is sequence
+      - platform_parked_workloads is not string
+      - >-
+        platform_parked_workloads
+        == platform_parked_workloads | unique | sort
+      - >-
+        platform_parked_workloads
+        | difference(workloads_parkable_services) | length == 0
       - >-
         (25565 in platform_public_tcp_ports)
         and (platform_public_tcp_ports | sort == [80, 443, 25565])
@@ -226,11 +234,13 @@
         hostname: "{{ workloads_approved_by_id.n8n.hostnames | first }}"
         path: /healthz
         status: "200"
+      # Aparcado, el edge conserva la ruta sin backend y responde 503.
       - service: openclaw
         hostname: >-
           {{ workloads_approved_by_id["openclaw-clean"].hostnames | first }}
         path: /readyz
-        status: "200"
+        status: >-
+          {{ "503" if "openclaw" in platform_parked_workloads else "200" }}
       - service: passbolt
         hostname: "{{ workloads_approved_by_id.passbolt.hostnames | first }}"
         path: /healthcheck/status.json
@@ -270,6 +280,36 @@
       - service: shlink-db
         user: shlink
         database: shlink
+
+# Un servicio aparcado converge a 0/0 y no tiene tarea: las comprobaciones de
+# contenedor, salud y datos solo recorren los servicios en marcha.
+- name: Derive the reviewed replica state of every workload service
+  ansible.builtin.set_fact:
+    workloads_running_stack_services: >-
+      {{
+        workloads_expected_stack_services
+        | reject("in", platform_parked_workloads)
+        | list
+      }}
+    workloads_expected_replica_lines: >-
+      {{
+        (
+          (
+            workloads_expected_stack_services
+            | reject("in", platform_parked_workloads)
+            | map("regex_replace", "^", workloads_stack_name ~ "_")
+            | map("regex_replace", "$", "=1/1")
+            | list
+          )
+          + (
+            platform_parked_workloads
+            | map("regex_replace", "^", workloads_stack_name ~ "_")
+            | map("regex_replace", "$", "=0/0")
+            | list
+          )
+        )
+        | sort
+      }}
 
 - name: Validate derived image, dataset and secret identities
   ansible.builtin.assert:

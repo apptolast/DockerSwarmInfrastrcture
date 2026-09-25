@@ -160,11 +160,23 @@ and observability. Backup is deliberately not hidden inside `site`; it remains
 the separate fail-closed `backup` target until R2 credentials, the restic
 password and Swarm unlock-key escrow are provisioned.
 
-Workload reconciliation finishes only after all 15 services are `1/1` and
-their task containers report `healthy`, the three application databases and
-both locked pgvector versions pass live queries, all eight HTTPS backends
-respond through Traefik when resolved directly to the reviewed server IP, and
-Minecraft's service has no published port while its public gate is closed.
+Workload reconciliation finishes only after every running service is `1/1`
+and its task container reports `healthy`, every parked service is `0/0` with no
+running task, the three application databases and both locked pgvector
+versions pass live queries, all eight HTTPS backends answer through Traefik
+when resolved directly to the reviewed server IP (a parked OpenClaw with the
+edge's `503`), and Minecraft's service has no published port while its public
+gate is closed.
 Blackbox performs the Minecraft TCP probe only across
 `apptolast-minecraft-monitoring`. Full `docker service ps --no-trunc` output
 is retained in Ansible failure diagnostics.
+
+## Parked services
+
+`platform_parked_workloads` in `config/platform.yml` parks `minecraft` and/or
+`openclaw`, the only services nothing else depends on. A parked service
+renders `replicas: 0` and keeps its image, bind-mounted data, secrets,
+networks, edge route and capacity budget, so unparking is removing it from
+the list and applying `--playbook workloads` (and `--playbook edge` for
+OpenClaw). The procedure and the effect on every layer are in
+[`docs/OPERATIONS.md`](../../docs/OPERATIONS.md) ("Aparcar un servicio").

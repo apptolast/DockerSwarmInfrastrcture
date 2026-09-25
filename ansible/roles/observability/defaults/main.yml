@@ -38,6 +38,12 @@ observability_http_probe_paths:
   personal-website-pablo: /placeholder-logo.svg
   shlink: /rest/health
 
+# Catalog ID of each workload config/platform.yml may park. A parked service
+# has no task to probe, so its Blackbox probes are not rendered.
+observability_parkable_catalog_ids:
+  minecraft: minecraft
+  openclaw: openclaw-clean
+
 observability_expected_components:
   - prometheus
   - alertmanager

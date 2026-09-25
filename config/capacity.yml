@@ -50,6 +50,9 @@ capacity_contract:
       expected_services:
         - traefik
       global_services: []
+    # minecraft and openclaw may be parked at replicas 0 by
+    # config/platform.yml platform_parked_workloads; their budget stays
+    # reserved (scripts/validate-capacity.py SUSPENDABLE_SERVICES).
     workloads:
       expected_services:
         - kropia

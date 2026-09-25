@@ -85,6 +85,7 @@ class ObservabilityStackContractTests(unittest.TestCase):
             self.stack,
             self.services,
             BUILD_ROOT / "config",
+            self.platform,
         )
 
     def test_published_port_is_rejected(self) -> None:

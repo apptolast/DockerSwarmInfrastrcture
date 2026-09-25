@@ -53,6 +53,27 @@
       Backup activation remains fail-closed until an R2 account/bucket,
       four root-only secret files, and backup_activation_enabled are supplied.
 
+- name: Reject parked workloads outside the reviewed backup contract
+  ansible.builtin.assert:
+    that:
+      - platform_parked_workloads is defined
+      - platform_parked_workloads is sequence
+      - platform_parked_workloads is not string
+      - platform_parked_workloads is not mapping
+      - >-
+        platform_parked_workloads | select("string") | list
+        == platform_parked_workloads
+      - platform_parked_workloads | unique == platform_parked_workloads
+      - platform_parked_workloads | sort == platform_parked_workloads
+      - >-
+        platform_parked_workloads
+        | difference(backup_parkable_services | list)
+        == []
+    fail_msg: >-
+      platform_parked_workloads must be a sorted, duplicate-free list of
+      workloads named in backup_parkable_services; the controller backs up a
+      parked service at rest and verification pins that reviewed set.
+
 - name: Inspect the platform Swarm auto-unlock lifecycle files
   ansible.builtin.stat:
     path: "{{ item.path }}"

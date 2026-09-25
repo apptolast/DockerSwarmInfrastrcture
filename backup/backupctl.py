@@ -52,6 +52,14 @@ SENSITIVE_ENVIRONMENT_KEYS = frozenset(
         "RESTIC_REPOSITORY",
     }
 )
+# Reviewed Swarm services the owner may park (rendered with `replicas: 0`
+# from config/platform.yml platform_parked_workloads). Neither has dependants,
+# so a parked one is backed up at rest instead of being quiesced. Snapshot
+# verification pins this constant, never the current configuration, so a
+# snapshot stays verifiable after the owner parks or unparks a service.
+PARKABLE_SERVICES = frozenset({"workloads_minecraft", "workloads_openclaw"})
+MINECRAFT_RCON_PROTOCOL = "rcon-save-off-save-all-flush-save-on"
+MINECRAFT_PARKED_PROTOCOL = "service-parked-at-rest"
 
 
 def host_lock_helper() -> Any:
@@ -541,26 +549,15 @@ def validate_restored_contract(
         }
     if normalized_groups != expected_group_metadata:
         fail("application snapshot consistency metadata differs")
-    minecraft_metadata = metadata.get("minecraft_consistency")
-    minecraft_ids = [
-        identifier
-        for identifier, dataset in datasets.items()
-        if dataset["consistency"] == "minecraft-save"
-    ]
-    if minecraft_metadata != {
-        "service": config.section("services")["minecraft"],
-        "artifacts": minecraft_ids,
-        "protocol": "rcon-save-off-save-all-flush-save-on",
-    }:
-        fail("application snapshot Minecraft consistency metadata differs")
 
     service_metadata = metadata.get("services")
+    minecraft_service = config.section("services")["minecraft"]
     expected_services = {
         service
         for group in config.document["consistency_groups"]
         for service in group["services"]
     }
-    expected_services.add(config.section("services")["minecraft"])
+    expected_services.add(minecraft_service)
     expected_services.update(
         database["service"] for database in config.document["databases"]
     )
@@ -568,20 +565,55 @@ def validate_restored_contract(
         expected_services
     ):
         fail("application snapshot service metadata differs")
+    parked_at_backup: set[str] = set()
     for service, value in service_metadata.items():
         if (
             not isinstance(value, dict)
             or set(value) != {"desired_replicas", "running_replicas", "image"}
             or not isinstance(value["desired_replicas"], int)
             or isinstance(value["desired_replicas"], bool)
-            or value["desired_replicas"] < 1
             or not isinstance(value["running_replicas"], int)
             or isinstance(value["running_replicas"], bool)
-            or value["running_replicas"] != value["desired_replicas"]
             or not isinstance(value["image"], str)
             or "@sha256:" not in value["image"]
         ):
             fail(f"application snapshot service metadata is invalid: {service}")
+        # A recorded 0/0 is the only evidence that a service was parked when
+        # the snapshot was taken. It is judged against the reviewed constant,
+        # not against the current parked_services, so parking or unparking
+        # later never invalidates an older snapshot.
+        if value["desired_replicas"] == 0 and value["running_replicas"] == 0:
+            if service not in PARKABLE_SERVICES:
+                fail(
+                    "application snapshot records a non-parkable service "
+                    f"at rest: {service}"
+                )
+            parked_at_backup.add(service)
+        elif (
+            value["desired_replicas"] < 1
+            or value["running_replicas"] != value["desired_replicas"]
+        ):
+            fail(f"application snapshot service metadata is invalid: {service}")
+
+    minecraft_metadata = metadata.get("minecraft_consistency")
+    minecraft_ids = [
+        identifier
+        for identifier, dataset in datasets.items()
+        if dataset["consistency"] == "minecraft-save"
+    ]
+    # The protocol must agree with the recorded Minecraft replicas: a parked
+    # server was archived at rest without RCON, a running one only between
+    # save-off and save-on. Any other pairing is an inconsistent manifest.
+    if minecraft_metadata != {
+        "service": minecraft_service,
+        "artifacts": minecraft_ids,
+        "protocol": (
+            MINECRAFT_PARKED_PROTOCOL
+            if minecraft_service in parked_at_backup
+            else MINECRAFT_RCON_PROTOCOL
+        ),
+    }:
+        fail("application snapshot Minecraft consistency metadata differs")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -926,6 +958,32 @@ class BackupConfig:
             grouped_datasets
         ) != len(quiesced_dataset_ids):
             fail("each non-Minecraft dataset needs one consistency group")
+
+        # Required even when empty: a configuration rendered without the key
+        # predates parking and is refused rather than read as "none parked".
+        parked_services = self.document.get("parked_services")
+        if not isinstance(parked_services, list) or any(
+            not isinstance(service, str) for service in parked_services
+        ):
+            fail("parked_services must be a list of Swarm service names")
+        if len(parked_services) != len(set(parked_services)):
+            fail("parked_services must not repeat a service")
+        if parked_services != sorted(parked_services):
+            fail("parked_services must be sorted")
+        unreviewed_parked = sorted(set(parked_services) - PARKABLE_SERVICES)
+        if unreviewed_parked:
+            fail(
+                "parked_services is outside the reviewed parkable set "
+                f"{sorted(PARKABLE_SERVICES)!r}: {unreviewed_parked!r}"
+            )
+        unmanaged_parked = sorted(
+            set(parked_services) - {*grouped_services, minecraft_service}
+        )
+        if unmanaged_parked:
+            fail(
+                "parked_services names services outside the backup contract: "
+                f"{unmanaged_parked!r}"
+            )
 
         retention = self.section("retention")
         for key in ("hourly", "daily", "weekly", "monthly", "yearly"):
@@ -1389,12 +1447,34 @@ class Swarm:
             fail("local Docker Engine is not an active Swarm manager")
 
 
+def require_parked_at_rest(swarm: Swarm, service: str, moment: str) -> None:
+    desired, running = swarm.replicas(service)
+    if desired != 0 or running != 0:
+        fail(
+            f"parked service is not at rest {moment} "
+            f"(desired={desired}, running={running}): {service}"
+        )
+
+
 @contextlib.contextmanager
-def quiesced_services(swarm: Swarm, service_names: Sequence[str]) -> Iterator[None]:
+def quiesced_services(
+    swarm: Swarm,
+    service_names: Sequence[str],
+    *,
+    parked: frozenset[str],
+) -> Iterator[None]:
     original: list[tuple[str, int]] = []
+    resting: list[str] = []
     primary_error: BaseException | None = None
     try:
         for service in service_names:
+            # A parked writer is already stopped by owner decision. It is
+            # never scaled, so neither this window nor its recovery can start
+            # it as a side effect; it only has to be provably at rest.
+            if service in parked:
+                require_parked_at_rest(swarm, service, "before backup")
+                resting.append(service)
+                continue
             desired, running = swarm.replicas(service)
             if desired < 1 or running != desired:
                 fail(f"writer service is not fully available before backup: {service}")
@@ -1402,6 +1482,10 @@ def quiesced_services(swarm: Swarm, service_names: Sequence[str]) -> Iterator[No
         for service, _ in original:
             swarm.scale(service, 0)
         yield
+        # Nothing here stopped the parked writers, so nothing here kept them
+        # stopped: re-read them before the window is accepted as consistent.
+        for service in resting:
+            require_parked_at_rest(swarm, service, "after backup")
     except BaseException as error:
         primary_error = error
     recovery_errors: list[str] = []
@@ -1461,6 +1545,15 @@ def suspended_minecraft_saves(swarm: Swarm, service: str) -> Iterator[str]:
         raise
     if primary_error is not None:
         raise primary_error
+
+
+@contextlib.contextmanager
+def parked_minecraft_at_rest(swarm: Swarm, service: str) -> Iterator[None]:
+    # A parked server has no task to exec into and nothing writing its world:
+    # the datasets are archived at rest, without any docker exec or RCON.
+    require_parked_at_rest(swarm, service, "before backup")
+    yield
+    require_parked_at_rest(swarm, service, "after backup")
 
 
 def archive_source(identifier: str, source: Path, destination: Path) -> dict[str, Any]:
@@ -1678,6 +1771,8 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
     }
     datasets_by_id = {dataset["id"]: dataset for dataset in datasets}
     consistency_groups = config.document["consistency_groups"]
+    parked_services = frozenset(config.document["parked_services"])
+    minecraft_parked = services["minecraft"] in parked_services
     minecraft = [
         dataset for dataset in datasets if dataset["consistency"] == "minecraft-save"
     ]
@@ -1696,7 +1791,11 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
         for group in consistency_groups:
             started_at = utc_timestamp()
             group_artifact_ids: list[str] = []
-            with quiesced_services(swarm, group["services"]):
+            with quiesced_services(
+                swarm,
+                group["services"],
+                parked=parked_services,
+            ):
                 for database_id in group["databases"]:
                     database = databases_by_id[database_id]
                     artifact = dump_database(
@@ -1726,13 +1825,19 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
                     "finished_at": utc_timestamp(),
                 }
             )
-        with suspended_minecraft_saves(swarm, services["minecraft"]):
+        with (
+            parked_minecraft_at_rest(swarm, services["minecraft"])
+            if minecraft_parked
+            else suspended_minecraft_saves(swarm, services["minecraft"])
+        ):
             for dataset in minecraft:
                 artifact = archive_source(
                     dataset["id"],
                     Path(dataset["source"]),
                     stage / "filesystems" / f"{dataset['id']}.tar",
                 )
+                # The artifact group ID stays stable across both protocols;
+                # minecraft_consistency.protocol records which one applied.
                 artifact["consistency_group"] = "minecraft-rcon"
                 artifacts.append(artifact)
         metadata_services = [
@@ -1746,6 +1851,13 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
         )
         for service in dict.fromkeys(metadata_services):
             desired, running = swarm.replicas(service)
+            # Verification reads a recorded 0/0 as "parked"; refuse to record
+            # a parked service in any other state.
+            if service in parked_services and (desired != 0 or running != 0):
+                fail(
+                    "parked service is not at rest while recording metadata "
+                    f"(desired={desired}, running={running}): {service}"
+                )
             service_metadata[service] = {
                 "desired_replicas": desired,
                 "running_replicas": running,
@@ -1760,7 +1872,11 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
                 "minecraft_consistency": {
                     "service": services["minecraft"],
                     "artifacts": [dataset["id"] for dataset in minecraft],
-                    "protocol": "rcon-save-off-save-all-flush-save-on",
+                    "protocol": (
+                        MINECRAFT_PARKED_PROTOCOL
+                        if minecraft_parked
+                        else MINECRAFT_RCON_PROTOCOL
+                    ),
                 },
                 "services": service_metadata,
             },

@@ -222,6 +222,82 @@ class BackupContractTests(unittest.TestCase):
             },
         )
 
+    def test_parked_workloads_share_one_reviewed_parkable_set(self) -> None:
+        defaults = yaml.safe_load(
+            (PROJECT_ROOT / "ansible/roles/backup/defaults/main.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        platform = yaml.safe_load(
+            (PROJECT_ROOT / "config/platform.yml").read_text(encoding="utf-8")
+        )
+        tasks = yaml.safe_load(
+            (PROJECT_ROOT / "ansible/roles/backup/tasks/main.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        template = (
+            PROJECT_ROOT / "ansible/roles/backup/templates/config.json.j2"
+        ).read_text(encoding="utf-8")
+        controller = (PROJECT_ROOT / "backup/backupctl.py").read_text(encoding="utf-8")
+
+        parkable = defaults["backup_parkable_services"]
+        self.assertEqual(
+            parkable,
+            {
+                "minecraft": "workloads_minecraft",
+                "openclaw": "workloads_openclaw",
+            },
+        )
+        self.assertEqual(parkable["minecraft"], defaults["backup_minecraft_service"])
+        openclaw_group = next(
+            group
+            for group in defaults["backup_consistency_groups"]
+            if group["id"] == "openclaw"
+        )
+        self.assertEqual(openclaw_group["services"], [parkable["openclaw"]])
+        self.assertIn(
+            "PARKABLE_SERVICES = frozenset("
+            '{"workloads_minecraft", "workloads_openclaw"})',
+            controller,
+        )
+
+        parked = platform["platform_parked_workloads"]
+        self.assertIsInstance(parked, list)
+        self.assertEqual(parked, sorted(set(parked)))
+        self.assertLessEqual(set(parked), set(parkable))
+
+        self.assertIn('"parked_services": (', template)
+        self.assertIn('| map("extract", backup_parkable_services)', template)
+        parked_assert = next(
+            task
+            for task in tasks
+            if task["name"]
+            == "Reject parked workloads outside the reviewed backup contract"
+        )
+        conditions = parked_assert["ansible.builtin.assert"]["that"]
+        self.assertIn("platform_parked_workloads is sequence", conditions)
+        self.assertIn(
+            "platform_parked_workloads | sort == platform_parked_workloads",
+            conditions,
+        )
+        self.assertIn(
+            "platform_parked_workloads | unique == platform_parked_workloads",
+            conditions,
+        )
+        self.assertIn(
+            "platform_parked_workloads"
+            " | difference(backup_parkable_services | list)"
+            " == []",
+            conditions,
+        )
+        activation_index = next(
+            index
+            for index, task in enumerate(tasks)
+            if task["name"] == "Reject activation without reviewed backup inputs"
+        )
+        self.assertEqual(tasks.index(parked_assert), activation_index + 1)
+
     def test_swarm_state_unit_requires_explicit_stop_acknowledgement(self) -> None:
         wrapper = (
             PROJECT_ROOT / "scripts/backup-swarm-state.sh"

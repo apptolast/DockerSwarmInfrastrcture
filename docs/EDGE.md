@@ -19,6 +19,14 @@ Publica únicamente `80/TCP` y `443/TCP`. Usa:
 - nueve routers explícitos: `/ping` de `edge.apptolast.com` y los ocho
   servicios HTTP aprobados.
 
+Si `config/platform.yml` aparca OpenClaw (`platform_parked_workloads`), su
+router y su certificado se mantienen, pero el backend se renderiza sin
+servidores ni sonda de salud: Traefik responde `503 no available server` sin
+registrar nada. Con la sonda activa y sin tarea, Traefik 3.7 registra un WARN
+`Health check failed.` en cada intervalo de 15 s
+([`pkg/healthcheck/healthcheck.go`](https://github.com/traefik/traefik/blob/v3.7.13/pkg/healthcheck/healthcheck.go)).
+Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`.
+
 Esto es estado declarado, no evidencia de despliegue. El Docker Secret
 `cloudflare_dns_api_token_v1` sigue existiendo (rotación pendiente de revocar
 hasta verificar el servicio con la v2, según el propio procedimiento de este

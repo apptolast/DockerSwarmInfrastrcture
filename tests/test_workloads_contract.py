@@ -1665,6 +1665,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
                 "workloads_stack_name": "workloads",
                 "platform_minecraft_public_enabled": True,
                 "platform_dns_cutover": {"minecraft": True},
+                "platform_parked_workloads": [],
                 "platform_public_tcp_ports": [80, 443, 25565],
                 "workloads_edge_networks": {
                     "kropia": "apptolast-edge-kropia",
@@ -2134,7 +2135,7 @@ class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
         cls.head = cls.channel["repository_familiar"] + ":" + cls.channel["tag"]
 
     @staticmethod
-    def inspect(image: str, label: str = "") -> str:
+    def inspect(image: str, label: str = "", replicas: int = 1) -> str:
         return json.dumps(
             [
                 {
@@ -2148,7 +2149,7 @@ class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
                                 ]
                             },
                         },
-                        "Mode": {"Replicated": {"Replicas": 1}},
+                        "Mode": {"Replicated": {"Replicas": replicas}},
                         "UpdateConfig": {"Order": "stop-first"},
                         "RollbackConfig": {"Order": "stop-first"},
                     }
@@ -2164,8 +2165,11 @@ class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
         before: str = "",
         channel: dict | None = None,
         hold: dict | None = None,
+        parked: list[str] | None = None,
+        channel_replicas: int = 1,
     ) -> dict:
         return {
+            "platform_parked_workloads": parked or [],
             "workloads_expected_spec_images": {
                 "kropia": channel or self.channel,
                 "shlink-db": hold or self.hold,
@@ -2178,7 +2182,12 @@ class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
             },
             "workloads_deployed_services": {
                 "results": [
-                    {"item": {"key": "kropia"}, "stdout": self.inspect(channel_live)},
+                    {
+                        "item": {"key": "kropia"},
+                        "stdout": self.inspect(
+                            channel_live, replicas=channel_replicas
+                        ),
+                    },
                     {"item": {"key": "shlink-db"}, "stdout": self.inspect(hold_live)},
                 ]
             },
@@ -2197,6 +2206,27 @@ class WorkloadLiveImageGateTests(AnsibleTaskAssertions, unittest.TestCase):
         self.assert_task_accepts(
             self.DEPLOY, self.IDENTITY, self.identity(kept, exact, before=kept)
         )
+
+    def test_identity_gate_binds_replicas_to_the_parked_list(self) -> None:
+        # The gate only mirrors platform_parked_workloads; which services may
+        # be parked at all is enforced when the workloads contract is derived.
+        live = self.head + "@" + self.RESOLVED
+        exact = self.hold["spec_exact"]
+        self.assert_task_accepts(
+            self.DEPLOY,
+            self.IDENTITY,
+            self.identity(live, exact, parked=["kropia"], channel_replicas=0),
+        )
+        for parked, replicas in ((["kropia"], 1), ([], 0)):
+            with self.subTest(parked=parked, replicas=replicas):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(
+                        live, exact, parked=parked, channel_replicas=replicas
+                    ),
+                    self.IDENTITY_MESSAGE,
+                )
 
     def test_identity_gate_rejects_a_hold_on_another_digest(self) -> None:
         wrong = self.hold["spec_exact"].split("@")[0] + "@" + self.FOREIGN

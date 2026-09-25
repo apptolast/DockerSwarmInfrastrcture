@@ -4,6 +4,16 @@ Instantánea comprobada el 28 de julio de 2026 sobre `159.195.156.57`. Sustituye
 a la sección «Estado observado» de [`README.md`](../README.md), que describe el
 host antes del primer despliegue real de este árbol.
 
+## Servicios aparcados
+
+Por decisión del propietario (2026-09-25), Minecraft y OpenClaw quedan
+aparcados (`platform_parked_workloads` en `config/platform.yml`) para liberar
+RAM y CPU del host. Sus datos siguen en `/srv/dockerswarm/services` y, al
+aparcarlos, su estado se archiva en frío bajo `/var/backups/dockerswarm/parked`.
+La evidencia del apply y los SHA-256 de esos archivos se añaden aquí cuando se
+verifican. Procedimiento en [OPERATIONS.md](OPERATIONS.md), «Aparcar un
+servicio».
+
 ## Aplicado y verificado
 
 | Capa | Resultado |

@@ -67,6 +67,11 @@ prueba y a una decisión explícita sobre `online-mode=false` antes de cambiar
 El hostname de Traefik expone únicamente el health endpoint versionado; no
 autoriza un dashboard público.
 
+Aparcar `minecraft` u `openclaw-clean` (`platform_parked_workloads` en
+`config/platform.yml`) no cambia este catálogo: el servicio sigue aprobado,
+con sus imágenes, datasets y hostname, y solo deja de ejecutar tarea. Ver
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
+
 ## Rutas de datos
 
 Las rutas de origen reflejan el layout del artefacto auditado. Las rutas de

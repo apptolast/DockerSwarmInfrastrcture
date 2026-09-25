@@ -695,7 +695,7 @@
         | from_json
       ).data.activeTargets
       | map(attribute="labels.job") | unique | sort
-      == observability_expected_scrape_jobs | sort
+      == observability_active_scrape_jobs | sort
     - >-
       (
         observability_prometheus_targets.stdout

@@ -23,9 +23,16 @@ DEFAULT_STACKS = {
     "autoupdater": PROJECT_DIR / ".build/autoupdater/stack.yml",
 }
 STACK_IDS = frozenset(DEFAULT_STACKS)
-# Replicated services whose kill switch may render `replicas: 0`. Their budget
-# stays reserved as one instance, so re-enabling needs no capacity review.
-SUSPENDABLE_SERVICES = frozenset({("autoupdater", "shepherd")})
+# Replicated services whose kill switch may render `replicas: 0`: the image
+# watcher and the workloads config/platform.yml may park. Their budget stays
+# reserved as one instance, so re-enabling needs no capacity review.
+SUSPENDABLE_SERVICES = frozenset(
+    {
+        ("autoupdater", "shepherd"),
+        ("workloads", "minecraft"),
+        ("workloads", "openclaw"),
+    }
+)
 IDENTIFIER_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 CPU_RE = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]{2}")
 MEMORY_RE = re.compile(r"([1-9][0-9]*)M")

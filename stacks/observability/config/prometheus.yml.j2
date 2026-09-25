@@ -114,6 +114,9 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+{# Aparcado (platform_parked_workloads) no hay tarea que sondear: sin este job
+   la regla MinecraftEndpointDown sigue cargada pero no tiene series. #}
+{% if "minecraft" not in platform_parked_workloads %}
 
   - job_name: blackbox-minecraft-tcp
     metrics_path: /probe
@@ -132,3 +135,4 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+{% endif %}

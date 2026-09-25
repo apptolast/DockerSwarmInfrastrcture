@@ -8,6 +8,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Estado «aparcado» para servicios del stack `workloads`:
+  `platform_parked_workloads` en `config/platform.yml` renderiza
+  `replicas: 0` y conserva imagen, datos, secretos, redes, ruta del edge y
+  presupuesto de capacidad. Solo admite servicios sin dependientes
+  (`minecraft`, `openclaw`), y cada capa lo aplica: la convergencia exige
+  `0/0` y ninguna tarea viva, la ruta de OpenClaw queda sin servidores
+  (Traefik responde 503 sin lanzar una sonda que registraría un WARN cada
+  15 s), Blackbox deja de sondear lo aparcado y el backup copia en reposo
+  sin RCON. Por decisión del propietario, Minecraft y OpenClaw quedan
+  aparcados para liberar RAM y CPU del host; runbook en
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md) («Aparcar un servicio»).
 - El juego se re-fija a la build que arregla el rendimiento sin GPU
   (`2ea28466`, digest `a61822ad`). El filtrado anisotropico del suelo
   costaba el 43% del frame en un rasterizador por software: ahora sigue al

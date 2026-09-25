@@ -95,7 +95,7 @@ class CapacityContractTests(unittest.TestCase):
         with self.assertRaises(capacity.CapacityError):
             capacity.validate_contract(document)
 
-    def test_only_the_watcher_kill_switch_may_render_zero_replicas(self) -> None:
+    def test_only_reviewed_kill_switches_may_render_zero_replicas(self) -> None:
         contract = self.normalized_contract()
         documents = copy.deepcopy(self.stack_documents)
         documents["autoupdater"]["services"]["shepherd"]["deploy"]["replicas"] = 0
@@ -104,6 +104,22 @@ class CapacityContractTests(unittest.TestCase):
         self.assertEqual(
             totals["autoupdater"], contract["reviewed_totals"]["autoupdater"]
         )
+        # So does a workload parked by config/platform.yml, in either state.
+        for replicas in (0, 1):
+            with self.subTest(parked_replicas=replicas):
+                documents = copy.deepcopy(self.stack_documents)
+                for service in ("minecraft", "openclaw"):
+                    documents["workloads"]["services"][service]["deploy"][
+                        "replicas"
+                    ] = replicas
+                totals = capacity.validate_stacks(contract, documents)
+                self.assertEqual(
+                    totals["workloads"], contract["reviewed_totals"]["workloads"]
+                )
+        documents = copy.deepcopy(self.stack_documents)
+        documents["workloads"]["services"]["n8n-db"]["deploy"]["replicas"] = 0
+        with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
+            capacity.validate_stacks(contract, documents)
         for replicas in (2, True, "1", None):
             with self.subTest(replicas=replicas):
                 documents = copy.deepcopy(self.stack_documents)
