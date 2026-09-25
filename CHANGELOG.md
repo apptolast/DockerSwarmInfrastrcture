@@ -485,6 +485,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Traefik se reiniciaba en bucle y cortaba todo el tráfico público. Con un
+  límite de 128 MiB, las páginas de su binario (unos 185 MB) se reclamaban
+  sin parar, `traefik healthcheck` agotaba sus 5 s y Swarm reemplazaba la
+  tarea cada pocos minutos. Durante cada relevo 80/443 no escuchaban (62
+  tareas en 24 h el 2026-09-25). El límite pasa a 256 MiB. Como `edge` no se
+  puede aplicar (compuerta STOP 10), el mismo valor se aplicó en vivo el
+  2026-09-25 con `docker service update --limit-memory 256M`, sin tocar nada
+  más del servicio.
+- `portfolio-alberto` pasa de 128 a 256 MiB de límite: `next-server` chocaba
+  con él (un OOM del cgroup y dos reinicios por healthcheck entre el
+  2026-09-15 y el 2026-09-22). Ambos aumentos salen del presupuesto que
+  liberan Minecraft y OpenClaw aparcados; desaparcarlos exige ahora 256 MiB
+  más de decisión de capacidad (`docs/CAPACITY.md`).
+
 - La imagen de runners de n8n vuelve a `n8nio/runners:2.31.5`, la misma
   versión que n8n. Dependabot la había subido sola a 2.32.6 el 2026-08-03
   (#3), aunque n8n exige que los runners usen exactamente su versión

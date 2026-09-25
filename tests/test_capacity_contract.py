@@ -62,7 +62,7 @@ class CapacityContractTests(unittest.TestCase):
                 },
                 "limits": {
                     "cpu_millicores": 13950,
-                    "memory_mib": 7789,
+                    "memory_mib": 8045,
                 },
             },
         )
