@@ -26,7 +26,8 @@ Seguimientos abiertos del aparcado:
 
 - Cerrar el 25565 en el firewall mientras Minecraft está aparcado. Exige
   aplicar `platform` y `host-baseline`, que aplicarían también el snapshot de
-  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`). Hasta entonces el
+  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`), y el de
+  `platform` cortaría SFTP y Satisfactory (ver abajo). Hasta entonces el
   apply de `workloads` exige que ningún proceso del host escuche en ese
   puerto, pero solo en el momento del apply.
 - Ninguna alerta avisa si alguien arranca a mano un servicio aparcado. El
@@ -57,19 +58,26 @@ aquí:
   privilegiado; el colector de procesos de `monitor-production` comparte el
   espacio de PID del host (`pid: host`, sin red).
 - Reglas manuales en la cadena `DOCKERSWARM-INGRESS`: el 2222/tcp de `sftp`
-  pasa por una cadena propia `SFTP-SWARM` (jail de Fail2ban), y el
-  7777/tcp+udp y el 8888/tcp del servidor de Satisfactory se admiten solo
-  desde una IP de origen. No están en el render revisado de esa cadena (80,
-  443 y 25565). Dos drop-ins manuales de `dockerswarm-docker-firewall.service`
-  las vuelven a añadir cada vez que la cadena se reconstruye, sea por un
-  reinicio de Docker o del host o por un apply de `platform` o
-  `host-baseline`:
+  pasa por una cadena propia `SFTP-SWARM` (jail manual de Fail2ban
+  `/etc/fail2ban/jail.d/95-sftp-swarm.local`), y el 7777/tcp+udp y el
+  8888/tcp del servidor de Satisfactory se admiten solo desde una IP de
+  origen. No están en el render revisado de esa cadena (80, 443 y 25565).
+  Dos drop-ins manuales de `dockerswarm-docker-firewall.service` las vuelven a
+  añadir cada vez que esa unidad se ejecuta:
   - `90-satisfactory.conf` ejecuta `/srv/satisfactory/ops/game_firewall.py`;
   - `95-sftp.conf` ejecuta `/usr/local/sbin/apptolast-sftp-firewall`.
 
-  Los roles de este repositorio solo escriben `20-crowdsec-order.conf` en ese
-  directorio y no borran los demás, pero un servidor reconstruido desde aquí
-  no los tendría.
+  Ambos scripts son `root:root` y no son escribibles por grupo ni por otros
+  (`0644` y `0755`). La unidad estaba `enabled` el 2026-09-25, así que
+  sobreviven a un reinicio de Docker o del host y a un apply de
+  `host-baseline`, que la reinicia y la vuelve a habilitar. Un apply de
+  `platform` **no**: ejecuta el script base fuera de systemd
+  (`ansible/roles/platform/tasks/main.yml`, «Reconcile the Docker
+  published-port policy after Swarm changes») y deja la unidad deshabilitada
+  al arranque. Tras él, SFTP y Satisfactory quedan cerrados hasta un
+  `systemctl enable --now dockerswarm-docker-firewall.service` o un
+  `systemctl restart` de esa unidad. Los roles de este repositorio no borran
+  esos drop-ins, pero un servidor reconstruido desde aquí no los tendría.
 - Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
   Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
   las rutas de `satisfactory.apptolast.com` (web, websocket y

@@ -293,16 +293,21 @@ Qué cambia en cada capa mientras un servicio está aparcado:
   cualquier playbook salvo `workloads` y `site` falla si el servicio corre.
 
 Para aparcar o desaparcar se edita la lista y se sigue la secuencia de
-cambio. El orden de los applies protege dos cosas: que ninguna alerta salte
-por una sonda que ya no aplica, y que el smoke de `workloads` encuentre en
-OpenClaw la respuesta que corresponde (`503` si está aparcado, `200` si no):
+cambio. Desde que la lista declara un servicio aparcado, el preflight de
+capacidad rechaza cualquier playbook salvo `workloads` y `site` mientras ese
+servicio siga en marcha, así que el orden es:
 
-- Para aparcar: `observability` si está desplegado (retira las sondas),
-  después `edge` y después `workloads`.
-- Para desaparcar: `edge`, después `workloads` y después `observability` si
-  está desplegado (repone las sondas cuando el servicio ya responde). Traefik
-  sondea OpenClaw desde el apply de `edge` y registra ese WARN hasta que el de
-  `workloads` arranca la tarea.
+- Para aparcar: `workloads` primero (lleva el servicio a `0/0`), después
+  `edge` (retira la sonda de OpenClaw) y después `observability` si está
+  desplegado (retira sus sondas). Hasta el apply de `edge`, la sonda de salud
+  del Traefik vivo marca OpenClaw caído, su ruta responde igualmente `503` y
+  Traefik registra un WARN cada 15 s. Si `observability` está desplegado,
+  `MinecraftEndpointDown` y `PublicEndpointDown` pueden disparar durante
+  esos minutos.
+- Para desaparcar: `edge` (repone el backend y la sonda), después
+  `workloads` (arranca la tarea; su smoke exige el `200` que ya sirve el
+  edge) y después `observability` si está desplegado. Traefik registra el
+  WARN de la sonda entre los dos primeros applies.
 
 Si `backup` está desplegado, se aplica también para renderizar la lista
 nueva. Cada apply de `edge` que cambia la configuración dinámica reemplaza la

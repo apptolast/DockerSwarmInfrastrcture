@@ -498,6 +498,14 @@ take Satisfactory offline, so **do not apply `--playbook edge` (or `site`)**
 until those routes are codified, with the `basicAuth` users held in a Docker
 Secret rather than a hash in this public repository.
 
+Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
+`95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
+rules whenever that unit runs. A `--playbook platform` apply runs the base
+firewall script outside the unit and disables it at boot, so **do not apply
+`platform`** unless `systemctl enable --now dockerswarm-docker-firewall.service`
+follows immediately, and check that `iptables -S DOCKERSWARM-INGRESS` shows
+those rules again.
+
 The Swarm stacks `satisfactory-companions`, `satisfactory-events` and `sftp`
 are declared only by their measured resources in
 `config/capacity-profiles.yml` `external_stacks`. The capacity preflight
