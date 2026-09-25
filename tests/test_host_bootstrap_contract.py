@@ -590,6 +590,41 @@ class HostBaselineConvergenceTests(AnsibleTaskAssertions, unittest.TestCase):
         self.assertTrue(completed.returncode == 0 or "evaluated_to" in output, output)
         return completed.returncode == 0
 
+    # -- journal integrity ---------------------------------------------------
+
+    def test_journal_integrity_reads_only_closed_files(self) -> None:
+        journald = load_tasks(f"{HOST_BASELINE_ROLE}/tasks/journald.yml")
+        names = list(journald)
+        find = journald["Find the closed persistent journal files"]
+        verify = journald["Verify persistent journal integrity"]
+        self.assertLess(names.index(find["name"]), names.index(verify["name"]))
+        self.assertEqual(find["ansible.builtin.find"]["patterns"], "*@*.journal")
+        self.assertEqual(find["ansible.builtin.find"]["paths"], "/var/log/journal")
+        # The active files journald is writing are never read by --verify.
+        self.assertEqual(
+            verify["ansible.builtin.command"]["argv"],
+            [
+                "/usr/bin/journalctl",
+                "--verify",
+                "--quiet",
+                "--file=/var/log/journal/*/*@*.journal",
+            ],
+        )
+        # With no closed file yet the glob would match nothing and fail, so
+        # the check runs only when the find saw one.
+        gate = "host_baseline_closed_journal_files.matched | default(0) > 0"
+        self.assertIn(gate, verify["when"])
+        self.assertFalse(
+            self.condition_holds(
+                gate, {"host_baseline_closed_journal_files": {"matched": 0}}
+            )
+        )
+        self.assertTrue(
+            self.condition_holds(
+                gate, {"host_baseline_closed_journal_files": {"matched": 3}}
+            )
+        )
+
     # -- A. kernel settings -------------------------------------------------
 
     def test_sysctl_converges_each_drifted_key_never_sysctl_system(self) -> None:

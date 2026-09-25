@@ -80,17 +80,36 @@
     quiet: true
   when: not ansible_check_mode
 
+# Only closed (archived) journal files are verified. journald keeps writing
+# the active system.journal and user-*.journal while --verify reads them,
+# which can report corruption that is not there: on 2026-09-25 both active
+# files failed and passed once closed with `journalctl --rotate`.
+- name: Find the closed persistent journal files
+  ansible.builtin.find:
+    paths: /var/log/journal
+    patterns: "*@*.journal"
+    recurse: true
+    file_type: file
+  register: host_baseline_closed_journal_files
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - host_baseline_run_expensive_validations | bool
+
 - name: Verify persistent journal integrity
   ansible.builtin.command:
     argv:
       - /usr/bin/journalctl
       - --verify
       - --quiet
+      # journalctl expands this glob itself (journalctl(1), --file=GLOB).
+      - --file=/var/log/journal/*/*@*.journal
   changed_when: false
   check_mode: false
   when:
     - not ansible_check_mode
     - host_baseline_run_expensive_validations | bool
+    - host_baseline_closed_journal_files.matched | default(0) > 0
 
 - name: Report bounded journal disk use
   ansible.builtin.command:
