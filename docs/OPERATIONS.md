@@ -251,10 +251,11 @@ stack `workloads` sin borrar nada: se renderizan con `replicas: 0` y conservan
 imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes, ruta del edge
 y presupuesto de capacidad. La lista va ordenada, sin duplicados, se escribe
 `[]` cuando no queda ningún servicio aparcado (una clave vacía es `null` y
-todas las capas la rechazan) y solo admite `minecraft` y `openclaw`, los dos servicios que ningún otro necesita
-para funcionar: `minecraft-stats` solo lee el mundo de Minecraft en modo
-lectura y sigue sirviendo las últimas estadísticas. Aparcar una base de datos
-dejaría a sus consumidores sin backend, así que los validadores lo rechazan.
+todas las capas la rechazan) y solo admite `minecraft` y `openclaw`, los dos
+servicios que ningún otro necesita para funcionar: `minecraft-stats` solo lee
+el mundo de Minecraft en modo lectura y sigue sirviendo las últimas
+estadísticas. Aparcar una base de datos dejaría a sus consumidores sin
+backend, así que los validadores lo rechazan.
 
 Qué cambia en cada capa mientras un servicio está aparcado:
 
