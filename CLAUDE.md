@@ -486,6 +486,38 @@ cover the `edge` record (grepping for `edge` in
 matches). Adopting the real state into Terraform is prerequisite work,
 not just one more `apply`.
 
+### 10. Hand-modified Traefik and out-of-repo stacks — OPEN
+
+Opened 2026-09-25 (`docs/DEPLOYMENT_STATUS.md`, "Deriva fuera del
+repositorio"). On 2026-09-22 the live `edge_traefik` service was switched by
+hand to the Docker Config `edge-traefik-dynamic-companions-a0952eace071`. It
+adds the `satisfactory.apptolast.com` and `logs-satisfactory.apptolast.com`
+routes, a `basicAuth` middleware and the `apptolast-edge-satisfactory`
+network. An `edge` apply from this repository would remove all three and
+take Satisfactory offline, so **do not apply `--playbook edge` (or `site`)**
+until those routes are codified, with the `basicAuth` users held in a Docker
+Secret rather than a hash in this public repository.
+
+Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
+`95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
+rules whenever that unit runs. A `--playbook platform` apply runs the base
+firewall script outside the unit and disables it at boot. The unit is a
+`oneshot` with `RemainAfterExit=yes` that stays active, so `enable --now`
+would not run it again. **Do not apply `platform`** unless
+`systemctl enable dockerswarm-docker-firewall.service` and
+`systemctl restart dockerswarm-docker-firewall.service` follow immediately,
+and check that `iptables -S DOCKERSWARM-INGRESS` shows those rules again.
+
+The Swarm stacks `satisfactory-companions`, `satisfactory-events` and `sftp`
+are declared only by their measured resources in
+`config/capacity-profiles.yml` `external_stacks`. The capacity preflight
+fails closed if they change, disappear or gain a service. A rebuilt host
+cannot run them from this repository, so on a fresh Swarm a reviewed change
+must first remove them from `external_stacks` (`docs/REBUILD.md`).
+
+Only the owner can close this gate: by codifying these projects here or by
+removing them from the host.
+
 None of these gates may be satisfied by inventing values, hardcoding a
 credential, or adding a bypass flag. If a task seems to require passing
 one of these gates, stop and surface that to the user rather than working

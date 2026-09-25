@@ -574,7 +574,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
         rollback.assert_called_once()
         evidence.assert_called_once()
@@ -618,7 +619,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
         rollback.assert_called_once()
         evidence.assert_called_once()
@@ -681,7 +683,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=Path("/private/n8n-active-workflows.json"),
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
         rollback.assert_called_once()
 
@@ -726,7 +729,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=Path("/private/n8n-active-workflows.json"),
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
         quarantine.assert_called_once()
 
@@ -799,7 +803,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
             self.assertEqual(cli_calls, ["alpha", "beta"])
             evidence = list(state_directory.glob("n8n-workflows-unpublished-*.json"))
@@ -870,7 +875,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                 expected=self.expected,
                 inventory_path=Path("/private/n8n-active-workflows.json"),
                 expected_ipv4="159.195.156.57",
-                timeout=300,                parked=frozenset(),
+                timeout=300,
+                parked=frozenset(),
             )
         self.assertEqual(cli.call_count, 4)
         quarantine.assert_called_once()
@@ -929,7 +935,8 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                     expected=self.expected,
                     inventory_path=inventory_path,
                     expected_ipv4="159.195.156.57",
-                    timeout=300,                    parked=frozenset(),
+                    timeout=300,
+                    parked=frozenset(),
                 )
             quarantine.assert_not_called()
             evidence = list(

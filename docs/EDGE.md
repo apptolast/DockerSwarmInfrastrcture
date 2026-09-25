@@ -37,8 +37,10 @@ digest: `traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b5245
 (3.7.13). Resultado: `503` y ninguna línea de sonda en 20 s; con la sonda
 activa y sin backend, tres WARN en 50 s. La evidencia está en el pull request
 apptolast/DockerSwarmInfrastrcture#59.
-Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`, antes
-que `workloads` en los dos sentidos.
+Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`:
+después de `workloads` al aparcar y antes al desaparcar (ver
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»). Hoy `edge` no se
+aplica por la compuerta STOP 10 de `CLAUDE.md`.
 
 Esto es estado declarado, no evidencia de despliegue. El Docker Secret
 `cloudflare_dns_api_token_v1` sigue existiendo (rotación pendiente de revocar
@@ -47,6 +49,14 @@ documento) pero ya no está referenciado por `edge_traefik_cloudflare_secret_nam
 `cloudflare_dns_api_token_v2` es la versión activa, instalada y verificada
 (TXT efímero) el 2026-07-27. No existen todavía certificado, overlays, stack
 ni servicios.
+
+Nota del 2026-09-25: desde `1c0a673` (2026-07-28)
+`edge_traefik_cloudflare_secret_name` fija `cloudflare_dns_api_token_v3`, y es
+el que usa el Traefik vivo (Docker Secret creado el 2026-07-27, etiquetas
+`com.apptolast.managed-by=manual-bootstrap` y
+`com.apptolast.purpose=traefik-cloudflare-dns`). Las menciones a la v2 como
+activa en este documento, incluido el registro de secrets, son anteriores y
+falta añadir su fila.
 
 ## Separación de credenciales
 

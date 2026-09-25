@@ -117,7 +117,12 @@ runbook marca `STOP`.
 5. Aplicar dos veces plataforma y baseline; la segunda debe ser idempotente.
 6. Restaurar o inicializar Swarm según la causa del incidente.
 7. Restaurar ACME o emitir de nuevo tras validar DNS-01 staging.
-8. Aplicar preflight, edge y workloads sin cambiar aún DNS.
+8. Aplicar preflight, edge y workloads sin cambiar aún DNS. En un Swarm
+   nuevo no existen los stacks externos que declara
+   `config/capacity-profiles.yml` (`external_stacks`) y el preflight de
+   capacidad falla con «a declared external service is not live». Antes de
+   este paso, un cambio revisado los retira de `external_stacks`, o sus
+   propietarios los restauran primero.
 9. Probar cada servicio con resolución forzada hacia la IP nueva.
 10. Aplicar observabilidad y comprobar alertas/blackbox.
 11. Adoptar DNS existente; cortar los ocho A HTTP y crear `edge`.

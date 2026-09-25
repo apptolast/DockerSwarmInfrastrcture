@@ -178,11 +178,16 @@ is retained in Ansible failure diagnostics.
 (`minecraft-stats` only reads the Minecraft world read-only and keeps serving
 the last statistics). A parked service renders `replicas: 0`, releases its
 capacity budget and keeps its image, bind-mounted data, secrets, networks and
-edge route. Unparking it means removing it from the list, adding its budget
-back to `config/capacity.yml` and `config/capacity-profiles.yml` in the same
-change, and applying `--playbook edge` first and then `--playbook workloads`,
-the same order as parking: the workloads smoke expects OpenClaw's edge answer
-(503 parked, 200 running) to already match. While Minecraft is parked the
+edge route.
+
+Parking applies `--playbook workloads` first, because while a
+declared-parked service still runs the capacity preflight refuses every other
+playbook, and then `--playbook edge`. Until then Traefik's own health check
+answers 503 for OpenClaw. Unparking means removing the service from the list,
+adding its budget back to `config/capacity.yml` and
+`config/capacity-profiles.yml` in the same change, and applying
+`--playbook edge` first and then `--playbook workloads`, whose smoke expects
+the edge to already serve OpenClaw (200). While Minecraft is parked the
 apply also fails if any host process listens on TCP 25565, which its public
 gate keeps admitted. The procedure and the effect on every layer are in
 [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md) ("Aparcar un servicio").

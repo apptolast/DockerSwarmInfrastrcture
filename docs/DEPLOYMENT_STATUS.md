@@ -8,8 +8,10 @@ host antes del primer despliegue real de este árbol.
 
 Por decisión del propietario (2026-09-25), `config/platform.yml` declara
 Minecraft y OpenClaw aparcados (`platform_parked_workloads`) para liberar RAM
-y CPU del host. Es estado declarado: se aplica con `edge` y después
-`workloads`, y la evidencia del apply y los SHA-256 de los archivos en frío
+y CPU del host. Es estado declarado. Para aparcar se aplica `workloads`,
+luego `edge` y luego `observability` si está desplegado; mientras `edge` no
+pueda aplicarse (ver «Deriva fuera del repositorio») se aplica solo
+`workloads`. La evidencia del apply y los SHA-256 de los archivos en frío
 bajo `/var/backups/dockerswarm/parked` se añaden aquí cuando se verifican.
 Sus datos siguen en `/srv/dockerswarm/services`. Procedimiento en
 [OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
@@ -25,27 +27,98 @@ Seguimientos abiertos del aparcado:
 
 - Cerrar el 25565 en el firewall mientras Minecraft está aparcado. Exige
   aplicar `platform` y `host-baseline`, que aplicarían también el snapshot de
-  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`). Hasta entonces el
+  paquetes 20260924 pendiente (`docs/SNAPSHOT_20260924.md`), y el de
+  `platform` cortaría SFTP y Satisfactory (ver abajo). Hasta entonces el
   apply de `workloads` exige que ningún proceso del host escuche en ese
   puerto, pero solo en el momento del apply.
-- Ninguna alerta avisa si alguien arranca a mano un servicio aparcado; el
-  siguiente apply de `workloads` lo detecta y falla.
+- Ninguna alerta avisa si alguien arranca a mano un servicio aparcado. El
+  preflight de capacidad de cualquier otro playbook lo rechaza (quedaría fuera
+  de presupuesto), y el siguiente apply de `workloads` lo vuelve a dejar en
+  `0/0` sin preguntar.
+- Desaparcar ya no es solo devolver el presupuesto: con los stacks externos
+  declarados, Minecraft no cabe en el plan `observability` (12 781 MiB de
+  límite frente a 12 397) y los dos juntos no caben en el activo (12 653 MiB).
+  Volver a arrancarlos exige una decisión de capacidad del propietario (ver
+  [CAPACITY.md](CAPACITY.md)).
+
+## Deriva fuera del repositorio
+
+Inventario del 2026-09-25 de lo que corre en el host sin estar codificado
+aquí:
+
+- Stacks Swarm `satisfactory-companions` y `satisfactory-events` (creados el
+  2026-09-22) y `sftp` (2026-09-23), posteriores al último apply desde este
+  repositorio (2026-09-19). Sus réplicas y recursos están declarados y se
+  verifican en `config/capacity-profiles.yml` (ver [CAPACITY.md](CAPACITY.md),
+  «Stacks externos»), pero sus ficheros de stack, imágenes locales y datos no
+  están aquí. Ninguno monta el socket de Docker ni corre privilegiado; `sftp`
+  añade `CAP_SETGID`, `CAP_SETUID` y `CAP_SYS_CHROOT`.
+- Proyectos Compose `satisfactory` (servidor del juego y sus servicios) y
+  `monitor-production` (observatorio de `monitor.apptolast.com`), fuera de
+  Swarm y del contrato de capacidad. Ninguno monta el socket de Docker ni es
+  privilegiado; el colector de procesos de `monitor-production` comparte el
+  espacio de PID del host (`pid: host`, sin red).
+- Reglas manuales en la cadena `DOCKERSWARM-INGRESS`: el 2222/tcp de `sftp`
+  pasa por una cadena propia `SFTP-SWARM` (jail manual de Fail2ban
+  `/etc/fail2ban/jail.d/95-sftp-swarm.local`), y el 7777/tcp+udp y el
+  8888/tcp del servidor de Satisfactory se admiten solo desde una IP de
+  origen. No están en el render revisado de esa cadena (80, 443 y 25565).
+  Dos drop-ins manuales de `dockerswarm-docker-firewall.service` las vuelven a
+  añadir cada vez que esa unidad se ejecuta:
+  - `90-satisfactory.conf` ejecuta `/srv/satisfactory/ops/game_firewall.py`;
+  - `95-sftp.conf` ejecuta `/usr/local/sbin/apptolast-sftp-firewall`.
+
+  Ambos scripts son `root:root` y no son escribibles por grupo ni por otros
+  (`0644` y `0755`), igual que sus directorios (`/srv/satisfactory` `0700`,
+  `/srv/satisfactory/ops` `0750`, `/usr/local/sbin` `0755`), y ningún
+  contenedor monta esas rutas. La unidad estaba `enabled` el 2026-09-25, así que
+  sobreviven a un reinicio de Docker o del host y a un apply de
+  `host-baseline`, que la reinicia y la vuelve a habilitar. Un apply de
+  `platform` **no**: ejecuta el script base fuera de systemd
+  (`ansible/roles/platform/tasks/main.yml`, «Reconcile the Docker
+  published-port policy after Swarm changes») y deja la unidad deshabilitada
+  al arranque. La unidad es `oneshot` con `RemainAfterExit=yes` y sigue
+  activa, así que `enable --now` no la vuelve a ejecutar. Tras el apply, SFTP
+  y Satisfactory quedan cerrados hasta
+  `systemctl enable dockerswarm-docker-firewall.service` seguido de
+  `systemctl restart dockerswarm-docker-firewall.service`, y
+  `iptables -S DOCKERSWARM-INGRESS` debe volver a mostrar sus reglas. Los
+  roles de este repositorio no borran esos drop-ins, pero un servidor
+  reconstruido desde aquí no los tendría.
+- Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
+  Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
+  las rutas de `satisfactory.apptolast.com` (web, websocket y
+  `/companions`) y `logs-satisfactory.apptolast.com`, esta última con un
+  middleware `basicAuth` cuyo hash no debe publicarse en este repositorio, y
+  está conectado a la red `apptolast-edge-satisfactory`. El secret
+  `cloudflare_dns_api_token_v3` que usa sí coincide con este repositorio. Un
+  apply de `edge` retiraría esas rutas y esa red y dejaría Satisfactory sin
+  ruta, así que no se aplica `edge` hasta codificarlas, con el `basicAuth`
+  como Docker Secret. Mientras tanto, con OpenClaw aparcado, la sonda de salud
+  del Traefik vivo lo marca caído (su ruta responde `503`) y registra un WARN
+  `Health check failed.` cada 15 s. El backend sin servidores de este
+  repositorio lo elimina en cuanto `edge` pueda aplicarse.
+
+La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`.
 
 ## Estado temporal fuera del repositorio
 
 - Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent
-  Substrate) en `/opt/ax-lab`: nodo `kind-control-plane` limitado con
-  `docker update` a 3 584 MiB y registro local `kind-registry`, fuera de
-  Swarm y del contrato de capacidad. Es un ensayo manual pendiente de
-  codificarse en su propio cambio revisado; hasta entonces no forma parte del
-  estado reconstruible. Sale de esta lista cuando ese cambio lo codifique o,
-  si se descarta, cuando se borren el clúster, el registro y `/opt/ax-lab`.
+  Substrate) en `/opt/ax-lab`: nodo `kind-control-plane` (privilegiado, como
+  exige kind) limitado con `docker update` a 3 584 MiB y registro local
+  `kind-registry`, fuera de Swarm y del contrato de capacidad. Esos
+  3 584 MiB equivalen a toda la reserva del contrato para el host, así que
+  con el laboratorio en marcha un preflight de capacidad en verde no
+  garantiza margen real. Es un ensayo manual pendiente de codificarse en su
+  propio cambio revisado; hasta entonces no forma parte del estado
+  reconstruible. Sale de esta lista cuando ese cambio lo codifique o, si se
+  descarta, cuando se borren el clúster, el registro y `/opt/ax-lab`.
 - Límites `fs.inotify.max_user_watches=524288` y
   `fs.inotify.max_user_instances=512`, aplicados en caliente para kind; se
   pierden al reiniciar hasta que ese cambio los codifique.
-- `/swap-ax-build`, swap temporal de 4 GiB creado para compilar el
-  laboratorio (fuera de `fstab`). Incumple `required_swap_mib: 0` y se retira
-  antes de cualquier apply, porque el preflight de capacidad lo rechaza.
+- El swap temporal `/swap-ax-build` (4 GiB, fuera de `fstab`) que se creó
+  para compilar el laboratorio se desactivó y se borró el 2026-09-25, antes
+  de cualquier apply. El host vuelve a cumplir `required_swap_mib: 0`.
 
 ## Aplicado y verificado
 

@@ -106,7 +106,9 @@ capacity_contract:
         memory_mib: 128
     # Both parked: minecraft (3072/4096 MiB, 500m/2500m) and openclaw
     # (256/512 MiB, 200m/1000m) are not counted. Unparking one adds its
-    # reservation and limit back here and in config/capacity-profiles.yml.
+    # reservation and limit back here and in config/capacity-profiles.yml;
+    # with the external stacks declared there it no longer fits without a
+    # capacity trade-off (docs/CAPACITY.md).
     workloads:
       reservations:
         cpu_millicores: 1600
