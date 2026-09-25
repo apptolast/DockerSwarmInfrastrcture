@@ -556,6 +556,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La comprobación de integridad del journal de `host-baseline` solo lee los
+  ficheros cerrados (`*@*.journal`). `journalctl --verify` sobre los activos,
+  que journald sigue escribiendo mientras se leen, daba corrupción que no
+  existía: el 2026-09-25 `system.journal` y `user-1001.journal` fallaron y
+  pasaron en cuanto `journalctl --rotate` los cerró. Con ese fallo, un apply
+  podía abortar a mitad, después de actualizar paquetes. Si aún no hay
+  ningún fichero cerrado, la comprobación no se ejecuta.
+
 - `host-baseline` no podía terminar. «Verify every managed kernel setting»
   fallaba siempre en `fs.suid_dumpable` (2 en vivo, 0 gestionado), después
   de mover el pin de APT y actualizar paquetes: el fichero de sysctl no
