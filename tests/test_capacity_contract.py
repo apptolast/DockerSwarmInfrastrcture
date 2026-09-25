@@ -73,15 +73,18 @@ class CapacityContractTests(unittest.TestCase):
                 "limits": {"cpu_millicores": 250, "memory_mib": 45},
             },
         )
-        # With Minecraft (4096 MiB) and OpenClaw (512 MiB) running, the full
-        # platform uses the whole memory-limit budget; parked, they free it.
+        # Minecraft (4096 MiB) and OpenClaw (512 MiB) are parked. On
+        # 2026-09-25 Traefik and portfolio-alberto took 256 MiB of the limit
+        # budget they freed, so running both again would exceed it by exactly
+        # that much: unparking needs a capacity decision (docs/CAPACITY.md).
         allocatable = (
             contract["host"]["minimum_memory_mib"]
             - contract["system_reserve"]["memory_mib"]
             - contract["operational_headroom"]["memory_mib"]
         )
         self.assertEqual(
-            totals["aggregate"]["limits"]["memory_mib"] + 4096 + 512, allocatable
+            totals["aggregate"]["limits"]["memory_mib"] + 4096 + 512,
+            allocatable + 256,
         )
 
     def test_the_four_stacks_are_all_required(self) -> None:

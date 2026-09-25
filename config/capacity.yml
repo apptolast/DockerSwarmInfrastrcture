@@ -126,6 +126,8 @@ capacity_contract:
     # The full platform used the whole memory-limit budget, 15981 - 3072
     # reserve - 512 headroom = 12397 MiB, until minecraft and openclaw were
     # parked: their 4608 MiB of limits are free while they stay parked.
+    # Traefik and portfolio-alberto took 256 MiB of that on 2026-09-25, so
+    # unparking both needs that much back first (docs/CAPACITY.md).
     autoupdater:
       reservations:
         cpu_millicores: 100
