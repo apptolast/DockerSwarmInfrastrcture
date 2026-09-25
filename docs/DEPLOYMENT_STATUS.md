@@ -113,9 +113,16 @@ aquí:
   (`0644` y `0755`), igual que sus directorios (`/srv/satisfactory` `0700`,
   `/srv/satisfactory/ops` `0750`, `/usr/local/sbin` `0755`), y ningún
   contenedor monta esas rutas. La unidad estaba `enabled` el 2026-09-25, así que
-  sobreviven a un reinicio de Docker o del host y a un apply de
-  `host-baseline`, que la reinicia y la vuelve a habilitar. Un apply de
-  `platform` **no**: ejecuta el script base fuera de systemd
+  sobreviven a un reinicio de Docker o del host. Un apply de `host-baseline`
+  solo reinicia y vuelve a habilitar la unidad cuando se dispara su handler
+  «Restart Docker ingress ordering»
+  (`ansible/roles/host_baseline/handlers/main.yml`), es decir, cuando cambia
+  el gancho `DOCKER-USER` del bouncer, uno de sus dos scripts auxiliares o el
+  drop-in `20-crowdsec-order.conf`
+  (`ansible/roles/host_baseline/tasks/crowdsec-docker.yml`). En un host
+  convergido no cambia nada de eso: `host-baseline` ni ejecuta la unidad ni la
+  vuelve a habilitar, tampoco después de un apply de `platform`. Un apply de
+  `platform` **no** las conserva: ejecuta el script base fuera de systemd
   (`ansible/roles/platform/tasks/main.yml`, «Reconcile the Docker
   published-port policy after Swarm changes») y deja la unidad deshabilitada
   al arranque. La unidad es `oneshot` con `RemainAfterExit=yes` y sigue
@@ -139,6 +146,20 @@ aquí:
   del Traefik vivo lo marca caído (su ruta responde `503`) y registra un WARN
   `Health check failed.` cada 15 s. El backend sin servidores de este
   repositorio lo elimina en cuanto `edge` pueda aplicarse.
+- `fs.suid_dumpable` vale `2` en vivo (leído el 2026-09-25), frente al `0`
+  que declaran `ansible/roles/host_baseline/defaults/main.yml` y
+  `/etc/sysctl.d/99-z-dockerswarm-host-hardening.conf`. Los otros 24 valores
+  gestionados coinciden. No es un cambio manual: lo escribe `apport.service`
+  (paquete `apport-core-dump-handler`, `enabled`) cada vez que arranca,
+  después de `systemd-sysctl`. Hasta el cambio que lo corrige, todo apply de
+  `host-baseline` fallaba en «Verify every managed kernel setting» después de
+  haber movido el pin de APT y actualizado paquetes. El siguiente apply
+  detiene y deshabilita esa unidad, cuya parada ya devuelve la clave a `0`, y
+  converge solo las claves gestionadas que difieran, sin `sysctl --system`.
+  `kernel.core_pattern`, que pasa a gestionarse como `|/bin/false`, vale hoy
+  el `core` del paquete (`/usr/lib/sysctl.d/10-coredump-debian.conf`); ese
+  mismo apply lo converge
+  (ver [`host_baseline/README.md`](../ansible/roles/host_baseline/README.md)).
 
 Unidades systemd del host que tampoco gestiona este repositorio:
 `satisfactory-backup.timer`, `satisfactory-backup-check.timer`,
