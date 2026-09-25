@@ -366,7 +366,9 @@ Antes:
 2. ejecutar
    `sudo -- dockerd --validate --config-file=/etc/docker/daemon.json`;
 3. verificar un backup reciente y que la unlock key externa está disponible si
-   autolock está activo.
+   autolock está activo;
+4. suspender las Tasks del laboratorio AX (ver [AX.md](AX.md), «Límites y
+   política de reinicio»).
 
 Después:
 
@@ -374,7 +376,10 @@ Después:
 2. `sudo -- docker node ls`;
 3. comprobar manager `Ready`, `Active`, `Leader`;
 4. revisar journal desde el instante del reinicio;
-5. comprobar réplicas, healthchecks, rutas y alertas.
+5. comprobar réplicas, healthchecks, rutas y alertas;
+6. el laboratorio AX queda parado (política de reinicio `no`) y ningún
+   playbook de producción lo necesita; si se quiere de vuelta, aplicar
+   `ax-lab`.
 
 `live-restore` no conserva el plano de control de Swarm durante un reinicio de
 Docker.

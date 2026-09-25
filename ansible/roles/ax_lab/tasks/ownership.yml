@@ -1,0 +1,131 @@
+---
+# Prove that every existing lab container is this role's, from the facts
+# read.yml recorded. Read-only and check-safe. kind cannot label the node
+# container (kind v0.33.0 sets only io.x-k8s.kind.cluster and
+# io.x-k8s.kind.role, pkg/cluster/internal/providers/docker/provision.go
+# lines 140 and 220), so the proof for the node is the state file the role
+# writes right after `kind create cluster`: its container ID and the digest
+# of the kind configuration it was created from. The registry carries the
+# labels the role sets. Without that proof, as for the manual lab of
+# /opt/ax-lab, the run stops before anything is changed.
+- name: Inspect the cluster state file without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_cluster_state_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_cluster_state_file
+
+# An existing node without this file is never adopted: it is the manual lab,
+# a cluster made by hand, or a node that a first apply of this role left
+# when interrupted during or right after `kind create cluster`, before any
+# state file existed.
+- name: Refuse a lab node this role cannot prove it created
+  ansible.builtin.assert:
+    that:
+      - ax_lab_cluster_state_file.stat.exists
+      - ax_lab_cluster_state_file.stat.isreg
+      - not ax_lab_cluster_state_file.stat.islnk
+      - ax_lab_cluster_state_file.stat.uid == 0
+      - ax_lab_cluster_state_file.stat.gid == 0
+      - ax_lab_cluster_state_file.stat.mode == "0600"
+    fail_msg: >-
+      {{ ax_lab.cluster.node_container }} exists, but no root-only state file
+      at {{ ax_lab_cluster_state_path }} proves this role created it, and it
+      is never adopted. The manual lab (/opt/ax-lab) or a cluster made by
+      hand is retired with the runbook of docs/AX.md («Retirar el
+      laboratorio manual»); a node that a first apply of this role left when
+      interrupted during or right after `kind create cluster` is deleted as
+      in docs/AX.md («Recrear el clúster»). Either way in an exclusive
+      window, then apply again.
+  when: ax_lab_node is not none
+
+- name: Read the cluster state file
+  ansible.builtin.slurp:
+    src: "{{ ax_lab_cluster_state_path }}"
+  register: ax_lab_cluster_state_content
+  when: ax_lab_node is not none
+
+- name: Require the state file to prove this exact lab node
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ax_lab_cluster_state_content.content | b64decode | from_json)
+        == ax_lab_expected_cluster_state
+        | combine({"node_container_id": ax_lab_node.id})
+    fail_msg: >-
+      {{ ax_lab.cluster.node_container }} is not the node this role created
+      from the reviewed kind configuration, node image and kind version: its
+      container ID, or one of those, differs from the state file
+      {{ ax_lab_cluster_state_path }}. kind cannot reconfigure a cluster in
+      place: recreate it in an exclusive window (docs/AX.md, «Recrear el
+      clúster»).
+  when: ax_lab_node is not none
+
+- name: Require the lab node to keep the settings it was created with
+  ansible.builtin.assert:
+    that:
+      - ax_lab_node.image == ax_lab.images.kind_node
+      - >-
+        (ax_lab_node.labels | default({}, true)).get("io.x-k8s.kind.cluster")
+        == ax_lab.cluster.name
+      - >-
+        (ax_lab_node.labels | default({}, true)).get("io.x-k8s.kind.role")
+        == "control-plane"
+      - ax_lab_node.port_bindings == ax_lab_node_port_bindings
+      - ax_lab.cluster.network in (ax_lab_node.networks | default({}, true))
+      - ax_lab_node.status in ["running", "created", "exited"]
+    fail_msg: >-
+      {{ ax_lab.cluster.node_container }} has another node image, cluster
+      label, network or published API port than the reviewed ones, or it is
+      {{ ax_lab_node.status }}. Recreate it in an exclusive window
+      (docs/AX.md, «Recrear el clúster»).
+  when: ax_lab_node is not none
+
+- name: Refuse a local registry this role did not create
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ax_lab_registry.labels | default({}, true)).get(item.key)
+        == item.value
+    fail_msg: >-
+      {{ ax_lab.registry.container }} exists without the label
+      {{ item.key }}={{ item.value }} that this role sets: it is the manual
+      lab's registry or a container made by hand. Retire it with the runbook
+      of docs/AX.md («Retirar el laboratorio manual»), then apply again.
+  loop: "{{ ax_lab_registry_labels | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: ax_lab_registry is not none
+
+# Its publishes and volume are fixed when it is created, so a difference
+# cannot be converged in place. It may lack the kind network, which the
+# apply reconnects, but it is never on any other network.
+- name: Require the local registry to keep the settings it was created with
+  ansible.builtin.assert:
+    that:
+      - ax_lab_registry.image == ax_lab.images.registry
+      - >-
+        ax_lab_registry.port_bindings | default({}, true) | list
+        == [ax_lab.registry.container_port ~ "/tcp"]
+      - >-
+        ax_lab_registry.port_bindings[ax_lab.registry.container_port ~ "/tcp"]
+        | map(attribute="HostIp") | sort
+        == ax_lab.registry.bind_addresses | sort
+      - >-
+        ax_lab_registry.port_bindings[ax_lab.registry.container_port ~ "/tcp"]
+        | map(attribute="HostPort") | unique
+        == [ax_lab.registry.host_port | string]
+      - >-
+        ax_lab_registry.networks | default({}, true) | list
+        | difference([ax_lab.cluster.network]) == []
+      - >-
+        ax_lab_registry.mounts | default([], true)
+        | map(attribute="Destination") | list == ["/var/lib/registry"]
+      - ax_lab_registry.mounts[0].Type == "volume"
+      - ax_lab_registry.mounts[0].Name == ax_lab.registry.volume
+      - ax_lab_registry.status in ["running", "created", "exited"]
+    fail_msg: >-
+      {{ ax_lab.registry.container }} has another image, publishes, network
+      or volume than the reviewed ones, or it is {{ ax_lab_registry.status }}.
+      Recreate it in an exclusive window (docs/AX.md, «Recrear el clúster»).
+  when: ax_lab_registry is not none

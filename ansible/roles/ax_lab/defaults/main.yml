@@ -5,3 +5,12 @@ ax_lab_sysctl_path: /etc/sysctl.d/99-z-dockerswarm-ax-lab.conf
 ax_lab_bin_directory: "{{ ax_lab.install_root }}/bin"
 # The pinned kind and kubectl assets are linux-amd64 builds.
 ax_lab_architecture: x86_64
+# The kind configuration the cluster is created from, rendered on the host.
+ax_lab_kind_config_path: "{{ ax_lab.install_root }}/kind-config.yaml"
+# Proof that this role created the node, written right after
+# `kind create cluster`: kind cannot label the node container.
+ax_lab_state_directory: "{{ ax_lab.install_root }}/state"
+ax_lab_cluster_state_path: "{{ ax_lab_state_directory }}/cluster.json"
+# HOME of kind and kubectl, with the lab's own admin kubeconfig (root 0600).
+ax_lab_home_directory: "{{ ax_lab.install_root }}/home"
+ax_lab_kubeconfig_path: "{{ ax_lab_home_directory }}/.kube/config"

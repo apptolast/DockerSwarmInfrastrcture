@@ -1,0 +1,82 @@
+---
+# Read the lab registry and node, in this order, and record which of them
+# differs from its reviewed limits and restart policy. Read-only and
+# check-safe; inspect.yml imports it before any change and cluster.yml again
+# after each change.
+
+# A missing container is not an error here: only Docker naming this exact
+# container as missing proves it absent, as in capacity_preflight.
+- name: Read the lab registry and node containers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - "{{ ax_lab_container_inspect_format }}"
+      - "{{ item.name }}"
+  loop: "{{ ax_lab_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ax_lab_container_reads
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# `docker container inspect` also resolves an ID prefix: the object read
+# must carry this exact name.
+- name: Require each lab container to be readable or absent
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or (
+          item.stdout | length == 0
+          and item.stderr | trim is match(
+            "^(.*: )?No such container: "
+            ~ (item.item.name | regex_escape) ~ "$"
+          )
+        )
+      - >-
+        item.rc != 0
+        or (item.stdout | from_json).name == "/" ~ item.item.name
+    fail_msg: >-
+      Cannot read the lab container {{ item.item.name }}:
+      {{ item.stderr | trim }}
+    quiet: true
+  loop: "{{ ax_lab_container_reads.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Record the lab registry and node as read
+  ansible.builtin.set_fact:
+    ax_lab_registry: >-
+      {{
+        (ax_lab_container_reads.results[0].stdout | from_json)
+        if ax_lab_container_reads.results[0].rc == 0 else none
+      }}
+    ax_lab_node: >-
+      {{
+        (ax_lab_container_reads.results[1].stdout | from_json)
+        if ax_lab_container_reads.results[1].rc == 0 else none
+      }}
+    ax_lab_limits_drift: []
+
+# The memory swap limit is compared too: equal to the memory limit, it means
+# no swap, and `docker update` must set both together.
+- name: Record each lab container whose limits or restart policy differ
+  ansible.builtin.set_fact:
+    ax_lab_limits_drift: "{{ ax_lab_limits_drift + [item.item.name] }}"
+  loop: "{{ ax_lab_container_reads.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - item.rc == 0
+    - >-
+      dict(
+        memory=(item.stdout | from_json).memory,
+        memory_swap=(item.stdout | from_json).memory_swap,
+        memory_reservation=(item.stdout | from_json).memory_reservation,
+        nano_cpus=(item.stdout | from_json).nano_cpus,
+        pids_limit=(item.stdout | from_json).pids_limit,
+        restart_policy=(item.stdout | from_json).restart_policy
+      ) != item.item.limits

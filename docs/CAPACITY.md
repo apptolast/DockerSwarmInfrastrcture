@@ -71,9 +71,12 @@ que libera su presupuesto: 3 328 MiB y 700m de CPU reservados y 4 608 MiB y
 en `config/capacity.yml` y `config/capacity-profiles.yml` dentro del mismo
 cambio revisado, y el validador exige que siga cabiendo en el presupuesto.
 Con los stacks externos declarados (ver «Stacks externos») ya no cabe sin
-más: Minecraft llevaría el plan `observability` a 13 037 MiB de límite y los
-dos juntos llevarían el activo a 12 909 MiB, por encima de 12 397. Volver a
-arrancarlos exige antes una decisión de capacidad del propietario.
+más: Minecraft llevaría el plan `observability` a 13 037 MiB de límite. En el
+activo, con el laboratorio AX (ver «Contenedores del host»), no cabe ninguno
+de los dos: OpenClaw lo llevaría a 12 653 MiB, Minecraft a 16 237 y los dos
+juntos a 16 749, por encima de 12 397; sin el laboratorio, los dos juntos
+serían 12 909. Volver a arrancarlos exige antes una decisión de capacidad
+del propietario.
 Con los dos en marcha, `workloads` suma 5 984/9 856 MiB y 2 300m/11 600m, y el
 total de la plataforma completa llegaría a 12 653 MiB de límite, 256 MiB por
 encima del techo.
@@ -96,8 +99,10 @@ capacidad para desaparcarlos. Fuera de eso, cualquier aumento de un límite
 exige reducir otro en la misma revisión. El vigilante `autoupdater` es
 distinto: su interruptor `enabled: false` renderiza `replicas: 0` sin liberar
 el presupuesto (`SUSPENDABLE_SERVICES`). En el perfil activo
-`organizationweb`, con los stacks externos, las sumas son 3 746 MiB
-reservados y 8 301 MiB de límite, con 2 550m y 14 150m de CPU.
+`organizationweb`, con los stacks externos y el laboratorio AX, las sumas
+son 5 666 MiB reservados y 12 141 MiB de límite, con 3 100m y 16 650m de
+CPU: 256 MiB por debajo del techo de memoria. Sin el laboratorio serían
+3 746 y 8 301 MiB, con 2 550m y 14 150m.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
@@ -187,13 +192,11 @@ que retirarlos de `external_stacks` antes de aplicar (ver
 [REBUILD.md](REBUILD.md), paso 8). Caben porque Minecraft y OpenClaw están
 aparcados.
 
-Hoy el contrato solo cubre servicios Swarm. Los proyectos Compose
-`satisfactory` y `monitor-production` y el nodo kind del laboratorio AX,
-limitado a 3 584 MiB, consumen memoria fuera de él. Ese nodo equivale a toda
-la reserva de 3 GiB más los 512 MiB de headroom, así que, con él en marcha,
-un preflight en verde no garantiza margen real en el host. El contrato ya
-puede presupuestar contenedores sueltos como ese nodo (ver «Contenedores del
-host»), pero todavía no declara ninguno.
+Los proyectos Compose `satisfactory` y `monitor-production` siguen
+consumiendo memoria fuera del contrato, así que, con ellos en marcha, un
+preflight en verde no garantiza margen real en el host. El nodo kind y el
+registro del laboratorio AX sí están declarados, como contenedores del host
+(ver «Contenedores del host»).
 
 ## Contenedores del host
 
@@ -206,8 +209,39 @@ cada grupo declara, por nombre de contenedor, `reservations` y `limits`
 (`cpu_millicores` y `memory_mib`) y `pids_limit`. Cada plan enumera en su
 propio `host_containers` los grupos que ejecuta. Solo esos grupos se suman a
 su agregado, que se sigue comprobando contra el presupuesto del host igual
-que el resto. Hoy no hay ninguno declarado: los dos planes dejan la lista
-vacía y el preflight no inspecciona ningún contenedor.
+que el resto.
+
+Hoy hay un grupo declarado, `ax-lab`, que solo ejecuta el plan activo
+`organizationweb` (ver [AX.md](AX.md), «Capacidad»):
+
+<!-- markdownlint-disable MD013 -->
+
+| Contenedor | RAM reservada | RAM límite | CPU reservada | CPU límite | PIDs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `kind-control-plane` | 1 792 MiB | 3 584 MiB | 500m | 2 000m | 4 096 |
+| `kind-registry` | 128 MiB | 256 MiB | 50m | 500m | 256 |
+| **Total** | **1 920 MiB** | **3 840 MiB** | **550m** | **2 500m** | |
+
+<!-- markdownlint-enable MD013 -->
+
+El nodo usó entre 1,62 y 1,70 GiB en régimen y un pico de 3 082 MiB al
+arrancar, y el registro entre 17 y 29 MiB sin contar la caché de páginas
+(laboratorio manual, 2026-09-25). El `memory.peak` del registro manual es
+de 376,8 MiB, por encima de su límite de 256 MiB, pero es sobre todo caché
+de ficheros de los blobs de las imágenes que el ensayo le subió: su memoria
+anónima era de 12,6 MiB y su `memory.events` marca `oom_kill 0`. Con
+`memory.max`, el kernel recupera esa caché antes de recurrir al OOM killer
+([documentación de cgroup
+v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)), así que el límite
+deja más de 200 MiB de caché a un proceso que usa menos de 30 MiB. Los
+cambios del laboratorio que suben imágenes lo comprobarán: las subirán con
+el límite ya aplicado y exigirán `oom_kill 0` (ver [AX.md](AX.md), «Límites
+y política de reinicio»).
+
+El plan `observability` no incluye el grupo, así que exige los dos
+contenedores ausentes o parados. `scripts/validate-ax-lab.py` exige que los
+límites de `config/ax-lab.yml`, los que aplica el rol, sean exactamente los
+declarados aquí.
 
 El esquema es tan estricto como el de `external_stacks`, y rechaza cualquier
 clave desconocida:
@@ -235,13 +269,40 @@ nombre, el estado y solo los cuatro campos de `HostConfig` que compara. Un
 contenedor que no existe no detiene esa lectura.
 Después, el validador exige:
 
-- que cada contenedor de un grupo del plan activo exista, esté `running` y
-  tenga exactamente los `Memory`, `MemoryReservation`, `NanoCpus` y
+- que cada contenedor de un grupo del plan activo esté ausente, parado
+  (`created`, `exited` o `dead`) o `running`: cualquier otro estado
+  (`paused`, `restarting` o `removing`) detiene el apply;
+- que cada contenedor de un grupo del plan activo que exista, en marcha o
+  parado, tenga exactamente los `Memory`, `MemoryReservation`, `NanoCpus` y
   `PidsLimit` que corresponden a su límite y reserva de memoria, su límite
   de CPU y su `pids_limit`;
 - que cada contenedor de un grupo que el plan activo no ejecuta esté
-  ausente o parado (`created`, `exited` o `dead`): cualquier otro estado
-  (`running`, `paused`, `restarting` o `removing`) detiene el apply.
+  ausente o parado: cualquier otro estado (`running`, `paused`, `restarting`
+  o `removing`) detiene el apply. Sus límites no se comparan.
+
+Un contenedor del plan activo ausente o parado no ejecuta ningún proceso y
+su presupuesto sigue reservado en el plan, así que ningún playbook depende
+de que esté en marcha. Uno que existe tiene que llevar sus límites exactos
+aunque esté parado, porque al volver a arrancar correría con ellos sin que
+nada lo convergiera antes. Para el laboratorio AX, cuya política de
+reinicio es `no`, eso significa que tras un reinicio del host o de Docker
+sus contenedores quedan parados, los despliegues de producción siguen
+adelante y el laboratorio no vuelve hasta que se aplica `ax-lab` (ver
+[AX.md](AX.md), «Límites y política de reinicio»).
+
+La única excepción es el playbook que converge un grupo en lugar de un
+stack Swarm: hoy `ax-lab`, para el grupo `ax-lab`
+(`HOST_CONTAINER_PLAYBOOKS`). `--requested-stack ax-lab` solo se acepta si
+el plan activo ejecuta ese grupo, y entonces sus contenedores pueden tener
+además otros límites, en marcha o parados, porque ese playbook los crea,
+los arranca y los converge, y después los comprueba él mismo. Sus lecturas
+tienen que ser igual de completas y válidas, y el resto del preflight no
+cambia: servicios Swarm, aparcados, estados que no son en marcha ni parado
+y cualquier otro grupo del plan. Un contenedor del laboratorio con otros
+límites, como el nodo que kind crea sin ellos si el apply se interrumpe
+antes del `docker update`, detiene cualquier otro playbook hasta que `ax-lab`
+lo converge o, si le falta la prueba de propiedad, hasta que se borra (ver
+[AX.md](AX.md), «Recrear el clúster»).
 
 Los contenedores no declarados no se leen ni se comprueban. Un dato vivo que
 falte, sobre o no tenga la forma esperada también detiene el apply: solo
@@ -257,8 +318,10 @@ los contenedores, no prueba su estado y se rechaza.
 
 Declarar un grupo no lo convierte en estado reconstruible, igual que ocurre
 con los stacks externos. En un host reconstruido, sus contenedores no
-existen, así que, si el plan activo ejecuta el grupo, el preflight se detiene
-hasta que un cambio revisado lo retire de ese plan.
+existen; el preflight lo acepta y su presupuesto sigue reservado en el plan
+activo. Para `ax-lab`, el playbook `ax-lab` los recrea desde este
+repositorio, al final y solo si se quiere el laboratorio (ver
+[REBUILD.md](REBUILD.md), «Orden de reconstrucción»).
 
 ## Gates
 
@@ -291,7 +354,7 @@ El validador:
   swap inesperada y presupuesto excedido.
 
 Los playbooks `site`, `edge`, `workloads`, `observability`,
-`organizationweb`, `racinggame` y `autoupdater` ejecutan
+`organizationweb`, `racinggame`, `autoupdater` y `ax-lab` ejecutan
 `capacity_preflight` antes de cualquier rol que muta el servidor. El preflight
 recopila los facts de hardware aunque el playbook parcial desactive el
 gathering general y detiene la ejecución si el host o el plan global no

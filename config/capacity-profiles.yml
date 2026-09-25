@@ -14,7 +14,10 @@ capacity_profiles:
     # Both totals leave out the budget of minecraft and openclaw while
     # config/platform.yml parks them (config/capacity.yml reviewed_totals),
     # and include the external stacks (50m/16 MiB reserved, 2050m/896 MiB
-    # limited). Neither plan runs a host container group yet.
+    # limited). Only the active plan runs the AX lab (host container group
+    # ax-lab: 550m/1920 MiB reserved, 2500m/3840 MiB limited), which leaves
+    # it 256 MiB under the 12397 MiB memory limit budget. The observability
+    # plan requires the lab stopped.
     observability:
       stacks: [edge, workloads, observability, autoupdater]
       host_containers: []
@@ -23,10 +26,10 @@ capacity_profiles:
         limits: {cpu_millicores: 16000, memory_mib: 8941}
     organizationweb:
       stacks: [edge, workloads, organizationweb, racinggame, autoupdater]
-      host_containers: []
+      host_containers: [ax-lab]
       aggregate:
-        reservations: {cpu_millicores: 2550, memory_mib: 3746}
-        limits: {cpu_millicores: 14150, memory_mib: 8301}
+        reservations: {cpu_millicores: 3100, memory_mib: 5666}
+        limits: {cpu_millicores: 16650, memory_mib: 12141}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:
@@ -74,7 +77,29 @@ capacity_profiles:
   # runs them: group -> container name -> reservations, limits (both
   # {cpu_millicores, memory_mib}) and pids_limit. A plan counts only the
   # groups its `host_containers` lists. Every apply inspects each declared
-  # container: those of the active plan must run with exactly the declared
-  # Memory, MemoryReservation, NanoCpus and PidsLimit, and those of any other
-  # group must be absent or stopped. None is declared yet.
-  host_containers: {}
+  # container. One of the active plan may be absent or stopped: it runs no
+  # process and its budget stays reserved, so no playbook depends on it
+  # running. One that exists, running or stopped, must carry exactly the
+  # declared Memory, MemoryReservation, NanoCpus and PidsLimit; only the
+  # ax-lab playbook, which creates and converges its own group, may start
+  # while that group carries other limits. A container of any other group
+  # must be absent or stopped.
+  host_containers:
+    # The AX lab's kind node and local registry (docs/AX.md). The memory
+    # limits, reservations, CPU limits and pids limits equal `resources` of
+    # config/ax-lab.yml, which the role applies with `docker update`. The
+    # node used 1.62-1.70 GiB steady and peaked at 3082 MiB while starting
+    # (2026-09-25). The registry used 17-29 MiB without page cache (12.6 MiB
+    # anonymous); its memory.peak of 376.8 MiB is mostly the reclaimable file
+    # cache of the pushed blobs, with oom_kill 0 (docs/CAPACITY.md). The CPU
+    # reservations only count in the budget: Docker does not reserve CPU for
+    # a container.
+    ax-lab:
+      kind-control-plane:
+        reservations: {cpu_millicores: 500, memory_mib: 1792}
+        limits: {cpu_millicores: 2000, memory_mib: 3584}
+        pids_limit: 4096
+      kind-registry:
+        reservations: {cpu_millicores: 50, memory_mib: 128}
+        limits: {cpu_millicores: 500, memory_mib: 256}
+        pids_limit: 256

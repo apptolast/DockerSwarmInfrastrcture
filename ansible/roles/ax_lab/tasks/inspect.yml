@@ -1,0 +1,136 @@
+---
+# The lab cluster and its local registry, read without changing anything:
+# the same in --check and in an apply. It stops the run without the owner
+# acceptance or with a lab container this role cannot prove it created.
+- name: Refuse to create or touch the lab cluster without the owner acceptance
+  ansible.builtin.assert:
+    that:
+      - ax_lab_privileged_node_accepted is boolean
+      - ax_lab_privileged_node_accepted
+    fail_msg: >-
+      ax_lab_privileged_node_accepted is false in config/ax-lab.yml: the
+      privileged kind node is not accepted, so the lab cluster is neither
+      created nor changed.
+
+- name: Derive the reviewed settings of the lab containers
+  ansible.builtin.set_fact:
+    # Only the fields the role compares; never the environment. The Go
+    # template reads the typed inspect response, whose ID field is `ID`: a
+    # field it lacks, such as `.Id`, makes the CLI fall back to the raw JSON
+    # map, where `.HostConfig.NanoCPUs` does not exist (Docker 29.6.2 on the
+    # host, 2026-09-25).
+    ax_lab_container_inspect_format: >-
+      {% raw %}{"id":{{json .ID}},"name":{{json .Name}},
+      "status":{{json .State.Status}},"image":{{json .Config.Image}},
+      "labels":{{json .Config.Labels}},
+      "memory":{{json .HostConfig.Memory}},
+      "memory_swap":{{json .HostConfig.MemorySwap}},
+      "memory_reservation":{{json .HostConfig.MemoryReservation}},
+      "nano_cpus":{{json .HostConfig.NanoCPUs}},
+      "pids_limit":{{json .HostConfig.PidsLimit}},
+      "restart_policy":{{json .HostConfig.RestartPolicy}},
+      "port_bindings":{{json .HostConfig.PortBindings}},
+      "networks":{{json .NetworkSettings.Networks}},
+      "mounts":{{json .Mounts}}}{% endraw %}
+    # The registry first: it is started before the node that pulls from it.
+    # `limits` is what `docker container inspect` shows once converged; the
+    # memory swap limit equals the memory limit, so there is no swap.
+    ax_lab_containers:
+      - name: "{{ ax_lab.registry.container }}"
+        resources: "{{ ax_lab.registry.resources }}"
+        limits:
+          memory: "{{ ax_lab.registry.resources.memory_limit_mib * 1048576 }}"
+          memory_swap: >-
+            {{ ax_lab.registry.resources.memory_limit_mib * 1048576 }}
+          memory_reservation: >-
+            {{ ax_lab.registry.resources.memory_reservation_mib * 1048576 }}
+          nano_cpus: >-
+            {{ ax_lab.registry.resources.cpu_limit_millicores * 1000000 }}
+          pids_limit: "{{ ax_lab.registry.resources.pids_limit }}"
+          restart_policy:
+            Name: "{{ ax_lab.registry.restart_policy }}"
+            MaximumRetryCount: 0
+      - name: "{{ ax_lab.cluster.node_container }}"
+        resources: "{{ ax_lab.cluster.resources }}"
+        limits:
+          memory: "{{ ax_lab.cluster.resources.memory_limit_mib * 1048576 }}"
+          memory_swap: >-
+            {{ ax_lab.cluster.resources.memory_limit_mib * 1048576 }}
+          memory_reservation: >-
+            {{ ax_lab.cluster.resources.memory_reservation_mib * 1048576 }}
+          nano_cpus: >-
+            {{ ax_lab.cluster.resources.cpu_limit_millicores * 1000000 }}
+          pids_limit: "{{ ax_lab.cluster.resources.pids_limit }}"
+          restart_policy:
+            Name: "{{ ax_lab.cluster.restart_policy }}"
+            MaximumRetryCount: 0
+    # kind publishes the API server's port inside the node, 6443
+    # (common.APIServerInternalPort), on apiServerAddress:apiServerPort.
+    ax_lab_node_port_bindings:
+      6443/tcp:
+        - HostIp: "{{ ax_lab.cluster.api_server.address }}"
+          HostPort: "{{ ax_lab.cluster.api_server.port | string }}"
+    # The labels `docker run` sets on the registry in cluster.yml.
+    ax_lab_registry_labels:
+      com.apptolast.managed-by: ansible
+      com.apptolast.ax-lab: registry
+    # kind's local registry guide: the containerd hosts.toml inside the node
+    # that sends localhost:<host port> to the registry container, and the
+    # KEP-1755 ConfigMap that documents it.
+    ax_lab_registry_hosts_directory: >-
+      /etc/containerd/certs.d/localhost:{{ ax_lab.registry.host_port }}
+    ax_lab_registry_mirror: >-
+      [host."http://{{ ax_lab.registry.container }}:{{
+      ax_lab.registry.container_port }}"]
+    ax_lab_registry_hosting_data:
+      localRegistryHosting.v1: |
+        host: "localhost:{{ ax_lab.registry.host_port }}"
+        help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+    ax_lab_expected_cluster_state:
+      schema_version: 1
+      cluster_name: "{{ ax_lab.cluster.name }}"
+      node_container: "{{ ax_lab.cluster.node_container }}"
+      node_image: "{{ ax_lab.images.kind_node }}"
+      kind_version: "{{ ax_lab.binaries.kind.version }}"
+      kind_config_sha256: "{{ ax_lab_kind_config_digest.stdout }}"
+
+- name: Read the lab registry and node
+  ansible.builtin.import_tasks: read.yml
+
+- name: Prove that every existing lab container is this role's
+  ansible.builtin.import_tasks: ownership.yml
+
+- name: Describe what an apply would change in the lab cluster
+  ansible.builtin.set_fact:
+    ax_lab_cluster_plan: >-
+      {{
+        (
+          [] if ax_lab_node is not none else
+          [
+            "kind create cluster --name " ~ ax_lab.cluster.name ~ " from "
+            ~ ax_lab.images.kind_node,
+            "docker update " ~ ax_lab.cluster.node_container,
+          ]
+        )
+        + (
+          ax_lab_limits_drift
+          | map("regex_replace", "^", "docker update ") | list
+        )
+        + (
+          [] if ax_lab_registry is not none else
+          ["create " ~ ax_lab.registry.container ~ " from "
+          ~ ax_lab.images.registry]
+        )
+        + (
+          [ax_lab_registry, ax_lab_node]
+          | reject("none")
+          | rejectattr("status", "equalto", "running")
+          | map(attribute="name")
+          | map("regex_replace", "^/", "docker start ")
+          | list
+        )
+        + [
+          "then, only where they differ: proxy_arp, proxy_ndp, the registry"
+          ~ " mirror and the local-registry-hosting ConfigMap inside the node"
+        ]
+      }}

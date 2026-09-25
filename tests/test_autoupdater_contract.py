@@ -336,9 +336,10 @@ class AutoupdaterWiringTests(unittest.TestCase):
             profiles.main(["--live", "--requested-stack", "autoupdater-extra"])
         # The exact argv capacity_preflight passes for `--playbook autoupdater`,
         # with the external stacks config/capacity-profiles.yml declares live.
-        external = yaml.safe_load(
+        contract = yaml.safe_load(
             (ROOT / "config/capacity-profiles.yml").read_text(encoding="utf-8")
-        )["capacity_profiles"]["external_stacks"]
+        )["capacity_profiles"]
+        external = contract["external_stacks"]
         services = [
             {"name": "autoupdater_shepherd", "stack": "autoupdater"},
             *(
@@ -364,8 +365,38 @@ class AutoupdaterWiringTests(unittest.TestCase):
                 for name, service in declared.items()
             ),
         ]
-        # The preflight's envelope; no host container is declared yet.
-        live = json.dumps({"services": services, "host_containers": []})
+        # The preflight's envelope, with the active plan's host containers (the
+        # AX lab) running exactly as declared.
+        active = contract["profiles"][contract["active"]]["host_containers"]
+        host_containers = [
+            {
+                "item": name,
+                "rc": 0,
+                "stdout": json.dumps(
+                    {
+                        "name": f"/{name}",
+                        "status": "running",
+                        "host_config": {
+                            "Memory": declared["limits"]["memory_mib"] * 1024 * 1024,
+                            "MemoryReservation": declared["reservations"]["memory_mib"]
+                            * 1024
+                            * 1024,
+                            "NanoCpus": declared["limits"]["cpu_millicores"]
+                            * 1_000_000,
+                            "PidsLimit": declared["pids_limit"],
+                        },
+                    }
+                ),
+                "stderr": "",
+            }
+            for group in active
+            for name, declared in contract["host_containers"][group].items()
+        ]
+        self.assertEqual(
+            [record["item"] for record in host_containers],
+            ["kind-control-plane", "kind-registry"],
+        )
+        live = json.dumps({"services": services, "host_containers": host_containers})
         with mock.patch("sys.stdin", io.StringIO(live)), mock.patch(
             "sys.stdout", io.StringIO()
         ):

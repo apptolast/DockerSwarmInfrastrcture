@@ -1,9 +1,10 @@
 ---
-# Host prerequisites of the AX lab (docs/AX.md). It starts no container, so,
-# like host-baseline, it runs without capacity_preflight; the change that
-# codifies the kind cluster adds it together with the host_containers
-# declaration.
-- name: Reconcile the AX lab host prerequisites
+# The AX lab (docs/AX.md): host prerequisites, then the kind cluster and its
+# local registry. capacity_preflight runs under the lock and before the role:
+# the active plan must run the ax-lab host container group, whose containers
+# this playbook may find absent, stopped or drifted, because it is the one
+# that creates, starts and converges them.
+- name: Reconcile the AX lab host prerequisites and kind cluster
   hosts: swarm_managers
   become: true
   gather_facts: false
@@ -11,11 +12,15 @@
   any_errors_fatal: true
 
   vars_files:
+    - ../../config/capacity.yml
     - ../../config/platform.yml
     - ../../config/ax-lab.yml
     - ../group_vars/all.yml
 
   roles:
     - role: operation_lock_guard
+    - role: capacity_preflight
+      tags:
+        - capacity
     - role: ax_lab
     - role: deployment_metadata
