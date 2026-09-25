@@ -566,7 +566,7 @@ def validate_live(
     live_services,
     *,
     parked,
-    live_containers=None,
+    live_containers,
 ):
     base = capacity.validate_contract(base_document)
     converging = requested_stack in PARKING_PLAYBOOKS

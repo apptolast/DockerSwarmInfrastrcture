@@ -15,7 +15,6 @@ import yaml
 
 from ansible_task_harness import run_task_definition
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_TASKS = "ansible/roles/capacity_preflight/tasks/profiles.yml"
 MIB = 1024 * 1024
@@ -233,9 +232,9 @@ class CapacityProfileTests(unittest.TestCase):
         for reservation in (0, 20):
             with self.subTest(reservation=reservation):
                 skewed = with_lab(self.profiles, running_plans=())
-                skewed["capacity_profiles"]["host_containers"]["lab"][
-                    "kind-registry"
-                ]["reservations"]["memory_mib"] = reservation
+                skewed["capacity_profiles"]["host_containers"]["lab"]["kind-registry"][
+                    "reservations"
+                ]["memory_mib"] = reservation
                 with self.assertRaisesRegex(
                     self.module.capacity.CapacityError, "ratio exceeds 2.50"
                 ):
@@ -275,7 +274,12 @@ class CapacityProfileTests(unittest.TestCase):
         ):
             with self.subTest(requested=requested):
                 self.module.validate_live(
-                    self.base, self.profiles, requested, live, parked=self.parked
+                    self.base,
+                    self.profiles,
+                    requested,
+                    live,
+                    parked=self.parked,
+                    live_containers=[],
                 )
         for service in (
             {"name": "autoupdater_gantry", "stack": "autoupdater"},
@@ -290,6 +294,7 @@ class CapacityProfileTests(unittest.TestCase):
                         "autoupdater",
                         [*live, service],
                         parked=self.parked,
+                        live_containers=[],
                     )
 
     def test_unaccounted_application_service_is_rejected(self):
@@ -324,6 +329,7 @@ class CapacityProfileTests(unittest.TestCase):
                             *external_live(self.profiles),
                         ],
                         parked=self.parked,
+                        live_containers=[],
                     )
 
     def test_live_name_must_belong_to_its_claimed_stack(self):
@@ -335,6 +341,7 @@ class CapacityProfileTests(unittest.TestCase):
                     *external_live(self.profiles),
                 ],
                 parked=self.parked,
+                live_containers=[],
             )
 
     def test_external_stacks_must_match_their_live_services(self):
@@ -343,7 +350,12 @@ class CapacityProfileTests(unittest.TestCase):
             *external_live(self.profiles),
         ]
         self.module.validate_live(
-            self.base, self.profiles, "edge", live, parked=self.parked
+            self.base,
+            self.profiles,
+            "edge",
+            live,
+            parked=self.parked,
+            live_containers=[],
         )
 
         def mutated(change):
@@ -447,6 +459,7 @@ class CapacityProfileTests(unittest.TestCase):
                         "edge",
                         mutated(change),
                         parked=self.parked,
+                        live_containers=[],
                     )
 
     def test_external_stack_contract_is_fail_closed(self):
@@ -552,7 +565,12 @@ class CapacityProfileTests(unittest.TestCase):
         for requested in ("edge", "autoupdater", "organizationweb", "workloads"):
             with self.subTest(requested=requested, state="parked"):
                 self.module.validate_live(
-                    self.base, self.profiles, requested, at_rest, parked=parked
+                    self.base,
+                    self.profiles,
+                    requested,
+                    at_rest,
+                    parked=parked,
+                    live_containers=[],
                 )
         # Only the playbooks that converge it to 0/0 may start while it runs.
         for requested in ("workloads", "site"):
@@ -561,7 +579,12 @@ class CapacityProfileTests(unittest.TestCase):
                 profiles["capacity_profiles"]["active"] = "observability"
             with self.subTest(requested=requested, state="running"):
                 self.module.validate_live(
-                    self.base, profiles, requested, running, parked=parked
+                    self.base,
+                    profiles,
+                    requested,
+                    running,
+                    parked=parked,
+                    live_containers=[],
                 )
         for requested in ("edge", "autoupdater", "organizationweb", "racinggame"):
             with self.subTest(requested=requested, state="running"):
@@ -570,11 +593,21 @@ class CapacityProfileTests(unittest.TestCase):
                     "parked live service runs over the budget: workloads_minecraft",
                 ):
                     self.module.validate_live(
-                        self.base, self.profiles, requested, running, parked=parked
+                        self.base,
+                        self.profiles,
+                        requested,
+                        running,
+                        parked=parked,
+                        live_containers=[],
                     )
         # An unparked service is not checked here: the stack owns its replicas.
         self.module.validate_live(
-            self.base, self.profiles, "edge", running, parked=frozenset({"openclaw"})
+            self.base,
+            self.profiles,
+            "edge",
+            running,
+            parked=frozenset({"openclaw"}),
+            live_containers=[],
         )
         for platform in (
             {"platform_parked_workloads": ["n8n-db"]},
@@ -593,7 +626,9 @@ class CapacityProfileTests(unittest.TestCase):
             [sys.executable, str(ROOT / "scripts/validate-capacity-profiles.py"),
              "--live", "--requested-stack", "observability"],
             input=json.dumps({"services": [], "host_containers": []}),
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         self.assertEqual(completed.returncode, 1)
         self.assertIn("outside the active profile", completed.stderr)
