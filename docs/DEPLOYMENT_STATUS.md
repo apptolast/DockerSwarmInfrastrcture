@@ -8,12 +8,13 @@ host antes del primer despliegue real de este árbol.
 
 Por decisión del propietario (2026-09-25), `config/platform.yml` declara
 Minecraft y OpenClaw aparcados (`platform_parked_workloads`) para liberar RAM
-y CPU del host. Es estado declarado. El orden general es `edge` y después
-`workloads`, pero mientras `edge` no pueda aplicarse (ver «Deriva fuera del
-repositorio») se aplica solo `workloads`. La evidencia del apply y los SHA-256
-de los archivos en frío bajo `/var/backups/dockerswarm/parked` se añaden aquí
-cuando se verifican. Sus datos siguen en `/srv/dockerswarm/services`.
-Procedimiento en [OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
+y CPU del host. Es estado declarado. Para aparcar se aplica `workloads`,
+luego `edge` y luego `observability` si está desplegado; mientras `edge` no
+pueda aplicarse (ver «Deriva fuera del repositorio») se aplica solo
+`workloads`. La evidencia del apply y los SHA-256 de los archivos en frío
+bajo `/var/backups/dockerswarm/parked` se añaden aquí cuando se verifican.
+Sus datos siguen en `/srv/dockerswarm/services`. Procedimiento en
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
 
 Antes de aparcar se tomó además un archivo en caliente de Minecraft con el
 protocolo RCON del backup (`save-off`, `save-all flush`, `save-on`), sin
@@ -68,16 +69,22 @@ aquí:
   - `95-sftp.conf` ejecuta `/usr/local/sbin/apptolast-sftp-firewall`.
 
   Ambos scripts son `root:root` y no son escribibles por grupo ni por otros
-  (`0644` y `0755`). La unidad estaba `enabled` el 2026-09-25, así que
+  (`0644` y `0755`), igual que sus directorios (`/srv/satisfactory` `0700`,
+  `/srv/satisfactory/ops` `0750`, `/usr/local/sbin` `0755`), y ningún
+  contenedor monta esas rutas. La unidad estaba `enabled` el 2026-09-25, así que
   sobreviven a un reinicio de Docker o del host y a un apply de
   `host-baseline`, que la reinicia y la vuelve a habilitar. Un apply de
   `platform` **no**: ejecuta el script base fuera de systemd
   (`ansible/roles/platform/tasks/main.yml`, «Reconcile the Docker
   published-port policy after Swarm changes») y deja la unidad deshabilitada
-  al arranque. Tras él, SFTP y Satisfactory quedan cerrados hasta un
-  `systemctl enable --now dockerswarm-docker-firewall.service` o un
-  `systemctl restart` de esa unidad. Los roles de este repositorio no borran
-  esos drop-ins, pero un servidor reconstruido desde aquí no los tendría.
+  al arranque. La unidad es `oneshot` con `RemainAfterExit=yes` y sigue
+  activa, así que `enable --now` no la vuelve a ejecutar. Tras el apply, SFTP
+  y Satisfactory quedan cerrados hasta
+  `systemctl enable dockerswarm-docker-firewall.service` seguido de
+  `systemctl restart dockerswarm-docker-firewall.service`, y
+  `iptables -S DOCKERSWARM-INGRESS` debe volver a mostrar sus reglas. Los
+  roles de este repositorio no borran esos drop-ins, pero un servidor
+  reconstruido desde aquí no los tendría.
 - Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
   Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
   las rutas de `satisfactory.apptolast.com` (web, websocket y
