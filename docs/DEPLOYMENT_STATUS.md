@@ -140,13 +140,17 @@ aquí:
   `/companions`) y `logs-satisfactory.apptolast.com`, esta última con un
   middleware `basicAuth` cuyo hash no debe publicarse en este repositorio, y
   está conectado a la red `apptolast-edge-satisfactory`. El secret
-  `cloudflare_dns_api_token_v3` que usa sí coincide con este repositorio. Un
-  apply de `edge` retiraría esas rutas y esa red y dejaría Satisfactory sin
-  ruta, así que no se aplica `edge` hasta codificarlas, con el `basicAuth`
-  como Docker Secret. Mientras tanto, con OpenClaw aparcado, la sonda de salud
-  del Traefik vivo lo marca caído (su ruta responde `503`) y registra un WARN
-  `Health check failed.` cada 15 s. El backend sin servidores de este
-  repositorio lo elimina en cuanto `edge` pueda aplicarse.
+  `cloudflare_dns_api_token_v3` que usa sí coincide con este repositorio.
+  Esas rutas, su backend y la red ya están codificados en
+  `stacks/edge/dynamic.yml.j2` tal como corren, y el `basicAuth` lee sus
+  usuarios del Docker Secret `edge-basicauth-satisfactory-logs-v1`, que aún
+  no existe (ver [EDGE.md](EDGE.md), «Rutas de Satisfactory»). Hasta que la
+  ventana de aplicación descrita allí cree el secret, aplique `edge` y lo
+  verifique, el Traefik vivo sigue en la Config hecha a mano y `edge` solo se
+  aplica siguiendo ese procedimiento. Mientras tanto, con OpenClaw aparcado,
+  la sonda de salud del Traefik vivo lo marca caído (su ruta responde `503`)
+  y registra un WARN `Health check failed.` cada 15 s. El backend sin
+  servidores de este repositorio lo elimina con ese apply.
 - `fs.suid_dumpable` vale `2` en vivo (leído el 2026-09-25), frente al `0`
   que declaran `ansible/roles/host_baseline/defaults/main.yml` y
   `/etc/sysctl.d/99-z-dockerswarm-host-hardening.conf`. Los otros 24 valores
@@ -180,7 +184,7 @@ el mismo inodo que monta el contenedor y se aplicó en vivo con
 repositorio de origen.
 
 La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`. Mientras
-siga cerrada, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
+siga abierta, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
 en vivo el 2026-09-25 con dos `docker service update` sobre `edge_traefik`:
 `--limit-memory 256M` a las 09:43 UTC y `--reserve-memory 128M` a las
 10:03 UTC. Cada uno cambió un único campo del spec (`Limits.MemoryBytes` de

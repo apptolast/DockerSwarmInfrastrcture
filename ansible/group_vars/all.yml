@@ -19,6 +19,9 @@ edge_application_networks:
   # The monitoring dashboard runs outside this repository; only its
   # ingress is codified here, on the network it already uses.
   observatorio: apptolast-edge-observatorio
+  # Satisfactory (web, reverb, logs and companions) also runs outside
+  # this repository, as plain Compose containers plus one Swarm stack.
+  satisfactory: apptolast-edge-satisfactory
 
 # Edge networks allowed to be attachable, and only those. The
 # monitoring dashboard is a plain container, not a Swarm service, and
@@ -29,6 +32,7 @@ edge_application_networks:
 # which is already root-equivalent on this host.
 edge_adopted_attachable_networks:
   - apptolast-edge-observatorio
+  - apptolast-edge-satisfactory
 
 edge_traefik_image: >-
   traefik@sha256:652929a140a32d7cafafb13c6cdfab5376cfeff800f51397b87b524501ed02a8
@@ -38,5 +42,11 @@ edge_traefik_runtime_gid: 65532
 edge_traefik_stack_name: edge
 edge_traefik_acme_email: acme@apptolast.com
 edge_traefik_cloudflare_secret_name: cloudflare_dns_api_token_v3
+# Traefik basicAuth users files, one `user:bcrypt` line each, mounted at
+# /run/secrets/<key>. The value is the versioned Docker Secret name. The
+# secret is created by hand on the host (docs/EDGE.md, «Rutas de
+# Satisfactory») and no hash ever enters this repository.
+edge_traefik_basicauth_secrets:
+  basicauth_satisfactory_logs: edge-basicauth-satisfactory-logs-v1
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json

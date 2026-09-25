@@ -493,10 +493,18 @@ repositorio"). On 2026-09-22 the live `edge_traefik` service was switched by
 hand to the Docker Config `edge-traefik-dynamic-companions-a0952eace071`. It
 adds the `satisfactory.apptolast.com` and `logs-satisfactory.apptolast.com`
 routes, a `basicAuth` middleware and the `apptolast-edge-satisfactory`
-network. An `edge` apply from this repository would remove all three and
-take Satisfactory offline, so **do not apply `--playbook edge` (or `site`)**
-until those routes are codified, with the `basicAuth` users held in a Docker
-Secret rather than a hash in this public repository.
+network. All three are now codified in `stacks/edge/` exactly as they run,
+except that the login reads its users from the Docker Secret
+`edge-basicauth-satisfactory-logs-v1` instead of a hash in this public
+repository. The live service still runs the hand-made Config and that secret
+does not exist yet, so **do not apply `--playbook edge` (or `site`) except
+through the window procedure in `docs/EDGE.md` («Ventana de aplicación»)**:
+it creates the secret from the live hash without printing it, records every
+public route before and after, and rolls back to the previous Config names
+on any difference found before the repeat apply (the repeat apply replaces
+the service's `PreviousSpec`). This part of the gate lifts only after that
+window verifies and a repeat apply reports `changed=0`; the evidence change
+then records it here.
 
 Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
 `95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
