@@ -1,0 +1,109 @@
+---
+# Apply only, after cluster.yml has started the local registry. The backup
+# layout and the registry each receive the pinned images the other holds,
+# byte for byte through the registry HTTP API; Docker's own image store is
+# never involved. Nothing is compiled here.
+- name: Read the pinned Substrate images in the running registry
+  ansible.builtin.import_tasks: images_read.yml
+
+- name: Refuse a pinned Substrate image held by neither backup nor registry
+  ansible.builtin.assert:
+    that:
+      - ax_lab_image_status.registry is not none
+      - ax_lab_substrate_lost == []
+    fail_msg: >-
+      {{ ax_lab_substrate_lost | join(", ") }} is in neither the backup
+      layout nor the local registry. Seed the backup (docs/AX.md, «Semilla
+      desde el laboratorio manual») or, in a reviewed change, list it in
+      ax_lab_substrate_fallback_builds (docs/AX.md, «Compilación de
+      reserva»).
+
+- name: Back up the pinned Substrate images the backup lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "export",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.substrate.version,
+        ]
+        + (
+          ax_lab_substrate_exports
+          | zip(
+            ax_lab_substrate_exports
+            | map("extract", ax_lab.substrate.images)
+          )
+          | map("join", "=") | map("regex_replace", "^", "--image=") | list
+        )
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: ax_lab_substrate_exports | length > 0
+  changed_when: true
+
+# A tag that moved in the unauthenticated registry is put back on its pin.
+- name: Restore the pinned Substrate images the registry lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "import",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.substrate.version,
+        ]
+        + (
+          ax_lab_substrate_imports
+          | zip(
+            ax_lab_substrate_imports
+            | map("extract", ax_lab.substrate.images)
+          )
+          | map("join", "=") | map("regex_replace", "^", "--image=") | list
+        )
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: ax_lab_substrate_imports | length > 0
+  changed_when: true
+
+- name: Read the pinned Substrate images after seeding them
+  ansible.builtin.import_tasks: images_read.yml
+
+- name: Verify every pinned Substrate image in the registry and the backup
+  ansible.builtin.assert:
+    that:
+      - ax_lab_image_status.registry is not none
+      - ax_lab_substrate_in_registry | sort == ax_lab.substrate.images | sort
+      - ax_lab_substrate_in_backup | sort == ax_lab.substrate.images | sort
+    fail_msg: >-
+      The local registry or the backup layout does not hold every pinned
+      Substrate image under its digest: {{ ax_lab_image_status }}.
+
+# docs/AX.md, «Límites y política de reinicio»: the registry keeps its
+# 256 MiB limit only if the kernel never had to kill inside it.
+- name: Read the memory events of the local registry
+  ansible.builtin.slurp:
+    src: >-
+      {{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_registry.id
+      ~ ".scope/memory.events" }}
+  register: ax_lab_registry_memory_events
+
+- name: Require no OOM kill in the local registry
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ax_lab_registry_memory_events.content | b64decode).splitlines()
+        | select("match", "^oom_kill ") | list == ["oom_kill 0"]
+    fail_msg: >-
+      The kernel killed a process inside {{ ax_lab.registry.container }}:
+      its memory limit is too small for the images it serves (docs/AX.md,
+      «Límites y política de reinicio»).

@@ -37,9 +37,16 @@ INSPECT = "ansible/roles/ax_lab/tasks/inspect.yml"
 READ = "ansible/roles/ax_lab/tasks/read.yml"
 OWNERSHIP = "ansible/roles/ax_lab/tasks/ownership.yml"
 CLUSTER = "ansible/roles/ax_lab/tasks/cluster.yml"
+NODE = "ansible/roles/ax_lab/tasks/node.yml"
+ARTIFACTS = "ansible/roles/ax_lab/tasks/artifacts.yml"
+IMAGES = "ansible/roles/ax_lab/tasks/images.yml"
+IMAGES_READ = "ansible/roles/ax_lab/tasks/images_read.yml"
+SUBSTRATE = "ansible/roles/ax_lab/tasks/substrate.yml"
+SUBSTRATE_READ = "ansible/roles/ax_lab/tasks/substrate_read.yml"
+MANAGER = "scripts/manage-ax-lab-substrate.py"
 # The files main.yml imports in --check too: every task in them must be
 # read-only there.
-CHECK_MODE_FILES = (MAIN, HOST, INSPECT, READ, OWNERSHIP)
+CHECK_MODE_FILES = (MAIN, HOST, INSPECT, READ, OWNERSHIP, IMAGES_READ, SUBSTRATE_READ)
 SYSCTL_PATH = "/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf"
 WATCHES = "fs.inotify.max_user_watches"
 INSTANCES = "fs.inotify.max_user_instances"
@@ -90,6 +97,15 @@ def role_variables() -> dict[str, Any]:
         "ax_lab_cluster_state_path": lab["install_root"] + "/state/cluster.json",
         "ax_lab_home_directory": lab["install_root"] + "/home",
         "ax_lab_kubeconfig_path": lab["install_root"] + "/home/.kube/config",
+        "ax_lab_substrate_fallback_builds": document[
+            "ax_lab_substrate_fallback_builds"
+        ],
+        "ax_lab_substrate_source_path": lab["install_root"] + "/src/substrate",
+        "ax_lab_cache_directory": lab["install_root"] + "/cache",
+        "ax_lab_substrate_state_path": lab["install_root"] + "/state/substrate.json",
+        "ax_lab_substrate_manager": (
+            lab["install_root"] + "/bin/manage-ax-lab-substrate.py"
+        ),
         "platform_install_root": "/opt/dockerswarm",
         "role_path": str(ROLE),
     }
@@ -615,6 +631,10 @@ class AxLabValidatorTests(unittest.TestCase):
                 "openai_proxy": "docker.io/nginxinc/nginx-unprivileged:1.30-alpine"
                 "@sha256:"
                 "4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5",
+                # The image the manual lab's toolbox was built on (the spike's
+                # Dockerfile, FROM line 3), still cached on the host.
+                "toolbox": "docker.io/library/golang:1.27.1@sha256:"
+                "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244",
             },
         )
         self.assertEqual(lab["install_root"], "/opt/dockerswarm/ax-lab")
@@ -694,7 +714,7 @@ class AxLabValidatorTests(unittest.TestCase):
             self.set_lab("binaries/kind/os", "linux"), "kind: unexpected"
         )
         self.assert_rejected(self.set_lab("images/extra", "x"), "images: unexpected")
-        for value in (2, True, "1"):
+        for value in (1, 3, True, "2"):
             with self.subTest(schema_version=value):
                 self.assert_rejected(
                     self.set_lab("schema_version", value), "schema_version"
@@ -1300,6 +1320,16 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 ),
                 "ax_lab_home_directory": "{{ ax_lab.install_root }}/home",
                 "ax_lab_kubeconfig_path": "{{ ax_lab_home_directory }}/.kube/config",
+                "ax_lab_substrate_source_path": (
+                    "{{ ax_lab.install_root }}/src/substrate"
+                ),
+                "ax_lab_cache_directory": "{{ ax_lab.install_root }}/cache",
+                "ax_lab_substrate_state_path": (
+                    "{{ ax_lab_state_directory }}/substrate.json"
+                ),
+                "ax_lab_substrate_manager": (
+                    "{{ ax_lab_bin_directory }}/manage-ax-lab-substrate.py"
+                ),
             },
         )
         self.assertFalse((ROLE / "handlers").exists())
@@ -1328,6 +1358,11 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             {**self.variables, "ax_lab_cluster_state_path": "/tmp/cluster.json"},
             {**self.variables, "ax_lab_home_directory": "/root"},
             {**self.variables, "ax_lab_kubeconfig_path": "/root/.kube/config"},
+            {**self.variables, "ax_lab_substrate_fallback_builds": ["ateapi"]},
+            {**self.variables, "ax_lab_substrate_source_path": "/tmp/substrate"},
+            {**self.variables, "ax_lab_cache_directory": "/tmp/cache"},
+            {**self.variables, "ax_lab_substrate_state_path": "/tmp/s.json"},
+            {**self.variables, "ax_lab_substrate_manager": "/tmp/manager.py"},
         ]
         for index, variables in enumerate(cases):
             with self.subTest(case=index):
@@ -1408,6 +1443,18 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 ("{{ ax_lab_home_directory }}", True),
                 ("{{ ax_lab_home_directory }}/.kube", True),
                 ("{{ ax_lab_kubeconfig_path }}", False),
+                ("{{ ax_lab.install_root }}/src", True),
+                ("{{ ax_lab_substrate_source_path }}", True),
+                ("{{ ax_lab_cache_directory }}", True),
+                ("{{ ax_lab_substrate_state_path }}", False),
+                ("{{ ax_lab_substrate_manager }}", False),
+                ("{{ ax_lab_bin_directory }}/host_global_operation_lock.py", False),
+                ("{{ ax_lab_bin_directory }}/ansible-operation-lock.py", False),
+                ("{{ ax_lab_bin_directory }}/run-locked-command.py", False),
+                ("/var/backups", True),
+                ("/var/backups/dockerswarm", True),
+                ("{{ ax_lab.substrate.backup_directory | dirname }}", True),
+                ("{{ ax_lab.substrate.backup_directory }}", True),
                 ("/etc", True),
                 ("/etc/sysctl.d", True),
                 ("{{ ax_lab_sysctl_path }}", False),
@@ -1721,14 +1768,23 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn("credential_directory", text)
                 self.assertNotIn("/etc/dockerswarm", text)
-        # The only file the role reads back is its own ownership proof.
-        slurps = [
-            task["ansible.builtin.slurp"]
+        # The only files the role reads back are its own ownership proofs and
+        # the registry's memory events.
+        slurps = sorted(
+            task["ansible.builtin.slurp"]["src"]
             for path in role_task_files()
             for task in yaml.safe_load(path.read_text(encoding="utf-8"))
             if "ansible.builtin.slurp" in task
-        ]
-        self.assertEqual(slurps, [{"src": "{{ ax_lab_cluster_state_path }}"}])
+        )
+        self.assertEqual(
+            slurps,
+            [
+                '{{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_registry.id'
+                ' ~ ".scope/memory.events" }}',
+                "{{ ax_lab_cluster_state_path }}",
+                "{{ ax_lab_substrate_state_path }}",
+            ],
+        )
         for path in role_task_files():
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=path.name):
@@ -1749,9 +1805,11 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
     CREATE = "Create the lab cluster with the pinned kind and node image"
     RUN_REGISTRY = "Create the local registry from its pinned digest"
     UPDATE = "Converge the limits and restart policy of drifted lab containers"
-    START = "Start each stopped lab container"
+    START = "Start the local registry when it is stopped"
     STATE = "Record the proof that this role created the lab node"
-    VERIFY = "Verify the lab containers run with their reviewed limits"
+    VERIFY = "Verify the lab containers carry their reviewed limits"
+    NODE_START = "Start the lab node when it is stopped"
+    NODE_VERIFY = "Verify the lab node runs with its reviewed limits"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1760,6 +1818,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
         cls.read = load_tasks(READ)
         cls.ownership = load_tasks(OWNERSHIP)
         cls.cluster = load_tasks(CLUSTER)
+        cls.node = load_tasks(NODE)
         cls.variables = cluster_variables()
         cls.lab = cls.variables["ax_lab"]
 
@@ -1806,7 +1865,12 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             "Reconcile the lab cluster and its local registry outside check mode",
         ]
         self.assertEqual([name for name in names if name in order], order)
-        self.assertEqual(names[-4:], order[-4:])
+        self.assertLess(
+            names.index(order[-1]),
+            names.index(
+                "Seed and verify the pinned Substrate images outside check mode"
+            ),
+        )
         self.assertEqual(
             self.main[order[4]],
             {"name": order[4], "ansible.builtin.import_tasks": "inspect.yml"},
@@ -1862,6 +1926,8 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                 self.DERIVE,
                 "Read the lab registry and node",
                 "Prove that every existing lab container is this role's",
+                "Read the transient Substrate build and install containers",
+                "Refuse a transient Substrate container left from an earlier run",
                 "Describe what an apply would change in the lab cluster",
             ],
         )
@@ -2481,7 +2547,11 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
 
     def test_every_cluster_command_reads_or_changes_only_on_drift(self) -> None:
         reads = 0
-        for task in yaml.safe_load((ROOT / CLUSTER).read_text()):
+        tasks = [
+            *yaml.safe_load((ROOT / CLUSTER).read_text()),
+            *yaml.safe_load((ROOT / NODE).read_text()),
+        ]
+        for task in tasks:
             command = task.get("ansible.builtin.command")
             if command is None:
                 continue
@@ -2683,25 +2753,71 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                 probe("probe_rendered == ['0.500', '2.000']"),
             ]
         )
+        # B3: cluster.yml starts only the registry; node.yml starts the node,
+        # after images.yml.
         start = self.cluster[self.START]
         self.assertEqual(
-            start["when"], '(item.stdout | from_json).status in ["created", "exited"]'
+            start["when"], 'ax_lab_registry.status in ["created", "exited"]'
         )
         self.assertEqual(
             start["ansible.builtin.command"]["argv"],
-            ["/usr/bin/docker", "start", "{{ item.item.name }}"],
+            ["/usr/bin/docker", "start", "{{ ax_lab.registry.container }}"],
         )
+        node_start = self.node[self.NODE_START]
+        self.assertEqual(
+            node_start["when"], 'ax_lab_node.status in ["created", "exited"]'
+        )
+        self.assertEqual(
+            node_start["ansible.builtin.command"]["argv"],
+            ["/usr/bin/docker", "start", "{{ ax_lab.cluster.node_container }}"],
+        )
+        self.assertIs(node_start["changed_when"], True)
+        self.assertEqual(
+            list(self.node)[:3],
+            [
+                self.NODE_START,
+                "Read the lab registry and node after starting the node",
+                self.NODE_VERIFY,
+            ],
+        )
+        for status, starts in (("exited", True), ("created", True), ("running", False)):
+            with self.subTest(node=status):
+                self.assert_tasks_pass(
+                    [
+                        *self.facts(
+                            container_read("kind-registry"),
+                            container_read("kind-control-plane", status=status),
+                        ),
+                        probe(
+                            node_start["when"]
+                            if starts
+                            else f"not ({node_start['when']})"
+                        ),
+                    ]
+                )
         converged = self.facts(*self.converged())
         self.assert_tasks_pass([*converged, self.cluster[self.VERIFY]])
+        self.assert_tasks_pass([*converged, self.node[self.NODE_VERIFY]])
+        # A node that a reboot left stopped passes cluster.yml, which no longer
+        # needs it running, and only node.yml requires it running.
+        stopped = self.facts(
+            container_read("kind-registry"),
+            container_read("kind-control-plane", status="exited"),
+        )
+        self.assert_tasks_pass([*stopped, self.cluster[self.VERIFY]])
+        self.assert_tasks_fail(
+            [*stopped, self.node[self.NODE_VERIFY]],
+            "does not run with its reviewed limits",
+        )
         for (
             label,
             reads,
         ) in (
             (
-                "stopped node",
+                "stopped registry",
                 [
-                    container_read("kind-registry"),
-                    container_read("kind-control-plane", status="exited"),
+                    container_read("kind-registry", status="exited"),
+                    container_read("kind-control-plane"),
                 ],
             ),
             (
@@ -2731,7 +2847,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             with self.subTest(case=label):
                 self.assert_tasks_fail(
                     [*self.facts(*reads), self.cluster[self.VERIFY]],
-                    "do not run with their reviewed limits",
+                    "do not carry their reviewed limits",
                 )
 
     def test_state_file_records_the_created_node(self) -> None:
@@ -2791,12 +2907,12 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             ),
         ):
             with self.subTest(task=change):
-                names = list(self.cluster)
+                names = list(self.node)
                 self.assertLess(names.index(read), names.index(change))
                 self.assertLess(names.index(change), names.index(verify))
-                self.assertEqual(self.cluster[change]["when"], expected_when)
+                self.assertEqual(self.node[change]["when"], expected_when)
         self.assertEqual(
-            self.cluster["Enable proxy_arp inside the lab node only when it is off"][
+            self.node["Enable proxy_arp inside the lab node only when it is off"][
                 "ansible.builtin.command"
             ]["argv"],
             [
@@ -2812,7 +2928,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
         # line 181 at the pinned commit); the reads use -e as well, so the
         # verification is what stops a kernel without the key.
         self.assertEqual(
-            self.cluster["Enable proxy_ndp inside the lab node only when it is off"][
+            self.node["Enable proxy_ndp inside the lab node only when it is off"][
                 "ansible.builtin.command"
             ]["argv"],
             [
@@ -2839,9 +2955,9 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
         ):
             with self.subTest(read=read):
                 key = register.removeprefix("ax_lab_").removesuffix("_before")
-                self.assertEqual(self.cluster[read]["register"], register)
+                self.assertEqual(self.node[read]["register"], register)
                 self.assertEqual(
-                    self.cluster[read]["ansible.builtin.command"]["argv"],
+                    self.node[read]["ansible.builtin.command"]["argv"],
                     [
                         "/usr/bin/docker",
                         "exec",
@@ -2860,18 +2976,18 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             name = f"Verify {key} inside the lab node"
             with self.subTest(verify=key):
                 self.assert_task_accepts(
-                    CLUSTER,
+                    NODE,
                     name,
                     {**self.variables, f"ax_lab_{key}": {"stdout": "1"}},
                 )
                 for stdout in ("0", ""):
                     self.assert_task_rejects(
-                        CLUSTER,
+                        NODE,
                         name,
                         {**self.variables, f"ax_lab_{key}": {"stdout": stdout}},
                         f"net.{family}.conf.all.{key} is {stdout} inside",
                     )
-        apply = self.cluster[
+        apply = self.node[
             "Apply the local registry hosting ConfigMap only when it differs"
         ]
         self.assertEqual(
@@ -2933,7 +3049,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             "mode": "0600",
         }
         self.assert_task_accepts(
-            CLUSTER, name, {**self.variables, "ax_lab_kubeconfig": {"stat": good}}
+            NODE, name, {**self.variables, "ax_lab_kubeconfig": {"stat": good}}
         )
         for change in (
             {"mode": "0644"},
@@ -2943,7 +3059,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
         ):
             with self.subTest(change=change):
                 self.assert_task_rejects(
-                    CLUSTER,
+                    NODE,
                     name,
                     {
                         **self.variables,
@@ -2965,7 +3081,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     continue
                 kubectl_tasks += 1
                 with self.subTest(task=task["name"]):
-                    self.assertEqual(path.name, "cluster.yml")
+                    self.assertEqual(path.name, "node.yml")
                     self.assertEqual(argv[0], "{{ ax_lab_bin_directory }}/kubectl")
                     self.assertEqual(
                         argv[1:7],

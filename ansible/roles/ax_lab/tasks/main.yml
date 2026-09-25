@@ -23,6 +23,21 @@
       - ax_lab_cluster_state_path == ax_lab_state_directory ~ "/cluster.json"
       - ax_lab_home_directory == ax_lab.install_root ~ "/home"
       - ax_lab_kubeconfig_path == ax_lab_home_directory ~ "/.kube/config"
+      - >-
+        ax_lab_substrate_fallback_builds == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/ax-lab.yml')
+          | from_yaml
+        ).ax_lab_substrate_fallback_builds
+      - >-
+        ax_lab_substrate_source_path == ax_lab.install_root ~ "/src/substrate"
+      - ax_lab_cache_directory == ax_lab.install_root ~ "/cache"
+      - >-
+        ax_lab_substrate_state_path
+        == ax_lab_state_directory ~ "/substrate.json"
+      - >-
+        ax_lab_substrate_manager
+        == ax_lab_bin_directory ~ "/manage-ax-lab-substrate.py"
     fail_msg: AX lab inputs differ from the versioned contract.
 
 - name: Validate the AX lab contract and its sysctl render locally
@@ -55,6 +70,66 @@
     that:
       - ax_lab_kind_config_digest.stdout is match("^[a-f0-9]{64}$")
     fail_msg: The validator did not print the kind configuration digest.
+
+# The validator accepts ate-setup's digest as pending until the
+# reproducibility workflow prints it; nothing runs until it is pinned.
+- name: Refuse to run while a Substrate image pin is pending
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab.substrate.images | dict2items
+        | selectattr("value", "none") | list == []
+    fail_msg: >-
+      A Substrate image of config/ax-lab.yml has no pinned digest yet. Pin it
+      from the ax-lab-reproducibility workflow in a reviewed change before
+      any check or apply (docs/AX.md, «Reproducibilidad»).
+
+# The installed images are those the reviewed workloads run; ate-setup is
+# the installer. The identity is what the Substrate state file records, and
+# any difference in it reinstalls.
+- name: Derive the pinned Substrate arguments and install identity
+  ansible.builtin.set_fact:
+    ax_lab_substrate_installed: >-
+      {{
+        ax_lab.substrate.workloads | map(attribute="images") | flatten
+        | select("in", ax_lab.substrate.images) | unique | sort
+      }}
+    ax_lab_substrate_image_args: >-
+      {{
+        ax_lab.substrate.images | dict2items | map(attribute="key")
+        | zip(ax_lab.substrate.images | dict2items | map(attribute="value"))
+        | map("join", "=") | map("regex_replace", "^", "--image=") | list
+      }}
+
+- name: Derive the installed Substrate image arguments and identity
+  ansible.builtin.set_fact:
+    ax_lab_substrate_installed_args: >-
+      {{
+        ax_lab_substrate_installed
+        | zip(
+          ax_lab_substrate_installed
+          | map("extract", ax_lab.substrate.images)
+        )
+        | map("join", "=") | map("regex_replace", "^", "--image=") | list
+      }}
+    ax_lab_substrate_identity:
+      schema_version: 1
+      version: "{{ ax_lab.substrate.version }}"
+      images: >-
+        {{
+          dict(
+            ax_lab_substrate_installed
+            | zip(
+              ax_lab_substrate_installed
+              | map("extract", ax_lab.substrate.images)
+            )
+          )
+          | combine({"ate-setup": ax_lab.substrate.images["ate-setup"]})
+        }}
+      install:
+        atenet_router: "{{ ax_lab.substrate.install.atenet_router }}"
+        rollout_timeout_seconds: >-
+          {{ ax_lab.substrate.install.rollout_timeout_seconds }}
 
 - name: Require the lab install root directly under the platform root
   ansible.builtin.assert:
@@ -93,6 +168,22 @@
     - {path: "{{ ax_lab_home_directory }}", directory: true}
     - {path: "{{ ax_lab_home_directory }}/.kube", directory: true}
     - {path: "{{ ax_lab_kubeconfig_path }}", directory: false}
+    - {path: "{{ ax_lab.install_root }}/src", directory: true}
+    - {path: "{{ ax_lab_substrate_source_path }}", directory: true}
+    - {path: "{{ ax_lab_cache_directory }}", directory: true}
+    - {path: "{{ ax_lab_substrate_state_path }}", directory: false}
+    - {path: "{{ ax_lab_substrate_manager }}", directory: false}
+    - path: "{{ ax_lab_bin_directory }}/host_global_operation_lock.py"
+      directory: false
+    - path: "{{ ax_lab_bin_directory }}/ansible-operation-lock.py"
+      directory: false
+    - path: "{{ ax_lab_bin_directory }}/run-locked-command.py"
+      directory: false
+    - {path: /var/backups, directory: true}
+    - {path: /var/backups/dockerswarm, directory: true}
+    - path: "{{ ax_lab.substrate.backup_directory | dirname }}"
+      directory: true
+    - {path: "{{ ax_lab.substrate.backup_directory }}", directory: true}
     - {path: /etc, directory: true}
     - {path: /etc/sysctl.d, directory: true}
     - {path: "{{ ax_lab_sysctl_path }}", directory: false}
@@ -134,6 +225,100 @@
     msg: "{{ ax_lab_cluster_plan }}"
   when: ansible_check_mode
 
+# Check mode reads Substrate as the host is now; an apply reads it again
+# after each step that changes it. Both only read, and both stop on objects
+# this role cannot prove it installed.
+- name: Read the pinned Substrate images in the registry and the backup
+  ansible.builtin.import_tasks: images_read.yml
+  when: ansible_check_mode
+
+- name: Read Substrate in the lab cluster and prove its ownership
+  ansible.builtin.import_tasks: substrate_read.yml
+  when: ansible_check_mode
+
+- name: Describe what an apply would change in Substrate
+  ansible.builtin.set_fact:
+    ax_lab_substrate_plan: >-
+      {{
+        (
+          [] if ax_lab_install_paths.results
+          | selectattr("item.path", "equalto", ax_lab_substrate_source_path)
+          | map(attribute="stat.exists") | first
+          else [
+            "clone " ~ ax_lab.sources.substrate.repository ~ " at "
+            ~ ax_lab.sources.substrate.commit
+          ]
+        )
+        + (
+          [] if ax_lab_substrate_builds == [] else
+          (
+            ax_lab_substrate_builds
+            | map("regex_replace", "^", "build with the fallback toolbox: ")
+            | list
+          )
+          if ax_lab_node is none or ax_lab_node.status != "running" else
+          [
+            "the apply stops before building "
+            ~ ax_lab_substrate_builds | join(", ") ~ ": "
+            ~ ax_lab.cluster.node_container ~ " runs, so suspend the AX"
+            ~ " Tasks, stop it under the host-global lock and apply again"
+            ~ " (docs/AX.md, «Compilación de reserva»)"
+          ]
+        )
+        + (
+          (
+            ax_lab_substrate_exports
+            | map("regex_replace", "^", "back up from the registry: ") | list
+          )
+          + (
+            ax_lab_substrate_imports
+            | map("regex_replace", "^", "restore into the registry: ") | list
+          )
+          + (
+            ax_lab_substrate_lost | difference(ax_lab_substrate_builds)
+            | map("regex_replace", "^", "in neither backup nor registry: ")
+            | list
+          )
+          if ax_lab_image_status.registry is not none else
+          ["the local registry is read once the apply starts it"]
+        )
+        + (
+          ["Substrate is read after the apply starts the lab node"]
+          if ax_lab_substrate_cluster is none else
+          ["install Substrate with ate-setup: " ~ ax_lab_substrate_drift
+          | join(", ")]
+          if ax_lab_substrate_drift else
+          ["Substrate matches its pinned install"]
+        )
+      }}
+  when: ansible_check_mode
+
+- name: Report what an apply would change in Substrate
+  ansible.builtin.debug:
+    msg: "{{ ax_lab_substrate_plan }}"
+  when: ansible_check_mode
+
+# The fallback build runs before cluster.yml can create or start the node
+# whose budget it borrows.
+- name: Keep the Substrate checkout and fallback builds outside check mode
+  ansible.builtin.import_tasks: artifacts.yml
+  when: not ansible_check_mode
+
 - name: Reconcile the lab cluster and its local registry outside check mode
   ansible.builtin.import_tasks: cluster.yml
+  when: not ansible_check_mode
+
+# A stopped node starts in node.yml only once the registry serves every
+# pinned image; a node that `kind create cluster` has just created already
+# runs, but nothing pulls a Substrate image before ate-setup.
+- name: Seed and verify the pinned Substrate images outside check mode
+  ansible.builtin.import_tasks: images.yml
+  when: not ansible_check_mode
+
+- name: Start and prepare the lab node outside check mode
+  ansible.builtin.import_tasks: node.yml
+  when: not ansible_check_mode
+
+- name: Install Substrate only on drift outside check mode
+  ansible.builtin.import_tasks: substrate.yml
   when: not ansible_check_mode

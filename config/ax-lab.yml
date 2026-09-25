@@ -5,13 +5,14 @@
 # docs/AX.md.
 #
 # The playbook codifies the host prerequisites (the inotify limits kind
-# needs and the pinned kind and kubectl binaries) and the lifecycle of the
-# kind cluster and its local registry. Substrate and AX are still the manual
-# trial of docs/DEPLOYMENT_STATUS.md until the later changes in docs/AX.md
-# codify them; `sources` and the redis and openai_proxy images are their
-# reviewed pins, not yet used.
+# needs and the pinned kind and kubectl binaries), the lifecycle of the kind
+# cluster and its local registry, and Agent Substrate: its pinned images, a
+# backup of them and its install with upstream's ate-setup. AX is still the
+# manual trial of docs/DEPLOYMENT_STATUS.md until a later change in
+# docs/AX.md codifies it; `sources.ax` and the redis and openai_proxy images
+# are its reviewed pins, not yet used.
 ax_lab:
-  schema_version: 1
+  schema_version: 2
   # Under platform_install_root (config/platform.yml), root:root 0750.
   install_root: /opt/dockerswarm/ax-lab
   # Owner-provisioned, root-only credential files for AX live here. Only
@@ -59,6 +60,12 @@ ax_lab:
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
     openai_proxy: "docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:\
       4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5"
+    # The official Go image that the explicit fallback build and the
+    # reproducibility workflow run: Go 1.27.1 (Substrate's go.mod says
+    # `go 1.27.0`), git and make. The manual lab built every pinned
+    # Substrate image in this exact digest.
+    toolbox: "docker.io/library/golang:1.27.1@sha256:\
+      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
   # The kind cluster the role creates when it is absent and reconciles
   # afterwards (docs/AX.md, «Ciclo de vida del clúster»). kind names the
   # node <name>-control-plane and attaches it to its fixed Docker network
@@ -104,6 +111,162 @@ ax_lab:
       cpu_limit_millicores: 500
       pids_limit: 256
     restart_policy: "no"
+  # Agent Substrate at sources.substrate (docs/AX.md, «Substrate»).
+  substrate:
+    # VERSION of every image, its tag in the registry, the node label
+    # ate.dev/substrate-version and the suffix of the atelet DaemonSet. It
+    # is what `git describe --tags --always --dirty` printed at the pinned
+    # commit for the manual lab (Makefile, line 36), passed explicitly and
+    # never recomputed.
+    version: "67253354"
+    # ko images of ./cmd/<name>, single-platform linux/amd64, by the digest
+    # of their manifest: the manual lab's registry serves exactly these.
+    # The registry keeps each as <name>:<version>, ko's --base-import-paths
+    # name, which `ate-setup --image-repo` looks up. The manual lab never
+    # built ate-setup: its digest is the one the ax-lab-reproducibility
+    # workflow built from the pinned commit on 2026-09-25 (run 36187353468),
+    # where the six images above also reproduced exactly.
+    images:
+      ateapi: >-
+        sha256:c1422c85315e87c0710ec9e22447ea68185f96cd47e10473b75966f79c2d30f3
+      atecontroller: >-
+        sha256:0893131c560ee326933dc06494c86d31011f48c0c60e8dbebb40aaaed4c80c14
+      atelet: >-
+        sha256:8e88c4e0d0289c88cb84f18f679494645700e67bea0e1a4c0bf56f461bf30f7b
+      atenet: >-
+        sha256:929ca468e20fc7d06e356cb844d3cd5d2d30632db68ba5360adb4850b975fcd9
+      podcertcontroller: >-
+        sha256:2baed2f1e88434f8d018e595c41f7117f06c6af6410b6fbd2210bb79c54c8f99
+      ateom-gvisor: >-
+        sha256:fdd1d0ad3b30578d86f11aaa67740448a8477ce706e70207b8b51a96646592e7
+      ate-setup: >-
+        sha256:43c9e2db7a2cdacedcd8515fb7abb561b4b7de60d8e5ef9df3b9d0300c7a1098
+    # A root-only OCI image layout with a byte-exact copy of every pinned
+    # image: the seed from the manual lab and the restore source.
+    backup_directory: /var/backups/dockerswarm/ax-lab/images
+    # The explicit fallback build (ax_lab_substrate_fallback_builds): one
+    # image per container, only while the node is not running, inside the
+    # node's own budget (cluster.resources), with no swap.
+    build:
+      memory_limit_mib: 3072
+      memory_reservation_mib: 1536
+      cpu_limit_millicores: 2000
+      pids_limit: 1024
+      timeout_seconds: 3600
+      # memory_limit_mib plus the operational headroom of
+      # config/capacity.yml, before the build starts.
+      min_mem_available_mib: 3584
+      # The operational headroom: below it the build is killed.
+      mem_available_floor_mib: 512
+    # ate-setup --kind --atenet-router envoy --image-repo localhost:5001
+    # deploy ate-system, from its pinned image, only when the install
+    # drifts. It runs beside the node, so its limits fit in the 256 MiB and
+    # 850m of limits the active capacity plan leaves free; the operational
+    # headroom is not spent.
+    install:
+      atenet_router: envoy
+      rollout_timeout_seconds: 600
+      # At least the sum of ate-setup's own waits with that rollout timeout,
+      # 10 x 600 + 180 s, plus 300 s: the namespace (60 s) and two CRDs
+      # (30 s each), the podcertificate-controller rollout and its trust
+      # bundles (cmd/ate-setup/internal/steps/deploy.go, lines 55-98), the
+      # same three waits again in SetupCSI, which runs with no driver too
+      # (deploy.go line 99, csi.go lines 61-104), and six rollouts
+      # (deploy.go lines 150-174).
+      timeout_seconds: 6480
+      memory_limit_mib: 256
+      memory_reservation_mib: 128
+      cpu_limit_millicores: 500
+      pids_limit: 256
+      min_mem_available_mib: 768
+      mem_available_floor_mib: 512
+    # What `ate-setup --kind` deploys at the pinned commit: every workload
+    # of its three namespaces, sorted by namespace, kind and name, with the
+    # images of its init and main containers. A pinned image is named by
+    # its key above; anything else is the reference the manifest carries.
+    workloads:
+      # atelet.yaml:94-138 and kind/atelet
+      - kind: DaemonSet
+        namespace: ate-system
+        name: atelet-67253354
+        images: [atelet]
+      # ate-api-server.yaml:58-88
+      - kind: Deployment
+        namespace: ate-system
+        name: ate-api-server
+        images: [ateapi]
+      # ate-controller.yaml:86-104
+      - kind: Deployment
+        namespace: ate-system
+        name: ate-controller
+        images: [atecontroller]
+      # atenet-egress.yaml:210-235, 311-312
+      - kind: Deployment
+        namespace: ate-system
+        name: atenet-egress
+        images:
+          - "envoyproxy/envoy:v1.39-latest@sha256:\
+            57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4"
+          - atenet
+      # atenet-router.yaml:116-145, 242-243
+      - kind: Deployment
+        namespace: ate-system
+        name: atenet-router
+        images:
+          - atenet
+          - "envoyproxy/envoy:v1.39-latest@sha256:\
+            57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4"
+      # kind/rustfs.yaml:45-65
+      - kind: Deployment
+        namespace: ate-system
+        name: rustfs
+        images:
+          - "rustfs/rustfs:1.0.0-beta.3@sha256:\
+            378642b05b7dcb4849fb77ebe6aca4ced1c3f66e7e504247df95a5c9018d3358"
+      # kind/rustfs.yaml:94-105
+      - kind: Job
+        namespace: ate-system
+        name: rustfs-bucket-init
+        images:
+          - "amazon/aws-cli:2.17.0@sha256:\
+            643507c10ada7964ca6157b3d799f030b90577643da9955d319a77399ed80d73"
+      # postgres/postgres.yaml:89-146: ate-setup applies the base file, not
+      # the kind/postgres overlay the shell installer uses.
+      - kind: StatefulSet
+        namespace: ate-system
+        name: postgres
+        init_images:
+          - "postgres:18-alpine@sha256:\
+            9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+        images:
+          - "postgres:18-alpine@sha256:\
+            9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+      # kind/otel-collector.yaml:200-218
+      - kind: Deployment
+        namespace: otel-system
+        name: jaeger
+        images:
+          - "jaegertracing/all-in-one:1.55@sha256:\
+            f6b5d09073f14f76873d300f565a6691d815e81bea8e07e1dc3ff67e0596dd4e"
+      # kind/otel-collector.yaml:131-153
+      - kind: Deployment
+        namespace: otel-system
+        name: opentelemetry-collector
+        images:
+          - "otel/opentelemetry-collector-contrib:0.157.0@sha256:\
+            f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6"
+      # kind/prometheus.yaml:149-175
+      - kind: Deployment
+        namespace: otel-system
+        name: prometheus
+        images:
+          - "prom/prometheus:v3.5.3@sha256:\
+            ddc2493835a1509976d5e4e0c94199c4f843ce1f42dd6bcfc8231ba734a93ff7"
+      # pod-certificate-controller.yaml:124-142
+      - kind: Deployment
+        namespace: podcertificate-controller-system
+        name: podcertificate-controller
+        images: [podcertcontroller]
 # Owner acceptance that the kind node runs root-equivalent: kind starts it
 # with --privileged and seccomp and AppArmor unconfined (kind v0.33.0
 # pkg/cluster/internal/providers/docker/provision.go, lines 226-228). The
@@ -115,3 +278,11 @@ ax_lab:
 # AppArmor confinement, root-equivalent on this host, bound to loopback and
 # never published. See docs/AX.md, «Aceptación del nodo privilegiado».
 ax_lab_privileged_node_accepted: true
+# The explicit fallback: Substrate images the role may build on this host,
+# one at a time and only while the lab node is not running, when neither the
+# backup nor the registry holds them (docs/AX.md, «Compilación de reserva»).
+# Normal applies build nothing: this list stays empty outside a reviewed lab
+# window, and every build must reproduce its pinned digest exactly. For the
+# first window it lists ate-setup, the one image the manual lab never built;
+# the change that records that window empties it again.
+ax_lab_substrate_fallback_builds: [ate-setup]

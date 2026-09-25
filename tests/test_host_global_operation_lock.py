@@ -560,6 +560,9 @@ class HostGlobalOperationLockTests(unittest.TestCase):
                 "observability-db-provision"
             ),
             "scripts/manage-n8n-runner-image.py": "n8n-runner-image-reconcile",
+            "scripts/manage-ax-lab-substrate.py": (
+                "ax-lab-substrate-{arguments.command}"
+            ),
             "scripts/reconcile-authorized-keys.py": "authorized-keys-reconcile",
             "migration/scripts/prepare_runtime.py": "migration-prepare-runtime",
             "migration/scripts/upgrade_secret_identity_contract.py": (

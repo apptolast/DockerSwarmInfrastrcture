@@ -1,0 +1,192 @@
+---
+name: AX lab reproducibility
+
+# Rebuilds every Agent Substrate image that config/ax-lab.yml pins, from the
+# pinned Substrate commit, with the same bounded build the ax_lab role runs
+# as its explicit fallback (scripts/manage-ax-lab-substrate.py build), then
+# restores them into a throwaway registry:3 on the runner's loopback and
+# requires each digest to equal its pin. It proves the pins are reproducible
+# from source, so the production host never has to compile them.
+#
+# It only builds. Nothing is published to any registry outside the runner,
+# no credential is used, and the kind end-to-end run belongs to a later
+# change (docs/AX.md, «Reproducibilidad»). A pin that is still pending, or
+# that differs from what the build produces, fails the job and lists the
+# digest the build produced in the run summary.
+
+"on":
+  pull_request:
+    paths:
+      - config/ax-lab.yml
+      - scripts/manage-ax-lab-substrate.py
+      - scripts/validate-ax-lab.py
+      - .github/workflows/ax-lab-reproducibility.yml
+  push:
+    branches:
+      - main
+    paths:
+      - config/ax-lab.yml
+      - scripts/manage-ax-lab-substrate.py
+      - scripts/validate-ax-lab.py
+      - .github/workflows/ax-lab-reproducibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ax-lab-reproducibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproduce:
+    name: Rebuild the pinned Substrate images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Python runtime
+        # v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            ansible/requirements-dev.in
+            ansible/requirements-dev.txt
+
+      - name: Bootstrap locked tooling
+        run: ./scripts/bootstrap-tooling.sh
+
+      # The validator checks the whole contract first, so the plan only
+      # carries reviewed values: a 40-hex commit, digest-pinned images and
+      # the build limits the role applies on the host.
+      - name: Read the Substrate build plan from the validated contract
+        id: plan
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/validate-ax-lab.py --substrate-plan \
+            >"${RUNNER_TEMP}/plan.json"
+          commit="$(jq -r .commit "${RUNNER_TEMP}/plan.json")"
+          [[ "${commit}" =~ ^[a-f0-9]{40}$ ]]
+          echo "commit=${commit}" >>"${GITHUB_OUTPUT}"
+
+      - name: Check out Agent Substrate at the pinned commit
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: agent-substrate/substrate
+          ref: ${{ steps.plan.outputs.commit }}
+          path: substrate
+          persist-credentials: false
+
+      - name: Require the pristine pinned Substrate checkout
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C substrate rev-parse HEAD)" == "${COMMIT}" ]]
+          dirty="$(git -C substrate status --porcelain --untracked-files=all)"
+          [[ -z "${dirty}" ]]
+
+      - name: Start a throwaway registry on the runner's loopback
+        run: |
+          set -euo pipefail
+          docker run --detach --name ax-lab-ci-registry \
+            --publish 127.0.0.1:5000:5000 \
+            "$(jq -r .registry_image "${RUNNER_TEMP}/plan.json")"
+
+      # Root-owned, as on the host: the manager refuses a cache or layout
+      # that another user could change. /opt is writable by others on
+      # GitHub's Ubuntu runners, so the work tree lives under /var/lib.
+      # Every image is built in turn, even after one fails, so the summary
+      # lists every digest.
+      - name: Build every pinned image with the role's bounded build
+        run: |
+          set -euo pipefail
+          plan="${RUNNER_TEMP}/plan.json"
+          sudo install -d -o root -g root -m 0755 /var/lib/ax-lab-ci
+          sudo install -d -o root -g root -m 0700 /var/lib/ax-lab-ci/cache
+          status=0
+          for name in $(jq -r '.images | keys[]' "${plan}"); do
+            digest="$(
+              jq -r --arg name "${name}" '.images[$name] // "pending"' \
+                "${plan}"
+            )"
+            sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py build \
+              --image "${name}=${digest}" \
+              --toolbox-image "$(jq -r .toolbox_image "${plan}")" \
+              --source "${GITHUB_WORKSPACE}/substrate" \
+              --cache /var/lib/ax-lab-ci/cache \
+              --layout /var/lib/ax-lab-ci/backup \
+              --version "$(jq -r .version "${plan}")" \
+              --node-container kind-control-plane \
+              --memory-mib "$(jq .build.memory_limit_mib "${plan}")" \
+              --memory-reservation-mib \
+              "$(jq .build.memory_reservation_mib "${plan}")" \
+              --cpu-millicores "$(jq .build.cpu_limit_millicores "${plan}")" \
+              --pids-limit "$(jq .build.pids_limit "${plan}")" \
+              --timeout-seconds "$(jq .build.timeout_seconds "${plan}")" \
+              --min-mem-available-mib \
+              "$(jq .build.min_mem_available_mib "${plan}")" \
+              --mem-available-floor-mib \
+              "$(jq .build.mem_available_floor_mib "${plan}")" \
+              >>"${RUNNER_TEMP}/builds.jsonl" || status=1
+          done
+          cat "${RUNNER_TEMP}/builds.jsonl"
+          exit "${status}"
+
+      - name: Restore the built images into the throwaway registry
+        run: |
+          set -euo pipefail
+          plan="${RUNNER_TEMP}/plan.json"
+          mapfile -t pins < <(
+            jq -r '.images | to_entries[] | select(.value != null)
+              | "--image=\(.key)=\(.value)"' "${plan}"
+          )
+          sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py import \
+            --registry 127.0.0.1:5000 \
+            --layout /var/lib/ax-lab-ci/backup \
+            --tag "$(jq -r .version "${plan}")" \
+            "${pins[@]}"
+          sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+            image-status \
+            --registry 127.0.0.1:5000 \
+            --layout /var/lib/ax-lab-ci/backup \
+            --tag "$(jq -r .version "${plan}")" \
+            "${pins[@]}" >"${RUNNER_TEMP}/status.json"
+          jq --exit-status '
+            (.registry | to_entries | all(.value == "pinned"))
+            and (.backup | to_entries | all(.value == "complete"))
+          ' "${RUNNER_TEMP}/status.json"
+
+      - name: Require every image pinned and every digest reproduced
+        if: always()
+        run: |
+          set -euo pipefail
+          plan="${RUNNER_TEMP}/plan.json"
+          builds="${RUNNER_TEMP}/builds.jsonl"
+          touch "${builds}"
+          {
+            echo "## Substrate images rebuilt from source"
+            echo ""
+            echo "| Image | Pinned | Built | Seconds | Peak memory |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r --slurpfile plan "${plan}" '
+              [.name, ($plan[0].images[.name] // "pending"),
+               (.digest // "none"), (.seconds // "-"),
+               (.memory_peak_bytes // "-")]
+              | "| " + (map(tostring) | join(" | ")) + " |"
+            ' "${builds}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          jq --exit-status --slurp --slurpfile plan "${plan}" '
+            (map(.name) | sort) == ($plan[0].images | keys | sort)
+            and all(.[]; .digest != null
+              and $plan[0].images[.name] == .digest)
+          ' "${builds}"

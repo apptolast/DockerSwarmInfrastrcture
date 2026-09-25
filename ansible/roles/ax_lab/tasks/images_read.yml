@@ -1,0 +1,83 @@
+---
+# Read-only in both modes: which pinned Substrate images the local registry
+# serves under their tag, and which the backup layout holds complete, then
+# what an apply has to move, build or refuse. The registry is read only
+# while it runs. The reviewed copy of the manager runs from the controller,
+# so --check needs nothing installed on the host.
+- name: Read the pinned Substrate images in the registry and the backup
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            role_path + "/../../../scripts/manage-ax-lab-substrate.py",
+            "image-status",
+            "--layout",
+            ax_lab.substrate.backup_directory,
+            "--tag",
+            ax_lab.substrate.version,
+          ]
+          + (
+            ["--registry", "127.0.0.1:" ~ ax_lab.registry.host_port]
+            if ax_lab_registry is not none
+            and ax_lab_registry.status == "running"
+            else []
+          )
+          + ax_lab_substrate_image_args
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_image_status_raw
+  changed_when: false
+  check_mode: false
+
+# The manager prints one JSON line; a pseudo-terminal may add others.
+- name: Record the pinned Substrate images as read
+  ansible.builtin.set_fact:
+    ax_lab_image_status: >-
+      {{
+        ax_lab_image_status_raw.stdout_lines
+        | select("match", "^[{]") | last | from_json
+      }}
+
+- name: Record where each pinned Substrate image is held
+  ansible.builtin.set_fact:
+    ax_lab_substrate_in_backup: >-
+      {{
+        ax_lab_image_status.backup | dict2items
+        | selectattr("value", "equalto", "complete")
+        | map(attribute="key") | list
+      }}
+    ax_lab_substrate_in_registry: >-
+      {{
+        (ax_lab_image_status.registry or {}) | dict2items
+        | selectattr("value", "equalto", "pinned")
+        | map(attribute="key") | list
+      }}
+
+# A registry that is absent, stopped or unread holds nothing here: an
+# owner-listed image missing from the backup is then built, before the node
+# starts. Exports and imports only happen once the registry runs.
+- name: Record which pinned Substrate images move, build or are lost
+  ansible.builtin.set_fact:
+    ax_lab_substrate_builds: >-
+      {{
+        ax_lab_substrate_fallback_builds
+        | difference(ax_lab_substrate_in_backup)
+        | difference(ax_lab_substrate_in_registry)
+      }}
+    ax_lab_substrate_exports: >-
+      {{
+        ax_lab_substrate_in_registry | difference(ax_lab_substrate_in_backup)
+      }}
+    ax_lab_substrate_imports: >-
+      {{
+        ax_lab_substrate_in_backup | difference(ax_lab_substrate_in_registry)
+      }}
+    ax_lab_substrate_lost: >-
+      {{
+        ax_lab.substrate.images | list
+        | difference(ax_lab_substrate_in_backup)
+        | difference(ax_lab_substrate_in_registry)
+      }}

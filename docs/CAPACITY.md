@@ -238,6 +238,26 @@ cambios del laboratorio que suben imágenes lo comprobarán: las subirán con
 el límite ya aplicado y exigirán `oom_kill 0` (ver [AX.md](AX.md), «Límites
 y política de reinicio»).
 
+El playbook `ax-lab` lanza además dos contenedores transitorios, que no se
+declaran: los ejecuta bajo el lock host-global y los borra al terminar
+(ver [AX.md](AX.md), «Substrate»), así que otro playbook no los encuentra
+en marcha salvo que se interrumpa el controlador de `ax-lab`. En ese caso
+la tarea asíncrona sigue en el host, fuera del lock, hasta que termina o
+vence su tiempo máximo (3 600 s una compilación, 6 480 s la instalación),
+y el preflight de capacidad no la ve; el siguiente `ax-lab` se detiene
+mientras exista (ver [AX.md](AX.md), «Contenedores transitorios»). La
+compilación de reserva de una imagen de Substrate (3 072 MiB sin swap,
+1 536 MiB reservados, 2 CPU, 1 024 PIDs) solo corre con el nodo parado o
+ausente, así que usa su presupuesto: registro y compilación suman
+3 328 MiB, por debajo de los 3 840 MiB del grupo. `ate-setup` (256 MiB sin
+swap, 128 MiB reservados, 0,5 CPU, 256 PIDs) corre junto al nodo y cabe en
+los 256 MiB y 850m de límites que el plan activo deja libres bajo el
+presupuesto (12 397 MiB y 17 500m); el margen operativo de 512 MiB sigue
+aparte. `scripts/validate-ax-lab.py` calcula ese margen libre de cada plan
+que ejecuta el grupo `ax-lab` y lo exige como techo de sus límites. Los dos
+se niegan a arrancar sin su `MemAvailable` mínimo y se matan si baja del
+margen operativo. Ninguna cifra de los planes cambia.
+
 El plan `observability` no incluye el grupo, así que exige los dos
 contenedores ausentes o parados. `scripts/validate-ax-lab.py` exige que los
 límites de `config/ax-lab.yml`, los que aplica el rol, sean exactamente los
