@@ -215,7 +215,7 @@ la evidencia que sostiene un `[x]` se cita.
   Cruzarlas es un error de revisión que debes cazar.
 - `--playbook` solo admite `platform`, `host-baseline`, `preflight-images`,
   `edge`, `workloads`, `observability`, `organizationweb`, `racinggame`,
-  `autoupdater`, `backup`, `site`; `--profile` solo
+  `autoupdater`, `ax-lab`, `backup`, `site`; `--profile` solo
   `production` y `acme-staging` (este último solo con `edge`); y
   `bootstrap-host`/`fresh-host` van emparejados 1:1 por
   `scripts/ansible-operation-lock.py`, a través de

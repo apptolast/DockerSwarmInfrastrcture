@@ -34,6 +34,7 @@ PLAYBOOK_COMPONENTS = {
     "organizationweb": ["organizationweb"],
     "racinggame": ["racinggame"],
     "autoupdater": ["autoupdater"],
+    "ax-lab": ["ax-lab"],
     "backup": ["backup"],
     "site": [
         "host-security",
@@ -136,6 +137,7 @@ contract_paths = [
     PROJECT_DIR / "config/services.yml",
     PROJECT_DIR / "config/image-channels.yml",
     PROJECT_DIR / "config/autoupdater.yml",
+    PROJECT_DIR / "config/ax-lab.yml",
     PROJECT_DIR / "stacks/observability/secrets.yml",
     PROJECT_DIR / "stacks/workloads/secrets.yml",
 ]

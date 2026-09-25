@@ -456,6 +456,7 @@ class AnsibleOperationLockTests(unittest.TestCase):
             "observability",
             "organizationweb",
             "autoupdater",
+            "ax-lab",
             "backup",
             "site",
         ):

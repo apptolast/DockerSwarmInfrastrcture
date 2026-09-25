@@ -2384,6 +2384,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "workloads",
             "observability",
             "autoupdater",
+            "ax-lab",
             "backup",
             "site",
         ):
@@ -2407,6 +2408,7 @@ class WorkloadAnsibleIntegrationTests(unittest.TestCase):
             "config/services.yml",
             "config/image-channels.yml",
             "config/autoupdater.yml",
+            "config/ax-lab.yml",
             "stacks/observability/secrets.yml",
             "stacks/workloads/secrets.yml",
         ):

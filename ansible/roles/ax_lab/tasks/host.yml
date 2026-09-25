@@ -1,0 +1,194 @@
+---
+# kind needs higher inotify limits than Ubuntu's defaults
+# (https://kind.sigs.k8s.io/docs/user/known-issues/). The file below only
+# sets the value of the next boot. The live value is converged key by key
+# further down, so there is no handler with `sysctl --system`.
+- name: Render and parse the lab sysctl candidate in memory
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - --dry-run
+      - --load=/dev/stdin
+    stdin: >-
+      {{
+        lookup("ansible.builtin.template", "99-z-dockerswarm-ax-lab.conf.j2")
+      }}
+    stdin_add_newline: true
+  changed_when: false
+  check_mode: false
+
+- name: Persist the lab kernel settings for the next boot
+  ansible.builtin.template:
+    src: 99-z-dockerswarm-ax-lab.conf.j2
+    dest: "{{ ax_lab_sysctl_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sysctl --dry-run --load=%s
+
+- name: Dry-run the complete persistent sysctl configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - --dry-run
+      - --system
+  register: ax_lab_persistent_sysctl
+  changed_when: false
+  check_mode: false
+
+# The dry run lists every setting in the order it is applied, and the last
+# value of a key wins, as it does at boot: "the entry in the file with the
+# lexicographically latest name will take precedence" (sysctl.d(5)). A file
+# sorting after this one must not override the lab values.
+- name: Require the persistent configuration to keep the lab values
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          ax_lab_persistent_sysctl.stdout_lines
+          | select("match", "^" ~ (item.key | regex_escape) ~ " = ")
+          | list | last | default("")
+        ) == item.key ~ " = " ~ item.value
+    fail_msg: >-
+      The persistent sysctl configuration would not boot with
+      {{ item.key }} = {{ item.value }}.
+    quiet: true
+  loop: "{{ ax_lab.sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode
+
+- name: Read every lab kernel setting before convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -n
+      - "{{ item.key }}"
+  loop: "{{ ax_lab.sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: ax_lab_observed_sysctl
+  changed_when: false
+  check_mode: false
+
+# Only a lab key whose live value differs is written, and only that key.
+# Never `sysctl --system`: it would also reload inherited files this role
+# does not manage, such as /etc/sysctl.d/99-hardening.conf, which sets
+# net.ipv6.conf.all.forwarding = 0 while the live host runs it at 1.
+- name: Converge only the drifted lab kernel settings
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -w
+      - "{{ item.item.key }}={{ item.item.value }}"
+  loop: "{{ ax_lab_observed_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: item.stdout != item.item.value
+  changed_when: true
+
+- name: Read every lab kernel setting
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -n
+      - "{{ item.key }}"
+  loop: "{{ ax_lab.sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: ax_lab_runtime_sysctl
+  changed_when: false
+  check_mode: false
+
+- name: Verify every lab kernel setting
+  ansible.builtin.assert:
+    that:
+      - item.stdout == item.item.value
+    fail_msg: >-
+      {{ item.item.key }} is {{ item.stdout }}, expected
+      {{ item.item.value }}.
+    quiet: true
+  loop: "{{ ax_lab_runtime_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: not ansible_check_mode
+
+- name: Create the lab install root and its binary directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ ax_lab.install_root }}"
+    - "{{ ax_lab_bin_directory }}"
+
+# Check mode does not create the directory above, and get_url cannot report
+# on a destination whose parent is missing. With follow: false a symlink is
+# never a directory, so it is skipped too and the apply fails its checks.
+- name: Inspect the binary directory before installing into it
+  ansible.builtin.stat:
+    path: "{{ ax_lab_bin_directory }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_bin_directory_state
+
+- name: Verify the binary directory after the apply
+  ansible.builtin.assert:
+    that:
+      - ax_lab_bin_directory_state.stat.exists
+      - ax_lab_bin_directory_state.stat.isdir
+      - not ax_lab_bin_directory_state.stat.islnk
+      - ax_lab_bin_directory_state.stat.uid == 0
+      - ax_lab_bin_directory_state.stat.gid == 0
+      - ax_lab_bin_directory_state.stat.mode == "0750"
+    fail_msg: The lab binary directory is not a root:root 0750 directory.
+    quiet: true
+  when: not ansible_check_mode
+
+# get_url hashes an existing file first and downloads only when it differs
+# from the pinned sha256, and a download that does not match it fails
+# before it replaces anything.
+- name: Install the pinned kind and kubectl release assets
+  ansible.builtin.get_url:
+    url: "{{ item.value.url }}"
+    dest: "{{ ax_lab_bin_directory }}/{{ item.key }}"
+    checksum: "sha256:{{ item.value.sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+    force: false
+  loop: "{{ ax_lab.binaries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} {{ item.value.version }}"
+  when: ax_lab_bin_directory_state.stat.isdir | default(false)
+
+- name: Inspect the installed lab binaries without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_bin_directory }}/{{ item.key }}"
+    follow: false
+    checksum_algorithm: sha256
+  loop: "{{ ax_lab.binaries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: ax_lab_installed_binaries
+
+- name: Verify each installed binary is its pinned release asset
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == "0755"
+      - item.stat.checksum == item.item.value.sha256
+    fail_msg: >-
+      {{ item.item.key }} is not the pinned {{ item.item.value.version }}
+      release asset.
+    quiet: true
+  loop: "{{ ax_lab_installed_binaries.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: not ansible_check_mode

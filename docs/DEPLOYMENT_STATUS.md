@@ -199,13 +199,18 @@ arriba.
   con el laboratorio en marcha un preflight de capacidad en verde no
   garantiza margen real. El nodo se paró el 2026-09-25 a las 07:36 UTC para
   retirar el swap antes de aparcar, y volvió a arrancarse a las 10:07 UTC,
-  con los 28 pods listos. Es un ensayo manual pendiente de codificarse en su
-  propio cambio revisado; hasta entonces no forma parte del estado
-  reconstruible. Sale de esta lista cuando ese cambio lo codifique o, si se
-  descarta, cuando se borren el clúster, el registro y `/opt/ax-lab`.
+  con los 28 pods listos. Es un ensayo manual que se codifica por partes
+  (ver [AX.md](AX.md), «Qué codifica este repositorio y qué sigue siendo
+  manual»); hasta entonces no forma parte del estado reconstruible. Sale de
+  esta lista cuando el último de esos cambios se haya aplicado y verificado
+  o, si se descarta, cuando se borren el clúster, el registro y
+  `/opt/ax-lab`.
 - Límites `fs.inotify.max_user_watches=524288` y
-  `fs.inotify.max_user_instances=512`, aplicados en caliente para kind; se
-  pierden al reiniciar hasta que ese cambio los codifique.
+  `fs.inotify.max_user_instances=512`, aplicados en caliente para kind. El
+  playbook `ax-lab` ya los codifica (ver [AX.md](AX.md)), pero hasta que se
+  aplique se pierden al reiniciar. El apply los deja persistentes en
+  `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf`, y entonces salen de esta
+  lista.
 - El swap temporal `/swap-ax-build` (4 GiB, fuera de `fstab`) que se creó
   para compilar el laboratorio se desactivó y se borró el 2026-09-25, antes
   de cualquier apply. El host vuelve a cumplir `required_swap_mib: 0`.

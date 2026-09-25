@@ -1,0 +1,7 @@
+---
+# Fixed paths of this role. The lab contract itself (`ax_lab`) and the owner
+# acceptance flag come from config/ax-lab.yml and are checked against it.
+ax_lab_sysctl_path: /etc/sysctl.d/99-z-dockerswarm-ax-lab.conf
+ax_lab_bin_directory: "{{ ax_lab.install_root }}/bin"
+# The pinned kind and kubectl assets are linux-amd64 builds.
+ax_lab_architecture: x86_64
