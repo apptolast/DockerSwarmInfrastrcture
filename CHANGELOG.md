@@ -425,6 +425,30 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Un apply de `host-baseline`, y también de `platform` y `site`, que aplican
+  el mismo rol `host_security`, ya no detiene UFW en un host convergido. Con
+  UFW activo, `ufw default` hace siempre un stop/start aunque la política no
+  cambie, y cada stop deja INPUT, OUTPUT y FORWARD en ACCEPT con las cadenas
+  de UFW vacías. Cada apply abría así un instante a Internet los puertos
+  2377, 7946 y 4789 de Swarm y el 22 sin límite de tasa, en IPv4 e IPv6.
+  Ahora se lee `/etc/default/ufw` sin efectos y `ufw default deny` solo se
+  ejecuta para la dirección que difiere. Si el fichero no declara
+  exactamente una política válida por dirección, el apply se detiene antes
+  de tocar UFW.
+- `fs.suid_dumpable` vuelve a `0` y se mantiene tras cada arranque:
+  `host-baseline` detiene y deshabilita `apport.service` (paquete
+  `apport-core-dump-handler`), que lo ponía a `2` cada vez que arrancaba sin
+  consultar `/etc/default/apport`. Con `0`, el kernel no vuelca la memoria
+  de los procesos que han cambiado de privilegio. La unidad no se enmascara
+  y `/etc/default/apport` no se toca; la decisión y sus motivos están en
+  [`ansible/roles/host_baseline/README.md`](ansible/roles/host_baseline/README.md).
+- `kernel.core_pattern` pasa a gestionarse como `|/bin/false`, que descarta
+  todo volcado de memoria. Sin Apport, el valor del paquete (`core`) dejaba
+  que cualquier contenedor, porque Docker y containerd corren con
+  `LimitCORE=infinity`, escribiera en su directorio de trabajo un volcado
+  completo con los secretos que tuviera en memoria. El manejador por tubería
+  corre siempre en el espacio de montaje inicial e ignora `RLIMIT_CORE`
+  (core(5)), así que un contenedor no puede desviarlo.
 - Promueve el snapshot Ubuntu a `20260924T000000Z` para devolver a verde el
   CI programado, que fallaba desde el 21 de septiembre por el SLO de 14
   días. Cuatro índices InRelease verificados con la clave de archivo Ubuntu
@@ -511,6 +535,27 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `host-baseline` no podía terminar. «Verify every managed kernel setting»
+  fallaba siempre en `fs.suid_dumpable` (2 en vivo, 0 gestionado), después
+  de mover el pin de APT y actualizar paquetes: el fichero de sysctl no
+  cambiaba y su handler `sysctl --system` nunca se disparaba. Ahora el rol
+  lee cada clave gestionada, escribe con `sysctl -w` solo las que difieren,
+  informa de cambio únicamente entonces y conserva la verificación final. Se
+  retira el handler `sysctl --system`: además de las claves gestionadas
+  recargaba ficheros heredados como `/etc/sysctl.d/99-hardening.conf`, que
+  pondría `net.ipv6.conf.all.forwarding=0`.
+- La limpieza de líneas PSAD antiguas en `/etc/ufw/before*.rules` casaba
+  también las reglas idénticas del bloque gestionado. En cada apply las
+  borraba, `blockinfile` las volvía a escribir y `Reload UFW` reiniciaba el
+  firewall, cuyo arranque vuelve a añadir las reglas `LOG` a INPUT y
+  FORWARD. Ahora un único `replace` devuelve intacto el bloque entre sus
+  marcadores y solo borra las líneas antiguas que quedan fuera. Los tests
+  de `tests/test_host_bootstrap_contract.py` lo fijan con el texto exacto de
+  ambas tareas.
+- `docs/DEPLOYMENT_STATUS.md` decía que un apply de `host-baseline` reinicia
+  y vuelve a habilitar `dockerswarm-docker-firewall.service`. Solo lo hace
+  cuando se dispara su handler, es decir, cuando cambia uno de los ficheros
+  que lo notifican. Documenta además la deriva viva de `fs.suid_dumpable`.
 - Traefik se reiniciaba en bucle y cortaba todo el tráfico público. Con un
   límite de 128 MiB, las páginas de su binario (unos 185 MB) se reclamaban
   sin parar, `traefik healthcheck` agotaba sus 5 s y Swarm reemplazaba la

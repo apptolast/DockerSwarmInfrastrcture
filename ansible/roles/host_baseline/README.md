@@ -82,9 +82,14 @@ public key material is read for this check.
   retaining 5 GiB free. `Seal=yes` is intentionally omitted: forward-secure
   sealing without provisioned keys and an off-host verification-key workflow
   would be a false control.
-- A late sysctl file enforces conservative kernel settings while keeping
+- A late sysctl file persists conservative kernel settings while keeping
   `net.ipv4.ip_forward=1`. Reverse-path filtering uses loose mode (`2`) so
-  asymmetric container and overlay paths are not broken.
+  asymmetric container and overlay paths are not broken. At runtime the role
+  reads every managed key, writes with `sysctl -w` only the keys whose live
+  value differs, and then asserts all of them again. It never runs
+  `sysctl --system`: that would also reload inherited files this contract
+  does not manage, and on the production host `99-hardening.conf` would set
+  `net.ipv6.conf.all.forwarding=0`.
 - AppArmor, Fail2ban, PSAD, CrowdSec, its firewall bouncer, and rsyslog are
   validated as existing active controls. Their credential-bearing
   configuration is not copied into Git.
@@ -97,6 +102,75 @@ Host OUTPUT policy does not govern container egress because Docker forwards
 published and bridged traffic before UFW's host INPUT/OUTPUT chains. Container
 egress requires a separate reviewed `DOCKER-USER` policy and is not
 misrepresented as covered here.
+
+### Kernel core dumps and Apport
+
+The contract keeps `fs.suid_dumpable=0`, the kernel's traditional mode: a
+process that has changed privilege levels, such as a setuid binary, `sudo` or
+`sshd`, is never dumped, so memory that can hold keys and password hashes
+never reaches a core file. Ubuntu's `apport.service`, from the package
+`apport-core-dump-handler`, sets `fs.suid_dumpable=2` every time it starts,
+after `systemd-sysctl`, without reading `/etc/default/apport`
+(`start_apport()` in `/usr/share/apport/apport`, apport 2.34.1). The
+persisted `0` was lost on every boot, and every later apply failed its
+runtime assertion.
+
+The role stops and disables only that unit. Stopping it runs
+`apport --stop`, which itself restores `fs.suid_dumpable=0` and
+`kernel.core_pattern=core`, the package default from
+`/usr/lib/sysctl.d/10-coredump-debian.conf`. Package upgrades do not start
+it again, because `deb-systemd-invoke` skips a disabled unit that is not
+running. The unit is not masked, so an operator can still start it by hand
+to debug a crash; the next apply then converges the key back to `0`. A
+missing unit is accepted, a masked one is left as it is, and any other
+`LoadState` stops the apply.
+
+`/etc/default/apport` is deliberately left unchanged. It does not control
+this unit, and `enabled=0` would only also switch off Apport's Python and
+package-failure reports, which never touch kernel settings. On 2026-09-25
+`whoopsie` was not installed and `/var/crash` was empty, so no crash report
+from this host was being collected.
+
+With Apport stopped, `core_pattern=core` would let any crashing process that
+has not changed privilege write a full core file into its working directory.
+`docker.service` and `containerd.service` run with `LimitCORE=infinity`, so
+that includes every container, and a core file holds whatever secrets the
+process had in memory. The contract therefore also manages
+`kernel.core_pattern=|/bin/false`, which discards every dump. A piped
+handler always runs in the initial mount namespace and `RLIMIT_CORE` does not
+apply to it (core(5)), so a container cannot redirect or keep its dump. The
+`99-z` file sorts after `10-coredump-debian.conf`, so the managed value also
+wins at boot. To debug a crash, set another pattern at runtime; the next
+apply converges it back.
+
+### No firewall restart on a converged host
+
+`host-baseline.yml` runs the `host_security` role first. That role owns the
+UFW default policies and the PSAD logging block in `/etc/ufw/before*.rules`.
+With UFW active, `ufw default` always stops and starts the firewall, even
+when the policy does not change (`set_default_policy()` in `ufw/frontend.py`),
+and `ufw reload` does the same. Each stop sets the INPUT, OUTPUT and FORWARD
+policies to ACCEPT and flushes UFW's chains (`ufw_stop` in
+`/lib/ufw/ufw-init-functions`, with `MANAGE_BUILTINS=no`). Each start appends
+the PSAD `LOG` rules to INPUT and FORWARD again. Before this was fixed, every
+apply briefly exposed the Swarm ports 2377, 7946 and 4789 and an unthrottled
+port 22 to the Internet.
+
+`host_security` now:
+
+- reads `DEFAULT_INPUT_POLICY`, `DEFAULT_OUTPUT_POLICY` and
+  `DEFAULT_FORWARD_POLICY` from `/etc/default/ufw` with `slurp`, and runs
+  `ufw default deny` only for a direction that is not already `DROP`. If any
+  of the three keys is missing, repeated or not `ACCEPT`, `DROP` or `REJECT`,
+  the apply stops before it touches UFW;
+- removes legacy PSAD lines only outside the managed
+  `# BEGIN DOCKERSWARM PSAD` / `# END DOCKERSWARM PSAD` block, so the block is
+  no longer rewritten and `Reload UFW` is no longer notified on every run.
+
+On a host that is already in the reviewed state, neither task changes
+anything and UFW is never stopped. When a default policy or `before*.rules`
+really has to change, UFW is still stopped and started, because `ufw` applies
+those changes no other way.
 
 ## First production run
 
@@ -120,7 +194,16 @@ keep an authenticated second SSH session and the Netcup console open, then run:
   --ask-become-pass
 ```
 
-Run it a second time and require `changed=0`.
+Run it a second time. On a converged host only these tasks still report
+`changed`, because their tools always say so:
+
+- `Enable bounded UFW logging`: `ufw logging` always answers "Logging
+  enabled" and only rebuilds UFW's logging chains; nothing is opened;
+- the CrowdSec firewall bouncer `-t` checks and restarts in `host_security`
+  and `crowdsec-docker.yml`, which leave a gap of a few seconds without
+  CrowdSec filtering.
+
+Any other changed task on the second run is drift to investigate.
 
 Relevant primary documentation:
 
@@ -129,4 +212,5 @@ Relevant primary documentation:
 - [Ubuntu OpenSSH crypto configuration](https://documentation.ubuntu.com/server/explanation/crypto/openssh-crypto-configuration/)
 - [Ubuntu automatic updates](https://documentation.ubuntu.com/server/how-to/software/automatic-updates/)
 - [systemd journal configuration](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html)
+- [Linux `fs` sysctls, including `suid_dumpable`](https://docs.kernel.org/admin-guide/sysctl/fs.html)
 - [Docker packet filtering and UFW](https://docs.docker.com/engine/network/packet-filtering-firewalls/)

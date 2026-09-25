@@ -11,6 +11,9 @@
   changed_when: false
   check_mode: false
 
+# El fichero solo fija el valor del proximo arranque. El valor vivo lo
+# converge, clave a clave, la tarea "Converge only the drifted managed kernel
+# settings"; por eso aqui no hay handler con `sysctl --system`.
 - name: Install authoritative Swarm-compatible kernel hardening
   ansible.builtin.template:
     src: sysctl.conf.j2
@@ -19,7 +22,6 @@
     group: root
     mode: "0644"
     validate: /usr/sbin/sysctl --dry-run --load=%s
-  notify: Host baseline apply sysctl
 
 - name: Dry-run the complete persistent sysctl configuration
   ansible.builtin.command:
@@ -30,8 +32,79 @@
   changed_when: false
   check_mode: false
 
-- name: Apply kernel settings before runtime verification
-  ansible.builtin.meta: flush_handlers
+# apport.service (paquete apport-core-dump-handler) arranca en cada boot
+# despues de systemd-sysctl y ejecuta `apport --start`, que escribe
+# fs.suid_dumpable=2 sin consultar /etc/default/apport
+# (/usr/share/apport/apport, start_apport). El 0 de este contrato se perdia en
+# cada arranque y la verificacion final fallaba en todo apply posterior. Con 0
+# el kernel no vuelca la memoria de procesos que han cambiado de privilegio
+# (setuid, sudo, sshd), que puede contener claves y hashes; y en este host
+# nadie recoge los informes de /var/crash. Por eso se para y se deshabilita
+# solo esa unidad: pararla ejecuta `apport --stop`, que devuelve
+# fs.suid_dumpable a 0 y kernel.core_pattern a `core`. No se toca
+# /etc/default/apport: no gobierna esta unidad, y ponerlo a 0 apagaria ademas
+# los informes de Python y de paquetes, que no cambian el kernel.
+- name: Read the Apport kernel crash-handler unit
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ host_baseline_apport_crash_handler_service }}"
+  register: host_baseline_apport_crash_handler
+  changed_when: false
+  check_mode: false
+
+- name: Require a known Apport kernel crash-handler unit state
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_apport_crash_handler.stdout
+        in ["loaded", "masked", "not-found"]
+    fail_msg: >-
+      {{ host_baseline_apport_crash_handler_service }} has LoadState
+      "{{ host_baseline_apport_crash_handler.stdout }}". It cannot be proven
+      unable to rewrite fs.suid_dumpable.
+    quiet: true
+
+# Una unidad enmascarada no arranca ni en el boot ni desde el postinst del
+# paquete, y la ausente no existe: solo la cargada necesita esta tarea.
+- name: Keep Apport from rewriting the kernel core-dump policy
+  ansible.builtin.systemd_service:
+    name: "{{ host_baseline_apport_crash_handler_service }}"
+    enabled: false
+    state: stopped
+  when: host_baseline_apport_crash_handler.stdout == "loaded"
+
+- name: Read every managed kernel setting before convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -n
+      - "{{ item.key }}"
+  loop: "{{ host_baseline_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: host_baseline_observed_sysctl
+  changed_when: false
+  check_mode: false
+
+# Solo se escribe cada clave gestionada cuyo valor vivo difiere, y solo esa.
+# Nunca `sysctl --system`: recargaria tambien los ficheros heredados que este
+# contrato no gestiona, como /etc/sysctl.d/99-hardening.conf, que pone
+# net.ipv6.conf.all.forwarding=0 y cortaria redes del host fuera de Swarm.
+- name: Converge only the drifted managed kernel settings
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sysctl
+      - -w
+      - "{{ item.item.key }}={{ item.item.value }}"
+  loop: "{{ host_baseline_observed_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: item.stdout != item.item.value
+  changed_when: true
 
 - name: Read every managed kernel setting
   ansible.builtin.command:

@@ -795,34 +795,35 @@
     label: "{{ item.key }}"
   notify: Restart PSAD
 
+# Las lineas PSAD antiguas son identicas a las reglas del bloque gestionado,
+# asi que un `lineinfile` por linea borraba tambien las del bloque; la tarea
+# siguiente las volvia a escribir y cada apply notificaba `Reload UFW`. Ese
+# reload es un stop/start: deja INPUT/OUTPUT/FORWARD en ACCEPT un instante y,
+# al arrancar, vuelve a anadir las reglas LOG del bloque a INPUT y FORWARD. La
+# primera alternativa casa el bloque gestionado entero y lo devuelve tal cual
+# (\1), de modo que la segunda solo puede casar lineas antiguas fuera de el.
+# `replace` compila con re.MULTILINE y solo informa de cambio si el contenido
+# resultante difiere.
 - name: Remove unmarked legacy PSAD UFW lines
-  ansible.builtin.lineinfile:
-    path: "{{ item.0 }}"
-    regexp: "{{ item.1 }}"
-    state: absent
+  ansible.builtin.replace:
+    path: "{{ item.path }}"
+    regexp: |-
+      (?x)
+      ( ^[#][ ]BEGIN[ ]DOCKERSWARM[ ]PSAD\n
+        (?:.*\n)*?
+        [#][ ]END[ ]DOCKERSWARM[ ]PSAD$ )
+      | ^(?: [#][ ]log[ ]all[ ]traffic[ ]so[ ]psad[ ]can[ ]analyze
+          | -A[ ](?:INPUT|FORWARD)[ ]-j[ ]LOG[ ]--log-tcp-options
+            [ ]--log-prefix[ ]"\[IPTABLES\][ ]" )$\n?
+    replace: '\1'
+    validate: "{{ item.validator }} --test %s"
   loop:
-    - - /etc/ufw/before.rules
-      - "^# log all traffic so psad can analyze$"
-    - - /etc/ufw/before.rules
-      - >-
-        ^-A INPUT -j LOG --log-tcp-options
-        --log-prefix "\[IPTABLES\] "$
-    - - /etc/ufw/before.rules
-      - >-
-        ^-A FORWARD -j LOG --log-tcp-options
-        --log-prefix "\[IPTABLES\] "$
-    - - /etc/ufw/before6.rules
-      - "^# log all traffic so psad can analyze$"
-    - - /etc/ufw/before6.rules
-      - >-
-        ^-A INPUT -j LOG --log-tcp-options
-        --log-prefix "\[IPTABLES\] "$
-    - - /etc/ufw/before6.rules
-      - >-
-        ^-A FORWARD -j LOG --log-tcp-options
-        --log-prefix "\[IPTABLES\] "$
+    - path: /etc/ufw/before.rules
+      validator: /usr/sbin/iptables-restore
+    - path: /etc/ufw/before6.rules
+      validator: /usr/sbin/ip6tables-restore
   loop_control:
-    label: "{{ item.0 }} PSAD legacy rule"
+    label: "{{ item.path }} PSAD legacy rules"
   notify: Reload UFW
 
 - name: Install managed PSAD logging in UFW
@@ -880,6 +881,48 @@
     state: present
   notify: Reload UFW
 
+# Con UFW activo, `ufw default` hace siempre un stop/start completo aunque la
+# politica no cambie (ufw/frontend.py, set_default_policy) e informa siempre
+# de un cambio. Cada stop pone INPUT/OUTPUT/FORWARD en ACCEPT y vacia las
+# cadenas de UFW (ufw-init-functions, ufw_stop con MANAGE_BUILTINS=no): cada
+# apply abria un instante a Internet 2377, 7946, 4789 y el 22 sin limite de
+# tasa. Se lee sin efectos lo que `ufw default` escribe, DEFAULT_*_POLICY de
+# /etc/default/ufw, y solo se ejecuta para la direccion que difiere. Si el
+# fichero no se puede leer sin ambiguedad, el apply se detiene antes de tocar
+# UFW. La politica efectiva la vuelve a exigir "Verify the fail-closed UFW
+# base".
+- name: Read the persisted UFW default policies without touching UFW
+  ansible.builtin.slurp:
+    src: /etc/default/ufw
+  register: host_security_ufw_defaults_file
+
+- name: Parse the persisted UFW default policies
+  ansible.builtin.set_fact:
+    host_security_ufw_default_policy_lines: >-
+      {{
+        host_security_ufw_defaults_file.content
+        | b64decode
+        | regex_findall(
+            "^DEFAULT_(INPUT|OUTPUT|FORWARD)_POLICY=(.*)$",
+            multiline=true
+          )
+      }}
+
+- name: Require exactly one readable policy per UFW direction
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_ufw_default_policy_lines | map("first") | sort
+        == ["FORWARD", "INPUT", "OUTPUT"]
+      - >-
+        host_security_ufw_default_policy_lines | map("last")
+        | reject("match", '^"?(ACCEPT|DROP|REJECT)"?$') | list | length == 0
+    fail_msg: >-
+      /etc/default/ufw must set DEFAULT_INPUT_POLICY, DEFAULT_OUTPUT_POLICY and
+      DEFAULT_FORWARD_POLICY exactly once each to ACCEPT, DROP or REJECT. The
+      current UFW policy cannot be proven, so UFW is left untouched.
+    quiet: true
+
 - name: Set fail-closed UFW defaults
   ansible.builtin.command:
     argv:
@@ -887,15 +930,20 @@
       - --force
       - default
       - deny
-      - "{{ item }}"
+      - "{{ item.direction }}"
   loop:
-    - incoming
-    - outgoing
-    - routed
-  register: host_security_ufw_defaults
-  changed_when: >-
-    "Default " + item + " policy changed" in
-    (host_security_ufw_defaults.stdout | default(""))
+    - direction: incoming
+      chain: INPUT
+    - direction: outgoing
+      chain: OUTPUT
+    - direction: routed
+      chain: FORWARD
+  loop_control:
+    label: "{{ item.direction }}"
+  when: >-
+    dict(host_security_ufw_default_policy_lines)[item.chain] | trim('"')
+    != "DROP"
+  changed_when: true
 
 - name: Rate-limit the sole administrative ingress
   ansible.builtin.command:

@@ -20,14 +20,6 @@
     state: restarted
   listen: Host baseline restart systemd-journald
 
-- name: Apply persistent sysctl settings
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/sysctl
-      - --system
-  changed_when: true
-  listen: Host baseline apply sysctl
-
 - name: Reload systemd units
   ansible.builtin.systemd_service:
     daemon_reload: true

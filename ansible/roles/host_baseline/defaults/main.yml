@@ -50,6 +50,12 @@ host_baseline_sysctl:
   fs.protected_fifos: "2"
   fs.protected_regular: "2"
   fs.suid_dumpable: "0"
+  # Discard every core dump: nothing on this host collects them, and Docker
+  # and containerd run with LimitCORE=infinity, so without a handler any
+  # container could write a full memory image, secrets included, into its
+  # working directory. A piped handler always runs in the initial mount
+  # namespace and ignores RLIMIT_CORE (core(5)).
+  kernel.core_pattern: "|/bin/false"
   kernel.dmesg_restrict: "1"
   kernel.kptr_restrict: "2"
   kernel.randomize_va_space: "2"
@@ -70,6 +76,9 @@ host_baseline_sysctl:
   net.ipv6.conf.default.accept_redirects: "0"
   net.ipv6.conf.all.accept_source_route: "0"
   net.ipv6.conf.default.accept_source_route: "0"
+# Ubuntu's kernel crash handler (package apport-core-dump-handler). Every start
+# rewrites fs.suid_dumpable to 2, so the role keeps it stopped and disabled.
+host_baseline_apport_crash_handler_service: apport.service
 
 host_baseline_required_packages: >-
   {{ host_security_required_packages }}
