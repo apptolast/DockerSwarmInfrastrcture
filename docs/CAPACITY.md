@@ -90,12 +90,14 @@ reinicios por healthcheck en una semana. Sus reservas pasaron de 64 a
 
 Ese techo no es el margen total del host: se siguen preservando por separado
 3 GiB para el host y 512 MiB de headroom operativo (3 584 MiB protegidos).
-Cualquier aumento futuro de un límite exige reducir otro en la misma
-revisión. El vigilante `autoupdater` es distinto: su interruptor
-`enabled: false` renderiza `replicas: 0` sin liberar el presupuesto
-(`SUSPENDABLE_SERVICES`). En el perfil activo `organizationweb`, con los
-stacks externos, las sumas son 3 746 MiB reservados y 8 301 MiB de límite,
-con 2 550m y 14 150m de CPU.
+Mientras Minecraft y OpenClaw sigan aparcados, un aumento puede salir del
+presupuesto que liberan, pero cada MiB así gastado se suma a la decisión de
+capacidad para desaparcarlos. Fuera de eso, cualquier aumento de un límite
+exige reducir otro en la misma revisión. El vigilante `autoupdater` es
+distinto: su interruptor `enabled: false` renderiza `replicas: 0` sin liberar
+el presupuesto (`SUSPENDABLE_SERVICES`). En el perfil activo
+`organizationweb`, con los stacks externos, las sumas son 3 746 MiB
+reservados y 8 301 MiB de límite, con 2 550m y 14 150m de CPU.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y

@@ -115,11 +115,13 @@ aquí:
   repositorio lo elimina en cuanto `edge` pueda aplicarse.
 
 La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`. Mientras
-siga cerrada, la memoria de Traefik de `stacks/edge/stack.yml.j2` (límite
-de 256 MiB y reserva de 128 MiB) se aplicó en vivo el 2026-09-25 con `docker
-service update --limit-memory 256M --reserve-memory 128M edge_traefik`. Solo
-cambiaron esos dos campos del spec (`Limits.MemoryBytes` de 134217728 a
-268435456 y `Reservations.MemoryBytes` de 67108864 a 134217728), así que el
+siga cerrada, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
+en vivo el 2026-09-25 con dos `docker service update` sobre `edge_traefik`:
+`--limit-memory 256M` a las 09:43 UTC y `--reserve-memory 128M` a las
+10:03 UTC. Cada uno cambió un único campo del spec (`Limits.MemoryBytes` de
+134217728 a 268435456 y `Reservations.MemoryBytes` de 67108864 a
+134217728) y reemplazó la única tarea del edge, con un corte breve de 80/443
+durante el relevo. La reserva solo cuenta para la planificación de Swarm. El
 servicio vivo sigue difiriendo del repositorio solo en la deriva descrita
 arriba.
 

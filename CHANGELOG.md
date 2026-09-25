@@ -492,7 +492,8 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   tareas en 24 h el 2026-09-25). El límite pasa a 256 MiB y la reserva a
   128 MiB, dentro de la proporción máxima de 2,50. Como `edge` no se puede
   aplicar (compuerta STOP 10), los mismos valores se aplicaron en vivo el
-  2026-09-25 con `docker service update`, sin tocar nada más del servicio.
+  2026-09-25 con dos `docker service update` (límite a las 09:43 UTC y
+  reserva a las 10:03 UTC), sin tocar nada más del servicio.
 - `portfolio-alberto` pasa de 128 a 256 MiB de límite y de 64 a 128 MiB de
   reserva: `next-server` chocaba con su límite (un OOM del cgroup y dos
   reinicios por healthcheck entre el 2026-09-15 y el 2026-09-22). Ambos
