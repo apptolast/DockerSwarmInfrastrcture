@@ -1398,6 +1398,268 @@ class WorkloadDeploymentIdentityTests(unittest.TestCase):
             self.validate(*fixture)
 
 
+class N8nRunnerBaseVersionTests(unittest.TestCase):
+    DOCKERFILE = REPOSITORY_ROOT / "images/n8n-runners/Dockerfile"
+    CONTEXT = REPOSITORY_ROOT / "images/n8n-runners"
+
+    def setUp(self) -> None:
+        services = workload_validator.load_yaml(REPOSITORY_ROOT / "config/services.yml")
+        approved = {item["id"]: item for item in services["approved_services"]}
+        channels = workload_validator.validate_image_channels(
+            workload_validator.load_unique_yaml(
+                REPOSITORY_ROOT / "config/image-channels.yml"
+            ),
+            services,
+            approved,
+        )
+        # The rendered n8n hold, not the restore-bound catalog baseline.
+        self.reference = channels["n8n"]["reference"]
+        self.tag = workload_validator.N8N_APP_PATTERN.fullmatch(self.reference)["tag"]
+        self.original = self.DOCKERFILE.read_text(encoding="utf-8")
+        self.base = next(
+            line
+            for line in self.original.splitlines()
+            if line.startswith("FROM docker.io/n8nio/runners:")
+        )
+        self.pair = workload_validator.REVIEWED_RUNNER_BASES[self.reference]
+        self.digest = self.pair.split("@", 1)[1]
+
+    def assert_rejected(
+        self, text: str, cause: str, reference: str | None = None
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dockerfile"
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(workload_validator.ContractError, cause):
+                workload_validator.validate_runner_base(
+                    path, self.reference if reference is None else reference
+                )
+
+    def test_repository_runner_base_matches_the_n8n_hold(self) -> None:
+        workload_validator.validate_runner_base(self.DOCKERFILE, self.reference)
+        # The same base with a platform flag and a stage alias is still it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dockerfile"
+            path.write_text(
+                self.original.replace(
+                    self.base,
+                    self.base.replace("FROM ", "from --platform=linux/amd64 ")
+                    + " AS final",
+                ),
+                encoding="utf-8",
+            )
+            workload_validator.validate_runner_base(path, self.reference)
+
+    def test_mismatched_or_ambiguous_runner_base_is_rejected(self) -> None:
+        other = "@sha256:" + "a" * 64
+        runners = "docker.io/n8nio/runners"
+        plain = "plain FROM instructions"
+        pinned = "must be docker.io/n8nio/runners"
+        label_block = self.original[self.original.index("LABEL ") :].split("\n\n", 1)[0]
+        dockerfiles = {
+            "newer runners": (
+                self.original.replace(self.base, f"FROM {runners}:9.99.9{other}"),
+                f"9.99.9 differs from n8n {self.tag}",
+            ),
+            "unpinned runners": (
+                self.original.replace(self.base, f"FROM {runners}:{self.tag}"),
+                pinned,
+            ),
+            "same tag, unreviewed digest": (
+                self.original.replace(self.digest, "sha256:" + "b" * 64),
+                "not a reviewed pair",
+            ),
+            "two runners bases": (f"{self.original}\n{self.base}\n", plain),
+            "no runners base": (
+                self.original.replace(
+                    self.base, f"FROM docker.io/library/node:26{other}"
+                ),
+                plain,
+            ),
+            "runners not in the final stage": (
+                f"{self.original}\nFROM docker.io/library/node:26{other}\n",
+                pinned,
+            ),
+            "label names another version": (
+                self.original.replace(
+                    f'"n8n {self.tag} task runners', '"n8n 9.99.9 task runners'
+                ),
+                "label names another",
+            ),
+            "label only in an earlier stage": (
+                self.original.replace(label_block + "\n", "").replace(
+                    "WORKDIR /dependencies", f"WORKDIR /dependencies\n{label_block}"
+                ),
+                "label names another",
+            ),
+            "single-quoted label for another version": (
+                f"{self.original}LABEL org.opencontainers.image.description="
+                "'n8n 9.99.9 task runners'\n",
+                "label names another",
+            ),
+            "continued FROM line": (
+                self.original.replace(
+                    self.base, self.base.replace("FROM ", "FROM \\\n  ")
+                ),
+                plain,
+            ),
+            "only a continued FROM": (
+                self.base.replace("FROM ", "FROM \\\n  "),
+                plain,
+            ),
+            "no FROM at all": ("# docker.io/n8nio/runners\nUSER runner\n", plain),
+            "uppercase runners stage before the base": (
+                self.original.replace(
+                    self.base, f"FROM N8NIO/RUNNERS:2.32.6{other} AS extra\n{self.base}"
+                ),
+                plain,
+            ),
+            "runners under another registry": (
+                self.original.replace(
+                    self.base, self.base.replace("FROM ", "FROM mirror.example/")
+                ),
+                pinned,
+            ),
+            "final FROM continued right after the image": (
+                f"{self.original}\nFROM docker.io/library/busybox:1\\\n  AS final\n",
+                plain,
+            ),
+            "final stage continued onto its alias": (
+                f"{self.original}\nFROM docker.io/library/busybox:1 \\\n  AS final\n",
+                plain,
+            ),
+            "runners name split by an ARG": (
+                "ARG R=docker.io/n8nio/run\n"
+                + self.original
+                + f"\nFROM ${{R}}ners:2.32.6{other} \\\n  AS final\n",
+                plain,
+            ),
+            "final stage named through a variable": (
+                "ARG R=docker.io/n8nio/run\n"
+                + self.original
+                + f"\nFROM ${{R}}ners:2.32.6{other} AS final\n",
+                plain,
+            ),
+            "form feed before a final FROM": (
+                f"{self.original}\n\fFROM docker.io/library/busybox:1\n",
+                plain,
+            ),
+            "no-break space before a final FROM": (
+                f"{self.original}\n\u00a0FROM docker.io/library/busybox:1\n",
+                plain,
+            ),
+            "syntax parser directive": (
+                "# syntax=docker/dockerfile:1\n" + self.original,
+                plain,
+            ),
+            "escape parser directive": ("# escape=`\n" + self.original, plain),
+        }
+        for image in (
+            f"n8nio/runners:2.32.6{other}",
+            f"{runners}:2.32.6",
+            f"{runners}:2.32.6{other} AS final",
+        ):
+            dockerfiles[f"appended stage {image}"] = (
+                f"{self.original}\nFROM {image}\nUSER runner\n",
+                plain,
+            )
+        dockerfiles["appended lowercase stage"] = (
+            f"{self.original}\nfrom {runners}:2.32.6{other}\nUSER runner\n",
+            plain,
+        )
+        for label, (text, cause) in dockerfiles.items():
+            with self.subTest(case=label):
+                self.assert_rejected(text, cause)
+        hold = "n8n hold must be"
+        for label, (reference, cause) in {
+            "newer n8n": (
+                self.reference.replace(f":{self.tag}@", ":9.99.9@"),
+                f"differs from n8n 9.99.9",
+            ),
+            "n8n digest moved alone": (
+                self.reference.split("@", 1)[0] + "@sha256:" + "d" * 64,
+                "not a reviewed pair",
+            ),
+            "n8n without tag": (self.reference.replace(f":{self.tag}@", "@"), hold),
+            "n8n from another image": (
+                self.reference.replace("n8nio/n8n:", "n8nio/runners:"),
+                hold,
+            ),
+            "n8n under another registry": (f"mirror.example/{self.reference}", hold),
+        }.items():
+            with self.subTest(case=label):
+                self.assert_rejected(self.original, cause, reference)
+        with self.subTest(case="missing Dockerfile"):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(
+                    workload_validator.ContractError, "cannot read"
+                ):
+                    workload_validator.validate_runner_base(
+                        Path(directory) / "absent", self.reference
+                    )
+
+    def run_cli(
+        self, directory: str, dockerfile: str, image_channels: Path
+    ) -> subprocess.CompletedProcess[str]:
+        context = Path(directory) / "n8n-runners"
+        shutil.copytree(self.CONTEXT, context)
+        (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+        stack = Path(directory) / "stack.yml"
+        stack.write_text("{}\n", encoding="utf-8")
+        return subprocess.run(
+            [
+                sys.executable,
+                str(REPOSITORY_ROOT / "scripts/validate-workloads.py"),
+                "--stack",
+                str(stack),
+                "--platform",
+                str(REPOSITORY_ROOT / "config/platform.yml"),
+                "--services",
+                str(REPOSITORY_ROOT / "config/services.yml"),
+                "--image-channels",
+                str(image_channels),
+                "--secrets",
+                str(REPOSITORY_ROOT / "stacks/workloads/secrets.yml"),
+                "--config-dir",
+                directory,
+                "--runner-context",
+                str(context),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_cli_rejects_a_runner_base_off_the_n8n_hold(self) -> None:
+        channels = REPOSITORY_ROOT / "config/image-channels.yml"
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_cli(
+                directory,
+                self.original.replace(
+                    self.base,
+                    "FROM docker.io/n8nio/runners:2.32.6@sha256:"
+                    "9c9ddc41410b56650605f44c3af6366abb467c33176569be371ccc5f476439fc",
+                ),
+                channels,
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"differs from n8n {self.tag}", result.stderr)
+        # Moving only the rendered n8n hold (config/image-channels.yml) must
+        # also stop the contract, even though the restore catalog keeps the
+        # old version.
+        with tempfile.TemporaryDirectory() as directory:
+            moved = Path(directory) / "image-channels.yml"
+            moved.write_text(
+                channels.read_text(encoding="utf-8").replace(
+                    f"docker.io/n8nio/n8n:{self.tag}@", "docker.io/n8nio/n8n:9.99.9@"
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_cli(directory, self.original, moved)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("differs from n8n 9.99.9", result.stderr)
+
+
 class N8nRunnerImageContractTests(unittest.TestCase):
     SOURCE_REFERENCE = (
         "ghcr.io/apptolast/migracionnetcup-n8n-runners@sha256:"

@@ -149,6 +149,18 @@ the interpreter does not report every isolation control as effective.
 The reviewed upstream source is
 [`docker/images/runners/n8n-task-runners.json`](https://github.com/n8n-io/n8n/blob/n8n%402.31.5/docker/images/runners/n8n-task-runners.json).
 
+The runners base image stays on the exact n8n version, as
+[n8n requires](https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners#setting-up-external-mode);
+nothing rejects a mismatch at connection time, so
+`scripts/validate-workloads.py` does. It compares the final `FROM` of
+`images/n8n-runners/Dockerfile` with the rendered n8n hold in
+`config/image-channels.yml`: the pair of full references, tags and digests,
+must be one reviewed in `REVIEWED_RUNNER_BASES`, and the final stage's label
+must name the same version. Every `FROM` must be a plain one-line
+instruction without variables or parser directives, and the file may mention
+`n8nio/runners` only there. Dependabot ignores `n8nio/runners`: upgrade it
+together with the n8n hold, in one reviewed change that adds the new pair.
+
 `ONLINE_MODE=false` is retained solely as restored application behavior while
 the host/perimeter gate keeps public Minecraft disabled. Do not set
 `platform_minecraft_public_enabled=true` until authentication/whitelisting and

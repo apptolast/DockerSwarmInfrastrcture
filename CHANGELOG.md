@@ -485,6 +485,19 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- La imagen de runners de n8n vuelve a `n8nio/runners:2.31.5`, la misma
+  versión que n8n. Dependabot la había subido sola a 2.32.6 el 2026-08-03
+  (#3), aunque n8n exige que los runners usen exactamente su versión
+  ([docs](https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners#setting-up-external-mode))
+  y nada lo comprueba al conectar. `scripts/validate-workloads.py` exige
+  ahora que la etapa final del Dockerfile sea la única referencia a
+  `n8nio/runners`, fijada por digest y con instrucciones `FROM` planas, sin
+  variables ni directivas; que la pareja formada por el hold de n8n que se
+  renderiza (`config/image-channels.yml`) y esa base, con tags y digests, sea
+  una pareja revisada; y que la etiqueta de la etapa final nombre la misma
+  versión. Dependabot deja de proponer runners por separado: se actualizan
+  junto con el hold de n8n.
+
 - La compuerta de contenedores del apply de `workloads` rechazaba el
   `node-exporter` del Observatorio (`monitor-production`, fuera de este
   repositorio), que monta la raíz del host en solo lectura, y bloqueaba todo
