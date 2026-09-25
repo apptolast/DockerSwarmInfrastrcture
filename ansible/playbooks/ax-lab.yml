@@ -1,0 +1,21 @@
+---
+# Host prerequisites of the AX lab (docs/AX.md). It starts no container, so,
+# like host-baseline, it runs without capacity_preflight; the change that
+# codifies the kind cluster adds it together with the host_containers
+# declaration.
+- name: Reconcile the AX lab host prerequisites
+  hosts: swarm_managers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  vars_files:
+    - ../../config/platform.yml
+    - ../../config/ax-lab.yml
+    - ../group_vars/all.yml
+
+  roles:
+    - role: operation_lock_guard
+    - role: ax_lab
+    - role: deployment_metadata

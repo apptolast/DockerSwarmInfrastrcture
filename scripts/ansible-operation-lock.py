@@ -38,6 +38,7 @@ SAFE_PLAYBOOKS = {
     "organizationweb",
     "racinggame",
     "autoupdater",
+    "ax-lab",
     "backup",
     "bootstrap-host",
     "site",

@@ -260,8 +260,8 @@ Always dry-run before applying:
 
 Valid `--playbook` values for `scripts/deploy-ansible.sh` are: `platform`,
 `host-baseline`, `preflight-images`, `edge`, `workloads`, `observability`,
-`organizationweb`, `racinggame`, `autoupdater`, `backup`, `site`. Valid
-`--profile` values are `production` (default) and `acme-staging` (edge
+`organizationweb`, `racinggame`, `autoupdater`, `ax-lab`, `backup`, `site`.
+Valid `--profile` values are `production` (default) and `acme-staging` (edge
 playbook only, uses a separate ACME storage file).
 `scripts/bootstrap-host.sh` is a separate script (its own flags: `--host`,
 `--authorized-keys-file`, `--password-hash-file`,

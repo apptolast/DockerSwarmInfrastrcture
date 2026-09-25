@@ -8,6 +8,27 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Playbook `ax-lab` con los prerrequisitos del host del laboratorio AX, el
+  primer paso para codificarlo (ver [`docs/AX.md`](docs/AX.md)). El contrato
+  `config/ax-lab.yml`, validado sin red por `scripts/validate-ax-lab.py`,
+  fija la raíz `/opt/dockerswarm/ax-lab`, la ruta del directorio de
+  credenciales (nunca su contenido), los límites de inotify que recomienda
+  kind (`fs.inotify.max_user_watches=524288` y
+  `fs.inotify.max_user_instances=512`), los commits de AX y Substrate, kind
+  v0.33.0 y kubectl v1.37.0 con el sha256 que publica upstream, las imágenes
+  upstream por tag y digest y la bandera
+  `ax_lab_privileged_node_accepted: false`, que aún no actúa. El rol `ax_lab`
+  persiste esos límites en `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf`,
+  exige que sean los que quedan tras un arranque, escribe en vivo solo las
+  claves que difieren y nunca ejecuta `sysctl --system`; instala `kind` y
+  `kubectl` con `get_url` y su checksum y los verifica sin seguir enlaces.
+  No arranca contenedores, así que corre sin `capacity_preflight`, como
+  `host-baseline`; admite `--check` y es idempotente. El nombre queda
+  registrado en el wrapper y su hash de contrato, el lock, los metadatos de
+  despliegue, `validate-iac.sh`, el guardián de rutas sensibles y las listas
+  de playbooks de `CLAUDE.md`, `judge` y `ansible-operator` (a esta última
+  también le faltaba `racinggame`). El clúster, Substrate y AX siguen siendo
+  manuales hasta los cambios siguientes que describe `docs/AX.md`.
 - `config/capacity-profiles.yml` admite `host_containers`: contenedores
   Docker sueltos, fuera de Swarm, agrupados y con reserva, límite y
   `pids_limit` explícitos. Cada plan enumera los grupos que ejecuta y solo

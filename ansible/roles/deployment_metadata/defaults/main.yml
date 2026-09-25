@@ -39,6 +39,8 @@ deployment_metadata_components_by_playbook:
     - racinggame
   autoupdater:
     - autoupdater
+  ax-lab:
+    - ax-lab
   site:
     - host-security
     - platform

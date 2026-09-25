@@ -1,0 +1,5 @@
+# Managed by Ansible (role ax_lab, config/ax-lab.yml). Inotify limits kind
+# needs for the AX lab: https://kind.sigs.k8s.io/docs/user/known-issues/
+{% for key, value in ax_lab.sysctl | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}

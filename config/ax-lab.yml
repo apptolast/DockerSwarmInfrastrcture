@@ -1,0 +1,68 @@
+---
+# Reviewed contract of the AX lab (playbook `ax-lab`): Google's Agent
+# Executor on Agent Substrate, in a kind Kubernetes cluster beside Swarm.
+# scripts/validate-ax-lab.py pins the shape and every value below. See
+# docs/AX.md.
+#
+# The playbook only codifies host prerequisites today: the inotify limits
+# kind needs and the pinned kind and kubectl binaries. It starts no
+# container. The cluster, Substrate and AX are still the manual trial of
+# docs/DEPLOYMENT_STATUS.md until the later changes in docs/AX.md codify
+# them; `sources` and `images` are their reviewed pins, not yet used.
+ax_lab:
+  schema_version: 1
+  # Under platform_install_root (config/platform.yml), root:root 0750.
+  install_root: /opt/dockerswarm/ax-lab
+  # Owner-provisioned, root-only credential files for AX live here. Only
+  # the path is versioned: no playbook reads, copies or prints their
+  # contents, and none of them belongs in Git.
+  credential_directory: /etc/dockerswarm/ax
+  # kind known issues, "Pod errors due to too many open files":
+  # https://kind.sigs.k8s.io/docs/user/known-issues/
+  # Persisted in /etc/sysctl.d/99-z-dockerswarm-ax-lab.conf. The keys must
+  # stay disjoint from host_baseline_sysctl and the platform role's file.
+  sysctl:
+    fs.inotify.max_user_watches: "524288"
+    fs.inotify.max_user_instances: "512"
+  # The exact commits the lab was built from. Substrate's is the one AX
+  # pins in its go.mod at this AX commit.
+  sources:
+    ax:
+      repository: https://github.com/google/ax
+      commit: f009cc81c9a571073bc1dd58cd2ed934bf2d5b1c
+    substrate:
+      repository: https://github.com/agent-substrate/substrate
+      commit: 672533541dbfcd29084e4de2475267088bda3651
+  # Official linux-amd64 release assets. Each sha256 is the one upstream
+  # publishes next to the asset (kind-linux-amd64.sha256sum on the kind
+  # release, kubectl.sha256 on dl.k8s.io).
+  binaries:
+    kind:
+      version: v0.33.0
+      url: "https://github.com/kubernetes-sigs/kind/releases/download/\
+        v0.33.0/kind-linux-amd64"
+      sha256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+    kubectl:
+      version: v1.37.0
+      url: "https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl"
+      sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+  # Upstream images by tag and index digest. kind_node is kind v0.33.0's
+  # default node image (pkg/apis/config/defaults/image.go), and its
+  # Kubernetes version equals kubectl's.
+  images:
+    kind_node: "docker.io/kindest/node:v1.37.0@sha256:\
+      a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
+    registry: "docker.io/library/registry:3@sha256:\
+      852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696"
+    redis: "docker.io/library/redis:7-alpine@sha256:\
+      858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
+    openai_proxy: "docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:\
+      4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5"
+# Owner acceptance that the kind node runs root-equivalent: kind starts it
+# with --privileged and seccomp and AppArmor unconfined
+# (kind v0.33.0 pkg/cluster/internal/providers/docker/provision.go). No
+# task acts on it yet; the playbook only checks that it is this boolean.
+# The change that codifies the cluster must refuse to create or start the
+# node while it is false, its default. Flipping it is a reviewed one-line
+# owner decision here. See docs/AX.md.
+ax_lab_privileged_node_accepted: false

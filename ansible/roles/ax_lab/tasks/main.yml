@@ -1,0 +1,92 @@
+---
+- name: Reject overrides of the reviewed AX lab contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/ax-lab.yml')
+          | from_yaml
+        ).ax_lab
+      - ax_lab_privileged_node_accepted is boolean
+      - >-
+        ax_lab_privileged_node_accepted == (
+          lookup('ansible.builtin.file',
+            role_path + '/../../../config/ax-lab.yml')
+          | from_yaml
+        ).ax_lab_privileged_node_accepted
+      - ax_lab_sysctl_path == "/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf"
+      - ax_lab_bin_directory == ax_lab.install_root ~ "/bin"
+      - ax_lab_architecture == "x86_64"
+    fail_msg: AX lab inputs differ from the versioned contract.
+
+- name: Validate the AX lab contract and its sysctl render locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-ax-lab.py"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Require the lab install root directly under the platform root
+  ansible.builtin.assert:
+    that:
+      - ax_lab.install_root | dirname == platform_install_root
+    fail_msg: The lab must install under platform_install_root.
+
+- name: Read the host machine architecture
+  ansible.builtin.command:
+    argv: [/usr/bin/uname, --machine]
+  register: ax_lab_machine
+  changed_when: false
+  check_mode: false
+
+- name: Require the architecture of the pinned binaries
+  ansible.builtin.assert:
+    that:
+      - ax_lab_machine.stdout == ax_lab_architecture
+    fail_msg: The pinned kind and kubectl release assets are linux-amd64.
+
+- name: Inspect the lab install and sysctl paths without following links
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - {path: /opt, directory: true}
+    - {path: "{{ platform_install_root }}", directory: true}
+    - {path: "{{ ax_lab.install_root }}", directory: true}
+    - {path: "{{ ax_lab_bin_directory }}", directory: true}
+    - {path: "{{ ax_lab_bin_directory }}/kind", directory: false}
+    - {path: "{{ ax_lab_bin_directory }}/kubectl", directory: false}
+    - {path: /etc, directory: true}
+    - {path: /etc/sysctl.d, directory: true}
+    - {path: "{{ ax_lab_sysctl_path }}", directory: false}
+  loop_control:
+    label: "{{ item.path }}"
+  register: ax_lab_install_paths
+
+- name: Reject unsafe types ownership and permissions in lab paths
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - >-
+        not item.stat.exists or (
+          item.stat.isdir if item.item.directory else item.stat.isreg
+        )
+      - not item.stat.exists or item.stat.uid == 0
+      - not item.stat.exists or item.stat.gid == 0
+      - not item.stat.exists or item.stat.mode[-1] | int not in [2, 3, 6, 7]
+      - not item.stat.exists or item.stat.mode[-2] | int not in [2, 3, 6, 7]
+    fail_msg: Refusing to write the lab prerequisites through an unsafe path.
+  loop: "{{ ax_lab_install_paths.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+# Unlike an application deploy, these tasks also run under --check: every
+# read is check-safe, every write only reports, and the runtime checks wait
+# for a real apply. Nothing here starts a container or touches Swarm.
+- name: Reconcile the lab host prerequisites
+  ansible.builtin.import_tasks: host.yml
