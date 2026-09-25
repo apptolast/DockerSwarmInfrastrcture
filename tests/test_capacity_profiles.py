@@ -1,17 +1,42 @@
 """Explicit alternative capacity plans preserve the legacy budget."""
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import jinja2
 import yaml
 
+from ansible_task_harness import run_task_definition
+
 
 ROOT = Path(__file__).resolve().parents[1]
+PROFILE_TASKS = "ansible/roles/capacity_preflight/tasks/profiles.yml"
+MIB = 1024 * 1024
+# A synthetic group for these tests only: config/capacity-profiles.yml does
+# not declare any host container yet.
+LAB_GROUP = {
+    "kind-control-plane": {
+        "reservations": {"cpu_millicores": 250, "memory_mib": 1024},
+        "limits": {"cpu_millicores": 1000, "memory_mib": 2048},
+        "pids_limit": 4096,
+    },
+    "kind-registry": {
+        "reservations": {"cpu_millicores": 0, "memory_mib": 30},
+        "limits": {"cpu_millicores": 250, "memory_mib": 64},
+        "pids_limit": 256,
+    },
+}
+LAB_TOTALS = {
+    "reservations": {"cpu_millicores": 250, "memory_mib": 1054},
+    "limits": {"cpu_millicores": 1250, "memory_mib": 2112},
+}
 
 
 def load_image_channels_map():
@@ -65,6 +90,57 @@ def external_live(profiles):
     return services
 
 
+def with_lab(profiles, running_plans=("organizationweb",)):
+    """A copy of the profile contract that declares LAB_GROUP as group `lab`.
+
+    Every plan in running_plans lists the group and pays for it.
+    """
+    candidate = json.loads(json.dumps(profiles))
+    contract = candidate["capacity_profiles"]
+    contract["host_containers"] = {"lab": json.loads(json.dumps(LAB_GROUP))}
+    for name in running_plans:
+        plan = contract["profiles"][name]
+        plan["host_containers"].append("lab")
+        for resource_class, values in LAB_TOTALS.items():
+            for resource_name, value in values.items():
+                plan["aggregate"][resource_class][resource_name] += value
+    return candidate
+
+
+def inspected(name, status="running", **host_config):
+    """The preflight's read of one declared container, as Docker prints it."""
+    declared = LAB_GROUP[name]
+    config = {
+        "Memory": declared["limits"]["memory_mib"] * MIB,
+        "MemoryReservation": declared["reservations"]["memory_mib"] * MIB,
+        "NanoCpus": declared["limits"]["cpu_millicores"] * 1_000_000,
+        "PidsLimit": declared["pids_limit"],
+    }
+    config.update(host_config)
+    return {
+        "item": name,
+        "rc": 0,
+        "stdout": json.dumps(
+            {"name": f"/{name}", "status": status, "host_config": config}
+        ),
+        "stderr": "",
+    }
+
+
+def absent(name, prefix="Error response from daemon: "):
+    """The preflight's read of a declared container that does not exist.
+
+    The default is Docker 29.6.2's exact stderr on the production host
+    (checked 2026-09-25 with a missing name).
+    """
+    return {
+        "item": name,
+        "rc": 1,
+        "stdout": "",
+        "stderr": f"{prefix}No such container: {name}",
+    }
+
+
 class CapacityProfileTests(unittest.TestCase):
     def setUp(self):
         spec = importlib.util.spec_from_file_location(
@@ -111,6 +187,59 @@ class CapacityProfileTests(unittest.TestCase):
         self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 14150)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 8941)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 16000)
+
+    def test_host_container_group_counts_only_in_the_plans_that_run_it(self):
+        before = self.module.validate_profiles(self.base, self.profiles, self.stacks)
+        totals = self.module.validate_profiles(
+            self.base, with_lab(self.profiles), self.stacks
+        )
+        expected = json.loads(json.dumps(before["organizationweb"]))
+        for resource_class, values in LAB_TOTALS.items():
+            for resource_name, value in values.items():
+                expected[resource_class][resource_name] += value
+        self.assertEqual(totals["organizationweb"], expected)
+        self.assertEqual(totals["observability"], before["observability"])
+        # Declared but run by no plan: no plan pays for it.
+        self.assertEqual(
+            self.module.validate_profiles(
+                self.base, with_lab(self.profiles, running_plans=()), self.stacks
+            ),
+            before,
+        )
+        # A plan that runs the group without paying for it breaks the
+        # arithmetic, and one that pays for it must still fit the budget.
+        unpaid = with_lab(self.profiles, running_plans=())
+        unpaid["capacity_profiles"]["profiles"]["organizationweb"][
+            "host_containers"
+        ].append("lab")
+        with self.assertRaisesRegex(
+            self.module.capacity.CapacityError, "profile totals differ"
+        ):
+            self.module.validate_profiles(self.base, unpaid, self.stacks)
+        oversized = with_lab(self.profiles, running_plans=("observability",))
+        contract = oversized["capacity_profiles"]
+        for resources in (
+            contract["host_containers"]["lab"]["kind-control-plane"],
+            contract["profiles"]["observability"]["aggregate"],
+        ):
+            resources["limits"]["memory_mib"] += 2048
+            resources["reservations"]["memory_mib"] += 1024
+        with self.assertRaisesRegex(
+            self.module.capacity.CapacityError, "aggregate memory limits"
+        ):
+            self.module.validate_profiles(self.base, oversized, self.stacks)
+        # The static check CI runs enforces the memory limit/reservation ratio
+        # too, even for a group no plan runs, and a missing reservation fails.
+        for reservation in (0, 20):
+            with self.subTest(reservation=reservation):
+                skewed = with_lab(self.profiles, running_plans=())
+                skewed["capacity_profiles"]["host_containers"]["lab"][
+                    "kind-registry"
+                ]["reservations"]["memory_mib"] = reservation
+                with self.assertRaisesRegex(
+                    self.module.capacity.CapacityError, "ratio exceeds 2.50"
+                ):
+                    self.module.validate_profiles(self.base, skewed, self.stacks)
 
     def test_every_profile_must_include_the_watcher(self):
         for name in ("observability", "organizationweb"):
@@ -463,7 +592,8 @@ class CapacityProfileTests(unittest.TestCase):
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts/validate-capacity-profiles.py"),
              "--live", "--requested-stack", "observability"],
-            input=json.dumps([]), text=True, capture_output=True, check=False,
+            input=json.dumps({"services": [], "host_containers": []}),
+            text=True, capture_output=True, check=False,
         )
         self.assertEqual(completed.returncode, 1)
         self.assertIn("outside the active profile", completed.stderr)
@@ -514,6 +644,677 @@ class CapacityProfileTests(unittest.TestCase):
             play = yaml.safe_load((ROOT / f"ansible/playbooks/{name}.yml").read_text())[0]
             roles = [item["role"] for item in play["roles"]]
             self.assertLess(roles.index("operation_lock_guard"), roles.index("capacity_preflight"))
+
+
+class HostContainerTests(unittest.TestCase):
+    """Plain Docker containers budgeted beside the Swarm services."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "capacity_profiles", ROOT / "scripts/validate-capacity-profiles.py"
+        )
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.error = self.module.capacity.CapacityError
+        self.base = yaml.safe_load((ROOT / "config/capacity.yml").read_text())
+        self.profiles = yaml.safe_load(
+            (ROOT / "config/capacity-profiles.yml").read_text()
+        )
+        self.parked = self.module.parked_workloads(
+            yaml.safe_load((ROOT / "config/platform.yml").read_text())
+        )
+        self.services = [
+            {"name": "edge_traefik", "stack": "edge"},
+            *external_live(self.profiles),
+        ]
+
+    def check_live(self, profiles, containers):
+        self.module.validate_live(
+            self.base,
+            profiles,
+            "edge",
+            self.services,
+            parked=self.parked,
+            live_containers=containers,
+        )
+
+    def run_cli(self, argv, stdin="", profiles=None):
+        """Run main() as the preflight does, on an optional temporary contract."""
+        with tempfile.TemporaryDirectory() as directory:
+            if profiles is not None:
+                path = Path(directory) / "capacity-profiles.yml"
+                path.write_text(yaml.safe_dump(profiles), encoding="utf-8")
+                argv = ["--profile-contract", str(path), *argv]
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch("sys.stdin", io.StringIO(stdin)), mock.patch(
+                "sys.stdout", stdout
+            ), mock.patch("sys.stderr", stderr):
+                code = self.module.main(argv)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_repository_declares_no_host_container_yet(self):
+        contract = self.profiles["capacity_profiles"]
+        self.assertEqual(contract["host_containers"], {})
+        for name, plan in contract["profiles"].items():
+            with self.subTest(profile=name):
+                self.assertEqual(plan["host_containers"], [])
+        # The preflight inspects nothing and the live check still passes; the
+        # envelope is the only input it accepts.
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/validate-capacity-profiles.py"),
+                "--host-container-names",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), [])
+        self.check_live(self.profiles, [])
+        code, _stdout, stderr = self.run_cli(
+            ["--live", "--requested-stack", "edge"],
+            json.dumps({"services": self.services, "host_containers": []}),
+        )
+        self.assertEqual(code, 0, stderr)
+        code, _stdout, stderr = self.run_cli(
+            ["--live", "--requested-stack", "edge"], json.dumps(self.services)
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("must hold exactly services and host_containers", stderr)
+
+    def test_host_container_contract_is_fail_closed(self):
+        def lab(contract):
+            return contract["host_containers"]["lab"]
+
+        def registry(contract):
+            return lab(contract)["kind-registry"]
+
+        for label, change, message in (
+            (
+                "not a mapping",
+                lambda c: c.update(host_containers=["kind-registry"]),
+                "host_containers must be a mapping",
+            ),
+            (
+                "missing section",
+                lambda c: c.pop("host_containers"),
+                "profiles has missing host_containers",
+            ),
+            (
+                "unknown section",
+                lambda c: c.update(host_services={}),
+                "profiles has unexpected host_services",
+            ),
+            (
+                "invalid group name",
+                lambda c: c["host_containers"].update(
+                    {"Lab!": c["host_containers"].pop("lab")}
+                ),
+                "host container group name is invalid",
+            ),
+            (
+                "empty group",
+                lambda c: c["host_containers"].update(lab={}),
+                "host container group lab has no containers",
+            ),
+            (
+                "one-character name",
+                lambda c: lab(c).update({"k": lab(c).pop("kind-registry")}),
+                "is not a container name",
+            ),
+            (
+                "name with a leading dash",
+                lambda c: lab(c).update({"-kind": lab(c).pop("kind-registry")}),
+                "is not a container name",
+            ),
+            (
+                "name with a slash",
+                lambda c: lab(c).update({"/kind": lab(c).pop("kind-registry")}),
+                "is not a container name",
+            ),
+            (
+                "name with a space",
+                lambda c: lab(c).update({"kind registry": lab(c).pop("kind-registry")}),
+                "is not a container name",
+            ),
+            (
+                "name declared in two groups",
+                lambda c: c["host_containers"].update(
+                    other={"kind-registry": registry(c)}
+                ),
+                "host container kind-registry is declared more than once",
+            ),
+            (
+                "unlimited memory",
+                lambda c: registry(c)["limits"].update(memory_mib=0),
+                "positive memory_mib limit",
+            ),
+            (
+                "unlimited cpu",
+                lambda c: registry(c)["limits"].update(cpu_millicores=0),
+                "positive cpu_millicores limit",
+            ),
+            (
+                "memory reservation above limit",
+                lambda c: registry(c)["reservations"].update(memory_mib=128),
+                "reserves more memory_mib",
+            ),
+            (
+                "cpu reservation above limit",
+                lambda c: registry(c)["reservations"].update(cpu_millicores=500),
+                "reserves more cpu_millicores",
+            ),
+            (
+                "negative reservation",
+                lambda c: registry(c)["reservations"].update(cpu_millicores=-1),
+                "cpu_millicores must be an integer >= 0",
+            ),
+            (
+                "zero pids limit",
+                lambda c: registry(c).update(pids_limit=0),
+                "pids_limit must be an integer >= 1",
+            ),
+            (
+                "boolean pids limit",
+                lambda c: registry(c).update(pids_limit=True),
+                "pids_limit must be an integer >= 1",
+            ),
+            (
+                "missing pids limit",
+                lambda c: registry(c).pop("pids_limit"),
+                "kind-registry has missing pids_limit",
+            ),
+            (
+                "unknown container field",
+                lambda c: registry(c).update(privileged=True),
+                "kind-registry has unexpected privileged",
+            ),
+            (
+                "plan without the list",
+                lambda c: c["profiles"]["observability"].pop("host_containers"),
+                "profile.observability has missing host_containers",
+            ),
+            (
+                "plan list as a string",
+                lambda c: c["profiles"]["observability"].update(host_containers="lab"),
+                "must list distinct group names",
+            ),
+            (
+                "plan list with a repeated group",
+                lambda c: c["profiles"]["organizationweb"]["host_containers"].append(
+                    "lab"
+                ),
+                "must list distinct group names",
+            ),
+            (
+                "plan running an undeclared group",
+                lambda c: c["profiles"]["observability"]["host_containers"].append(
+                    "ghost"
+                ),
+                "runs an undeclared host container group: ghost",
+            ),
+        ):
+            with self.subTest(case=label):
+                profiles = with_lab(self.profiles)
+                change(profiles["capacity_profiles"])
+                with self.assertRaisesRegex(self.error, message):
+                    self.module.validate_profile_contract(profiles)
+        # The valid declaration passes and is returned, not rewritten.
+        profiles = with_lab(self.profiles)
+        before = json.dumps(profiles, sort_keys=True)
+        validated = self.module.validate_profile_contract(profiles)
+        self.assertEqual(set(validated["host_containers"]["lab"]), set(LAB_GROUP))
+        self.assertEqual(json.dumps(profiles, sort_keys=True), before)
+
+    def test_host_container_memory_follows_the_service_ratio_policy(self):
+        for label, reservation, limit, message in (
+            ("above 2.50", 512, 2048, "ratio exceeds 2.50"),
+            ("zero reservation", 0, 64, "ratio exceeds 2.50"),
+            ("exactly 2.50", 32, 80, None),
+        ):
+            with self.subTest(case=label):
+                profiles = with_lab(self.profiles, running_plans=())
+                declared = profiles["capacity_profiles"]["host_containers"]["lab"]
+                declared["kind-registry"]["reservations"]["memory_mib"] = reservation
+                declared["kind-registry"]["limits"]["memory_mib"] = limit
+                containers = [absent(name) for name in LAB_GROUP]
+                if message is None:
+                    self.check_live(profiles, containers)
+                    continue
+                with self.assertRaisesRegex(self.error, message):
+                    self.check_live(profiles, containers)
+                # The preflight never gets a name to inspect from it either.
+                code, stdout, stderr = self.run_cli(
+                    ["--host-container-names"], profiles=profiles
+                )
+                self.assertEqual((code, stdout), (1, ""))
+                self.assertIn(message, stderr)
+
+    def test_live_budget_and_arithmetic_include_the_running_groups(self):
+        running = [inspected(name) for name in LAB_GROUP]
+        self.check_live(with_lab(self.profiles), running)
+        unpaid = with_lab(self.profiles, running_plans=())
+        unpaid["capacity_profiles"]["profiles"]["organizationweb"][
+            "host_containers"
+        ].append("lab")
+        with self.assertRaisesRegex(
+            self.error, "profile organizationweb has inconsistent arithmetic"
+        ):
+            self.check_live(unpaid, running)
+        oversized = with_lab(self.profiles, running_plans=("observability",))
+        contract = oversized["capacity_profiles"]
+        for resources in (
+            contract["host_containers"]["lab"]["kind-control-plane"],
+            contract["profiles"]["observability"]["aggregate"],
+        ):
+            resources["limits"]["cpu_millicores"] += 1000
+        with self.assertRaisesRegex(self.error, "aggregate CPU limits"):
+            self.check_live(oversized, [absent(name) for name in LAB_GROUP])
+
+    def test_active_host_containers_run_exactly_as_declared(self):
+        profiles = with_lab(self.profiles)
+        self.check_live(profiles, [inspected(name) for name in LAB_GROUP])
+        for label, registry, message in (
+            (
+                "absent",
+                absent("kind-registry"),
+                "active host container is absent: kind-registry",
+            ),
+            (
+                "stopped",
+                inspected("kind-registry", status="exited"),
+                "active host container is exited, not running: kind-registry",
+            ),
+            (
+                "never started",
+                inspected("kind-registry", status="created"),
+                "is created, not running",
+            ),
+            (
+                "paused",
+                inspected("kind-registry", status="paused"),
+                "is paused, not running",
+            ),
+            (
+                "restarting",
+                inspected("kind-registry", status="restarting"),
+                "is restarting, not running",
+            ),
+            (
+                "memory limit",
+                inspected("kind-registry", Memory=128 * MIB),
+                "differs from its declaration: kind-registry Memory",
+            ),
+            (
+                "unlimited memory",
+                inspected("kind-registry", Memory=0),
+                "differs from its declaration: kind-registry Memory",
+            ),
+            (
+                "memory reservation",
+                inspected("kind-registry", MemoryReservation=0),
+                "differs from its declaration: kind-registry MemoryReservation",
+            ),
+            (
+                "cpu limit",
+                inspected("kind-registry", NanoCpus=500_000_000),
+                "differs from its declaration: kind-registry NanoCpus",
+            ),
+            (
+                "a HostConfig field the preflight does not read",
+                inspected("kind-registry", CpuQuota=25_000),
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "pids limit",
+                inspected("kind-registry", PidsLimit=512),
+                "differs from its declaration: kind-registry PidsLimit",
+            ),
+            (
+                "unset pids limit",
+                inspected("kind-registry", PidsLimit=None),
+                "differs from its declaration: kind-registry PidsLimit",
+            ),
+            (
+                "unlimited pids",
+                inspected("kind-registry", PidsLimit=-1),
+                "differs from its declaration: kind-registry PidsLimit",
+            ),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(self.error, message):
+                    self.check_live(
+                        profiles, [inspected("kind-control-plane"), registry]
+                    )
+
+    def test_host_containers_outside_the_active_plan_must_not_run(self):
+        for running_plans in ((), ("observability",)):
+            profiles = with_lab(self.profiles, running_plans=running_plans)
+            for label, state in (
+                ("absent", absent("kind-control-plane")),
+                ("absent, older Docker", absent("kind-control-plane", "Error: ")),
+                ("stopped", inspected("kind-control-plane", status="exited")),
+                ("never started", inspected("kind-control-plane", status="created")),
+                ("dead", inspected("kind-control-plane", status="dead")),
+                # A stopped container holds no memory: its limits are not read.
+                (
+                    "stopped with other limits",
+                    inspected("kind-control-plane", status="exited", Memory=0),
+                ),
+            ):
+                with self.subTest(plans=running_plans, case=label):
+                    self.check_live(profiles, [state, absent("kind-registry")])
+            for status in ("running", "paused", "restarting", "removing"):
+                with self.subTest(plans=running_plans, status=status):
+                    with self.assertRaisesRegex(
+                        self.error,
+                        f"host container outside the active profile is {status}: "
+                        "kind-control-plane",
+                    ):
+                        self.check_live(
+                            profiles,
+                            [
+                                inspected("kind-control-plane", status=status),
+                                absent("kind-registry"),
+                            ],
+                        )
+
+    def test_live_host_container_data_is_fail_closed(self):
+        profiles = with_lab(self.profiles)
+        control_plane = inspected("kind-control-plane")
+        registry = inspected("kind-registry")
+
+        def rewritten(record, **fields):
+            return {**record, **fields}
+
+        def reinspected(**document):
+            record = json.loads(registry["stdout"])
+            record.update(document)
+            return rewritten(registry, stdout=json.dumps(record))
+
+        for label, containers, message in (
+            (
+                "no host container inventory",
+                None,
+                "live host container inventory must be a list",
+            ),
+            (
+                "declared container not read",
+                [control_plane],
+                "live host container data is missing: kind-registry",
+            ),
+            (
+                "container read twice",
+                [control_plane, registry, registry],
+                "not one declared container: 'kind-registry'",
+            ),
+            (
+                # The preflight reads declared names only: a record for any
+                # other one means its input and the contract disagree.
+                "record for a name the contract does not declare",
+                [control_plane, registry, absent("kind-worker")],
+                "not one declared container: 'kind-worker'",
+            ),
+            (
+                "record without stderr",
+                [control_plane, {k: v for k, v in registry.items() if k != "stderr"}],
+                "live host container record is malformed",
+            ),
+            (
+                "record with an extra key",
+                [control_plane, rewritten(registry, cmd=["docker"])],
+                "live host container record is malformed",
+            ),
+            (
+                "boolean return code",
+                [control_plane, rewritten(registry, rc=False)],
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "daemon unreachable",
+                [
+                    control_plane,
+                    rewritten(
+                        absent("kind-registry"),
+                        stderr="Cannot connect to the Docker daemon at "
+                        "unix:///var/run/docker.sock. Is the docker daemon running?",
+                    ),
+                ],
+                "cannot inspect live host container kind-registry: Cannot connect",
+            ),
+            (
+                "failure without a diagnostic",
+                [control_plane, rewritten(absent("kind-registry"), stderr="")],
+                "cannot inspect live host container kind-registry: exit code 1",
+            ),
+            (
+                "absence of another container",
+                [
+                    control_plane,
+                    rewritten(
+                        absent("kind-registry"),
+                        stderr="Error: No such container: kind-registry-old",
+                    ),
+                ],
+                "cannot inspect live host container kind-registry",
+            ),
+            (
+                "absence with output",
+                [control_plane, rewritten(absent("kind-registry"), stdout="[]")],
+                "cannot inspect live host container kind-registry",
+            ),
+            (
+                "template error",
+                [
+                    control_plane,
+                    rewritten(
+                        absent("kind-registry"),
+                        stderr="template parsing error: can't evaluate field Name",
+                    ),
+                ],
+                "cannot inspect live host container kind-registry",
+            ),
+            (
+                "output is not JSON",
+                [control_plane, rewritten(registry, stdout="running")],
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "output with an extra field",
+                [control_plane, reinspected(image="registry:2")],
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "another container read through an ID prefix",
+                [control_plane, reinspected(name="/kind-registry-old")],
+                "inspected container is not kind-registry",
+            ),
+            (
+                "unknown status",
+                [control_plane, reinspected(status="sleeping")],
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "host config missing",
+                [control_plane, reinspected(host_config=None)],
+                "live host container kind-registry is malformed",
+            ),
+            (
+                "memory as text",
+                [control_plane, inspected("kind-registry", Memory="64m")],
+                "kind-registry has an invalid Memory",
+            ),
+            (
+                "negative memory reservation",
+                [control_plane, inspected("kind-registry", MemoryReservation=-1)],
+                "kind-registry has an invalid MemoryReservation",
+            ),
+            (
+                "boolean cpu limit",
+                [control_plane, inspected("kind-registry", NanoCpus=True)],
+                "kind-registry has an invalid NanoCpus",
+            ),
+            (
+                "pids limit as text",
+                [control_plane, inspected("kind-registry", PidsLimit="256")],
+                "kind-registry has an invalid PidsLimit",
+            ),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(self.error, message):
+                    self.check_live(profiles, containers)
+        # The same holds for data of a group no plan runs.
+        with self.assertRaisesRegex(self.error, "cannot inspect"):
+            self.check_live(
+                with_lab(self.profiles, running_plans=()),
+                [
+                    absent("kind-control-plane"),
+                    rewritten(absent("kind-registry"), stderr="permission denied"),
+                ],
+            )
+
+    def test_cli_reads_the_preflight_envelope(self):
+        profiles = with_lab(self.profiles)
+        code, stdout, stderr = self.run_cli(
+            ["--host-container-names"], profiles=profiles
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), ["kind-control-plane", "kind-registry"])
+        live = ["--live", "--requested-stack", "edge"]
+        envelope = {
+            "services": self.services,
+            "host_containers": [inspected(name) for name in LAB_GROUP],
+        }
+        code, stdout, stderr = self.run_cli(live, json.dumps(envelope), profiles)
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("passed", stdout)
+        for label, stdin, message in (
+            (
+                "bare service list",
+                json.dumps(self.services),
+                "must hold exactly services and host_containers",
+            ),
+            (
+                "extra key",
+                json.dumps({**envelope, "networks": []}),
+                "must hold exactly services and host_containers",
+            ),
+            (
+                "containers not a list",
+                json.dumps({**envelope, "host_containers": {}}),
+                "live host container inventory must be a list",
+            ),
+            (
+                "services not a list",
+                json.dumps({**envelope, "services": {}}),
+                "live inventory must be a service list",
+            ),
+            ("not JSON", "services", "ERROR"),
+        ):
+            with self.subTest(case=label):
+                code, _stdout, stderr = self.run_cli(live, stdin, profiles)
+                self.assertEqual(code, 1)
+                self.assertIn(message, stderr)
+        with self.assertRaises(SystemExit):
+            self.run_cli(["--live", "--host-container-names"])
+
+    def test_preflight_reads_every_declared_container_before_the_live_check(self):
+        tasks = yaml.safe_load((ROOT / PROFILE_TASKS).read_text())
+
+        def argv(task):
+            return task.get("ansible.builtin.command", {}).get("argv", [])
+
+        names = next(t for t in tasks if "--host-container-names" in argv(t))
+        reads = next(t for t in tasks if argv(t)[1:3] == ["container", "inspect"])
+        services = next(t for t in tasks if argv(t)[1:3] == ["service", "inspect"])
+        check = next(t for t in tasks if "--live" in argv(t))
+        order = [tasks.index(task) for task in (services, names, reads, check)]
+        self.assertEqual(order, sorted(order))
+        for task in (names, reads, check):
+            self.assertIs(task["changed_when"], False)
+            self.assertIs(task["check_mode"], False)
+        # The contract is read on the controller, like the live check.
+        for task in (names, check):
+            self.assertEqual(task["delegate_to"], "localhost")
+            self.assertIs(task["become"], False)
+        # A missing container must reach the validator instead of failing.
+        self.assertIs(reads["failed_when"], False)
+        self.assertEqual(argv(reads)[0], "/usr/bin/docker")
+        self.assertEqual(argv(reads)[-1], "{{ item }}")
+        self.assertIn("capacity_preflight_host_container_names.stdout", reads["loop"])
+        read_format = " ".join(argv(reads))
+        for field in (
+            '"name":{{json .Name}}',
+            '"status":{{json .State.Status}}',
+            '"Memory":{{json .HostConfig.Memory}}',
+            '"MemoryReservation":{{json .HostConfig.MemoryReservation}}',
+            # The Go field is NanoCPUs; its JSON key is NanoCpus.
+            '"NanoCpus":{{json .HostConfig.NanoCPUs}}',
+            '"PidsLimit":{{json .HostConfig.PidsLimit}}',
+        ):
+            self.assertIn(field, read_format)
+        # Only the fields the validator compares are read.
+        self.assertNotIn("{{json .HostConfig}}", read_format)
+        self.assertEqual(
+            read_format.count("{{json .HostConfig."),
+            len(self.module.HOST_CONFIG_FIELDS),
+        )
+        # The exact stdin expression, rendered from synthetic registered
+        # results: loop bookkeeping is dropped, absences are kept.
+        service = {"name": "edge_traefik", "stack": "edge"}
+        bookkeeping = {"changed": False, "failed": False, "ansible_loop_var": "item"}
+        for label, results, expected in (
+            ("none declared", [], []),
+            (
+                "one absent, one running",
+                [
+                    {
+                        **absent("kind-registry"),
+                        **bookkeeping,
+                        "msg": "non-zero return code",
+                        "stderr_lines": ["No such container: kind-registry"],
+                    },
+                    {**inspected("kind-control-plane"), **bookkeeping},
+                ],
+                [absent("kind-registry"), inspected("kind-control-plane")],
+            ),
+        ):
+            with self.subTest(case=label):
+                probe = {
+                    "name": "Render the live inventory the validator reads",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "capacity_preflight_probe_stdin | from_json"
+                            " == capacity_preflight_probe_expected"
+                        ],
+                        "quiet": True,
+                    },
+                    "vars": {
+                        "capacity_preflight_probe_stdin": check[
+                            "ansible.builtin.command"
+                        ]["stdin"]
+                    },
+                }
+                completed = run_task_definition(
+                    probe,
+                    {
+                        "capacity_preflight_live_specs": {
+                            "results": [
+                                {"item": "id", "rc": 0, "stdout": json.dumps(service)}
+                            ]
+                        },
+                        "capacity_preflight_host_container_specs": {"results": results},
+                        "capacity_preflight_probe_expected": {
+                            "services": [service],
+                            "host_containers": expected,
+                        },
+                    },
+                )
+                self.assertEqual(
+                    completed.returncode, 0, completed.stdout + completed.stderr
+                )
 
 
 if __name__ == "__main__":
