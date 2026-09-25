@@ -260,9 +260,9 @@ Always dry-run before applying:
 
 Valid `--playbook` values for `scripts/deploy-ansible.sh` are: `platform`,
 `host-baseline`, `preflight-images`, `edge`, `workloads`, `observability`,
-`organizationweb`, `autoupdater`, `backup`, `site`. Valid `--profile` values
-are `production` (default) and `acme-staging` (edge playbook only, uses a
-separate ACME storage file).
+`organizationweb`, `racinggame`, `autoupdater`, `backup`, `site`. Valid
+`--profile` values are `production` (default) and `acme-staging` (edge
+playbook only, uses a separate ACME storage file).
 `scripts/bootstrap-host.sh` is a separate script (its own flags: `--host`,
 `--authorized-keys-file`, `--password-hash-file`,
 `--confirm-production`) that always drives playbook `bootstrap-host` under
@@ -504,9 +504,10 @@ rules whenever that unit runs. A `--playbook platform` apply runs the base
 firewall script outside the unit and disables it at boot. The unit is a
 `oneshot` with `RemainAfterExit=yes` that stays active, so `enable --now`
 would not run it again. **Do not apply `platform`** unless
-`systemctl enable dockerswarm-docker-firewall.service` and
-`systemctl restart dockerswarm-docker-firewall.service` follow immediately,
-and check that `iptables -S DOCKERSWARM-INGRESS` shows those rules again.
+`sudo -- systemctl enable dockerswarm-docker-firewall.service` and
+`sudo -- systemctl restart dockerswarm-docker-firewall.service` follow
+immediately, and check that `sudo -- iptables -S DOCKERSWARM-INGRESS` shows
+those rules again.
 
 The Swarm stacks `satisfactory-companions`, `satisfactory-events` and `sftp`
 are declared only by their measured resources in

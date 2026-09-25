@@ -194,6 +194,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `docs/DEPLOYMENT_STATUS.md` registra los applies del 2026-09-25 (aparcado
+  de Minecraft y OpenClaw, runners de n8n y memoria de `portfolio-alberto`),
+  los SHA-256 de los archivos en frío, las unidades systemd del host que el
+  repositorio no gestiona, el arreglo del Redis de Satisfactory hecho fuera
+  del repositorio y el rearranque del laboratorio AX. Los comandos de la
+  compuerta STOP 10 llevan `sudo --`, y las listas de playbooks de
+  `CLAUDE.md`, del agente `judge` y de `docs/CAPACITY.md` incluyen
+  `racinggame`.
+
 - El entryPoint `websecure` pasa a `readTimeout: 3600s` y
   `writeTimeout: 0s`. Traefik fijó en v2.11.2 un `readTimeout` por defecto
   de 60s que acota la petición completa, y Go no limpia ese deadline en una
