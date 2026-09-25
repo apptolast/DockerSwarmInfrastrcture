@@ -542,6 +542,135 @@ class WorkloadContainerGateTests(unittest.TestCase):
             with self.assertRaises(container_gate.ContainerGateError):
                 container_gate.validate_containers([inspected], self.contract)
 
+    def test_external_observatorio_node_exporter_is_accepted_read_only(
+        self,
+    ) -> None:
+        database_path = next(iter(self.contract))
+        labels = {
+            "com.docker.compose.project": "monitor-production",
+            "com.docker.compose.service": "node-exporter",
+            "com.docker.compose.oneoff": "False",
+        }
+        root = {"Type": "bind", "Source": "/", "Destination": "/host", "RW": False}
+        unrelated = {
+            "Type": "bind",
+            "Source": "/srv/observer-captures",
+            "Destination": "/captures",
+            "RW": False,
+        }
+        writable_database = {
+            "Type": "bind",
+            "Source": database_path,
+            "Destination": "/data",
+            "RW": True,
+        }
+
+        def observer(mounts, *, user="nobody", **label_changes):
+            candidate_labels = {**labels, **label_changes}
+            return {
+                "Id": "observatorio-node-exporter",
+                "Config": {
+                    "User": user,
+                    "Labels": {
+                        key: value
+                        for key, value in candidate_labels.items()
+                        if value is not None
+                    },
+                },
+                "Mounts": mounts,
+            }
+
+        # The live shape: the host root read-only plus an unrelated mount.
+        container_gate.validate_containers([observer([root, unrelated])], self.contract)
+        for user in ("65534", "65534:65534"):
+            container_gate.validate_containers(
+                [observer([root], user=user)], self.contract
+            )
+        without_rw = {key: value for key, value in root.items() if key != "RW"}
+        unsafe_mount = "unsafe database-overlapping mount"
+        rejected = [
+            ("writable root", observer([{**root, "RW": True}]), unsafe_mount),
+            ("RW missing", observer([without_rw]), unsafe_mount),
+            (
+                "volume instead of bind",
+                observer([{**root, "Type": "volume"}]),
+                unsafe_mount,
+            ),
+            (
+                "other destination",
+                observer([{**root, "Destination": "/rootfs"}]),
+                unsafe_mount,
+            ),
+            (
+                "database path itself",
+                observer([{**root, "Source": database_path}]),
+                unsafe_mount,
+            ),
+            (
+                "root then writable database",
+                observer([root, writable_database]),
+                unsafe_mount,
+            ),
+            (
+                "writable database then root",
+                observer([writable_database, root]),
+                unsafe_mount,
+            ),
+        ]
+        for user in (
+            "root",
+            "0",
+            "0:0",
+            "00",
+            "+0",
+            "ROOT",
+            "65534:0",
+            "nobody:root",
+            "",
+            None,
+            ["nobody"],
+        ):
+            rejected.append(
+                (
+                    f"runs as {user!r}",
+                    observer([root], user=user),
+                    "reviewed non-root user",
+                )
+            )
+        for key, value in (
+            ("com.docker.compose.oneoff", "True"),
+            ("com.docker.compose.oneoff", "false"),
+            ("com.docker.compose.oneoff", None),
+            ("com.docker.swarm.service.name", "workloads_n8n-db"),
+            ("com.docker.swarm.task.id", "task-id"),
+            ("com.docker.swarm.task.name", "x.1.task-id"),
+            ("com.docker.stack.namespace", "observability"),
+        ):
+            rejected.append(
+                (
+                    f"label {key}={value}",
+                    observer([root], **{key: value}),
+                    "reviewed long-running Compose service",
+                )
+            )
+        # Another Compose project or service is not the external observer, so
+        # the generic overlap rule rejects it.
+        for key, value in (
+            ("com.docker.compose.service", "api"),
+            ("com.docker.compose.project", "monitor-staging"),
+        ):
+            rejected.append(
+                (
+                    f"label {key}={value}",
+                    observer([root], **{key: value}),
+                    "overlaps",
+                )
+            )
+        for label, inspected, cause in rejected:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(container_gate.ContainerGateError, cause):
+                    container_gate.validate_containers([inspected], self.contract)
+
 
 class WorkloadNetworkIsolationTests(unittest.TestCase):
     @classmethod

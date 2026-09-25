@@ -18,6 +18,20 @@ READ_ONLY_OBSERVER_TARGETS = {
     "observability_cadvisor": "/rootfs",
     "observability_node-exporter": "/host",
 }
+COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
+COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff"
+# Compose observers the owner runs outside this repository with a read-only
+# host-root bind like the observability node-exporter's
+# (docs/DEPLOYMENT_STATUS.md, "Deriva fuera del repositorio"). Keyed by
+# Compose project and service; renaming either blocks the workloads apply
+# again.
+EXTERNAL_READ_ONLY_OBSERVER_TARGETS = {
+    ("monitor-production", "node-exporter"): "/host",
+}
+# The reviewed `nobody` user of prom/node-exporter, matched exactly: any other
+# spelling, such as uid 0, `00` or group 0, stays rejected.
+EXTERNAL_OBSERVER_USERS = frozenset({"nobody", "65534", "65534:65534"})
 
 
 class ContainerGateError(RuntimeError):
@@ -71,7 +85,7 @@ def validate_containers(
         labels = container.get("Config", {}).get("Labels") or {}
         if not isinstance(labels, dict):
             raise ContainerGateError(f"container {container_id} has invalid labels")
-        if labels.get("com.docker.compose.project") == RESTORE_COMPOSE_PROJECT:
+        if labels.get(COMPOSE_PROJECT_LABEL) == RESTORE_COMPOSE_PROJECT:
             raise ContainerGateError(
                 f"restore Compose container still exists: {container_id}"
             )
@@ -97,6 +111,41 @@ def validate_containers(
             service_name = labels.get(SWARM_SERVICE_LABEL)
             task_id = labels.get(SWARM_TASK_ID_LABEL)
             task_name = labels.get(SWARM_TASK_NAME_LABEL)
+            external_target = EXTERNAL_READ_ONLY_OBSERVER_TARGETS.get(
+                (
+                    labels.get(COMPOSE_PROJECT_LABEL),
+                    labels.get(COMPOSE_SERVICE_LABEL),
+                )
+            )
+            if external_target is not None:
+                user = container.get("Config", {}).get("User")
+                if not isinstance(user, str) or user not in EXTERNAL_OBSERVER_USERS:
+                    raise ContainerGateError(
+                        f"external observer container {container_id} does not "
+                        "run as the reviewed non-root user"
+                    )
+                if (
+                    labels.get(COMPOSE_ONEOFF_LABEL) != "False"
+                    or service_name is not None
+                    or task_id is not None
+                    or task_name is not None
+                    or labels.get(SWARM_STACK_LABEL) is not None
+                ):
+                    raise ContainerGateError(
+                        f"external observer container {container_id} is not the "
+                        "reviewed long-running Compose service"
+                    )
+                if (
+                    source == "/"
+                    and mount.get("Destination") == external_target
+                    and mount.get("Type") == "bind"
+                    and mount.get("RW") is False
+                ):
+                    continue
+                raise ContainerGateError(
+                    f"external observer container {container_id} has an unsafe "
+                    "database-overlapping mount"
+                )
             observer_target = READ_ONLY_OBSERVER_TARGETS.get(service_name)
             if observer_target is not None:
                 if (
