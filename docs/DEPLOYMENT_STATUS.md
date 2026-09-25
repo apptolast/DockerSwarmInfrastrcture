@@ -8,13 +8,39 @@ host antes del primer despliegue real de este árbol.
 
 Por decisión del propietario (2026-09-25), `config/platform.yml` declara
 Minecraft y OpenClaw aparcados (`platform_parked_workloads`) para liberar RAM
-y CPU del host. Es estado declarado. Para aparcar se aplica `workloads`,
-luego `edge` y luego `observability` si está desplegado; mientras `edge` no
-pueda aplicarse (ver «Deriva fuera del repositorio») se aplica solo
-`workloads`. La evidencia del apply y los SHA-256 de los archivos en frío
-bajo `/var/backups/dockerswarm/parked` se añaden aquí cuando se verifican.
-Sus datos siguen en `/srv/dockerswarm/services`. Procedimiento en
+y CPU del host. Para aparcar se aplica `workloads`, luego `edge` y luego
+`observability` si está desplegado; mientras `edge` no pueda aplicarse (ver
+«Deriva fuera del repositorio») se aplica solo `workloads`. Sus datos siguen
+en `/srv/dockerswarm/services`. Procedimiento en
 [OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
+
+Aplicado el 2026-09-25 con `--playbook workloads --local` desde `main` en
+`7361203` (#59, #60 y #61):
+
+- `--check`: `ok=74 changed=2 failed=0`.
+- `--confirm-production` (09:47-09:49 UTC): `ok=164 changed=5 failed=0`;
+  repetido: `ok=164 changed=0 failed=0`. Las dos operaciones liberaron el
+  lock sin dejar marker.
+- `workloads_minecraft=0/0` y `workloads_openclaw=0/0`, sin contenedores;
+  los otros trece servicios en `1/1`. Ningún proceso del host escucha en el
+  25565.
+- `openclaw.apptolast.com` responde `503`; el resto de rutas públicas
+  responde igual que antes del apply.
+- Memoria disponible: 3 002 MiB antes del apply y 6 745 MiB después, sin
+  swap; la presión de memoria (PSI) bajó a casi cero.
+- `edge` no se aplicó (compuerta STOP 10).
+
+Archivos en frío tomados en `0/0` bajo el lock host-global
+(`parked-cold-archive`), `0600 root:root`:
+
+<!-- markdownlint-disable MD013 -->
+
+| Archivo | Bytes | Entradas | SHA-256 |
+| --- | ---: | ---: | --- |
+| `minecraft-cold-20260925T095312Z.tar.zst` | 2 352 288 645 | 2 601 | `14954f6f96c3f05bdd7a40664282645217f377e7abf360a1a4cfbd801c06bef1` |
+| `openclaw-cold-20260925T095312Z.tar.zst` | 42 191 531 | 8 230 | `a6ac4fee4d86af91181d9242f8a9c5231cb1983e6b755e81b25507e3ede4d80d` |
+
+<!-- markdownlint-enable MD013 -->
 
 Antes de aparcar se tomó además un archivo en caliente de Minecraft con el
 protocolo RCON del backup (`save-off`, `save-all flush`, `save-on`), sin
@@ -95,11 +121,11 @@ aquí:
   al arranque. La unidad es `oneshot` con `RemainAfterExit=yes` y sigue
   activa, así que `enable --now` no la vuelve a ejecutar. Tras el apply, SFTP
   y Satisfactory quedan cerrados hasta
-  `systemctl enable dockerswarm-docker-firewall.service` seguido de
-  `systemctl restart dockerswarm-docker-firewall.service`, y
-  `iptables -S DOCKERSWARM-INGRESS` debe volver a mostrar sus reglas. Los
-  roles de este repositorio no borran esos drop-ins, pero un servidor
-  reconstruido desde aquí no los tendría.
+  `sudo -- systemctl enable dockerswarm-docker-firewall.service` seguido de
+  `sudo -- systemctl restart dockerswarm-docker-firewall.service`, y
+  `sudo -- iptables -S DOCKERSWARM-INGRESS` debe volver a mostrar sus
+  reglas. Los roles de este repositorio no borran esos drop-ins, pero un
+  servidor reconstruido desde aquí no los tendría.
 - Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
   Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
   las rutas de `satisfactory.apptolast.com` (web, websocket y
@@ -113,6 +139,23 @@ aquí:
   del Traefik vivo lo marca caído (su ruta responde `503`) y registra un WARN
   `Health check failed.` cada 15 s. El backend sin servidores de este
   repositorio lo elimina en cuanto `edge` pueda aplicarse.
+
+Unidades systemd del host que tampoco gestiona este repositorio:
+`satisfactory-backup.timer`, `satisfactory-backup-check.timer`,
+`satisfactory-stable-update.timer` (con `satisfactory-maintenance@.service`),
+`satisfactory-log-collector.service`, `monitor-endpoints.timer`,
+`monitor-swarm.timer` y `apptolast-sftp-chain.service`, que prepara la
+cadena IPv4 de la jail de Fail2ban de SFTP antes de `fail2ban.service`.
+
+El proyecto Compose `satisfactory` (`/srv/satisfactory`) se despliega desde
+otro repositorio. El 2026-09-25 su Redis estaba lleno (`maxmemory 80mb` con
+`noeviction`) y la web devolvía `500` al guardar la sesión. En
+`/srv/satisfactory/redis.conf` la política pasó a `volatile-lru`, que solo
+expulsa claves con caducidad y deja intacta la cola de Horizon. Se editó en
+el mismo inodo que monta el contenedor y se aplicó en vivo con
+`CONFIG SET`; la copia anterior quedó en
+`redis.conf.pre-volatile-lru-20260925`. Ese cambio tiene que llegar a su
+repositorio de origen.
 
 La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`. Mientras
 siga cerrada, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
@@ -133,7 +176,9 @@ arriba.
   `kind-registry`, fuera de Swarm y del contrato de capacidad. Esos
   3 584 MiB equivalen a toda la reserva del contrato para el host, así que
   con el laboratorio en marcha un preflight de capacidad en verde no
-  garantiza margen real. Es un ensayo manual pendiente de codificarse en su
+  garantiza margen real. El nodo se paró el 2026-09-25 a las 07:36 UTC para
+  retirar el swap antes de aparcar, y volvió a arrancarse a las 10:07 UTC,
+  con los 28 pods listos. Es un ensayo manual pendiente de codificarse en su
   propio cambio revisado; hasta entonces no forma parte del estado
   reconstruible. Sale de esta lista cuando ese cambio lo codifique o, si se
   descarta, cuando se borren el clúster, el registro y `/opt/ax-lab`.
@@ -161,6 +206,20 @@ El nodo declara las etiquetas `platform.edge` y `platform.workloads`, existen
 las nueve redes overlay aisladas, UFW mantiene exactamente trece reglas de
 egress más `80/tcp` y `443/tcp` de ingress, y `22/tcp` conservó su límite de
 tasa durante todo el proceso.
+
+### Runners de n8n y memoria de `portfolio-alberto` (2026-09-25)
+
+`--playbook workloads --local` desde `main` en `1fa9c10` (#62 y #63):
+
+- `--check`: `ok=74 changed=2 failed=0`.
+- `--confirm-production` (10:40-10:43 UTC): `ok=164 changed=8 failed=0`;
+  repetido: `ok=164 changed=0 failed=0`. Ninguna operación dejó marker.
+- `workloads_n8n-runners` corre sobre `n8nio/runners:2.31.5`, la misma
+  versión que n8n (etiqueta `org.opencontainers.image.version`), y n8n
+  registró sus dos lanzadores, `launcher-javascript` y `launcher-python`.
+- `workloads_portfolio-alberto` tiene 256 MiB de límite y 128 MiB de reserva.
+- Todos los servicios siguen en `1/1`, salvo los aparcados en `0/0`, y todas
+  las rutas públicas responden igual que antes.
 
 ## Runtime regenerado
 

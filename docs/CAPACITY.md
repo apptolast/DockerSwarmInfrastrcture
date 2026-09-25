@@ -224,7 +224,7 @@ El validador:
   swap inesperada y presupuesto excedido.
 
 Los playbooks `site`, `edge`, `workloads`, `observability`,
-`organizationweb` y `autoupdater` ejecutan
+`organizationweb`, `racinggame` y `autoupdater` ejecutan
 `capacity_preflight` antes de cualquier rol que muta el servidor. El preflight
 recopila los facts de hardware aunque el playbook parcial desactive el
 gathering general y detiene la ejecución si el host o el plan global no
