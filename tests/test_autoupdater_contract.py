@@ -334,8 +334,38 @@ class AutoupdaterWiringTests(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             profiles.main(["--live", "--requested-stack", "autoupdater-extra"])
-        # The exact argv capacity_preflight passes for `--playbook autoupdater`.
-        live = json.dumps([{"name": "autoupdater_shepherd", "stack": "autoupdater"}])
+        # The exact argv capacity_preflight passes for `--playbook autoupdater`,
+        # with the external stacks config/capacity-profiles.yml declares live.
+        external = yaml.safe_load(
+            (ROOT / "config/capacity-profiles.yml").read_text(encoding="utf-8")
+        )["capacity_profiles"]["external_stacks"]
+        live = json.dumps(
+            [
+                {"name": "autoupdater_shepherd", "stack": "autoupdater"},
+                *(
+                    {
+                        "name": f"{stack}_{name}",
+                        "stack": stack,
+                        "mode": {"Replicated": {"Replicas": service["replicas"]}},
+                        "resources": {
+                            key: {
+                                "NanoCPUs": service[resource_class]["cpu_millicores"]
+                                * 1_000_000,
+                                "MemoryBytes": service[resource_class]["memory_mib"]
+                                * 1024
+                                * 1024,
+                            }
+                            for key, resource_class in (
+                                ("Limits", "limits"),
+                                ("Reservations", "reservations"),
+                            )
+                        },
+                    }
+                    for stack, services in external.items()
+                    for name, service in services.items()
+                ),
+            ]
+        )
         with mock.patch("sys.stdin", io.StringIO(live)), mock.patch(
             "sys.stdout", io.StringIO()
         ):
