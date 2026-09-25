@@ -305,6 +305,23 @@ lock:
     descargar la clave y borrarlo. La tarea que instala el keyring no
     informa cambios.
 
+### `host-baseline` converge a `changed=0` (2026-09-25)
+
+`--playbook host-baseline --local --confirm-production` desde `main` en
+`0028bca` (#71):
+
+- Apply (17:30-17:34 UTC): `ok=219 changed=2 failed=0`. Los dos cambios son
+  los metadatos del despliegue, que registran el commit nuevo. Sin handlers
+  ni avisos.
+- Repetido (17:34-17:37 UTC): `ok=219 changed=0 failed=0`, sin handlers ni
+  avisos.
+- El bouncer de CrowdSec no se reinició en ninguno de los dos: su arranque
+  sigue siendo el de las 13:41:19 UTC. Ninguna prueba `-t` corrió, así que
+  no hubo hueco sin filtrado.
+- `-A INPUT -j CROWDSEC_CHAIN` sigue presente en IPv4 y en IPv6, y
+  `DOCKER-USER`, `DOCKERSWARM-INGRESS` y `SFTP-SWARM` son idénticas byte a
+  byte a las de antes del apply. Ninguna operación dejó marker.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como

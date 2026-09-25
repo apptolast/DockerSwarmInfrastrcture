@@ -232,6 +232,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `docs/DEPLOYMENT_STATUS.md` registra el apply de `host-baseline` desde
+  `0028bca` (#71): `changed=2` de metadatos y una repetición con
+  `changed=0`, sin reiniciar el bouncer de CrowdSec.
+
 - `docs/DEPLOYMENT_STATUS.md` registra los applies de `ax-lab` y
   `host-baseline` del 2026-09-25: el paso al snapshot `20260924T000000Z`
   con 19 paquetes, `fs.suid_dumpable=0` y `kernel.core_pattern=|/bin/false`
@@ -633,10 +637,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 ### Fixed
 
 - Un segundo apply de `host-baseline` sobre un host convergido debe informar
-  `changed=0`; el 2026-09-25 informó `changed=6`. Todavía no se ha medido
-  con este cambio. Además de las pruebas del bouncer de CrowdSec (ver
-  «Security»), dos partes de `host_security`, que también aplican `platform`
-  y `site`, informaban de cambios en cada apply:
+  `changed=0`; el 2026-09-25 informó `changed=6`. Con este cambio, medido el
+  mismo día, informó `changed=0` (ver `docs/DEPLOYMENT_STATUS.md`). Además
+  de las pruebas del bouncer de CrowdSec (ver «Security»), dos partes de
+  `host_security`, que también aplican `platform` y `site`, informaban de
+  cambios en cada apply:
   - `ufw logging low` reescribe `/etc/ufw/ufw.conf` y las cadenas de logging
     de UFW y siempre responde «Logging enabled», así que la tarea siempre
     informaba de un cambio. Ahora se lee `/etc/ufw/ufw.conf` con `slurp` y
