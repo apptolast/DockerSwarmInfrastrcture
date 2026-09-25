@@ -313,17 +313,30 @@ def bind_sources(service: dict[str, Any]) -> list[str]:
     return result
 
 
+DOCKERFILE_FROM = re.compile(
+    r"^[ \t]*FROM[ \t]+(?:--platform=\S+[ \t]+)?(?P<image>\S+)"
+    r"(?:[ \t]+AS[ \t]+\S+)?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 RUNNER_BASE_PATTERN = re.compile(
-    r"^FROM docker\.io/n8nio/runners:(?P<tag>[^@\s]+)@sha256:[0-9a-f]{64}\s*$",
-    re.MULTILINE,
+    r"docker\.io/n8nio/runners:(?P<tag>[^@\s]+)@(?P<digest>sha256:[0-9a-f]{64})"
+)
+RUNNER_LABEL_PATTERN = re.compile(
+    r'org\.opencontainers\.image\.description="n8n (?P<tag>\S+) task runners'
 )
 N8N_APP_PATTERN = re.compile(
     r"docker\.io/n8nio/n8n:(?P<tag>[^@\s]+)@sha256:[0-9a-f]{64}"
 )
+# Reviewed n8nio/runners index digest for each n8n hold version. A tag is
+# only text (docs/AUTOUPDATE.md): moving the n8n hold adds its reviewed
+# runners digest here in the same change.
+REVIEWED_RUNNER_BASES = {
+    "2.31.5": "sha256:ac5ed40759bfe754cc8ab91ed2a1db6795015173084411f4392bc2dc608833b3",
+}
 
 
 def validate_runner_base(dockerfile: Path, n8n_reference: str) -> None:
-    """Keep the runners base on the n8n version, as n8n requires.
+    """Keep the runners base on the rendered n8n hold, as n8n requires.
 
     https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners
     ("the n8nio/runners image version must match that of the n8nio/n8n
@@ -331,19 +344,33 @@ def validate_runner_base(dockerfile: Path, n8n_reference: str) -> None:
     """
     try:
         text = dockerfile.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ContractError("cannot read the n8n runner Dockerfile") from exc
-    bases = [match["tag"] for match in RUNNER_BASE_PATTERN.finditer(text)]
+    images = [match["image"] for match in DOCKERFILE_FROM.finditer(text)]
     app = N8N_APP_PATTERN.fullmatch(n8n_reference)
-    if len(bases) != 1 or app is None:
+    # Any other mention, even in a continued line or another stage, would be
+    # a second runners base the FROM parser could miss.
+    if app is None or not images or text.lower().count("n8nio/runners") != 1:
         raise ContractError(
-            "n8n runner base or n8n app image is not one pinned reference"
+            "n8n runner image must build its final stage on the only "
+            "n8nio/runners base"
         )
-    if bases[0] != app["tag"]:
+    base = RUNNER_BASE_PATTERN.fullmatch(images[-1])
+    if base is None:
         raise ContractError(
-            f"n8n runner base {bases[0]} differs from n8n {app['tag']}; "
+            "n8n runner base must be docker.io/n8nio/runners:<version>@sha256:<digest>"
+        )
+    if base["tag"] != app["tag"]:
+        raise ContractError(
+            f"n8n runner base {base['tag']} differs from n8n {app['tag']}; "
             "n8n requires the same version"
         )
+    if REVIEWED_RUNNER_BASES.get(base["tag"]) != base["digest"]:
+        raise ContractError(
+            f"n8n runner base {base['tag']} is not the reviewed index digest"
+        )
+    if RUNNER_LABEL_PATTERN.findall(text) != [base["tag"]]:
+        raise ContractError("n8n runner image label names another n8n version")
 
 
 def validate_stack(
@@ -695,9 +722,10 @@ def main() -> int:
             )
         except runner_manager.RunnerImageError as exc:
             raise ContractError(str(exc)) from exc
+        channels = validate_image_channels(image_channels, services, approved)
         validate_runner_base(
             args.runner_context / "Dockerfile",
-            find_image(approved, "n8n", "app"),
+            channels["n8n"]["reference"],
         )
         validate_stack(
             stack,

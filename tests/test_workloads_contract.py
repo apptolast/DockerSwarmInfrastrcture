@@ -1400,65 +1400,179 @@ class WorkloadDeploymentIdentityTests(unittest.TestCase):
 
 class N8nRunnerBaseVersionTests(unittest.TestCase):
     DOCKERFILE = REPOSITORY_ROOT / "images/n8n-runners/Dockerfile"
+    CONTEXT = REPOSITORY_ROOT / "images/n8n-runners"
 
     def setUp(self) -> None:
         services = workload_validator.load_yaml(REPOSITORY_ROOT / "config/services.yml")
         approved = {item["id"]: item for item in services["approved_services"]}
-        self.reference = workload_validator.find_image(approved, "n8n", "app")
+        channels = workload_validator.validate_image_channels(
+            workload_validator.load_unique_yaml(
+                REPOSITORY_ROOT / "config/image-channels.yml"
+            ),
+            services,
+            approved,
+        )
+        # The rendered n8n hold, not the restore-bound catalog baseline.
+        self.reference = channels["n8n"]["reference"]
         self.tag = workload_validator.N8N_APP_PATTERN.fullmatch(self.reference)["tag"]
         self.original = self.DOCKERFILE.read_text(encoding="utf-8")
-        bases = workload_validator.RUNNER_BASE_PATTERN.findall(self.original)
-        self.assertEqual(len(bases), 1)
         self.base = next(
             line
             for line in self.original.splitlines()
             if line.startswith("FROM docker.io/n8nio/runners:")
         )
+        self.digest = workload_validator.REVIEWED_RUNNER_BASES[self.tag]
+
+    def assert_rejected(self, text: str, reference: str | None = None) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dockerfile"
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(workload_validator.ContractError):
+                workload_validator.validate_runner_base(
+                    path, self.reference if reference is None else reference
+                )
 
     def test_repository_runner_base_matches_the_n8n_hold(self) -> None:
         workload_validator.validate_runner_base(self.DOCKERFILE, self.reference)
+        # The same base with a platform flag and a stage alias is still it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dockerfile"
+            path.write_text(
+                self.original.replace(
+                    self.base,
+                    self.base.replace("FROM ", "from --platform=linux/amd64 ")
+                    + " AS final",
+                ),
+                encoding="utf-8",
+            )
+            workload_validator.validate_runner_base(path, self.reference)
 
     def test_mismatched_or_ambiguous_runner_base_is_rejected(self) -> None:
-        digest = "@sha256:" + "a" * 64
-        runners = "FROM docker.io/n8nio/runners:"
+        other = "@sha256:" + "a" * 64
+        runners = "docker.io/n8nio/runners"
+        appended_stage = "\nFROM {} AS final\nUSER runner\n"
         dockerfiles = {
             "newer runners": self.original.replace(
-                self.base, f"{runners}9.99.9{digest}"
+                self.base, f"FROM {runners}:9.99.9{other}"
             ),
             "unpinned runners": self.original.replace(
-                self.base, f"{runners}{self.tag}"
+                self.base, f"FROM {runners}:{self.tag}"
+            ),
+            "same tag, unreviewed digest": self.original.replace(
+                self.digest, "sha256:" + "b" * 64
             ),
             "two runners bases": f"{self.original}\n{self.base}\n",
             "no runners base": self.original.replace(
-                self.base, f"FROM docker.io/library/node:26{digest}"
+                self.base, f"FROM docker.io/library/node:26{other}"
+            ),
+            "runners not in the final stage": (
+                f"{self.original}\nFROM docker.io/library/node:26{other}\n"
+            ),
+            "label names another version": self.original.replace(
+                f'"n8n {self.tag} task runners', '"n8n 9.99.9 task runners'
+            ),
+            "continued FROM line": self.original.replace(
+                self.base, self.base.replace("FROM ", "FROM \\\n  ")
+            ),
+            "only a continued FROM": self.base.replace("FROM ", "FROM \\\n  "),
+            "no FROM at all": "# docker.io/n8nio/runners\nUSER runner\n",
+            "uppercase runners stage before the base": self.original.replace(
+                self.base, f"FROM N8NIO/RUNNERS:2.32.6{other} AS extra\n{self.base}"
+            ),
+            "runners under another registry": self.original.replace(
+                self.base, self.base.replace("FROM ", "FROM mirror.example/")
             ),
         }
-        references = {
+        for label, image in {
+            "appended stage without registry": f"n8nio/runners:2.32.6{other}",
+            "appended lowercase stage": f"{runners}:2.32.6{other}",
+            "appended unpinned stage": f"{runners}:2.32.6",
+            "appended stage with alias": f"{runners}:2.32.6{other}",
+        }.items():
+            text = self.original + appended_stage.format(image)
+            if label == "appended lowercase stage":
+                text = text.replace("\nFROM " + image, "\nfrom " + image)
+            dockerfiles[label] = text
+        for label, text in dockerfiles.items():
+            with self.subTest(case=label):
+                self.assert_rejected(text)
+        for label, reference in {
             "newer n8n": self.reference.replace(f":{self.tag}@", ":9.99.9@"),
             "n8n without tag": self.reference.replace(f":{self.tag}@", "@"),
             "n8n from another image": self.reference.replace(
                 "n8nio/n8n:", "n8nio/runners:"
             ),
             "n8n under another registry": f"mirror.example/{self.reference}",
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "Dockerfile"
-            for label, text in dockerfiles.items():
-                with self.subTest(case=label):
-                    path.write_text(text, encoding="utf-8")
-                    with self.assertRaises(workload_validator.ContractError):
-                        workload_validator.validate_runner_base(path, self.reference)
-            for label, reference in references.items():
-                with self.subTest(case=label):
-                    with self.assertRaises(workload_validator.ContractError):
-                        workload_validator.validate_runner_base(
-                            self.DOCKERFILE, reference
-                        )
-            with self.subTest(case="missing Dockerfile"):
+        }.items():
+            with self.subTest(case=label):
+                self.assert_rejected(self.original, reference)
+        with self.subTest(case="missing Dockerfile"):
+            with tempfile.TemporaryDirectory() as directory:
                 with self.assertRaises(workload_validator.ContractError):
                     workload_validator.validate_runner_base(
                         Path(directory) / "absent", self.reference
                     )
+
+    def run_cli(
+        self, directory: str, dockerfile: str, image_channels: Path
+    ) -> subprocess.CompletedProcess[str]:
+        context = Path(directory) / "n8n-runners"
+        shutil.copytree(self.CONTEXT, context)
+        (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+        stack = Path(directory) / "stack.yml"
+        stack.write_text("{}\n", encoding="utf-8")
+        return subprocess.run(
+            [
+                sys.executable,
+                str(REPOSITORY_ROOT / "scripts/validate-workloads.py"),
+                "--stack",
+                str(stack),
+                "--platform",
+                str(REPOSITORY_ROOT / "config/platform.yml"),
+                "--services",
+                str(REPOSITORY_ROOT / "config/services.yml"),
+                "--image-channels",
+                str(image_channels),
+                "--secrets",
+                str(REPOSITORY_ROOT / "stacks/workloads/secrets.yml"),
+                "--config-dir",
+                directory,
+                "--runner-context",
+                str(context),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_cli_rejects_a_runner_base_off_the_n8n_hold(self) -> None:
+        channels = REPOSITORY_ROOT / "config/image-channels.yml"
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_cli(
+                directory,
+                self.original.replace(
+                    self.base,
+                    "FROM docker.io/n8nio/runners:2.32.6@sha256:"
+                    "9c9ddc41410b56650605f44c3af6366abb467c33176569be371ccc5f476439fc",
+                ),
+                channels,
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"differs from n8n {self.tag}", result.stderr)
+        # Moving only the rendered n8n hold (config/image-channels.yml) must
+        # also stop the contract, even though the restore catalog keeps the
+        # old version.
+        with tempfile.TemporaryDirectory() as directory:
+            moved = Path(directory) / "image-channels.yml"
+            moved.write_text(
+                channels.read_text(encoding="utf-8").replace(
+                    f"docker.io/n8nio/n8n:{self.tag}@", "docker.io/n8nio/n8n:9.99.9@"
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_cli(directory, self.original, moved)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("differs from n8n 9.99.9", result.stderr)
 
 
 class N8nRunnerImageContractTests(unittest.TestCase):

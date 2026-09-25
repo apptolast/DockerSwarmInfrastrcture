@@ -152,8 +152,13 @@ The reviewed upstream source is
 The runners base image stays on the exact n8n version, as
 [n8n requires](https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners#setting-up-external-mode);
 nothing rejects a mismatch at connection time, so
-`scripts/validate-workloads.py` does. Dependabot ignores `n8nio/runners`:
-upgrade it together with the n8n version hold, in one reviewed change.
+`scripts/validate-workloads.py` does. It compares the final `FROM` of
+`images/n8n-runners/Dockerfile` with the rendered n8n hold in
+`config/image-channels.yml`, requires the reviewed index digest for that
+version (`REVIEWED_RUNNER_BASES`) and the same version in the image label, and
+rejects any other `n8nio/runners` reference. Dependabot ignores
+`n8nio/runners`: upgrade it together with the n8n hold, in one reviewed change
+that also adds the new reviewed digest.
 
 `ONLINE_MODE=false` is retained solely as restored application behavior while
 the host/perimeter gate keeps public Minecraft disabled. Do not set

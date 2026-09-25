@@ -37,6 +37,7 @@ updates:
       interval: weekly
     # n8n requires the runners image on the exact n8n version, and n8n is a
     # reviewed version hold: both move together in one reviewed change.
-    # scripts/validate-workloads.py rejects any other pairing.
+    # scripts/validate-workloads.py rejects a runners base off the rendered
+    # n8n hold (config/image-channels.yml) or off its reviewed digest.
     ignore:
       - dependency-name: n8nio/runners
