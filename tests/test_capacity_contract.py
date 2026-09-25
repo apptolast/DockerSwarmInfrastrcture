@@ -58,11 +58,11 @@ class CapacityContractTests(unittest.TestCase):
             {
                 "reservations": {
                     "cpu_millicores": 2870,
-                    "memory_mib": 3922,
+                    "memory_mib": 4050,
                 },
                 "limits": {
                     "cpu_millicores": 13950,
-                    "memory_mib": 7789,
+                    "memory_mib": 8045,
                 },
             },
         )
@@ -73,15 +73,18 @@ class CapacityContractTests(unittest.TestCase):
                 "limits": {"cpu_millicores": 250, "memory_mib": 45},
             },
         )
-        # With Minecraft (4096 MiB) and OpenClaw (512 MiB) running, the full
-        # platform uses the whole memory-limit budget; parked, they free it.
+        # Minecraft (4096 MiB) and OpenClaw (512 MiB) are parked. On
+        # 2026-09-25 Traefik and portfolio-alberto took 256 MiB of the limit
+        # budget they freed, so running both again would exceed it by exactly
+        # that much: unparking needs a capacity decision (docs/CAPACITY.md).
         allocatable = (
             contract["host"]["minimum_memory_mib"]
             - contract["system_reserve"]["memory_mib"]
             - contract["operational_headroom"]["memory_mib"]
         )
         self.assertEqual(
-            totals["aggregate"]["limits"]["memory_mib"] + 4096 + 512, allocatable
+            totals["aggregate"]["limits"]["memory_mib"] + 4096 + 512,
+            allocatable + 256,
         )
 
     def test_the_four_stacks_are_all_required(self) -> None:
@@ -169,8 +172,9 @@ class CapacityContractTests(unittest.TestCase):
                     capacity.CapacityError, "autoupdater rendered totals differ"
                 ):
                     capacity.validate_stacks(contract, documents)
-        # Re-reviewing the totals cannot buy memory beyond the host budget. With
-        # Minecraft and OpenClaw running again the full platform fills it.
+        # Re-reviewing the totals cannot buy memory beyond the host budget.
+        # With Minecraft and OpenClaw running again the full platform exceeds
+        # it by the 256 MiB Traefik and portfolio-alberto took on 2026-09-25.
         document = copy.deepcopy(self.contract_document)
         totals = document["capacity_contract"]["reviewed_totals"]
         for stack_id in ("workloads", "aggregate"):
@@ -180,20 +184,32 @@ class CapacityContractTests(unittest.TestCase):
             ):
                 totals[stack_id][resource_class]["cpu_millicores"] += cpu
                 totals[stack_id][resource_class]["memory_mib"] += memory
-        for resource_class, delta in (("limits", 1), ("reservations", 1)):
-            totals["autoupdater"][resource_class]["memory_mib"] += delta
-            totals["aggregate"][resource_class]["memory_mib"] += delta
         contract = capacity.validate_contract(document)
         documents = copy.deepcopy(self.stack_documents)
         for service in ("minecraft", "openclaw"):
             documents["workloads"]["services"][service]["deploy"]["replicas"] = 1
-        resources = documents["autoupdater"]["services"]["shepherd"]["deploy"][
-            "resources"
-        ]
-        resources["limits"]["memory"] = "46M"
-        resources["reservations"]["memory"] = "19M"
         with self.assertRaisesRegex(capacity.CapacityError, "swapless host headroom"):
             capacity.validate_stacks(contract, documents)
+
+    def test_memory_limit_budget_boundary_is_exact(self) -> None:
+        contract = self.normalized_contract()
+        totals = capacity.validate_stacks(contract, copy.deepcopy(self.stack_documents))
+        ceiling = (
+            contract["host"]["minimum_memory_mib"]
+            - contract["system_reserve"]["memory_mib"]
+            - contract["operational_headroom"]["memory_mib"]
+        )
+        # The overcommit ratio is 1.00, so the limit budget is the allocatable
+        # memory itself: a plan right at it passes and 1 MiB more does not.
+        self.assertEqual(
+            str(contract["policy"]["aggregate_memory_limit_overcommit_ratio"]), "1.00"
+        )
+        at_ceiling = copy.deepcopy(totals["aggregate"])
+        at_ceiling["limits"]["memory_mib"] = ceiling
+        capacity.validate_budget(contract, at_ceiling)
+        at_ceiling["limits"]["memory_mib"] = ceiling + 1
+        with self.assertRaisesRegex(capacity.CapacityError, "swapless host headroom"):
+            capacity.validate_budget(contract, at_ceiling)
 
     def test_docker_normalizes_m_suffix_as_binary_mebibytes(self) -> None:
         for stack_id, path in capacity.DEFAULT_STACKS.items():

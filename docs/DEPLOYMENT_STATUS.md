@@ -36,8 +36,8 @@ Seguimientos abiertos del aparcado:
   de presupuesto), y el siguiente apply de `workloads` lo vuelve a dejar en
   `0/0` sin preguntar.
 - Desaparcar ya no es solo devolver el presupuesto: con los stacks externos
-  declarados, Minecraft no cabe en el plan `observability` (12 781 MiB de
-  límite frente a 12 397) y los dos juntos no caben en el activo (12 653 MiB).
+  declarados, Minecraft no cabe en el plan `observability` (13 037 MiB de
+  límite frente a 12 397) y los dos juntos no caben en el activo (12 909 MiB).
   Volver a arrancarlos exige una decisión de capacidad del propietario (ver
   [CAPACITY.md](CAPACITY.md)).
 
@@ -114,7 +114,16 @@ aquí:
   `Health check failed.` cada 15 s. El backend sin servidores de este
   repositorio lo elimina en cuanto `edge` pueda aplicarse.
 
-La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`.
+La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`. Mientras
+siga cerrada, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
+en vivo el 2026-09-25 con dos `docker service update` sobre `edge_traefik`:
+`--limit-memory 256M` a las 09:43 UTC y `--reserve-memory 128M` a las
+10:03 UTC. Cada uno cambió un único campo del spec (`Limits.MemoryBytes` de
+134217728 a 268435456 y `Reservations.MemoryBytes` de 67108864 a
+134217728) y reemplazó la única tarea del edge, con un corte breve de 80/443
+durante el relevo. La reserva solo cuenta para la planificación de Swarm. El
+servicio vivo sigue difiriendo del repositorio solo en la deriva descrita
+arriba.
 
 ## Estado temporal fuera del repositorio
 

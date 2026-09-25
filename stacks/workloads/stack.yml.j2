@@ -878,10 +878,12 @@ services:
       resources:
         limits:
           cpus: "0.35"
-          memory: 128M
+          # At 128M next-server hit its cgroup limit: one OOM kill and two
+          # healthcheck kills between 2026-09-15 and 2026-09-22.
+          memory: 256M
         reservations:
           cpus: "0.05"
-          memory: 64M
+          memory: 128M
 
   openclaw:
     <<: *service-defaults

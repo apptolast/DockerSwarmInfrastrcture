@@ -76,10 +76,13 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 128M
+          # The traefik binary is ~185 MB. At 128M its file pages were
+          # reclaimed nonstop, `traefik healthcheck` timed out and Swarm
+          # replaced the task every few minutes (2026-09-25).
+          memory: 256M
         reservations:
           cpus: "0.10"
-          memory: 64M
+          memory: 128M
       restart_policy:
         condition: any
         delay: 5s

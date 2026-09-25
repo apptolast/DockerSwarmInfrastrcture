@@ -100,10 +100,10 @@ capacity_contract:
     edge:
       reservations:
         cpu_millicores: 100
-        memory_mib: 64
+        memory_mib: 128
       limits:
         cpu_millicores: 500
-        memory_mib: 128
+        memory_mib: 256
     # Both parked: minecraft (3072/4096 MiB, 500m/2500m) and openclaw
     # (256/512 MiB, 200m/1000m) are not counted. Unparking one adds its
     # reservation and limit back here and in config/capacity-profiles.yml;
@@ -112,10 +112,10 @@ capacity_contract:
     workloads:
       reservations:
         cpu_millicores: 1600
-        memory_mib: 2592
+        memory_mib: 2656
       limits:
         cpu_millicores: 8100
-        memory_mib: 5120
+        memory_mib: 5248
     observability:
       reservations:
         cpu_millicores: 1070
@@ -126,6 +126,8 @@ capacity_contract:
     # The full platform used the whole memory-limit budget, 15981 - 3072
     # reserve - 512 headroom = 12397 MiB, until minecraft and openclaw were
     # parked: their 4608 MiB of limits are free while they stay parked.
+    # Traefik and portfolio-alberto took 256 MiB of that on 2026-09-25, so
+    # unparking both needs that much back first (docs/CAPACITY.md).
     autoupdater:
       reservations:
         cpu_millicores: 100
@@ -136,7 +138,7 @@ capacity_contract:
     aggregate:
       reservations:
         cpu_millicores: 2870
-        memory_mib: 3922
+        memory_mib: 4050
       limits:
         cpu_millicores: 13950
-        memory_mib: 7789
+        memory_mib: 8045
