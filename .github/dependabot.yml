@@ -35,3 +35,8 @@ updates:
     directory: /images/n8n-runners
     schedule:
       interval: weekly
+    # n8n requires the runners image on the exact n8n version, and n8n is a
+    # reviewed version hold: both move together in one reviewed change.
+    # scripts/validate-workloads.py rejects any other pairing.
+    ignore:
+      - dependency-name: n8nio/runners

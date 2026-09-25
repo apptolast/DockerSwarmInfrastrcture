@@ -1398,6 +1398,69 @@ class WorkloadDeploymentIdentityTests(unittest.TestCase):
             self.validate(*fixture)
 
 
+class N8nRunnerBaseVersionTests(unittest.TestCase):
+    DOCKERFILE = REPOSITORY_ROOT / "images/n8n-runners/Dockerfile"
+
+    def setUp(self) -> None:
+        services = workload_validator.load_yaml(REPOSITORY_ROOT / "config/services.yml")
+        approved = {item["id"]: item for item in services["approved_services"]}
+        self.reference = workload_validator.find_image(approved, "n8n", "app")
+        self.tag = workload_validator.N8N_APP_PATTERN.fullmatch(self.reference)["tag"]
+        self.original = self.DOCKERFILE.read_text(encoding="utf-8")
+        bases = workload_validator.RUNNER_BASE_PATTERN.findall(self.original)
+        self.assertEqual(len(bases), 1)
+        self.base = next(
+            line
+            for line in self.original.splitlines()
+            if line.startswith("FROM docker.io/n8nio/runners:")
+        )
+
+    def test_repository_runner_base_matches_the_n8n_hold(self) -> None:
+        workload_validator.validate_runner_base(self.DOCKERFILE, self.reference)
+
+    def test_mismatched_or_ambiguous_runner_base_is_rejected(self) -> None:
+        digest = "@sha256:" + "a" * 64
+        runners = "FROM docker.io/n8nio/runners:"
+        dockerfiles = {
+            "newer runners": self.original.replace(
+                self.base, f"{runners}9.99.9{digest}"
+            ),
+            "unpinned runners": self.original.replace(
+                self.base, f"{runners}{self.tag}"
+            ),
+            "two runners bases": f"{self.original}\n{self.base}\n",
+            "no runners base": self.original.replace(
+                self.base, f"FROM docker.io/library/node:26{digest}"
+            ),
+        }
+        references = {
+            "newer n8n": self.reference.replace(f":{self.tag}@", ":9.99.9@"),
+            "n8n without tag": self.reference.replace(f":{self.tag}@", "@"),
+            "n8n from another image": self.reference.replace(
+                "n8nio/n8n:", "n8nio/runners:"
+            ),
+            "n8n under another registry": f"mirror.example/{self.reference}",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dockerfile"
+            for label, text in dockerfiles.items():
+                with self.subTest(case=label):
+                    path.write_text(text, encoding="utf-8")
+                    with self.assertRaises(workload_validator.ContractError):
+                        workload_validator.validate_runner_base(path, self.reference)
+            for label, reference in references.items():
+                with self.subTest(case=label):
+                    with self.assertRaises(workload_validator.ContractError):
+                        workload_validator.validate_runner_base(
+                            self.DOCKERFILE, reference
+                        )
+            with self.subTest(case="missing Dockerfile"):
+                with self.assertRaises(workload_validator.ContractError):
+                    workload_validator.validate_runner_base(
+                        Path(directory) / "absent", self.reference
+                    )
+
+
 class N8nRunnerImageContractTests(unittest.TestCase):
     SOURCE_REFERENCE = (
         "ghcr.io/apptolast/migracionnetcup-n8n-runners@sha256:"

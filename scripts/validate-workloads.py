@@ -313,6 +313,39 @@ def bind_sources(service: dict[str, Any]) -> list[str]:
     return result
 
 
+RUNNER_BASE_PATTERN = re.compile(
+    r"^FROM docker\.io/n8nio/runners:(?P<tag>[^@\s]+)@sha256:[0-9a-f]{64}\s*$",
+    re.MULTILINE,
+)
+N8N_APP_PATTERN = re.compile(
+    r"docker\.io/n8nio/n8n:(?P<tag>[^@\s]+)@sha256:[0-9a-f]{64}"
+)
+
+
+def validate_runner_base(dockerfile: Path, n8n_reference: str) -> None:
+    """Keep the runners base on the n8n version, as n8n requires.
+
+    https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners
+    ("the n8nio/runners image version must match that of the n8nio/n8n
+    image"). Nothing at runtime rejects a mismatch, so the contract does.
+    """
+    try:
+        text = dockerfile.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ContractError("cannot read the n8n runner Dockerfile") from exc
+    bases = [match["tag"] for match in RUNNER_BASE_PATTERN.finditer(text)]
+    app = N8N_APP_PATTERN.fullmatch(n8n_reference)
+    if len(bases) != 1 or app is None:
+        raise ContractError(
+            "n8n runner base or n8n app image is not one pinned reference"
+        )
+    if bases[0] != app["tag"]:
+        raise ContractError(
+            f"n8n runner base {bases[0]} differs from n8n {app['tag']}; "
+            "n8n requires the same version"
+        )
+
+
 def validate_stack(
     stack: dict[str, Any],
     service_catalog: dict[str, Any],
@@ -662,6 +695,10 @@ def main() -> int:
             )
         except runner_manager.RunnerImageError as exc:
             raise ContractError(str(exc)) from exc
+        validate_runner_base(
+            args.runner_context / "Dockerfile",
+            find_image(approved, "n8n", "app"),
+        )
         validate_stack(
             stack,
             services,
