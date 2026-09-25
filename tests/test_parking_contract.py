@@ -8,6 +8,7 @@ services parked, into disposable directories so `.build` is never touched.
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import importlib.util
 import json
@@ -29,7 +30,12 @@ from ansible_task_harness import (
 )
 
 PARKABLE = ["minecraft", "openclaw"]
-VARIANTS = {"none": [], "both": PARKABLE}
+VARIANTS = {
+    "none": [],
+    "minecraft": ["minecraft"],
+    "openclaw": ["openclaw"],
+    "both": PARKABLE,
+}
 ANSIBLE_ENVIRONMENT_CONFIG = REPOSITORY_ROOT / "ansible/ansible.cfg"
 
 
@@ -99,26 +105,40 @@ class ParkedRenderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary = tempfile.TemporaryDirectory()
-        cls.roots = {}
-        for variant, parked in VARIANTS.items():
-            root = Path(cls.temporary.name) / variant
-            cls.roots[variant] = root
+        cls.roots = {
+            variant: Path(cls.temporary.name) / variant for variant in VARIANTS
+        }
+        jobs = [
+            (variant, playbook, key, directory)
+            for variant in VARIANTS
             for playbook, key, directory in (
                 ("render-workloads", "workloads_render_root", "workloads"),
                 ("render-edge", "edge_render_dir", "edge"),
                 ("render-observability", "observability_render_root", "observability"),
-            ):
-                completed = render(
-                    playbook,
-                    {"platform_parked_workloads": parked, key: str(root / directory)},
+            )
+        ]
+
+        def run(job: tuple[str, str, str, str]) -> subprocess.CompletedProcess[str]:
+            variant, playbook, key, directory = job
+            return render(
+                playbook,
+                {
+                    "platform_parked_workloads": VARIANTS[variant],
+                    key: str(cls.roots[variant] / directory),
+                },
+            )
+
+        # Independent disposable renders; four at a time keeps the host calm.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(run, jobs))
+        for (variant, playbook, _, _), completed in zip(jobs, results, strict=True):
+            if completed.returncode != 0:
+                cls.temporary.cleanup()
+                raise AssertionError(
+                    f"{playbook} ({variant}) failed:\n"
+                    + completed.stdout
+                    + completed.stderr
                 )
-                if completed.returncode != 0:
-                    cls.temporary.cleanup()
-                    raise AssertionError(
-                        f"{playbook} ({variant}) failed:\n"
-                        + completed.stdout
-                        + completed.stderr
-                    )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -127,32 +147,36 @@ class ParkedRenderTests(unittest.TestCase):
     def stack(self, variant: str, name: str) -> dict[str, Any]:
         return load_yaml(self.roots[variant] / name / "stack.yml")
 
-    def test_parking_changes_only_the_replica_count_of_parked_services(self) -> None:
-        running = self.stack("none", "workloads")["services"]
-        parked = self.stack("both", "workloads")["services"]
-        self.assertEqual(set(running), set(parked))
-        for name, service in running.items():
-            with self.subTest(service=name):
-                self.assertEqual(service["deploy"]["replicas"], 1)
-                self.assertEqual(
-                    parked[name]["deploy"]["replicas"], 0 if name in PARKABLE else 1
-                )
-                # Image, data, port, networks, secrets and budget all stay.
-                self.assertEqual(
-                    without_replicas(service), without_replicas(parked[name])
-                )
-        self.assertEqual(
-            {
-                key: value
-                for key, value in self.stack("none", "workloads").items()
-                if key != "services"
-            },
-            {
-                key: value
-                for key, value in self.stack("both", "workloads").items()
-                if key != "services"
-            },
+    def dynamic(self, variant: str) -> dict[str, Any]:
+        return load_yaml(self.roots[variant] / "edge/dynamic.yml")["http"]
+
+    def jobs(self, variant: str) -> dict[str, Any]:
+        prometheus = load_yaml(
+            self.roots[variant] / "observability/config/prometheus.yml"
         )
+        return {job["job_name"]: job for job in prometheus["scrape_configs"]}
+
+    def test_parking_changes_only_the_replica_count_of_parked_services(self) -> None:
+        running = self.stack("none", "workloads")
+        for variant, parked in VARIANTS.items():
+            candidate = self.stack(variant, "workloads")
+            self.assertEqual(set(candidate["services"]), set(running["services"]))
+            for name, service in running["services"].items():
+                with self.subTest(variant=variant, service=name):
+                    self.assertEqual(service["deploy"]["replicas"], 1)
+                    self.assertEqual(
+                        candidate["services"][name]["deploy"]["replicas"],
+                        0 if name in parked else 1,
+                    )
+                    # Image, data, port, networks, secrets and budget all stay.
+                    self.assertEqual(
+                        without_replicas(service),
+                        without_replicas(candidate["services"][name]),
+                    )
+            self.assertEqual(
+                {key: value for key, value in running.items() if key != "services"},
+                {key: value for key, value in candidate.items() if key != "services"},
+            )
 
     def test_workload_validator_binds_each_render_to_its_parking_list(self) -> None:
         services = load_yaml(REPOSITORY_ROOT / "config/services.yml")
@@ -170,9 +194,9 @@ class ParkedRenderTests(unittest.TestCase):
             ),
         )
 
-        def validate(variant: str, parked: Any) -> None:
+        def validate(stack: dict[str, Any], parked: Any) -> None:
             workload_validator.validate_stack(
-                self.stack(variant, "workloads"),
+                stack,
                 services,
                 channels,
                 secrets,
@@ -180,24 +204,48 @@ class ParkedRenderTests(unittest.TestCase):
                 platform_with(parked),
             )
 
-        validate("none", [])
-        validate("both", PARKABLE)
-        for variant, parked, message in (
-            ("both", [], "replica count drift for minecraft"),
-            ("none", PARKABLE, "replica count drift for minecraft"),
-            ("both", ["minecraft"], "replica count drift for openclaw"),
-            ("both", ["n8n-db"], "outside the reviewed parkable set"),
-            ("both", ["openclaw", "minecraft"], "outside the reviewed parkable set"),
-            ("both", "minecraft", "outside the reviewed parkable set"),
+        for variant, parked in VARIANTS.items():
+            with self.subTest(variant=variant):
+                validate(self.stack(variant, "workloads"), parked)
+            for other, other_parked in VARIANTS.items():
+                if other != variant:
+                    with (
+                        self.subTest(render=variant, platform=other),
+                        self.assertRaisesRegex(
+                            workload_validator.ContractError, "replica count drift"
+                        ),
+                    ):
+                        validate(self.stack(variant, "workloads"), other_parked)
+        for parked in (
+            ["n8n-db"],
+            ["openclaw", "minecraft"],
+            ["minecraft", "minecraft"],
+            "minecraft",
+            None,
         ):
-            with self.subTest(variant=variant, parked=parked):
-                with self.assertRaisesRegex(workload_validator.ContractError, message):
-                    validate(variant, parked)
+            with (
+                self.subTest(parked=parked),
+                self.assertRaisesRegex(
+                    workload_validator.ContractError,
+                    "outside the reviewed parkable set",
+                ),
+            ):
+                validate(self.stack("both", "workloads"), parked)
+        # A boolean is not a replica count, even where it compares equal.
+        for service, replicas in (("kropia", True), ("minecraft", False)):
+            stack = self.stack("both", "workloads")
+            stack["services"][service]["deploy"]["replicas"] = replicas
+            with (
+                self.subTest(service=service, replicas=replicas),
+                self.assertRaisesRegex(
+                    workload_validator.ContractError,
+                    f"replica count drift for {service}",
+                ),
+            ):
+                validate(stack, PARKABLE)
 
     def test_parked_openclaw_keeps_its_route_without_server_or_probe(self) -> None:
-        running = load_yaml(self.roots["none"] / "edge/dynamic.yml")["http"]
-        parked = load_yaml(self.roots["both"] / "edge/dynamic.yml")["http"]
-        self.assertEqual(running["routers"], parked["routers"])
+        running = self.dynamic("none")
         self.assertEqual(
             running["services"]["openclaw"]["loadBalancer"],
             {
@@ -206,49 +254,53 @@ class ParkedRenderTests(unittest.TestCase):
                 "healthCheck": {"path": "/readyz", "interval": "15s", "timeout": "3s"},
             },
         )
-        # Traefik answers 503 "no available server" and runs no probe.
-        self.assertEqual(
-            parked["services"]["openclaw"],
-            {"loadBalancer": {"passHostHeader": True, "servers": []}},
-        )
-        for name in running["services"]:
-            if name != "openclaw":
-                with self.subTest(service=name):
+        for variant, parked in VARIANTS.items():
+            candidate = self.dynamic(variant)
+            with self.subTest(variant=variant):
+                self.assertEqual(running["routers"], candidate["routers"])
+                # Traefik answers 503 "no available server" and runs no probe.
+                self.assertEqual(
+                    candidate["services"]["openclaw"],
+                    {"loadBalancer": {"passHostHeader": True, "servers": []}}
+                    if "openclaw" in parked
+                    else running["services"]["openclaw"],
+                )
+                for name in set(running["services"]) - {"openclaw"}:
                     self.assertEqual(
-                        running["services"][name], parked["services"][name]
+                        running["services"][name], candidate["services"][name]
                     )
 
     def test_parked_services_lose_only_their_blackbox_probes(self) -> None:
-        def prometheus(variant: str) -> dict[str, Any]:
-            return load_yaml(
-                self.roots[variant] / "observability/config/prometheus.yml"
-            )
-
-        def jobs(variant: str) -> dict[str, Any]:
-            return {
-                job["job_name"]: job for job in prometheus(variant)["scrape_configs"]
-            }
-
-        running, parked = jobs("none"), jobs("both")
-        self.assertEqual(set(running) - set(parked), {"blackbox-minecraft-tcp"})
+        running = self.jobs("none")
         public = "blackbox-http-public"
-        self.assertEqual(
-            set(running[public]["static_configs"][0]["targets"])
-            - set(parked[public]["static_configs"][0]["targets"]),
-            {"https://openclaw.apptolast.com/healthz"},
-        )
-        for name in set(parked) - {public}:
-            with self.subTest(job=name):
-                self.assertEqual(running[name], parked[name])
-        # The alert rule stays loaded; without the job it has no series.
-        for variant in VARIANTS:
-            rules = load_yaml(
-                self.roots[variant] / "observability/config/prometheus-alerts.yml"
-            )
-            names = {
-                rule["alert"] for group in rules["groups"] for rule in group["rules"]
-            }
-            self.assertIn("MinecraftEndpointDown", names)
+        for variant, parked in VARIANTS.items():
+            candidate = self.jobs(variant)
+            with self.subTest(variant=variant):
+                self.assertEqual(
+                    set(running) - set(candidate),
+                    {"blackbox-minecraft-tcp"} if "minecraft" in parked else set(),
+                )
+                self.assertEqual(
+                    set(running[public]["static_configs"][0]["targets"])
+                    - set(candidate[public]["static_configs"][0]["targets"]),
+                    {"https://openclaw.apptolast.com/healthz"}
+                    if "openclaw" in parked
+                    else set(),
+                )
+                for name in set(candidate) - {public}:
+                    self.assertEqual(running[name], candidate[name])
+                # The alert rule stays loaded; without the job it has no series.
+                rules = load_yaml(
+                    self.roots[variant] / "observability/config/prometheus-alerts.yml"
+                )
+                self.assertIn(
+                    "MinecraftEndpointDown",
+                    {
+                        rule["alert"]
+                        for group in rules["groups"]
+                        for rule in group["rules"]
+                    },
+                )
 
     def test_observability_validator_binds_each_render_to_its_parking_list(
         self,
@@ -264,63 +316,78 @@ class ParkedRenderTests(unittest.TestCase):
                 platform_with(parked),
             )
 
-        validate("none", [])
-        validate("both", PARKABLE)
-        for variant, parked, message in (
-            ("both", [], "scrape job set changed"),
-            ("none", PARKABLE, "scrape job set changed"),
-            ("both", ["minecraft"], "public blackbox probes differ"),
-            ("both", ["selenium"], "outside the reviewed parkable set"),
-            ("both", ["openclaw", "minecraft"], "outside the reviewed parkable set"),
+        for variant, parked in VARIANTS.items():
+            with self.subTest(variant=variant):
+                validate(variant, parked)
+            for other, other_parked in VARIANTS.items():
+                if other != variant:
+                    with (
+                        self.subTest(render=variant, platform=other),
+                        self.assertRaisesRegex(
+                            observability_validator.ContractError,
+                            "scrape job set changed|public blackbox probes differ",
+                        ),
+                    ):
+                        validate(variant, other_parked)
+        for parked in (
+            ["selenium"],
+            ["openclaw", "minecraft"],
+            ["minecraft", "minecraft"],
+            "minecraft",
+            None,
         ):
-            with self.subTest(variant=variant, parked=parked):
-                with self.assertRaisesRegex(
-                    observability_validator.ContractError, message
-                ):
-                    validate(variant, parked)
+            with (
+                self.subTest(parked=parked),
+                self.assertRaisesRegex(
+                    observability_validator.ContractError,
+                    "outside the reviewed parkable set",
+                ),
+            ):
+                validate("both", parked)
 
     def test_parking_keeps_the_reviewed_capacity_budget(self) -> None:
         contract = capacity.validate_contract(
             load_yaml(REPOSITORY_ROOT / "config/capacity.yml")
         )
-        totals = {}
+        totals = []
         for variant in VARIANTS:
             documents = {
                 stack_id: load_yaml(path)
                 for stack_id, path in capacity.DEFAULT_STACKS.items()
             }
             documents["workloads"] = self.stack(variant, "workloads")
-            totals[variant] = capacity.validate_stacks(contract, documents)
-        self.assertEqual(totals["none"], totals["both"])
-        self.assertEqual(
-            totals["both"]["workloads"], contract["reviewed_totals"]["workloads"]
-        )
+            totals.append(capacity.validate_stacks(contract, documents))
+        for variant_totals in totals:
+            self.assertEqual(variant_totals, totals[0])
+            self.assertEqual(
+                variant_totals["workloads"], contract["reviewed_totals"]["workloads"]
+            )
 
 
 class UnreviewedParkingRenderTests(unittest.TestCase):
     def test_render_refuses_to_park_a_service_with_dependents(self) -> None:
-        for playbook, message in (
+        for playbook, key, message in (
             (
                 "render-workloads",
-                "outside the approved workloads contract",
+                "workloads_render_root",
+                "outside the reviewed parkable services",
             ),
             (
                 "render-observability",
+                "observability_render_root",
                 "outside the reviewed parkable services",
             ),
+            ("render-edge", "edge_render_dir", "Assertion failed"),
         ):
             with self.subTest(playbook=playbook), tempfile.TemporaryDirectory() as root:
-                key = (
-                    "workloads_render_root"
-                    if playbook == "render-workloads"
-                    else "observability_render_root"
-                )
-                completed = render(
-                    playbook,
-                    {"platform_parked_workloads": ["n8n-db"], key: root},
-                )
-                self.assertNotEqual(completed.returncode, 0, completed.stdout)
-                self.assertIn(message, completed.stdout + completed.stderr)
+                for parked in (["n8n-db"], "openclaw", {"openclaw": True}):
+                    with self.subTest(parked=parked):
+                        completed = render(
+                            playbook,
+                            {"platform_parked_workloads": parked, key: root},
+                        )
+                        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                        self.assertIn(message, completed.stdout + completed.stderr)
 
 
 class ParkableSetTests(unittest.TestCase):
@@ -334,7 +401,9 @@ class ParkableSetTests(unittest.TestCase):
             REPOSITORY_ROOT / "ansible/roles/observability/defaults/main.yml"
         )
         backup = load_yaml(REPOSITORY_ROOT / "ansible/roles/backup/defaults/main.yml")
+        edge = load_yaml(REPOSITORY_ROOT / "ansible/roles/edge/defaults/main.yml")
         self.assertEqual(workloads["workloads_parkable_services"], PARKABLE)
+        self.assertEqual(edge["edge_parkable_workloads"], PARKABLE)
         self.assertEqual(set(workload_validator.PARKABLE_SERVICES), set(PARKABLE))
         self.assertEqual(
             {
@@ -384,20 +453,25 @@ class ContractValidatorParkingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary = tempfile.TemporaryDirectory()
-        cls.edges = {}
-        for variant, parked in VARIANTS.items():
-            directory = Path(cls.temporary.name) / variant
-            completed = render(
+        cls.edges = {
+            variant: Path(cls.temporary.name) / variant for variant in ("none", "both")
+        }
+
+        def run(variant: str) -> subprocess.CompletedProcess[str]:
+            return render(
                 "render-edge",
                 {
-                    "platform_parked_workloads": parked,
-                    "edge_render_dir": str(directory),
+                    "platform_parked_workloads": VARIANTS[variant],
+                    "edge_render_dir": str(cls.edges[variant]),
                 },
             )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(run, cls.edges))
+        for completed in results:
             if completed.returncode != 0:
                 cls.temporary.cleanup()
                 raise AssertionError(completed.stdout + completed.stderr)
-            cls.edges[variant] = directory
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -454,6 +528,39 @@ class ContractValidatorParkingTests(unittest.TestCase):
         self.assertIn("parked openclaw backend must have no server", completed.stderr)
         completed = self.run_contract("both", [])
         self.assertIn("openclaw upstream differs from the Swarm", completed.stderr)
+
+    def test_parked_backend_must_have_exactly_no_server_and_no_probe(self) -> None:
+        def backend(load_balancer: dict[str, Any]) -> Callable[[Path], None]:
+            def mutate(root: Path) -> None:
+                path = root / ".build/edge/dynamic.yml"
+                document = load_yaml(path)
+                document["http"]["services"]["openclaw"] = {
+                    "loadBalancer": load_balancer
+                }
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+            return mutate
+
+        for load_balancer in (
+            {
+                "passHostHeader": True,
+                "servers": [],
+                "healthCheck": {"path": "/readyz", "interval": "15s", "timeout": "3s"},
+            },
+            {
+                "passHostHeader": True,
+                "servers": [{"url": "http://workloads_openclaw:18789"}],
+            },
+            {"servers": []},
+        ):
+            with self.subTest(load_balancer=load_balancer):
+                completed = self.run_contract("both", PARKABLE, backend(load_balancer))
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(
+                    "parked openclaw backend must have no server", completed.stderr
+                )
 
 
 class WorkloadsParkingGateTests(AnsibleTaskAssertions, unittest.TestCase):
@@ -622,6 +729,83 @@ class WorkloadsParkingGateTests(AnsibleTaskAssertions, unittest.TestCase):
         self.assert_task_accepts(self.DEPLOY, task, results([]))
         self.assert_task_rejects(
             self.DEPLOY, task, results(["a" * 64]), "still runs a task container"
+        )
+        # A failed listing is no proof that nothing runs.
+        failed = results([])
+        failed["workloads_parked_task_container_ids"]["results"][0]["rc"] = 1
+        self.assert_task_rejects(
+            self.DEPLOY, task, failed, "still runs a task container"
+        )
+
+    def test_every_role_rejects_an_unreviewed_parked_list(self) -> None:
+        task = "Require a reviewed parked workload list"
+        message = "outside the reviewed parkable services"
+        roles = (
+            (
+                self.DERIVE,
+                "workloads_parkable_services",
+                "ansible/roles/workloads/defaults/main.yml",
+            ),
+            (
+                "ansible/roles/observability/tasks/derive.yml",
+                "observability_parkable_catalog_ids",
+                "ansible/roles/observability/defaults/main.yml",
+            ),
+            (
+                "ansible/roles/edge/tasks/main.yml",
+                "edge_parkable_workloads",
+                "ansible/roles/edge/defaults/main.yml",
+            ),
+        )
+        for task_file, key, defaults in roles:
+            parkable = load_yaml(REPOSITORY_ROOT / defaults)[key]
+            for parked in ([], ["minecraft"], ["openclaw"], PARKABLE):
+                with self.subTest(role=task_file, parked=parked):
+                    self.assert_task_accepts(
+                        task_file,
+                        task,
+                        {"platform_parked_workloads": parked, key: parkable},
+                    )
+            for parked in (
+                ["n8n-db"],
+                ["openclaw", "minecraft"],
+                ["minecraft", "minecraft"],
+                "minecraft",
+                {"minecraft": True},
+                None,
+                [1],
+            ):
+                with self.subTest(role=task_file, parked=parked):
+                    self.assert_task_rejects(
+                        task_file,
+                        task,
+                        {"platform_parked_workloads": parked, key: parkable},
+                        message,
+                    )
+
+    def test_parked_minecraft_port_must_have_no_host_listener(self) -> None:
+        task = "Refuse a host listener on the port a parked Minecraft leaves open"
+        listener = 'LISTEN 0 4096 0.0.0.0:25565 0.0.0.0:* users:(("nc",pid=4242,fd=3))'
+
+        def facts(parked: list[str], lines: list[str], public: bool = True):
+            return {
+                "platform_parked_workloads": parked,
+                "platform_minecraft_public_enabled": public,
+                "workloads_parked_minecraft_listeners": {
+                    "rc": 0,
+                    "stdout_lines": lines,
+                },
+            }
+
+        self.assert_task_accepts(self.DEPLOY, task, facts(PARKABLE, []))
+        self.assert_task_rejects(
+            self.DEPLOY, task, facts(PARKABLE, [listener]), "listens on TCP 25565"
+        )
+        # A running Minecraft task legitimately holds the port through dockerd,
+        # and a closed public gate leaves nothing admitted to protect.
+        self.assert_task_accepts(self.DEPLOY, task, facts(["openclaw"], [listener]))
+        self.assert_task_accepts(
+            self.DEPLOY, task, facts(PARKABLE, [listener], public=False)
         )
 
 

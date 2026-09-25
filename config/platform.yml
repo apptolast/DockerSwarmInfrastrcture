@@ -64,10 +64,13 @@ platform_minecraft_offline_public_accepted: true
 # renderiza con `replicas: 0`: no corre ninguna tarea ni reserva recursos en
 # Swarm, pero conserva imagen, datos, secretos, redes, ruta del edge y su
 # presupuesto en config/capacity.yml, de modo que volver a arrancarlo es
-# quitarlo de esta lista y aplicar `--playbook workloads`, sin revision de
-# capacidad. Lista ordenada y sin duplicados; solo admite servicios sin
-# dependientes (minecraft, openclaw). La compuerta publica de Minecraft no
-# cambia: el 25565 sigue permitido, pero sin tarea nada escucha en el.
+# quitarlo de esta lista y aplicar `--playbook edge` y despues
+# `--playbook workloads`, sin revision de capacidad. Lista ordenada y sin
+# duplicados, `[]` si no hay ninguno (un valor vacio se rechaza); solo admite
+# los servicios que ningun otro necesita para funcionar (minecraft, openclaw).
+# La compuerta publica de Minecraft no cambia: el firewall sigue admitiendo el
+# 25565 y el apply de workloads exige que ningun proceso del host escuche en
+# el mientras esta aparcado.
 platform_parked_workloads:
   - minecraft
   - openclaw

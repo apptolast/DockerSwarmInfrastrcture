@@ -1114,6 +1114,40 @@
       gate are not in the same state. Internal TCP health is probed only by
       Blackbox on apptolast-minecraft-monitoring.
 
+# Con la tarea en marcha dockerd reserva el 25565 (escucha en 0.0.0.0) y lo
+# redirige al contenedor. Aparcado no queda reserva ni redireccion, pero la
+# compuerta publica sigue admitiendo el puerto en el firewall del host: ningun
+# proceso local puede estar escuchando en el.
+- name: List host TCP listeners on the port a parked Minecraft leaves open
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ss
+      - --no-header
+      - --tcp
+      - --listening
+      - --numeric
+      - --processes
+      - "sport = :25565"
+  register: workloads_parked_minecraft_listeners
+  changed_when: false
+  check_mode: false
+  when:
+    - "'minecraft' in platform_parked_workloads"
+    - platform_minecraft_public_enabled | bool
+
+- name: Refuse a host listener on the port a parked Minecraft leaves open
+  ansible.builtin.assert:
+    that:
+      - workloads_parked_minecraft_listeners.rc == 0
+      - workloads_parked_minecraft_listeners.stdout_lines | length == 0
+    fail_msg: >-
+      A host process listens on TCP 25565 while Minecraft is parked and the
+      public firewall still admits that port:
+      {{ workloads_parked_minecraft_listeners.stdout_lines }}
+  when:
+    - "'minecraft' in platform_parked_workloads"
+    - platform_minecraft_public_enabled | bool
+
 - name: Locate the running n8n runner task container
   ansible.builtin.command:
     argv:

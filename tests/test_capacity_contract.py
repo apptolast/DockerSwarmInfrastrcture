@@ -116,10 +116,26 @@ class CapacityContractTests(unittest.TestCase):
                 self.assertEqual(
                     totals["workloads"], contract["reviewed_totals"]["workloads"]
                 )
-        documents = copy.deepcopy(self.stack_documents)
-        documents["workloads"]["services"]["n8n-db"]["deploy"]["replicas"] = 0
-        with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
-            capacity.validate_stacks(contract, documents)
+        # Every other replicated service must keep exactly one replica.
+        for stack_id, document in self.stack_documents.items():
+            for name, service in document["services"].items():
+                if (stack_id, name) in capacity.SUSPENDABLE_SERVICES or (
+                    service["deploy"].get("mode") == "global"
+                ):
+                    continue
+                with self.subTest(service=f"{stack_id}/{name}"):
+                    documents = copy.deepcopy(self.stack_documents)
+                    documents[stack_id]["services"][name]["deploy"]["replicas"] = 0
+                    with self.assertRaisesRegex(capacity.CapacityError, "one replica"):
+                        capacity.validate_stacks(contract, documents)
+        self.assertEqual(
+            capacity.SUSPENDABLE_SERVICES,
+            {
+                ("autoupdater", "shepherd"),
+                ("workloads", "minecraft"),
+                ("workloads", "openclaw"),
+            },
+        )
         for replicas in (2, True, "1", None):
             with self.subTest(replicas=replicas):
                 documents = copy.deepcopy(self.stack_documents)

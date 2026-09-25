@@ -22,10 +22,19 @@ Publica únicamente `80/TCP` y `443/TCP`. Usa:
 Si `config/platform.yml` aparca OpenClaw (`platform_parked_workloads`), su
 router y su certificado se mantienen, pero el backend se renderiza sin
 servidores ni sonda de salud: Traefik responde `503 no available server` sin
-registrar nada. Con la sonda activa y sin tarea, Traefik 3.7 registra un WARN
-`Health check failed.` en cada intervalo de 15 s
-([`pkg/healthcheck/healthcheck.go`](https://github.com/traefik/traefik/blob/v3.7.13/pkg/healthcheck/healthcheck.go)).
-Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`.
+registrar nada, porque un balanceador sin servidores devuelve ese error
+(`pkg/server/service/loadbalancer/wrr/wrr.go`). Con la sonda activa y sin
+tarea, Traefik registra un WARN `Health check failed.` en cada intervalo de
+15 s (`pkg/healthcheck/healthcheck.go`). Ambos ficheros coinciden en las
+etiquetas
+[v3.7.9](https://github.com/traefik/traefik/blob/v3.7.9/pkg/healthcheck/healthcheck.go),
+la base fijada, y
+[v3.7.13](https://github.com/traefik/traefik/blob/v3.7.13/pkg/healthcheck/healthcheck.go),
+la que ejecuta el canal `traefik:v3` a 2026-09-25. Se comprobó el 2026-09-25
+con ambas imágenes por digest y el backend renderizado: `503` y ninguna línea
+de sonda en 20 s; con la sonda activa y sin backend, tres WARN en 50 s.
+Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`, antes
+que `workloads` en los dos sentidos.
 
 Esto es estado declarado, no evidencia de despliegue. El Docker Secret
 `cloudflare_dns_api_token_v1` sigue existiendo (rotación pendiente de revocar

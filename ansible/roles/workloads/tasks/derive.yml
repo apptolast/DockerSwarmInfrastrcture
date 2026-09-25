@@ -14,14 +14,6 @@
       - >-
         platform_dns_cutover.minecraft
         == platform_minecraft_public_enabled
-      - platform_parked_workloads is sequence
-      - platform_parked_workloads is not string
-      - >-
-        platform_parked_workloads
-        == platform_parked_workloads | unique | sort
-      - >-
-        platform_parked_workloads
-        | difference(workloads_parkable_services) | length == 0
       - >-
         (25565 in platform_public_tcp_ports)
         and (platform_public_tcp_ports | sort == [80, 443, 25565])
@@ -57,6 +49,21 @@
     fail_msg: >-
       The service, secret, path or network catalog is outside the approved
       workloads contract.
+
+- name: Require a reviewed parked workload list
+  ansible.builtin.assert:
+    that:
+      - platform_parked_workloads is sequence
+      - platform_parked_workloads is not string
+      - platform_parked_workloads is not mapping
+      - >-
+        platform_parked_workloads
+        == platform_parked_workloads | unique | sort
+      - >-
+        platform_parked_workloads
+        | difference(workloads_parkable_services) | length == 0
+    fail_msg: >-
+      platform_parked_workloads is outside the reviewed parkable services.
 
 - name: Index approved services by catalog ID
   ansible.builtin.set_fact:

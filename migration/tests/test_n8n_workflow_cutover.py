@@ -93,6 +93,71 @@ class N8nWorkflowCutoverTests(unittest.TestCase):
                 "workloads",
             )
 
+    def test_stack_smoke_accepts_only_reviewed_parked_services_at_zero(self) -> None:
+        parked = frozenset({"minecraft", "openclaw"})
+        lines = {
+            name: "0/0" if name in parked else "1/1"
+            for name in workflow_manager.EXPECTED_STACK_SERVICES
+        }
+
+        def output(replicas: dict[str, str]) -> str:
+            return "\n".join(
+                f"workloads_{name}\t{value}" for name, value in sorted(replicas.items())
+            )
+
+        observed = workflow_manager.parse_stack_replicas(
+            output(lines), "workloads", parked
+        )
+        self.assertEqual(observed["minecraft"], "0/0")
+        for name, value, parked_set in (
+            ("minecraft", "1/1", parked),
+            ("openclaw", "0/1", parked),
+            ("n8n-db", "0/0", parked),
+            ("minecraft", "0/0", frozenset()),
+        ):
+            with self.subTest(service=name, replicas=value, parked=sorted(parked_set)):
+                candidate = dict(lines, **{name: value})
+                if not parked_set:
+                    candidate = {
+                        key: "1/1" if key != name else value for key in candidate
+                    }
+                with self.assertRaises(workflow_manager.WorkflowActivationError):
+                    workflow_manager.parse_stack_replicas(
+                        output(candidate), "workloads", parked_set
+                    )
+        with self.assertRaises(workflow_manager.WorkflowActivationError):
+            workflow_manager.parse_stack_replicas(
+                output(dict(lines, **{"n8n-db": "0/0"})),
+                "workloads",
+                parked | {"n8n-db"},
+            )
+
+    def test_parked_workloads_are_read_from_the_reviewed_platform_contract(
+        self,
+    ) -> None:
+        platform = REPOSITORY_ROOT / "config/platform.yml"
+        parked = workflow_manager.load_parked_workloads(platform)
+        self.assertLessEqual(parked, workflow_manager.PARKABLE_STACK_SERVICES)
+        document = platform.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "platform.yml"
+            for replacement in (
+                "platform_parked_workloads: [n8n-db]",
+                "platform_parked_workloads: [openclaw, minecraft]",
+                "platform_parked_workloads: [minecraft, minecraft]",
+                "platform_parked_workloads: minecraft",
+                "platform_parked_workloads_missing: []",
+            ):
+                with self.subTest(replacement=replacement):
+                    start = document.index("platform_parked_workloads:")
+                    end = document.index("platform_public_ipv6_tcp_ports:")
+                    candidate.write_text(
+                        document[:start] + replacement + "\n" + document[end:],
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(workflow_manager.WorkflowActivationError):
+                        workflow_manager.load_parked_workloads(candidate)
+
     def test_cli_uses_exact_version_and_never_interpolates_identifiers(self) -> None:
         class FakeRunner:
             def __init__(self) -> None:

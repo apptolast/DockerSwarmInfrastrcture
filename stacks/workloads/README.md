@@ -174,9 +174,14 @@ is retained in Ansible failure diagnostics.
 ## Parked services
 
 `platform_parked_workloads` in `config/platform.yml` parks `minecraft` and/or
-`openclaw`, the only services nothing else depends on. A parked service
-renders `replicas: 0` and keeps its image, bind-mounted data, secrets,
-networks, edge route and capacity budget, so unparking is removing it from
-the list and applying `--playbook workloads` (and `--playbook edge` for
-OpenClaw). The procedure and the effect on every layer are in
+`openclaw`, the only services no other service needs in order to work
+(`minecraft-stats` only reads the Minecraft world read-only and keeps serving
+the last statistics). A parked service renders `replicas: 0` and keeps its
+image, bind-mounted data, secrets, networks, edge route and capacity budget,
+so unparking is removing it from the list and applying `--playbook edge`
+first and then `--playbook workloads`, the same order as parking: the
+workloads smoke expects OpenClaw's edge answer (503 parked, 200 running) to
+already match. While Minecraft is parked the apply also fails if any host
+process listens on TCP 25565, which its public gate keeps admitted. The
+procedure and the effect on every layer are in
 [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md) ("Aparcar un servicio").

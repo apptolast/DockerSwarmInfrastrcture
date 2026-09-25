@@ -325,6 +325,75 @@ class FakeReplicaSwarm:
         raise AssertionError(f"a parked service has no container: {service}")
 
 
+def reviewed_replicas(document: dict[str, object]) -> dict[str, tuple[int, int]]:
+    """Every managed service at rest if parked, fully available otherwise."""
+
+    services = {
+        *(
+            service
+            for group in document["consistency_groups"]
+            for service in group["services"]
+        ),
+        document["services"]["minecraft"],
+        *(database["service"] for database in document["databases"]),
+    }
+    return {
+        service: (0, 0) if service in document["parked_services"] else (1, 1)
+        for service in services
+    }
+
+
+def contract_database_artifact(
+    _swarm: object,
+    database: dict[str, object],
+    destination: Path,
+) -> dict[str, object]:
+    """dump_database stand-in returning the reviewed artifact contract."""
+
+    return {
+        "id": database["id"],
+        "type": "postgres-custom-dump",
+        "service": database["service"],
+        "database": database["database"],
+        "image": f"registry.invalid/{database['service']}@sha256:{IMAGE_DIGEST}",
+        "rehearsal_image": database["rehearsal_image"],
+        "extensions": database["extensions"],
+        "file": f"databases/{destination.name}",
+    }
+
+
+def contract_filesystem_artifact(
+    identifier: str, source: Path, destination: Path
+) -> dict[str, object]:
+    """archive_source stand-in returning the reviewed artifact contract."""
+
+    return {
+        "id": identifier,
+        "type": "filesystem-tar",
+        "source": str(source),
+        "file": f"filesystems/{destination.name}",
+    }
+
+
+class ManifestRepository:
+    """Repository double that keeps the manifest it was asked to upload."""
+
+    def __init__(self) -> None:
+        self.manifest: dict[str, object] | None = None
+
+    def check_exists(self) -> None:
+        return None
+
+    def backup(self, source: Path, _tag: str, _hostname: str) -> str:
+        self.manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        return "c" * 64
+
+    def apply_retention(self, _tag: str, _hostname: str) -> None:
+        return None
+
+
 class ConfigurationTests(unittest.TestCase):
     def test_reviewed_configuration_is_valid_offline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -656,81 +725,33 @@ class ApplicationBackupTests(unittest.TestCase):
             for dataset in document["datasets"]:
                 Path(dataset["source"]).mkdir(parents=True)
             config = backupctl.BackupConfig.load(write_config(base, document))
-            managed_services = {
-                *(
-                    service
-                    for group in document["consistency_groups"]
-                    for service in group["services"]
-                ),
-                "workloads_minecraft",
-                *(database["service"] for database in document["databases"]),
-            }
-            swarm = FakeReplicaSwarm(
-                {
-                    service: (0, 0) if service in PARKED_SERVICES else (1, 1)
-                    for service in managed_services
-                }
-            )
+            swarm = FakeReplicaSwarm(reviewed_replicas(document))
             commands: list[list[str]] = []
-            archived: list[str] = []
 
             def forbidden_run(arguments: list[str], **_kwargs: object) -> object:
                 commands.append(list(arguments))
                 raise AssertionError(f"unexpected command: {arguments!r}")
 
-            def fake_database(
-                _swarm: object,
-                database: dict[str, object],
-                destination: Path,
-            ) -> dict[str, object]:
-                return {
-                    "id": database["id"],
-                    "type": "postgres-custom-dump",
-                    "service": database["service"],
-                    "database": database["database"],
-                    "image": (
-                        f"registry.invalid/{database['service']}@sha256:{IMAGE_DIGEST}"
-                    ),
-                    "rehearsal_image": database["rehearsal_image"],
-                    "extensions": database["extensions"],
-                    "file": f"databases/{destination.name}",
-                }
-
-            def fake_archive(
-                identifier: str, source: Path, destination: Path
-            ) -> dict[str, object]:
-                archived.append(identifier)
-                return {
-                    "id": identifier,
-                    "type": "filesystem-tar",
-                    "source": str(source),
-                    "file": f"filesystems/{destination.name}",
-                }
-
-            class FakeRepository:
-                def check_exists(self) -> None:
-                    return None
-
-                def backup(self, source: Path, _tag: str, _hostname: str) -> str:
-                    self.manifest = json.loads(
-                        (source / "manifest.json").read_text(encoding="utf-8")
-                    )
-                    return "c" * 64
-
-                def apply_retention(self, _tag: str, _hostname: str) -> None:
-                    return None
-
-            repository = FakeRepository()
+            repository = ManifestRepository()
             with (
                 mock.patch.object(backupctl, "Swarm", return_value=swarm),
                 mock.patch.object(backupctl, "run", side_effect=forbidden_run),
-                mock.patch.object(backupctl, "dump_database", fake_database),
-                mock.patch.object(backupctl, "archive_source", fake_archive),
+                mock.patch.object(
+                    backupctl, "dump_database", contract_database_artifact
+                ),
+                mock.patch.object(
+                    backupctl, "archive_source", contract_filesystem_artifact
+                ),
             ):
                 snapshot = backupctl.command_application(config, repository)
 
             self.assertEqual(snapshot, "c" * 64)
             self.assertEqual(commands, [])
+            archived = {
+                artifact["id"]
+                for artifact in repository.manifest["artifacts"]
+                if artifact["type"] == "filesystem-tar"
+            }
             self.assertIn("minecraft-data", archived)
             self.assertIn("minecraft-mods", archived)
             self.assertIn("openclaw-clean-home", archived)
@@ -764,6 +785,41 @@ class ApplicationBackupTests(unittest.TestCase):
             unparked = backupctl.BackupConfig.load(write_config(base, document))
             backupctl.validate_restored_contract(unparked, repository.manifest)
 
+    def test_unavailable_service_is_never_recorded_or_uploaded(self) -> None:
+        # Database services sit outside every quiesce window, so the metadata
+        # read is the first to observe one that is degraded or stopped.
+        for replicas in ((1, 0), (0, 0), (2, 1)):
+            with (
+                self.subTest(replicas=replicas),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                document["parked_services"] = PARKED_SERVICES
+                for dataset in document["datasets"]:
+                    Path(dataset["source"]).mkdir(parents=True)
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                swarm = FakeReplicaSwarm(reviewed_replicas(document))
+                swarm.state["workloads_n8n-db"] = replicas
+                repository = ManifestRepository()
+                with (
+                    mock.patch.object(backupctl, "Swarm", return_value=swarm),
+                    mock.patch.object(
+                        backupctl, "dump_database", contract_database_artifact
+                    ),
+                    mock.patch.object(
+                        backupctl, "archive_source", contract_filesystem_artifact
+                    ),
+                    self.assertRaisesRegex(
+                        backupctl.BackupError,
+                        "service is not fully available while recording metadata "
+                        rf"\(desired={replicas[0]}, running={replicas[1]}\): "
+                        "workloads_n8n-db",
+                    ),
+                ):
+                    backupctl.command_application(config, repository)
+                self.assertIsNone(repository.manifest)
+
     def test_running_parked_minecraft_fails_before_archiving(self) -> None:
         swarm = FakeReplicaSwarm({"workloads_minecraft": (1, 1)})
         with self.assertRaisesRegex(
@@ -773,6 +829,104 @@ class ApplicationBackupTests(unittest.TestCase):
             with backupctl.parked_minecraft_at_rest(swarm, "workloads_minecraft"):
                 self.fail("a running parked server must not be archived")
         self.assertEqual(swarm.scaled, [])
+
+    def test_draining_parked_minecraft_is_rejected_before_archiving(self) -> None:
+        # (0, 1): a task still stopping after the scale to zero; (1, 0): the
+        # service was unparked and its task has not started yet.
+        for desired, running in ((0, 1), (1, 0)):
+            with self.subTest(replicas=(desired, running)):
+                swarm = FakeReplicaSwarm({"workloads_minecraft": (desired, running)})
+                with self.assertRaisesRegex(
+                    backupctl.BackupError,
+                    "parked service is not at rest before backup "
+                    rf"\(desired={desired}, running={running}\): "
+                    "workloads_minecraft",
+                ):
+                    with backupctl.parked_minecraft_at_rest(
+                        swarm, "workloads_minecraft"
+                    ):
+                        self.fail("a draining parked server must not be archived")
+                self.assertEqual(swarm.scaled, [])
+
+    def test_parked_minecraft_started_mid_archive_fails(self) -> None:
+        swarm = FakeReplicaSwarm({"workloads_minecraft": (0, 0)})
+        with self.assertRaisesRegex(
+            backupctl.BackupError,
+            "parked service is not at rest after backup "
+            r"\(desired=1, running=1\): workloads_minecraft",
+        ):
+            with backupctl.parked_minecraft_at_rest(swarm, "workloads_minecraft"):
+                swarm.state["workloads_minecraft"] = (1, 1)
+        self.assertEqual(swarm.scaled, [])
+
+    def test_parked_minecraft_started_during_backup_is_never_uploaded(self) -> None:
+        class StartedBeforeMetadata(FakeReplicaSwarm):
+            """Minecraft starts after its window closed, before metadata."""
+
+            def service_image(self, service: str) -> str:
+                # Database dumps are faked, so only the metadata loop reads
+                # images, after every backup window has closed.
+                self.state["workloads_minecraft"] = (1, 1)
+                return super().service_image(service)
+
+        scenarios = (
+            (
+                "started while archiving",
+                FakeReplicaSwarm,
+                True,
+                (
+                    "parked service is not at rest after backup "
+                    r"\(desired=1, running=1\): workloads_minecraft"
+                ),
+            ),
+            (
+                "started before metadata",
+                StartedBeforeMetadata,
+                False,
+                (
+                    "parked service is not at rest while recording metadata "
+                    r"\(desired=1, running=1\): workloads_minecraft"
+                ),
+            ),
+        )
+        for label, swarm_class, start_while_archiving, message in scenarios:
+            with (
+                self.subTest(label),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                document = configuration(base)
+                document["parked_services"] = PARKED_SERVICES
+                for dataset in document["datasets"]:
+                    Path(dataset["source"]).mkdir(parents=True)
+                config = backupctl.BackupConfig.load(write_config(base, document))
+                swarm = swarm_class(reviewed_replicas(document))
+
+                def archive(
+                    identifier: str,
+                    source: Path,
+                    destination: Path,
+                    swarm: FakeReplicaSwarm = swarm,
+                    start: bool = start_while_archiving,
+                ) -> dict[str, object]:
+                    if start and identifier == "minecraft-mods":
+                        swarm.state["workloads_minecraft"] = (1, 1)
+                    return contract_filesystem_artifact(identifier, source, destination)
+
+                repository = ManifestRepository()
+                with (
+                    mock.patch.object(backupctl, "Swarm", return_value=swarm),
+                    mock.patch.object(
+                        backupctl, "dump_database", contract_database_artifact
+                    ),
+                    mock.patch.object(backupctl, "archive_source", archive),
+                    self.assertRaisesRegex(backupctl.BackupError, message),
+                ):
+                    backupctl.command_application(config, repository)
+                self.assertIsNone(repository.manifest)
+                self.assertNotIn(
+                    "workloads_minecraft", {name for name, _ in swarm.scaled}
+                )
 
 
 class QuiesceWindowTests(unittest.TestCase):
@@ -810,6 +964,34 @@ class QuiesceWindowTests(unittest.TestCase):
         self.assertNotIn(("workloads_n8n", 0), swarm.scaled)
         self.assertNotIn("workloads_openclaw", {name for name, _ in swarm.scaled})
         self.assertEqual(swarm.state["workloads_n8n"], (1, 1))
+
+    def test_draining_parked_group_service_is_rejected_before_any_scale(
+        self,
+    ) -> None:
+        # The parked service is listed first so a rejection leaves no writer
+        # to recover: the window must refuse before touching anything.
+        for desired, running in ((0, 1), (1, 0)):
+            with self.subTest(replicas=(desired, running)):
+                swarm = FakeReplicaSwarm(
+                    {
+                        "workloads_openclaw": (desired, running),
+                        "workloads_n8n": (1, 1),
+                    }
+                )
+                with self.assertRaisesRegex(
+                    backupctl.BackupError,
+                    "parked service is not at rest before backup "
+                    rf"\(desired={desired}, running={running}\): "
+                    "workloads_openclaw",
+                ):
+                    with backupctl.quiesced_services(
+                        swarm,
+                        ["workloads_openclaw", "workloads_n8n"],
+                        parked=frozenset({"workloads_openclaw"}),
+                    ):
+                        self.fail("the window must not open around a draining task")
+                self.assertEqual(swarm.scaled, [])
+                self.assertEqual(swarm.state["workloads_n8n"], (1, 1))
 
     def test_parked_service_started_during_window_fails_and_restores_writers(
         self,
@@ -910,8 +1092,11 @@ class ParkedSnapshotVerificationTests(unittest.TestCase):
             ):
                 backupctl.validate_restored_contract(config, manifest)
 
-    def test_partially_stopped_parkable_service_is_rejected(self) -> None:
-        for replicas in ((0, 1), (1, 0), (2, 1)):
+    def test_partially_stopped_or_boolean_replicas_are_rejected(self) -> None:
+        # False == 0 and True == 1 in Python: without the bool guard a
+        # recorded (False, False) would read as parked and (True, True) as
+        # available, so both must be refused as malformed metadata.
+        for replicas in ((0, 1), (1, 0), (2, 1), (False, False), (True, True)):
             with (
                 self.subTest(replicas=replicas),
                 tempfile.TemporaryDirectory() as temporary,

@@ -249,21 +249,34 @@ paralelo si afectan al mismo servidor o ventana de cutover.
 `platform_parked_workloads` (`config/platform.yml`) detiene servicios del
 stack `workloads` sin borrar nada: se renderizan con `replicas: 0` y conservan
 imagen, datos bajo `/srv/dockerswarm/services`, secretos, redes, ruta del edge
-y presupuesto de capacidad. La lista va ordenada, sin duplicados, y solo
-admite `minecraft` y `openclaw`, los dos servicios de los que no depende
-ningún otro. Aparcar una base de datos dejaría a sus consumidores sin backend,
-así que los validadores lo rechazan.
+y presupuesto de capacidad. La lista va ordenada, sin duplicados, se escribe
+`[]` cuando no queda ningún servicio aparcado (una clave vacía es `null` y
+todas las capas la rechazan) y solo admite `minecraft` y `openclaw`, los dos servicios que ningún otro necesita
+para funcionar: `minecraft-stats` solo lee el mundo de Minecraft en modo
+lectura y sigue sirviendo las últimas estadísticas. Aparcar una base de datos
+dejaría a sus consumidores sin backend, así que los validadores lo rechazan.
 
 Qué cambia en cada capa mientras un servicio está aparcado:
 
 - `workloads`: la convergencia exige `0/0` y ninguna tarea viva del servicio;
-  las comprobaciones de salud recorren solo los servicios en marcha.
+  las comprobaciones de salud recorren solo los servicios en marcha y el
+  smoke de OpenClaw espera el `503` del edge. El helper de publicación de n8n
+  (`migration/scripts/manage_n8n_workflows.py`) acepta `0/0` solo para los
+  servicios aparcados.
 - `edge` (solo OpenClaw): el router y su certificado siguen, pero el backend
-  no tiene servidores ni sonda y Traefik responde `503 no available server`.
-  Con la sonda activa y sin tarea, Traefik registraría un WARN
-  `Health check failed.` cada 15 s.
-- Minecraft conserva su compuerta pública: el 25565 sigue permitido en el
-  firewall, pero sin tarea no escucha nada y el host responde con un reset.
+  no tiene servidores ni sonda y Traefik responde `503 no available server`
+  sin registrar nada. Con la sonda activa y sin tarea, Traefik registra un
+  WARN `Health check failed.` en cada intervalo de 15 s (ver
+  [EDGE.md](EDGE.md)).
+- Minecraft conserva su compuerta pública y UFW sigue admitiendo el 25565.
+  Con la tarea en marcha, dockerd reserva ese puerto (escucha en `0.0.0.0`) y
+  lo redirige al contenedor. Aparcado no hay reserva ni redirección y el
+  tráfico llega al propio host: el apply de `workloads` falla si algún
+  proceso escucha entonces en el 25565, y sin proceso el kernel rechaza la
+  conexión. Cerrar el puerto en el firewall mientras Minecraft está aparcado
+  exigiría hacer la lista efectiva de puertos consciente del aparcado y
+  aplicar `platform` y `host-baseline`, que hoy aplicarían además el snapshot
+  de paquetes pendiente; queda como cambio aparte.
 - `observability`: no se renderizan la sonda TCP de Minecraft ni la sonda
   HTTPS pública de OpenClaw; la regla `MinecraftEndpointDown` sigue cargada
   sin series.
@@ -272,29 +285,44 @@ Qué cambia en cada capa mientras un servicio está aparcado:
 - Capacidad: el presupuesto sigue reservado, así que desaparcar no requiere
   revisión de capacidad; lo que se libera es la RAM y CPU reales del host.
 
-Para aparcar, se añade el servicio a la lista y se sigue la secuencia de
-cambio. Para OpenClaw se aplica primero `edge` y después `workloads`: así la
-ruta ya no tiene sonda cuando la tarea se detiene. Para desaparcar, el orden
-es el inverso (`workloads` y después `edge`), de modo que Traefik recupera el
-backend cuando la tarea ya está sana. Si `observability` o `backup` están
-desplegados, se aplican también para renderizar la lista nueva.
+Para aparcar o desaparcar se edita la lista y se sigue la secuencia de
+cambio. En los dos sentidos se aplica primero `edge` y después `workloads`: el
+smoke de `workloads` exige a OpenClaw el `503` del edge si está aparcado y el
+`200` si no lo está, así que el edge ya debe servir el backend que
+corresponde. Al desaparcar, Traefik sondea OpenClaw desde el apply de `edge`
+y registra ese WARN hasta que el de `workloads` arranca la tarea. Si
+`observability` o `backup` están desplegados, se aplican también para
+renderizar la lista nueva. Cada apply de `edge` que cambia la configuración
+dinámica reemplaza la tarea de Traefik (`stop-first`), con un corte breve de
+todas las rutas públicas.
 
 Mientras no exista el backup externo (ver «Backup y autolock»), al aparcar
 se archiva el estado en frío en el propio host en cuanto el servicio está en
-`0/0` (datos en reposo), se comprueba el archivo y se registra su SHA-256:
+`0/0` (datos en reposo), bajo el lock host-global, y se registra su SHA-256.
+Las rutas son `minecraft/data` y `minecraft/mods` para Minecraft y
+`openclaw-clean/home` para OpenClaw:
 
 ```bash
 sudo -- install -d -o root -g root -m 0700 /var/backups/dockerswarm/parked
-sudo -- tar --create --zstd --numeric-owner --acls --xattrs \
-  --file /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst \
-  -C /srv/dockerswarm/services <ruta-del-dataset>
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation parked-cold-archive -- \
+  /bin/sh -c 'umask 077 && exec /usr/bin/tar --create --zstd \
+    --numeric-owner --acls --xattrs \
+    --file /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst \
+    -C /srv/dockerswarm/services minecraft/data minecraft/mods'
 sudo -- tar --list --zstd \
-  --file /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst >/dev/null
-sudo -- sha256sum /var/backups/dockerswarm/parked/<servicio>-<UTC>.tar.zst
+  --file /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst >/dev/null
+sudo -- sha256sum /var/backups/dockerswarm/parked/minecraft-cold-UTC.tar.zst
 ```
 
-Ese archivo convive con los datos en el mismo disco: protege frente a un
-error al desaparcar, no frente a la pérdida del servidor.
+El archivo es `0600 root:root` dentro de un directorio `0700` y contiene el
+estado en claro, incluido el de OpenClaw. Convive con los datos en el mismo
+disco: protege frente a un error al desaparcar, no frente a la pérdida del
+servidor. Se conserva hasta que el servicio vuelve a estar en marcha y sano y
+existe un backup externo verificado que lo cubra; entonces se borra. Para
+restaurar, con el servicio aún aparcado, se extrae en un directorio vacío de
+staging, se compara con el dataset y solo después se sustituye el dataset
+completo, sin extraer nunca sobre datos vivos.
 
 ## Reinicios
 

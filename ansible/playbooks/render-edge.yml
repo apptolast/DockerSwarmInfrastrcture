@@ -33,6 +33,16 @@
           - edge_traefik_hostname is match("^[a-z0-9.-]+$")
           - edge_traefik_runtime_uid | int > 0
           - edge_traefik_runtime_gid | int > 0
+          # The parked OpenClaw backend is rendered from this list.
+          - platform_parked_workloads is sequence
+          - platform_parked_workloads is not string
+          - platform_parked_workloads is not mapping
+          - >-
+            platform_parked_workloads
+            == platform_parked_workloads | unique | sort
+          - >-
+            platform_parked_workloads
+            | difference(["minecraft", "openclaw"]) | length == 0
 
     - name: Create the disposable render directory
       ansible.builtin.file:

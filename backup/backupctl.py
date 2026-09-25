@@ -1851,11 +1851,18 @@ def command_application(config: BackupConfig, repository: Repository) -> str:
         )
         for service in dict.fromkeys(metadata_services):
             desired, running = swarm.replicas(service)
-            # Verification reads a recorded 0/0 as "parked"; refuse to record
-            # a parked service in any other state.
-            if service in parked_services and (desired != 0 or running != 0):
+            # Verification accepts a parked service only at 0/0 and every
+            # other one only at full availability: refuse to record, and so
+            # to upload, a snapshot the verifier would reject.
+            if service in parked_services:
+                if desired != 0 or running != 0:
+                    fail(
+                        "parked service is not at rest while recording metadata "
+                        f"(desired={desired}, running={running}): {service}"
+                    )
+            elif desired < 1 or running != desired:
                 fail(
-                    "parked service is not at rest while recording metadata "
+                    "service is not fully available while recording metadata "
                     f"(desired={desired}, running={running}): {service}"
                 )
             service_metadata[service] = {
