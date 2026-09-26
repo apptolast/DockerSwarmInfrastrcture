@@ -152,7 +152,10 @@ aquí:
   (ver [EDGE.md](EDGE.md), «Rollback»). La ruta de AX (EDGE.md, «Ruta de
   AX») se aplicó en su ventana del mismo día (ver «Panel web de AX: ventana 2
   (2026-09-26)»); desde entonces `edge` y `site` solo se aplican siguiendo
-  «Ventana de aplicación de la ruta», con sus tres secrets presentes.
+  «Ventana de aplicación de la ruta», con sus tres secrets presentes; cada
+  apply posterior sigue la ventana de [EDGE.md](EDGE.md) para su cambio, como
+  «Ventana del log de acceso», con las reglas comunes de la compuerta STOP 10
+  de `CLAUDE.md`.
 - El registro DNS `ax.apptolast.com` (A a `159.195.156.57`, DNS-only) lo creó
   el propietario a mano en Cloudflare para el panel web de AX, igual que los
   de OrganizationWeb y RacingGame. Resolvía a esa IP el 2026-09-26. No está
@@ -175,6 +178,15 @@ aquí:
   el `core` del paquete (`/usr/lib/sysctl.d/10-coredump-debian.conf`); ese
   mismo apply lo converge
   (ver [`host_baseline/README.md`](../ansible/roles/host_baseline/README.md)).
+- CrowdSec tiene una allowlist creada a mano el 2026-09-20 a las 01:32 UTC,
+  `apptolast-trusted` («Operator trusted IPs - never ban»), con una
+  dirección IPv4 pública sin caducidad (leída el 2026-09-26 sin mostrarla).
+  CrowdSec descarta las alertas de esa IP antes de decidir nada. Desde el
+  cambio de los 401 de Traefik (ver «Pendiente») `host_security` gestiona
+  esa allowlist a partir del fichero del host
+  `/etc/dockerswarm/crowdsec/trusted-ips`, y todo apply que ejecuta ese rol
+  se detiene antes de cambiar CrowdSec mientras ese fichero no exista
+  ([OPERATIONS.md](OPERATIONS.md), «CrowdSec y los 401 de Traefik»).
 
 Unidades systemd del host que tampoco gestiona este repositorio:
 `satisfactory-backup.timer`, `satisfactory-backup-check.timer`,
@@ -553,6 +565,66 @@ El árbol anterior quedó apartado como
 - 35 Docker Secrets de workloads instalados.
 
 ## Pendiente
+
+### CrowdSec para los 401 de Traefik
+
+Codificado, **sin aplicar**. `host_security` añade la fuente `file` sobre el
+log de acceso de Traefik, el parser fijado `crowdsecurity/traefik-logs` 1.5,
+el escenario local `apptolast/traefik-basicauth-bf` sobre los `401` de
+`ax@file` y `satisfactory-logs@file`, un perfil que lo banea 30 minutos y la
+allowlist gestionada `apptolast-trusted`
+([`host_security/README.md`](../ansible/roles/host_security/README.md)).
+`edge` pasa el log de acceso de Traefik a
+`/var/log/dockerswarm/edge/access.log` con su rotación
+([EDGE.md](EDGE.md), «Log de acceso en fichero»). Hoy nada banea a quien
+prueba contraseñas en `logs-satisfactory` ni en `ax.apptolast.com`, ya
+publicado.
+
+Todo apply que ejecuta `host_security` lleva el cambio: `host-baseline`,
+`platform` y `site`. **Ninguno debe correr antes del paso 1.** Sin el fichero
+del paso 1 se detienen sin tocar CrowdSec, en la comprobación previa de la
+allowlist, pero `platform` y `site` quedarían a medias.
+
+1. El propietario crea `/etc/dockerswarm/crowdsec/trusted-ips` con la
+   dirección de la allowlist actual y las que quiera proteger
+   ([OPERATIONS.md](OPERATIONS.md), «CrowdSec y los 401 de Traefik»). Sin
+   ese fichero el apply se detiene en «Refuse to guess an absent CrowdSec
+   allowlist source».
+2. `host-baseline`, fuera de 22:30-00:40 UTC. `--check`: además de lo
+   habitual, informa como cambios los dos directorios de
+   `/var/log/dockerswarm`, el escenario local, el perfil y la fuente de
+   adquisición; el parser de Traefik se instala solo en el apply. Apply:
+   instala el parser, escribe los ficheros, prueba la configuración con
+   `crowdsec -t`, reinicia CrowdSec una vez y converge la allowlist. Un
+   segundo apply debe dar `changed=0`. `cscli metrics show acquisition`
+   sigue mostrando `auth.log` y syslog con líneas leídas; el fichero de
+   Traefik aún no existe y solo deja un aviso en `/var/log/crowdsec.log`.
+3. `edge` en la «Ventana del log de acceso» de [EDGE.md](EDGE.md): relanza
+   Traefik (unos 13 s) con el montaje nuevo, y el apply prueba que las
+   sondas `401` llegan al fichero. Desde ahí `cscli metrics` muestra el
+   fichero con líneas leídas. No empieza sin el registro de la última
+   ventana de `edge`, la de la ruta de AX (PR #80), con su `Version.Index`
+   y sus dos Configs tras el apply repetido: es la referencia de su paso 1.
+4. Verificar con `cscli metrics`, `cscli allowlists check` y `cscli explain`
+   (OPERATIONS.md); la prueba de extremo a extremo desde una máquina
+   virtual desechable es opcional.
+
+Efectos conocidos: `docker service logs edge_traefik` ya no muestra el log
+de acceso, y el `logrotate.timer` diario no lo rota: lo hace
+`dockerswarm-edge-access-log-rotate.timer` cada 15 minutos. CrowdSec deja
+de depender de Docker; el primer borrador lo hacía.
+
+Vuelta atrás. Para quitar solo los baneos activos del escenario:
+`sudo -- cscli decisions delete --scenario apptolast/traefik-basicauth-bf`.
+Para retirar el cambio de `host_security` no basta con revertirlo: el rol
+revertido exige exactamente sus dos fuentes. Antes de su apply, borrar
+`/etc/crowdsec/acquis.d/02-dockerswarm-traefik.yaml`,
+`/etc/crowdsec/profiles.yaml.local` y
+`/etc/crowdsec/scenarios/dockerswarm-traefik-basicauth-bf.yaml`, ejecutar
+`sudo -- cscli parsers remove crowdsecurity/traefik-logs`, probar con
+`sudo -- crowdsec -c /etc/crowdsec/config.yaml -t` y reiniciar `crowdsec`.
+La allowlist `apptolast-trusted` se queda como está. La del `edge` está en
+[EDGE.md](EDGE.md), «Rollback del log de acceso».
 
 ### Servicios que no convergen
 

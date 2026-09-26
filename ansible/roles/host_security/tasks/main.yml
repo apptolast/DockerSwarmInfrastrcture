@@ -49,6 +49,66 @@
         | selectattr("sha256", "match", "^[a-f0-9]{64}$")
         | list | length
         == host_security_crowdsec_hub_dependency_lock | length
+      - >-
+        host_security_crowdsec_standalone_hub_lock
+        | selectattr("type", "in", ["parsers", "scenarios", "postoverflows"])
+        | selectattr("version", "match", "^[0-9]+[.][0-9]+$")
+        | selectattr("sha256", "match", "^[a-f0-9]{64}$")
+        | list | length
+        == host_security_crowdsec_standalone_hub_lock | length
+      - >-
+        (
+          host_security_crowdsec_collection_lock
+          + host_security_crowdsec_hub_dependency_lock
+          + host_security_crowdsec_standalone_hub_lock
+        )
+        | map(attribute="name") | unique | list | length
+        == (
+          host_security_crowdsec_collection_lock
+          + host_security_crowdsec_hub_dependency_lock
+          + host_security_crowdsec_standalone_hub_lock
+        )
+        | length
+      # A plain file two levels below /var/log/dockerswarm: no glob, no
+      # rotated sibling, and a directory this role can create.
+      - >-
+        host_security_crowdsec_traefik_access_log
+        is match("^/var/log/dockerswarm/[a-z0-9-]+/[a-z0-9-]+[.]log$")
+      - >-
+        host_security_crowdsec_basicauth_scenario
+        is match("^[a-z0-9-]+/[a-z0-9-]+$")
+      - >-
+        host_security_crowdsec_basicauth_scenario
+        not in (
+          host_security_crowdsec_hub_dependency_lock
+          + host_security_crowdsec_standalone_hub_lock
+        )
+        | map(attribute="name")
+      - host_security_crowdsec_basicauth_routers | length > 0
+      - >-
+        host_security_crowdsec_basicauth_routers | unique | list | length
+        == host_security_crowdsec_basicauth_routers | length
+      - >-
+        host_security_crowdsec_basicauth_routers
+        | reject("match", "^[a-z0-9-]+@file$")
+        | list | length == 0
+      - host_security_crowdsec_basicauth_capacity is integer
+      - host_security_crowdsec_basicauth_capacity >= 5
+      - host_security_crowdsec_basicauth_capacity <= 20
+      - host_security_crowdsec_basicauth_leakspeed is match("^[1-9][0-9]*[sm]$")
+      - host_security_crowdsec_basicauth_blackhole is match("^[1-9][0-9]*[sm]$")
+      - >-
+        host_security_crowdsec_basicauth_ban_duration
+        is match("^(1[5-9]|2[0-9]|30)m$")
+      - >-
+        host_security_crowdsec_allowlist_name
+        is match("^[a-z0-9][a-z0-9-]{0,62}$")
+      - >-
+        host_security_crowdsec_allowlist_description
+        is match("^[A-Za-z0-9 ._-]{1,100}$")
+      - >-
+        host_security_crowdsec_allowlist_source
+        is match("^/etc/dockerswarm/crowdsec/[a-z0-9][a-z0-9-]*$")
       - host_security_required_active_services | unique | length
         == host_security_required_active_services | length
       - host_security_legacy_tool_policy == "preserve-unmanaged"
@@ -61,7 +121,8 @@
         | selectattr("protocol", "eq", "tcp") | list | length == 1
     fail_msg: >-
       Host security is constrained to the reviewed Ubuntu 26.04 identity,
-      authenticated CrowdSec repository and exact egress contract.
+      authenticated CrowdSec repository, pinned CrowdSec content, Traefik
+      basicAuth ban policy and exact egress contract.
     quiet: true
 
 - name: Read the administrator identity
@@ -629,6 +690,15 @@
     fail_msg: "CrowdSec is not sourced from the authenticated official repo."
     quiet: true
 
+# Preflight of the allowlist, before the first CrowdSec Hub, acquisition or
+# profile change of this role: an apply that would stop at an allowlist gate
+# stops here, with the running engine untouched (crowdsec_allowlist_gates.yml).
+- name: Gate the managed CrowdSec allowlist before any CrowdSec change
+  ansible.builtin.include_tasks:
+    file: crowdsec_allowlist_gates.yml
+  vars:
+    host_security_crowdsec_allowlist_gate_strict: false
+
 - name: Inspect locked CrowdSec Hub candidates before installation
   ansible.builtin.command:
     argv:
@@ -646,6 +716,7 @@
         | list
       )
       + host_security_crowdsec_hub_dependency_lock
+      + host_security_crowdsec_standalone_hub_lock
     }}
   loop_control:
     label: "{{ item.type }}/{{ item.name }}"
@@ -687,6 +758,38 @@
     not in host_security_crowdsec_collection_install.stdout
   check_mode: false
 
+# Hub items that no reviewed collection brings are installed by name, and only
+# when the inspection above, already checked against the locked version and
+# digest, says they are missing. A converged host runs nothing here.
+- name: Install the reviewed standalone CrowdSec Hub items
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cscli
+      - "{{ item.item.type }}"
+      - install
+      - "{{ item.item.name }}"
+      - --error
+      - --color
+      - "no"
+  loop: >-
+    {{
+      host_security_crowdsec_hub_candidates.results
+      | selectattr(
+          "item.name",
+          "in",
+          host_security_crowdsec_standalone_hub_lock
+          | map(attribute="name") | list
+        )
+      | list
+    }}
+  loop_control:
+    label: "{{ item.item.type }}/{{ item.item.name }}"
+  when:
+    - not ansible_check_mode
+    - not ((item.stdout | from_json).installed | bool)
+  changed_when: true
+  notify: Restart CrowdSec
+
 - name: Inspect every available locked CrowdSec Hub item
   ansible.builtin.command:
     argv:
@@ -704,6 +807,7 @@
         | list
       )
       + host_security_crowdsec_hub_dependency_lock
+      + host_security_crowdsec_standalone_hub_lock
     }}
   loop_control:
     label: "{{ item.type }}/{{ item.name }}"
@@ -730,6 +834,34 @@
   loop: "{{ host_security_crowdsec_hub_inspections.results }}"
   loop_control:
     label: "{{ item.item.type }}/{{ item.item.name }}"
+  # A --check run installs nothing, so a standalone item the apply would add
+  # is still missing here. Its index version and digest were already enforced
+  # before mutation; everything else must be installed even in check mode.
+  when: >-
+    not ansible_check_mode
+    or (item.stdout | from_json).installed | bool
+    or item.item.name
+    not in host_security_crowdsec_standalone_hub_lock
+    | map(attribute="name") | list
+
+# The local scenario is a regular file in the install directory, so cscli
+# lists it as a local item named by its `name:` key. It is written before the
+# inventory is read so that the exact inventory below includes it.
+- name: Install the reviewed local Traefik basicAuth scenario
+  ansible.builtin.template:
+    src: dockerswarm-traefik-basicauth-bf.yaml.j2
+    dest: "{{ host_security_crowdsec_basicauth_scenario_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart CrowdSec
+
+- name: Inspect the local Traefik basicAuth scenario file
+  ansible.builtin.stat:
+    path: "{{ host_security_crowdsec_basicauth_scenario_path }}"
+    follow: false
+    get_checksum: false
+  register: host_security_crowdsec_basicauth_scenario_file
 
 - name: Read the complete installed CrowdSec Hub inventory
   ansible.builtin.command:
@@ -750,6 +882,45 @@
   ansible.builtin.set_fact:
     host_security_crowdsec_hub_inventory: >-
       {{ host_security_crowdsec_hub_inventory_raw.stdout | from_json }}
+
+# Only a --check run can reach the exact inventory below without the items
+# this change adds: it neither installs the standalone Hub items nor writes
+# the local scenario. Those two, and nothing else, may be missing then. An
+# apply has already installed both, so nothing may be missing.
+- name: Derive the reviewed CrowdSec items only an apply installs
+  ansible.builtin.set_fact:
+    host_security_crowdsec_hub_pending: >-
+      {{
+        (
+          (
+            host_security_crowdsec_standalone_hub_lock
+            | map(attribute="name") | list
+          )
+          + (
+            []
+            if host_security_crowdsec_basicauth_scenario_file.stat.exists
+            else [host_security_crowdsec_basicauth_scenario]
+          )
+        )
+        | reject(
+            "in",
+            (
+              host_security_crowdsec_hub_inventory.parsers
+              | map(attribute="name") | list
+            )
+            + (
+              host_security_crowdsec_hub_inventory.postoverflows
+              | map(attribute="name") | list
+            )
+            + (
+              host_security_crowdsec_hub_inventory.scenarios
+              | map(attribute="name") | list
+            )
+          )
+        | list
+        if ansible_check_mode
+        else []
+      }}
 
 - name: Reject every unreviewed installed CrowdSec Hub item
   ansible.builtin.assert:
@@ -782,21 +953,39 @@
       - >-
         host_security_crowdsec_hub_inventory.parsers
         | map(attribute="name") | sort
-        == host_security_crowdsec_hub_dependency_lock
+        == (
+          host_security_crowdsec_hub_dependency_lock
+          + host_security_crowdsec_standalone_hub_lock
+        )
         | selectattr("type", "equalto", "parsers")
-        | map(attribute="name") | sort
+        | map(attribute="name")
+        | reject("in", host_security_crowdsec_hub_pending)
+        | sort
       - >-
         host_security_crowdsec_hub_inventory.postoverflows
         | map(attribute="name") | sort
-        == host_security_crowdsec_hub_dependency_lock
+        == (
+          host_security_crowdsec_hub_dependency_lock
+          + host_security_crowdsec_standalone_hub_lock
+        )
         | selectattr("type", "equalto", "postoverflows")
-        | map(attribute="name") | sort
+        | map(attribute="name")
+        | reject("in", host_security_crowdsec_hub_pending)
+        | sort
       - >-
         host_security_crowdsec_hub_inventory.scenarios
         | map(attribute="name") | sort
-        == host_security_crowdsec_hub_dependency_lock
-        | selectattr("type", "equalto", "scenarios")
-        | map(attribute="name") | sort
+        == (
+          (
+            host_security_crowdsec_hub_dependency_lock
+            + host_security_crowdsec_standalone_hub_lock
+          )
+          | selectattr("type", "equalto", "scenarios")
+          | map(attribute="name") | list
+          + [host_security_crowdsec_basicauth_scenario]
+        )
+        | reject("in", host_security_crowdsec_hub_pending)
+        | sort
     fail_msg: >-
       Installed CrowdSec Hub content contains an unreviewed or missing item.
       Review drift before removing or enabling security content.
@@ -809,6 +998,49 @@
     owner: root
     group: root
     mode: "0750"
+
+# The Traefik source tails the access log that the edge role creates and the
+# edge_traefik task writes through a bind mount. CrowdSec 1.7.8 watches a
+# directory for a file that does not exist yet only if that directory exists
+# when CrowdSec starts (force_inotify; pkg/acquisition/modules/file/config.go,
+# Configure). The two directories are therefore created here, root:root 0755
+# as the edge role requires them, so the order of the host-baseline and edge
+# applies does not matter. The access log file itself belongs to the edge
+# role. A link is refused: the file module would follow it.
+- name: Inspect the Traefik access log directories without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - "{{ host_security_crowdsec_traefik_access_log | dirname | dirname }}"
+    - "{{ host_security_crowdsec_traefik_access_log | dirname }}"
+  register: host_security_traefik_access_log_dirs
+
+- name: Reject an unsafe Traefik access log directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists
+        or (item.stat.isdir and not item.stat.islnk)
+    fail_msg: >-
+      {{ item.item }} is a link or not a directory. CrowdSec watches it for
+      the Traefik access log; review it before this role creates it.
+    quiet: true
+  loop: "{{ host_security_traefik_access_log_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the Traefik access log directories CrowdSec watches
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ host_security_crowdsec_traefik_access_log | dirname | dirname }}"
+    - "{{ host_security_crowdsec_traefik_access_log | dirname }}"
 
 - name: Install exact CrowdSec acquisition sources
   ansible.builtin.template:
@@ -835,6 +1067,18 @@
     state: absent
   notify: Restart CrowdSec
 
+# CrowdSec prepends profiles.yaml.local to the packaged profiles.yaml (a
+# dpkg conffile this role never edits), so this short-ban profile is
+# evaluated before the 4 h default and stops there for its scenario only.
+- name: Install the reviewed CrowdSec decision profile override
+  ansible.builtin.template:
+    src: profiles.yaml.local.j2
+    dest: "{{ host_security_crowdsec_profiles_override }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart CrowdSec
+
 - name: Enumerate CrowdSec acquisition files
   ansible.builtin.find:
     paths: /etc/crowdsec/acquis.d
@@ -854,6 +1098,24 @@
       An unmanaged CrowdSec acquisition source would duplicate or expand the
       reviewed log scope.
     quiet: true
+  when: not ansible_check_mode
+
+# systemd runs this same test before every CrowdSec start (ExecStartPre).
+# Running it here, before the restart handler, stops the apply while the
+# running engine still holds its previous configuration, instead of leaving
+# CrowdSec down after a restart that cannot start. Every source is a file,
+# so neither this test nor CrowdSec itself needs Docker.
+- name: Validate the CrowdSec configuration before a restart loads it
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/crowdsec
+      - -c
+      - /etc/crowdsec/config.yaml
+      - -t
+      - -error
+  changed_when: false
+  check_mode: false
+  no_log: true
   when: not ansible_check_mode
 
 - name: Install the exact Fail2ban SSH jail
@@ -1297,6 +1559,137 @@
   changed_when: false
   check_mode: false
   no_log: true
+  when: not ansible_check_mode
+
+# La allowlist de CrowdSec vive en su base de datos (cscli allowlists, 1.6.8
+# o posterior), no en un fichero, y las IP que protege no pueden estar en este
+# repositorio publico. La fuente es un fichero solo del host, root:root 0600
+# en un directorio 0700, que el script lee sin seguir enlaces. La allowlist
+# gestionada converge exactamente a ese fichero; cualquier otra allowlist es
+# deriva y detiene el apply. Si el fichero no existe y la allowlist gestionada
+# tiene entradas, el apply se detiene: no se adivina si quitarlas. Las tareas
+# que ven direcciones llevan no_log; las comprobaciones solo muestran su
+# expresion, nunca los valores.
+- name: Create the host-only CrowdSec allowlist source directory
+  ansible.builtin.file:
+    path: "{{ host_security_crowdsec_allowlist_source | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Gate the managed CrowdSec allowlist before writing it
+  ansible.builtin.include_tasks:
+    file: crowdsec_allowlist_gates.yml
+  vars:
+    host_security_crowdsec_allowlist_gate_strict: true
+
+- name: Create the managed CrowdSec allowlist
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cscli
+      - allowlists
+      - create
+      - "{{ host_security_crowdsec_allowlist_name }}"
+      - --description
+      - "{{ host_security_crowdsec_allowlist_description }}"
+      - --error
+      - --color
+      - "no"
+  when:
+    - not ansible_check_mode
+    - not host_security_crowdsec_allowlist_exists
+    - host_security_crowdsec_allowlist_add | length > 0
+  changed_when: true
+
+- name: Remove stale entries from the managed CrowdSec allowlist
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/cscli", "allowlists", "remove",
+         host_security_crowdsec_allowlist_name]
+        + host_security_crowdsec_allowlist_remove
+        + ["--error", "--color", "no"]
+      }}
+  when:
+    - not ansible_check_mode
+    - host_security_crowdsec_allowlist_remove | length > 0
+  changed_when: true
+  no_log: true
+
+# `add` also expires every active decision that the new entries cover, so an
+# owner already banned is let back in by the same apply.
+- name: Add the reviewed entries to the managed CrowdSec allowlist
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/cscli", "allowlists", "add",
+         host_security_crowdsec_allowlist_name]
+        + host_security_crowdsec_allowlist_add
+        + ["--comment", "managed by host_security",
+           "--error", "--color", "no"]
+      }}
+  when:
+    - not ansible_check_mode
+    - host_security_crowdsec_allowlist_add | length > 0
+  changed_when: true
+  no_log: true
+
+# A LAPI read, bounded like the one in crowdsec_allowlist_gates.yml; a LAPI
+# that stops answering here fails the apply after 30 s instead of holding it.
+- name: Re-read the CrowdSec allowlists
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timeout
+      - --kill-after=5
+      - "30"
+      - /usr/bin/cscli
+      - allowlists
+      - list
+      - --output
+      - json
+      - --error
+      - --color
+      - "no"
+  register: host_security_crowdsec_allowlists_final_raw
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+# cscli skips a value it cannot parse and still exits 0, and it keeps an
+# expired entry that hides a new one with the same value, so the result is
+# proven here rather than trusted.
+- name: Verify the managed CrowdSec allowlist equals its source
+  ansible.builtin.assert:
+    that:
+      - >-
+        final | map(attribute="name")
+        | reject("equalto", host_security_crowdsec_allowlist_name)
+        | list | length == 0
+      - >-
+        final
+        | selectattr("name", "equalto", host_security_crowdsec_allowlist_name)
+        | map(attribute="items") | first | default([], true)
+        | selectattr("expiration", "match", "^0001-01-01T")
+        | map(attribute="value") | sort
+        == host_security_crowdsec_allowlist_source_state.entries | sort
+      - >-
+        final
+        | selectattr("name", "equalto", host_security_crowdsec_allowlist_name)
+        | map(attribute="items") | first | default([], true)
+        | length
+        == host_security_crowdsec_allowlist_source_state.entries | length
+    fail_msg: >-
+      The CrowdSec allowlist {{ host_security_crowdsec_allowlist_name }} does
+      not hold exactly the entries of
+      {{ host_security_crowdsec_allowlist_source }}. An expired entry with the
+      same value blocks a new one: remove it with cscli allowlists remove and
+      apply again.
+    quiet: true
+  vars:
+    final: >-
+      {{ host_security_crowdsec_allowlists_final_raw.stdout | from_json or [] }}
   when: not ansible_check_mode
 
 # `-t` esta documentado como "test config and exit", pero el bouncer

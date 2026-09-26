@@ -370,6 +370,33 @@ if traefik_service.get("secrets") != [
 ]:
     fail("Traefik does not mount exactly the reviewed read-only secrets")
 
+# Two writable binds and nothing else: the ACME state and the directory of
+# the access log that CrowdSec tails as a plain host file (docs/EDGE.md, «Log
+# de acceso en fichero»). config/host-security.yml names that same file, so
+# neither side can move without the other.
+TRAEFIK_ACCESS_LOG_DIR = "/var/log/dockerswarm/edge"
+if group_vars.get("edge_traefik_access_log_dir") != TRAEFIK_ACCESS_LOG_DIR:
+    fail("the Traefik access log directory differs from the reviewed contract")
+if traefik_service.get("volumes") != [
+    {
+        "type": "bind",
+        "source": f"{contract['platform_state_root']}/traefik",
+        "target": "/data",
+    },
+    {
+        "type": "bind",
+        "source": TRAEFIK_ACCESS_LOG_DIR,
+        "target": "/var/log/traefik",
+    },
+]:
+    fail("Traefik does not mount exactly the reviewed state and access log")
+host_security = load_yaml("config/host-security.yml")
+if not isinstance(host_security, dict) or (
+    host_security.get("host_security_crowdsec_traefik_access_log")
+    != f"{TRAEFIK_ACCESS_LOG_DIR}/access.log"
+):
+    fail("CrowdSec does not read the access log that Traefik writes")
+
 def load_image_channels() -> dict[str, Any]:
     import importlib.util
 
@@ -784,6 +811,12 @@ if (static.get("accessLog") or {}).get("fields", {}).get("names") != {
     "ClientUsername": "drop"
 }:
     fail("the access log keeps the basicAuth user name")
+# The bind mount above; format json is what crowdsecurity/traefik-logs and
+# the edge role's probe proof parse.
+if (static.get("accessLog") or {}).get("filePath") != (
+    "/var/log/traefik/access.log"
+) or (static.get("accessLog") or {}).get("format") != "json":
+    fail("the access log must be JSON in /var/log/traefik/access.log")
 if static.get("ping") != {
     "entryPoint": "traefik",
     "manualRouting": True,

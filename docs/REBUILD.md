@@ -157,7 +157,11 @@ Nunca deben pegarse en chat ni commit:
 - contraseña restic y unlock key en un gestor externo;
 - canal/responsable de alertas, incidentes y rollback;
 - aceptación OAuth de n8n y decisión de exposición de Minecraft.
-- evidencia de snapshot final o tooling revisado de refresh/promoción.
+- evidencia de snapshot final o tooling revisado de refresh/promoción;
+- opcional: las IP que CrowdSec nunca debe banear, en
+  `/etc/dockerswarm/crowdsec/trusted-ips` (`root:root 0600`), antes del
+  primer apply que lea la allowlist
+  ([OPERATIONS.md](OPERATIONS.md), «CrowdSec y los 401 de Traefik»).
 
 La máquina todavía no puede declararse reconstruible al 100 % mientras falten
 esas entradas y un ensayo off-host. Los gates convierten esa ausencia en un

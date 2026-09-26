@@ -104,6 +104,7 @@ boot_traefik() {
     --security-opt no-new-privileges:true \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777 \
     --tmpfs /data:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700 \
+    --tmpfs /var/log/traefik:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700 \
     --volume "${static_file}:/etc/traefik.yml:ro" \
     --volume "${dynamic_file}:/etc/traefik-dynamic.yml:ro" \
     "$@" \

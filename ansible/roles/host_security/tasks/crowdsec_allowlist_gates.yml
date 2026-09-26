@@ -1,0 +1,189 @@
+---
+# Read-only gates of the managed CrowdSec allowlist. main.yml includes this
+# file twice. The preflight pass runs before this role changes any CrowdSec
+# Hub item, acquisition or profile, so a missing or unsafe host-only source,
+# or an unreviewed allowlist, stops the apply before CrowdSec restarts with
+# new content; it skips the LAPI gates when the LAPI does not answer within
+# 30 s, so a stopped or hung CrowdSec can still be repaired. The strict pass
+# runs after the services start, just before the writes, and needs the LAPI.
+# Every task that sees an address has no_log; the checks only show names and
+# counts.
+- name: Read the host-only CrowdSec allowlist source
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          playbook_dir + "/../../scripts/validate-crowdsec-allowlist.py",
+          host_security_crowdsec_allowlist_source
+        ]
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: host_security_crowdsec_allowlist_source_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+# The script never prints an address on stderr, so its reason is safe here.
+- name: Require a safe host-only CrowdSec allowlist source
+  ansible.builtin.assert:
+    that:
+      - host_security_crowdsec_allowlist_source_raw.rc == 0
+    fail_msg: >-
+      {{ host_security_crowdsec_allowlist_source }} is unsafe or malformed:
+      {{ host_security_crowdsec_allowlist_source_raw.stderr | default("")
+      | trim }}. See docs/OPERATIONS.md, «CrowdSec y los 401 de Traefik».
+    quiet: true
+
+# `cscli allowlists list` asks the LAPI through an HTTP client without any
+# timeout (CrowdSec v1.7.8, cmd/crowdsec-cli/cliallowlists/allowlists.go:
+# 314-330, pkg/apiclient/auth_jwt.go:247-248, pkg/apiclient/client.go:
+# 153-196), so a LAPI that accepts the connection and never answers would
+# hold this task, and the host-global lock, forever. timeout(1) bounds it:
+# SIGTERM cancels the cscli context (cmd/crowdsec-cli/main.go:329) and the
+# rc is 124, or 137 after the KILL. Both count as "the LAPI does not answer".
+- name: Read the CrowdSec allowlists
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timeout
+      - --kill-after=5
+      - "30"
+      - /usr/bin/cscli
+      - allowlists
+      - list
+      - --output
+      - json
+      - --error
+      - --color
+      - "no"
+  register: host_security_crowdsec_allowlists_raw
+  changed_when: false
+  # The strict pass retries for a minute (longer while each attempt times
+  # out) and then fails. The preflight pass stops at the first attempt and,
+  # when the LAPI does not answer, only skips the gates below: the role then
+  # starts CrowdSec and the strict pass gates the writes.
+  failed_when: >-
+    host_security_crowdsec_allowlists_raw.rc != 0
+    and host_security_crowdsec_allowlist_gate_strict | bool
+  check_mode: false
+  no_log: true
+  retries: 12
+  delay: 5
+  until: >-
+    host_security_crowdsec_allowlists_raw.rc == 0
+    or not host_security_crowdsec_allowlist_gate_strict | bool
+
+- name: Decode the CrowdSec allowlists and their host-only source
+  ansible.builtin.set_fact:
+    host_security_crowdsec_allowlists: >-
+      {{ host_security_crowdsec_allowlists_raw.stdout | from_json or [] }}
+    host_security_crowdsec_allowlist_source_state: >-
+      {{ host_security_crowdsec_allowlist_source_raw.stdout | from_json }}
+  no_log: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0
+
+- name: Select the managed CrowdSec allowlist entries
+  ansible.builtin.set_fact:
+    host_security_crowdsec_allowlist_exists: "{{ managed | length > 0 }}"
+    host_security_crowdsec_allowlist_entries: >-
+      {{ managed | map(attribute="items") | first | default([], true) }}
+  vars:
+    managed: >-
+      {{
+        host_security_crowdsec_allowlists
+        | selectattr("name", "equalto", host_security_crowdsec_allowlist_name)
+        | list
+      }}
+  no_log: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0
+
+- name: Reject every unreviewed CrowdSec allowlist
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_allowlists
+        | map(attribute="name")
+        | reject("equalto", host_security_crowdsec_allowlist_name)
+        | list | length == 0
+      - >-
+        host_security_crowdsec_allowlists
+        | selectattr("console_managed", "defined")
+        | selectattr("console_managed")
+        | list | length == 0
+    fail_msg: >-
+      CrowdSec holds an allowlist this repository does not manage
+      ({{
+        host_security_crowdsec_allowlists
+        | map(attribute="name")
+        | reject("equalto", host_security_crowdsec_allowlist_name)
+        | join(", ")
+      }}) or one managed from the CrowdSec console. Every IP in it escapes
+      every ban; review it before removing it or codifying it.
+    quiet: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0
+
+- name: Require well-formed entries in the managed CrowdSec allowlist
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_allowlist_entries
+        | selectattr("value", "defined")
+        | selectattr("expiration", "defined")
+        | list | length
+        == host_security_crowdsec_allowlist_entries | length
+    fail_msg: >-
+      cscli allowlists list returned an entry of
+      {{ host_security_crowdsec_allowlist_name }} without a value or an
+      expiration field, so it cannot be compared with its source.
+    quiet: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0
+
+- name: Refuse to guess an absent CrowdSec allowlist source
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_security_crowdsec_allowlist_source_state.present
+        or host_security_crowdsec_allowlist_entries | length == 0
+    fail_msg: >-
+      The CrowdSec allowlist {{ host_security_crowdsec_allowlist_name }} holds
+      {{ host_security_crowdsec_allowlist_entries | length }} entries but
+      {{ host_security_crowdsec_allowlist_source }} does not exist. Write
+      that file with the addresses to keep (docs/OPERATIONS.md, «CrowdSec y
+      los 401 de Traefik»); an empty file removes them all.
+    quiet: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0
+
+- name: Plan the exact CrowdSec allowlist convergence
+  ansible.builtin.set_fact:
+    # Stale values, plus desired values stored with an expiry: removed first
+    # and added back without one.
+    host_security_crowdsec_allowlist_remove: >-
+      {{
+        (
+          host_security_crowdsec_allowlist_entries
+          | rejectattr("value", "in", desired)
+          | map(attribute="value") | list
+        )
+        + (
+          host_security_crowdsec_allowlist_entries
+          | selectattr("value", "in", desired)
+          | rejectattr("expiration", "match", "^0001-01-01T")
+          | map(attribute="value") | list
+        )
+      }}
+    host_security_crowdsec_allowlist_add: >-
+      {{
+        desired
+        | reject(
+            "in",
+            host_security_crowdsec_allowlist_entries
+            | selectattr("expiration", "match", "^0001-01-01T")
+            | map(attribute="value") | list
+          )
+        | list
+      }}
+  vars:
+    desired: "{{ host_security_crowdsec_allowlist_source_state.entries }}"
+  no_log: true
+  when: host_security_crowdsec_allowlists_raw.rc == 0

@@ -1,0 +1,24 @@
+# Managed by Ansible. Local scenario: repeated HTTP 401 answers on the Traefik
+# routers behind basicAuth. It counts every 401, with or without credentials,
+# because Traefik answers a missing or a wrong password the same way. The
+# profile in profiles.yaml.local gives it a short ban.
+type: leaky
+name: {{ host_security_crowdsec_basicauth_scenario }}
+description: "Detect repeated HTTP 401 on Traefik basicAuth routers"
+filter: >-
+  evt.Meta.log_type == 'http_access-log'
+  && evt.Meta.http_status == '401'
+  && evt.Meta.traefik_router_name in [{% for router in host_security_crowdsec_basicauth_routers %}'{{ router }}'{% if not loop.last %}, {% endif %}{% endfor %}]
+groupby: evt.Meta.source_ip
+capacity: {{ host_security_crowdsec_basicauth_capacity }}
+leakspeed: "{{ host_security_crowdsec_basicauth_leakspeed }}"
+blackhole: "{{ host_security_crowdsec_basicauth_blackhole }}"
+labels:
+  service: http
+  confidence: 3
+  spoofable: 0
+  classification:
+    - attack.T1110
+  behavior: "http:bruteforce"
+  label: "Traefik basicAuth bruteforce"
+  remediation: true

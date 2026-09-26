@@ -1,0 +1,11 @@
+# Managed by Ansible (edge role). docs/EDGE.md, «Log de acceso en fichero».
+[Unit]
+Description=Rotate the Traefik access log every 15 minutes when due
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

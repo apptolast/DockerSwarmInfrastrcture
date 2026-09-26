@@ -1,0 +1,11 @@
+# Managed by Ansible. CrowdSec reads this file before profiles.yaml as one
+# multi-document stream, so this profile is evaluated first. It gives the
+# local Traefik basicAuth scenario a short ban and stops there; every other
+# alert falls through to the packaged profiles and their 4 h ban.
+name: dockerswarm_traefik_basicauth_short_ban
+filters:
+  - Alert.Remediation == true && Alert.GetScope() == "Ip" && Alert.GetScenario() == "{{ host_security_crowdsec_basicauth_scenario }}"
+decisions:
+  - type: ban
+    duration: {{ host_security_crowdsec_basicauth_ban_duration }}
+on_success: break
