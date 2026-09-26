@@ -18,8 +18,8 @@ from ansible_task_harness import run_task_definition
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_TASKS = "ansible/roles/capacity_preflight/tasks/profiles.yml"
 MIB = 1024 * 1024
-# A synthetic group for these tests only: config/capacity-profiles.yml does
-# not declare any host container yet.
+# A synthetic group for these tests only, declared on a copy of the contract
+# from which the repository's own groups (the AX lab) are removed first.
 LAB_GROUP = {
     "kind-control-plane": {
         "reservations": {"cpu_millicores": 250, "memory_mib": 1024},
@@ -89,12 +89,84 @@ def external_live(profiles):
     return services
 
 
+def group_totals(containers):
+    """Sum the reservations and limits of one host container group."""
+    totals = {
+        resource_class: {"cpu_millicores": 0, "memory_mib": 0}
+        for resource_class in ("reservations", "limits")
+    }
+    for container in containers.values():
+        for resource_class, values in totals.items():
+            for resource_name in values:
+                values[resource_name] += container[resource_class][resource_name]
+    return totals
+
+
+def without_host_container_groups(profiles):
+    """A copy of the contract without any host container group.
+
+    Every plan that ran a group stops listing it and stops paying for it, so
+    the copy is the contract as it was before the AX lab was declared.
+    """
+    candidate = json.loads(json.dumps(profiles))
+    contract = candidate["capacity_profiles"]
+    for group, containers in contract["host_containers"].items():
+        totals = group_totals(containers)
+        for plan in contract["profiles"].values():
+            if group in plan["host_containers"]:
+                plan["host_containers"].remove(group)
+                for resource_class, values in totals.items():
+                    for resource_name, value in values.items():
+                        plan["aggregate"][resource_class][resource_name] -= value
+    contract["host_containers"] = {}
+    return candidate
+
+
+def as_declared(name, declared, status="running"):
+    """The preflight's read of a host container running exactly as declared."""
+    return {
+        "item": name,
+        "rc": 0,
+        "stdout": json.dumps(
+            {
+                "name": f"/{name}",
+                "status": status,
+                "host_config": {
+                    "Memory": declared["limits"]["memory_mib"] * MIB,
+                    "MemoryReservation": declared["reservations"]["memory_mib"] * MIB,
+                    "NanoCpus": declared["limits"]["cpu_millicores"] * 1_000_000,
+                    "PidsLimit": declared["pids_limit"],
+                },
+            }
+        ),
+        "stderr": "",
+    }
+
+
+def live_host_containers(profiles):
+    """What the preflight reads on a converged host for this contract.
+
+    The containers of the active plan's groups run exactly as declared; every
+    other declared container is absent.
+    """
+    contract = profiles["capacity_profiles"]
+    active = contract["profiles"][contract["active"]]["host_containers"]
+    records = []
+    for group, containers in contract["host_containers"].items():
+        for name, declared in containers.items():
+            records.append(
+                as_declared(name, declared) if group in active else absent(name)
+            )
+    return records
+
+
 def with_lab(profiles, running_plans=("organizationweb",)):
     """A copy of the profile contract that declares LAB_GROUP as group `lab`.
 
-    Every plan in running_plans lists the group and pays for it.
+    The repository's own groups are removed first. Every plan in
+    running_plans lists the group and pays for it.
     """
-    candidate = json.loads(json.dumps(profiles))
+    candidate = without_host_container_groups(profiles)
     contract = candidate["capacity_profiles"]
     contract["host_containers"] = {"lab": json.loads(json.dumps(LAB_GROUP))}
     for name in running_plans:
@@ -178,17 +250,39 @@ class CapacityProfileTests(unittest.TestCase):
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
-        # The active plan now carries the game as well; both plans leave out
-        # Minecraft and OpenClaw while config/platform.yml parks them and
-        # count the external stacks (16/896 MiB, 50m/2050m).
-        self.assertEqual(totals["organizationweb"]["limits"]["memory_mib"], 8301)
-        self.assertEqual(totals["organizationweb"]["reservations"]["memory_mib"], 3746)
-        self.assertEqual(totals["organizationweb"]["limits"]["cpu_millicores"], 14150)
+        # The active plan now carries the game and the AX lab (host container
+        # group ax-lab: 550m/1920 MiB reserved, 2500m/3840 MiB limited) as
+        # well; both plans leave out Minecraft and OpenClaw while
+        # config/platform.yml parks them and count the external stacks
+        # (16/896 MiB, 50m/2050m).
+        self.assertEqual(
+            totals["organizationweb"],
+            {
+                "reservations": {"cpu_millicores": 3100, "memory_mib": 5666},
+                "limits": {"cpu_millicores": 16650, "memory_mib": 12141},
+            },
+        )
+        # 256 MiB under the 15981 - 3072 - 512 = 12397 MiB memory limit budget.
+        self.assertEqual(15981 - 3072 - 512 - 12141, 256)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 8941)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 16000)
+        # Without the lab, the active plan is what it was before it.
+        before = self.module.validate_profiles(
+            self.base, without_host_container_groups(self.profiles), self.stacks
+        )
+        self.assertEqual(
+            before["organizationweb"],
+            {
+                "reservations": {"cpu_millicores": 2550, "memory_mib": 3746},
+                "limits": {"cpu_millicores": 14150, "memory_mib": 8301},
+            },
+        )
+        self.assertEqual(before["observability"], totals["observability"])
 
     def test_host_container_group_counts_only_in_the_plans_that_run_it(self):
-        before = self.module.validate_profiles(self.base, self.profiles, self.stacks)
+        before = self.module.validate_profiles(
+            self.base, without_host_container_groups(self.profiles), self.stacks
+        )
         totals = self.module.validate_profiles(
             self.base, with_lab(self.profiles), self.stacks
         )
@@ -279,7 +373,7 @@ class CapacityProfileTests(unittest.TestCase):
                     requested,
                     live,
                     parked=self.parked,
-                    live_containers=[],
+                    live_containers=live_host_containers(self.profiles),
                 )
         for service in (
             {"name": "autoupdater_gantry", "stack": "autoupdater"},
@@ -294,7 +388,7 @@ class CapacityProfileTests(unittest.TestCase):
                         "autoupdater",
                         [*live, service],
                         parked=self.parked,
-                        live_containers=[],
+                        live_containers=live_host_containers(self.profiles),
                     )
 
     def test_unaccounted_application_service_is_rejected(self):
@@ -329,7 +423,7 @@ class CapacityProfileTests(unittest.TestCase):
                             *external_live(self.profiles),
                         ],
                         parked=self.parked,
-                        live_containers=[],
+                        live_containers=live_host_containers(self.profiles),
                     )
 
     def test_live_name_must_belong_to_its_claimed_stack(self):
@@ -341,7 +435,7 @@ class CapacityProfileTests(unittest.TestCase):
                     *external_live(self.profiles),
                 ],
                 parked=self.parked,
-                live_containers=[],
+                live_containers=live_host_containers(self.profiles),
             )
 
     def test_external_stacks_must_match_their_live_services(self):
@@ -355,7 +449,7 @@ class CapacityProfileTests(unittest.TestCase):
             "edge",
             live,
             parked=self.parked,
-            live_containers=[],
+            live_containers=live_host_containers(self.profiles),
         )
 
         def mutated(change):
@@ -459,7 +553,7 @@ class CapacityProfileTests(unittest.TestCase):
                         "edge",
                         mutated(change),
                         parked=self.parked,
-                        live_containers=[],
+                        live_containers=live_host_containers(self.profiles),
                     )
 
     def test_external_stack_contract_is_fail_closed(self):
@@ -570,7 +664,7 @@ class CapacityProfileTests(unittest.TestCase):
                     requested,
                     at_rest,
                     parked=parked,
-                    live_containers=[],
+                    live_containers=live_host_containers(self.profiles),
                 )
         # Only the playbooks that converge it to 0/0 may start while it runs.
         for requested in ("workloads", "site"):
@@ -584,7 +678,7 @@ class CapacityProfileTests(unittest.TestCase):
                     requested,
                     running,
                     parked=parked,
-                    live_containers=[],
+                    live_containers=live_host_containers(profiles),
                 )
         for requested in ("edge", "autoupdater", "organizationweb", "racinggame"):
             with self.subTest(requested=requested, state="running"):
@@ -598,7 +692,7 @@ class CapacityProfileTests(unittest.TestCase):
                         requested,
                         running,
                         parked=parked,
-                        live_containers=[],
+                        live_containers=live_host_containers(self.profiles),
                     )
         # An unparked service is not checked here: the stack owns its replicas.
         self.module.validate_live(
@@ -607,7 +701,7 @@ class CapacityProfileTests(unittest.TestCase):
             "edge",
             running,
             parked=frozenset({"openclaw"}),
-            live_containers=[],
+            live_containers=live_host_containers(self.profiles),
         )
         for platform in (
             {"platform_parked_workloads": ["n8n-db"]},
@@ -674,6 +768,7 @@ class CapacityProfileTests(unittest.TestCase):
             "observability",
             "autoupdater",
             "racinggame",
+            "ax-lab",
             "site",
         ):
             play = yaml.safe_load((ROOT / f"ansible/playbooks/{name}.yml").read_text())[0]
@@ -727,14 +822,41 @@ class HostContainerTests(unittest.TestCase):
                 code = self.module.main(argv)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_repository_declares_no_host_container_yet(self):
+    def test_repository_declares_the_ax_lab_group_in_the_active_plan(self):
         contract = self.profiles["capacity_profiles"]
-        self.assertEqual(contract["host_containers"], {})
-        for name, plan in contract["profiles"].items():
-            with self.subTest(profile=name):
-                self.assertEqual(plan["host_containers"], [])
-        # The preflight inspects nothing and the live check still passes; the
-        # envelope is the only input it accepts.
+        self.assertEqual(
+            contract["host_containers"],
+            {
+                "ax-lab": {
+                    "kind-control-plane": {
+                        "reservations": {"cpu_millicores": 500, "memory_mib": 1792},
+                        "limits": {"cpu_millicores": 2000, "memory_mib": 3584},
+                        "pids_limit": 4096,
+                    },
+                    "kind-registry": {
+                        "reservations": {"cpu_millicores": 50, "memory_mib": 128},
+                        "limits": {"cpu_millicores": 500, "memory_mib": 256},
+                        "pids_limit": 256,
+                    },
+                }
+            },
+        )
+        self.assertEqual(contract["active"], "organizationweb")
+        self.assertEqual(
+            contract["profiles"]["organizationweb"]["host_containers"], ["ax-lab"]
+        )
+        self.assertEqual(contract["profiles"]["observability"]["host_containers"], [])
+        # The limits the ax_lab role applies are the ones budgeted here.
+        spec = importlib.util.spec_from_file_location(
+            "validate_ax_lab_capacity", ROOT / "scripts/validate-ax-lab.py"
+        )
+        lab_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lab_module)
+        lab_module.validate_capacity_group(
+            yaml.safe_load((ROOT / "config/ax-lab.yml").read_text())["ax_lab"],
+            contract["host_containers"]["ax-lab"],
+        )
+        # The preflight inspects both names: absent, stopped or exact.
         completed = subprocess.run(
             [
                 sys.executable,
@@ -746,18 +868,354 @@ class HostContainerTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(json.loads(completed.stdout), [])
-        self.check_live(self.profiles, [])
+        self.assertEqual(
+            json.loads(completed.stdout), ["kind-control-plane", "kind-registry"]
+        )
+        running = live_host_containers(self.profiles)
+        self.assertEqual(
+            [record["item"] for record in running],
+            ["kind-control-plane", "kind-registry"],
+        )
+        self.check_live(self.profiles, running)
         code, _stdout, stderr = self.run_cli(
             ["--live", "--requested-stack", "edge"],
-            json.dumps({"services": self.services, "host_containers": []}),
+            json.dumps({"services": self.services, "host_containers": running}),
         )
         self.assertEqual(code, 0, stderr)
+        # A production playbook never depends on the lab being up: absent (a
+        # rebuilt host) or stopped (restart policy "no" after a reboot or a
+        # Docker restart) runs no process and stays budgeted in the plan.
+        node = contract["host_containers"]["ax-lab"]["kind-control-plane"]
+        registry = contract["host_containers"]["ax-lab"]["kind-registry"]
+        for label, containers in (
+            ("absent", [absent("kind-control-plane"), absent("kind-registry")]),
+            ("registry absent", [running[0], absent("kind-registry")]),
+            (
+                "stopped after a reboot",
+                [
+                    as_declared("kind-control-plane", node, status="exited"),
+                    as_declared("kind-registry", registry, status="exited"),
+                ],
+            ),
+            (
+                "node stopped",
+                [
+                    as_declared("kind-control-plane", node, status="exited"),
+                    running[1],
+                ],
+            ),
+        ):
+            with self.subTest(case=label):
+                self.check_live(self.profiles, containers)
+                code, _stdout, stderr = self.run_cli(
+                    ["--live", "--requested-stack", "edge"],
+                    json.dumps(
+                        {"services": self.services, "host_containers": containers}
+                    ),
+                )
+                self.assertEqual(code, 0, stderr)
+        # A lab container that exists must carry its declared limits, running
+        # or stopped. The manual lab has no CPU or PID limit and no memory
+        # reservation, so every other playbook stops while it exists.
+        manual_node = json.loads(running[0]["stdout"])
+        manual_node["host_config"].update(
+            NanoCpus=0, PidsLimit=None, MemoryReservation=0
+        )
+        manual = {**running[0], "stdout": json.dumps(manual_node)}
+        stopped_manual = {
+            **manual,
+            "stdout": json.dumps({**manual_node, "status": "exited"}),
+        }
+        for label, containers in (
+            ("the manual lab", [manual, running[1]]),
+            ("the manual lab, stopped", [stopped_manual, running[1]]),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(
+                    self.error,
+                    "differs from its declaration: kind-control-plane "
+                    "MemoryReservation",
+                ):
+                    self.check_live(self.profiles, containers)
+                code, _stdout, stderr = self.run_cli(
+                    ["--live", "--requested-stack", "edge"],
+                    json.dumps(
+                        {"services": self.services, "host_containers": containers}
+                    ),
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("differs from its declaration", stderr)
         code, _stdout, stderr = self.run_cli(
             ["--live", "--requested-stack", "edge"], json.dumps(self.services)
         )
         self.assertEqual(code, 1)
         self.assertIn("must hold exactly services and host_containers", stderr)
+
+    def test_only_the_ax_lab_playbook_converges_its_own_group(self):
+        group = self.profiles["capacity_profiles"]["host_containers"]["ax-lab"]
+        node = group["kind-control-plane"]
+        registry = group["kind-registry"]
+        drifted_node = as_declared("kind-control-plane", node)
+        document = json.loads(drifted_node["stdout"])
+        document["host_config"].update(Memory=0, NanoCpus=0, PidsLimit=None)
+        drifted_node["stdout"] = json.dumps(document)
+        stopped_drifted_node = {
+            **drifted_node,
+            "stdout": json.dumps({**document, "status": "exited"}),
+        }
+        drifted_registry = as_declared("kind-registry", registry)
+        document = json.loads(drifted_registry["stdout"])
+        document["host_config"].update(PidsLimit=512)
+        drifted_registry["stdout"] = json.dumps(document)
+
+        def ax_lab(profiles, containers):
+            self.module.validate_live(
+                self.base,
+                profiles,
+                "ax-lab",
+                self.services,
+                parked=self.parked,
+                live_containers=containers,
+            )
+
+        # The playbook that creates, starts and converges the group may start
+        # while it is absent (first apply), stopped (after a reboot, restart
+        # policy "no") or drifted (kind creates the node without limits).
+        # Every other playbook accepts the group absent or stopped, but never
+        # a container with other limits, running or stopped.
+        for label, containers, others in (
+            ("converged", live_host_containers(self.profiles), None),
+            (
+                "absent",
+                [absent("kind-control-plane"), absent("kind-registry")],
+                None,
+            ),
+            (
+                "stopped",
+                [
+                    as_declared("kind-control-plane", node, status="exited"),
+                    as_declared("kind-registry", registry, status="exited"),
+                ],
+                None,
+            ),
+            (
+                "created, not started",
+                [
+                    as_declared("kind-control-plane", node, status="created"),
+                    absent("kind-registry"),
+                ],
+                None,
+            ),
+            (
+                "drifted",
+                [drifted_node, as_declared("kind-registry", registry)],
+                "differs from its declaration: kind-control-plane Memory",
+            ),
+            (
+                "drifted and stopped",
+                [stopped_drifted_node, absent("kind-registry")],
+                "differs from its declaration: kind-control-plane Memory",
+            ),
+            (
+                "registry drifted",
+                [
+                    as_declared("kind-control-plane", node, status="exited"),
+                    drifted_registry,
+                ],
+                "differs from its declaration: kind-registry PidsLimit",
+            ),
+        ):
+            envelope = json.dumps(
+                {"services": self.services, "host_containers": containers}
+            )
+            with self.subTest(case=label):
+                ax_lab(self.profiles, containers)
+                code, _stdout, stderr = self.run_cli(
+                    ["--live", "--requested-stack", "ax-lab"], envelope
+                )
+                self.assertEqual(code, 0, stderr)
+                if others is None:
+                    self.check_live(self.profiles, containers)
+                else:
+                    with self.assertRaisesRegex(self.error, others):
+                        self.check_live(self.profiles, containers)
+                    code, _stdout, stderr = self.run_cli(
+                        ["--live", "--requested-stack", "edge"], envelope
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertIn(others, stderr)
+        # A state that is neither running nor stopped stops every playbook,
+        # ax-lab included: its role converges only running or stopped ones.
+        for status in ("paused", "restarting", "removing"):
+            containers = [
+                as_declared("kind-control-plane", node, status=status),
+                as_declared("kind-registry", registry),
+            ]
+            for requested in ("ax-lab", "edge"):
+                with self.subTest(status=status, requested=requested):
+                    with self.assertRaisesRegex(
+                        self.error,
+                        f"active host container is {status}, neither running "
+                        "nor stopped: kind-control-plane",
+                    ):
+                        self.module.validate_live(
+                            self.base,
+                            self.profiles,
+                            requested,
+                            self.services,
+                            parked=self.parked,
+                            live_containers=containers,
+                        )
+        # Its reads must still be well formed and complete.
+        for label, containers, message in (
+            (
+                "unreadable",
+                [
+                    {**absent("kind-control-plane"), "stderr": "permission denied"},
+                    absent("kind-registry"),
+                ],
+                "cannot inspect live host container kind-control-plane",
+            ),
+            (
+                "missing read",
+                [absent("kind-control-plane")],
+                "live host container data is missing: kind-registry",
+            ),
+            (
+                "another container through an ID prefix",
+                [
+                    {
+                        **as_declared("kind-control-plane", node),
+                        "stdout": json.dumps(
+                            {
+                                "name": "/kind-control-plane-old",
+                                "status": "running",
+                                "host_config": {
+                                    "Memory": 0,
+                                    "MemoryReservation": 0,
+                                    "NanoCpus": 0,
+                                    "PidsLimit": None,
+                                },
+                            }
+                        ),
+                    },
+                    absent("kind-registry"),
+                ],
+                "inspected container is not kind-control-plane",
+            ),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(self.error, message):
+                    ax_lab(self.profiles, containers)
+        # Swarm services and parked workloads are checked as for any playbook.
+        with self.assertRaisesRegex(self.error, "outside the reviewed active profile"):
+            self.module.validate_live(
+                self.base,
+                self.profiles,
+                "ax-lab",
+                [
+                    *self.services,
+                    {"name": "observability_grafana", "stack": "observability"},
+                ],
+                parked=self.parked,
+                live_containers=live_host_containers(self.profiles),
+            )
+        # Another group of the active plan stays strict even for ax-lab: it
+        # may be absent or stopped, never with other limits.
+        both = json.loads(json.dumps(self.profiles))
+        contract = both["capacity_profiles"]
+        contract["host_containers"]["extra"] = {
+            "extra-box": {
+                "reservations": {"cpu_millicores": 0, "memory_mib": 1},
+                "limits": {"cpu_millicores": 1, "memory_mib": 2},
+                "pids_limit": 1,
+            }
+        }
+        plan = contract["profiles"]["organizationweb"]
+        plan["host_containers"].append("extra")
+        plan["aggregate"]["reservations"]["memory_mib"] += 1
+        plan["aggregate"]["limits"]["memory_mib"] += 2
+        plan["aggregate"]["limits"]["cpu_millicores"] += 1
+        extra = contract["host_containers"]["extra"]["extra-box"]
+        lab = [drifted_node, absent("kind-registry")]
+        for state in (
+            as_declared("extra-box", extra),
+            as_declared("extra-box", extra, status="exited"),
+            absent("extra-box"),
+        ):
+            ax_lab(both, [*lab, state])
+        drifted_extra = json.loads(as_declared("extra-box", extra)["stdout"])
+        drifted_extra["host_config"].update(PidsLimit=None)
+        for status in ("running", "exited"):
+            with self.subTest(extra=status):
+                with self.assertRaisesRegex(
+                    self.error, "differs from its declaration: extra-box PidsLimit"
+                ):
+                    ax_lab(
+                        both,
+                        [
+                            *lab,
+                            {
+                                **as_declared("extra-box", extra),
+                                "stdout": json.dumps(
+                                    {**drifted_extra, "status": status}
+                                ),
+                            },
+                        ],
+                    )
+
+    def test_ax_lab_is_requestable_only_while_the_active_plan_runs_it(self):
+        # The observability plan requires the lab stopped: ax-lab is outside it.
+        observability = json.loads(json.dumps(self.profiles))
+        observability["capacity_profiles"]["active"] = "observability"
+        stopped = [absent("kind-control-plane"), absent("kind-registry")]
+        services = [
+            {"name": "observability_prometheus", "stack": "observability"},
+            *external_live(self.profiles),
+        ]
+        for profiles, message in (
+            (observability, "runs no host container group ax-lab"),
+            (
+                without_host_container_groups(self.profiles),
+                "runs no host container group ax-lab",
+            ),
+        ):
+            with self.subTest(active=profiles["capacity_profiles"]["active"]):
+                with self.assertRaisesRegex(self.error, message):
+                    self.module.validate_live(
+                        self.base,
+                        profiles,
+                        "ax-lab",
+                        services,
+                        parked=self.parked,
+                        live_containers=live_host_containers(profiles),
+                    )
+        # There, the lab's containers must not run for any other playbook.
+        self.module.validate_live(
+            self.base,
+            observability,
+            "observability",
+            services,
+            parked=self.parked,
+            live_containers=stopped,
+        )
+        with self.assertRaisesRegex(
+            self.error, "outside the active profile is running: kind-control-plane"
+        ):
+            self.module.validate_live(
+                self.base,
+                observability,
+                "observability",
+                services,
+                parked=self.parked,
+                live_containers=live_host_containers(self.profiles),
+            )
+        # The CLI accepts the name, and no other lab spelling.
+        self.assertIn("ax-lab", self.module.HOST_CONTAINER_PLAYBOOKS)
+        for requested in ("ax_lab", "ax-lab-extra", "kind"):
+            with self.subTest(requested=requested):
+                with self.assertRaises(SystemExit):
+                    self.run_cli(["--live", "--requested-stack", requested], "{}")
 
     def test_host_container_contract_is_fail_closed(self):
         def lab(contract):
@@ -948,74 +1406,39 @@ class HostContainerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.error, "aggregate CPU limits"):
             self.check_live(oversized, [absent(name) for name in LAB_GROUP])
 
-    def test_active_host_containers_run_exactly_as_declared(self):
+    def test_active_host_containers_are_absent_stopped_or_exact(self):
         profiles = with_lab(self.profiles)
         self.check_live(profiles, [inspected(name) for name in LAB_GROUP])
+        # Absent or stopped runs no process and stays budgeted in the plan.
+        for label, registry in (
+            ("absent", absent("kind-registry")),
+            ("absent, older Docker", absent("kind-registry", "Error: ")),
+            ("stopped", inspected("kind-registry", status="exited")),
+            ("never started", inspected("kind-registry", status="created")),
+            ("dead", inspected("kind-registry", status="dead")),
+        ):
+            with self.subTest(case=label):
+                self.check_live(profiles, [inspected("kind-control-plane"), registry])
         for label, registry, message in (
-            (
-                "absent",
-                absent("kind-registry"),
-                "active host container is absent: kind-registry",
-            ),
-            (
-                "stopped",
-                inspected("kind-registry", status="exited"),
-                "active host container is exited, not running: kind-registry",
-            ),
-            (
-                "never started",
-                inspected("kind-registry", status="created"),
-                "is created, not running",
-            ),
             (
                 "paused",
                 inspected("kind-registry", status="paused"),
-                "is paused, not running",
+                "is paused, neither running nor stopped: kind-registry",
             ),
             (
                 "restarting",
                 inspected("kind-registry", status="restarting"),
-                "is restarting, not running",
+                "is restarting, neither running nor stopped: kind-registry",
             ),
             (
-                "memory limit",
-                inspected("kind-registry", Memory=128 * MIB),
-                "differs from its declaration: kind-registry Memory",
-            ),
-            (
-                "unlimited memory",
-                inspected("kind-registry", Memory=0),
-                "differs from its declaration: kind-registry Memory",
-            ),
-            (
-                "memory reservation",
-                inspected("kind-registry", MemoryReservation=0),
-                "differs from its declaration: kind-registry MemoryReservation",
-            ),
-            (
-                "cpu limit",
-                inspected("kind-registry", NanoCpus=500_000_000),
-                "differs from its declaration: kind-registry NanoCpus",
+                "removing",
+                inspected("kind-registry", status="removing"),
+                "is removing, neither running nor stopped: kind-registry",
             ),
             (
                 "a HostConfig field the preflight does not read",
                 inspected("kind-registry", CpuQuota=25_000),
                 "live host container kind-registry is malformed",
-            ),
-            (
-                "pids limit",
-                inspected("kind-registry", PidsLimit=512),
-                "differs from its declaration: kind-registry PidsLimit",
-            ),
-            (
-                "unset pids limit",
-                inspected("kind-registry", PidsLimit=None),
-                "differs from its declaration: kind-registry PidsLimit",
-            ),
-            (
-                "unlimited pids",
-                inspected("kind-registry", PidsLimit=-1),
-                "differs from its declaration: kind-registry PidsLimit",
             ),
         ):
             with self.subTest(case=label):
@@ -1023,6 +1446,32 @@ class HostContainerTests(unittest.TestCase):
                     self.check_live(
                         profiles, [inspected("kind-control-plane"), registry]
                     )
+        # A container that exists carries exactly its declared limits, running
+        # or stopped: once started, nothing converges it again.
+        for label, host_config, field in (
+            ("memory limit", {"Memory": 128 * MIB}, "Memory"),
+            ("unlimited memory", {"Memory": 0}, "Memory"),
+            ("memory reservation", {"MemoryReservation": 0}, "MemoryReservation"),
+            ("cpu limit", {"NanoCpus": 500_000_000}, "NanoCpus"),
+            ("pids limit", {"PidsLimit": 512}, "PidsLimit"),
+            ("unset pids limit", {"PidsLimit": None}, "PidsLimit"),
+            ("unlimited pids", {"PidsLimit": -1}, "PidsLimit"),
+        ):
+            for status in ("running", "exited", "created", "dead"):
+                with self.subTest(case=label, status=status):
+                    with self.assertRaisesRegex(
+                        self.error,
+                        f"differs from its declaration: kind-registry {field}$",
+                    ):
+                        self.check_live(
+                            profiles,
+                            [
+                                inspected("kind-control-plane"),
+                                inspected(
+                                    "kind-registry", status=status, **host_config
+                                ),
+                            ],
+                        )
 
     def test_host_containers_outside_the_active_plan_must_not_run(self):
         for running_plans in ((), ("observability",)):

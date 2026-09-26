@@ -129,6 +129,13 @@ runbook marca `STOP`.
 12. Mantener Minecraft legacy hasta aprobar seguridad/publicación.
 13. Con R2 y custodia externa ya probados, aplicar el target separado `backup`.
 14. Ejecutar restore de aplicación y recuperación Raft en un host aislado.
+15. Solo si se quiere el laboratorio AX, aplicar `ax-lab` el último (ver
+    [AX.md](AX.md)). Es opcional: sus contenedores ausentes no detienen
+    ninguno de los pasos anteriores, porque el preflight de capacidad acepta
+    ausente o parado un contenedor del host del plan activo y su presupuesto
+    sigue reservado (ver [CAPACITY.md](CAPACITY.md), «Contenedores del
+    host»). `ax-lab` crea el clúster kind y su registro desde este
+    repositorio.
 
 `site` termina en observabilidad. Backup es deliberadamente un target separado:
 omitirlo tras preparar sus entradas deja la reconstrucción incompleta.

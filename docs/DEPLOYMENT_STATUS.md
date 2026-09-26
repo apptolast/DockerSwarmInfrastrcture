@@ -63,7 +63,8 @@ Seguimientos abiertos del aparcado:
   `0/0` sin preguntar.
 - Desaparcar ya no es solo devolver el presupuesto: con los stacks externos
   declarados, Minecraft no cabe en el plan `observability` (13 037 MiB de
-  límite frente a 12 397) y los dos juntos no caben en el activo (12 909 MiB).
+  límite frente a 12 397) y, con el laboratorio AX declarado en el activo,
+  ninguno de los dos cabe en él (12 653 MiB solo OpenClaw).
   Volver a arrancarlos exige una decisión de capacidad del propietario (ver
   [CAPACITY.md](CAPACITY.md)).
 
@@ -194,10 +195,15 @@ arriba.
 - Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent
   Substrate) en `/opt/ax-lab`: nodo `kind-control-plane` (privilegiado, como
   exige kind) limitado con `docker update` a 3 584 MiB y registro local
-  `kind-registry`, fuera de Swarm y del contrato de capacidad. Esos
-  3 584 MiB equivalen a toda la reserva del contrato para el host, así que
-  con el laboratorio en marcha un preflight de capacidad en verde no
-  garantiza margen real. El nodo se paró el 2026-09-25 a las 07:36 UTC para
+  `kind-registry`, fuera de Swarm. El contrato de capacidad presupuesta un
+  nodo y un registro con esos nombres (grupo `ax-lab`, ver
+  [CAPACITY.md](CAPACITY.md)), pero con otros límites: el nodo manual no
+  tiene límite de CPU ni de PIDs ni reserva de memoria, y el registro no
+  tiene ninguno. Mientras sigan en el host, el preflight de capacidad de
+  cualquier playbook salvo `ax-lab` se detiene, así que se retiran en la
+  misma ventana en la que se fusiona y aplica el ciclo de vida del clúster
+  (ver [AX.md](AX.md), «Por qué este cambio solo se fusiona en la
+  ventana»). El nodo se paró el 2026-09-25 a las 07:36 UTC para
   retirar el swap antes de aparcar, y volvió a arrancarse a las 10:07 UTC,
   con los 28 pods listos. Es un ensayo manual que se codifica por partes
   (ver [AX.md](AX.md), «Qué codifica este repositorio y qué sigue siendo

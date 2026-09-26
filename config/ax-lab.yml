@@ -4,11 +4,12 @@
 # scripts/validate-ax-lab.py pins the shape and every value below. See
 # docs/AX.md.
 #
-# The playbook only codifies host prerequisites today: the inotify limits
-# kind needs and the pinned kind and kubectl binaries. It starts no
-# container. The cluster, Substrate and AX are still the manual trial of
-# docs/DEPLOYMENT_STATUS.md until the later changes in docs/AX.md codify
-# them; `sources` and `images` are their reviewed pins, not yet used.
+# The playbook codifies the host prerequisites (the inotify limits kind
+# needs and the pinned kind and kubectl binaries) and the lifecycle of the
+# kind cluster and its local registry. Substrate and AX are still the manual
+# trial of docs/DEPLOYMENT_STATUS.md until the later changes in docs/AX.md
+# codify them; `sources` and the redis and openai_proxy images are their
+# reviewed pins, not yet used.
 ax_lab:
   schema_version: 1
   # Under platform_install_root (config/platform.yml), root:root 0750.
@@ -58,11 +59,59 @@ ax_lab:
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
     openai_proxy: "docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:\
       4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5"
+  # The kind cluster the role creates when it is absent and reconciles
+  # afterwards (docs/AX.md, «Ciclo de vida del clúster»). kind names the
+  # node <name>-control-plane and attaches it to its fixed Docker network
+  # `kind` (kind v0.33.0 pkg/cluster/internal/providers/docker/network.go).
+  cluster:
+    name: kind
+    node_container: kind-control-plane
+    network: kind
+    # The Kubernetes API is published only on the IPv4 loopback, on a fixed
+    # reviewed port instead of the random one kind picks by default (kind
+    # configuration guide, «API Server»). 6443 is outside the kernel's
+    # ephemeral port range (32768-60999 on this host) and no other listener
+    # of the host uses it.
+    api_server:
+      address: 127.0.0.1
+      port: 6443
+    # Converged with `docker update` only when the live value differs. They
+    # must equal the node's entry in host_containers.ax-lab of
+    # config/capacity-profiles.yml, which the validator checks.
+    resources:
+      memory_limit_mib: 3584
+      memory_reservation_mib: 1792
+      cpu_limit_millicores: 2000
+      pids_limit: 4096
+    # kind creates the node with on-failure:1 (provision.go, line 167). The
+    # lab only starts through this playbook, so the capacity preflight runs
+    # first and the proxy_arp and proxy_ndp settings follow. Stopped after a
+    # host or Docker restart, it blocks no other playbook.
+    restart_policy: "no"
+  # kind's local registry (https://kind.sigs.k8s.io/docs/user/local-registry/),
+  # created by the role from images.registry on the kind network only and
+  # published only on the loopback addresses.
+  registry:
+    container: kind-registry
+    # Named, so the pushed images survive a recreation of the container.
+    volume: ax-lab-registry
+    host_port: 5001
+    container_port: 5000
+    bind_addresses: ["127.0.0.1", "::1"]
+    resources:
+      memory_limit_mib: 256
+      memory_reservation_mib: 128
+      cpu_limit_millicores: 500
+      pids_limit: 256
+    restart_policy: "no"
 # Owner acceptance that the kind node runs root-equivalent: kind starts it
-# with --privileged and seccomp and AppArmor unconfined
-# (kind v0.33.0 pkg/cluster/internal/providers/docker/provision.go). No
-# task acts on it yet; the playbook only checks that it is this boolean.
-# The change that codifies the cluster must refuse to create or start the
-# node while it is false, its default. Flipping it is a reviewed one-line
-# owner decision here. See docs/AX.md.
-ax_lab_privileged_node_accepted: false
+# with --privileged and seccomp and AppArmor unconfined (kind v0.33.0
+# pkg/cluster/internal/providers/docker/provision.go, lines 226-228). The
+# role refuses to create or touch the cluster while it is false.
+#
+# Accepted by the owner on 2026-09-25, who delegated the decision on every
+# recommendation of the AX lab plan ("Si a todo, autorizo todo, seguiré todas
+# tus recomendaciones"). It accepts a privileged node without seccomp or
+# AppArmor confinement, root-equivalent on this host, bound to loopback and
+# never published. See docs/AX.md, «Aceptación del nodo privilegiado».
+ax_lab_privileged_node_accepted: true

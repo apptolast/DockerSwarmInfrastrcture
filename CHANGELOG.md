@@ -8,6 +8,41 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- El playbook `ax-lab` crea y reconcilia el clúster kind del laboratorio AX
+  y su registro local desde el repositorio (ver [`docs/AX.md`](docs/AX.md),
+  «Ciclo de vida del clúster»). `config/ax-lab.yml` fija el clúster `kind`
+  (nodo `kind-control-plane`, API solo en `127.0.0.1:6443`) y el registro
+  `kind-registry` (solo en `127.0.0.1:5001` y `[::1]:5001`, en la red `kind`,
+  con el volumen `ax-lab-registry`), sus límites (3 584/1 792 MiB, 2 CPU y
+  4 096 PIDs el nodo; 256/128 MiB, 0,5 CPU y 256 PIDs el registro) y la
+  política de reinicio `no`; el validador exige binds de loopback, puertos
+  fijos fuera del rango efímero, enteros positivos, la relación
+  límite/reserva de `config/capacity.yml` y los mismos límites que el grupo
+  `ax-lab` de `config/capacity-profiles.yml`. La configuración de kind es la
+  que genera `hack/create-kind-cluster.sh` de Substrate en el commit fijado,
+  más la API en loopback y el `config_path` de containerd de la guía del
+  registro local, sin montaje de KVM. `kind create cluster` se ejecuta sin
+  `--wait`, así que los límites se aplican al nodo en cuanto kind termina y
+  el rol escribe su prueba de propiedad, antes de crear el registro. Como kind
+  no puede etiquetar el nodo, el rol escribe tras `kind create cluster` una
+  prueba de propiedad (`/opt/dockerswarm/ax-lab/state/cluster.json`,
+  `root 0600`: ID del contenedor y sha256 de la configuración) y se detiene,
+  en `--check` y en el apply y antes de escribir nada, ante un nodo sin ella
+  o un registro sin sus etiquetas, como los del laboratorio manual. Solo
+  cuando difieren, aplica los límites y la política con `docker update`,
+  arranca los contenedores parados, activa `proxy_arp` y `proxy_ndp` dentro
+  del nodo, como Substrate, y escribe el `hosts.toml` del registro y el
+  ConfigMap `local-registry-hosting`; nunca ejecuta el script de Substrate,
+  que borra el clúster. `kubectl` corre con el `HOME` del laboratorio y
+  `--request-timeout 10s`. El playbook gana `capacity_preflight`, y
+  `docs/AX.md` documenta el ciclo de vida, el reinicio del host o de Docker,
+  cómo recrear el clúster, cómo retirar el laboratorio manual con el kind
+  fijado y cómo descartar el laboratorio. `docs/REBUILD.md` añade `ax-lab`
+  como último paso, opcional, de la reconstrucción, y `docs/OPERATIONS.md`
+  suspende las Tasks de AX antes de un reinicio. Este cambio solo se fusiona
+  en la ventana del laboratorio: el laboratorio manual no tiene los límites
+  declarados y detendría el preflight de todos los playbooks salvo
+  `ax-lab`.
 - Playbook `ax-lab` con los prerrequisitos del host del laboratorio AX, el
   primer paso para codificarlo (ver [`docs/AX.md`](docs/AX.md)). El contrato
   `config/ax-lab.yml`, validado sin red por `scripts/validate-ax-lab.py`,
@@ -235,6 +270,27 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - `docs/DEPLOYMENT_STATUS.md` registra el apply de `host-baseline` desde
   `0028bca` (#71): `changed=2` de metadatos y una repetición con
   `changed=0`, sin reiniciar el bouncer de CrowdSec.
+
+- El plan activo `organizationweb` ejecuta el grupo `ax-lab` de
+  `host_containers` (el nodo y el registro del laboratorio AX, 550m/1 920 MiB
+  reservados y 2 500m/3 840 MiB de límite): queda en 3 100m/5 666 MiB
+  reservados y 16 650m/12 141 MiB de límite, 256 MiB por debajo del techo de
+  12 397 MiB. El plan `observability` no cambia y exige el laboratorio
+  parado. Con él, ni Minecraft ni OpenClaw caben ya en el plan activo (ver
+  [`docs/CAPACITY.md`](docs/CAPACITY.md)).
+
+- `scripts/validate-capacity-profiles.py` cambia la regla de los
+  contenedores del host del plan activo: ausentes o parados se aceptan para
+  cualquier playbook, porque no ejecutan nada y su presupuesto sigue
+  reservado, así que los despliegues de producción no dependen de que el
+  laboratorio esté en marcha tras un reinicio del host o de Docker. Uno que
+  exista, en marcha o parado, tiene que llevar exactamente sus límites
+  declarados; solo `--requested-stack ax-lab`, aceptado únicamente si el
+  plan activo ejecuta ese grupo, admite además otros límites, porque ese
+  playbook los converge. Un estado que no sea en marcha ni parado
+  (`paused`, `restarting` o `removing`) detiene cualquier playbook, y los
+  contenedores de un grupo fuera del plan activo siguen teniendo que estar
+  ausentes o parados.
 
 - `docs/DEPLOYMENT_STATUS.md` registra los applies de `ax-lab` y
   `host-baseline` del 2026-09-25: el paso al snapshot `20260924T000000Z`
@@ -526,6 +582,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
     CrowdSec bouncer to start», que lo explica, y CrowdSec queda sin filtrar
     hasta que se corrija la configuración; la unidad del paquete
     (`Restart=always`, `RestartSec=10`) sigue reintentando el arranque.
+
+- `ax_lab_privileged_node_accepted` pasa a `true` en `config/ax-lab.yml`,
+  con la delegación del propietario del 2026-09-25 registrada en su
+  comentario. Acepta que el nodo kind del laboratorio AX corra con
+  `--privileged` y sin confinamiento de seccomp ni AppArmor (kind v0.33.0,
+  `provision.go`, líneas 226 a 228), lo que equivale a root en el host, solo
+  en loopback y nunca publicado. Sin ella, el rol `ax_lab` se niega a crear
+  o tocar el clúster; volver a `false` no para ni borra un nodo existente,
+  así que retirarla exige además descartar el laboratorio (ver
+  [`docs/AX.md`](docs/AX.md), «Aceptación del nodo privilegiado»). El
+  registro local no tiene autenticación: cualquier proceso del host y
+  cualquier carga del clúster puede escribir en él. Es un riesgo aceptado
+  del laboratorio, que el cambio de las imágenes de AX compensará
+  exigiendo imágenes por digest.
 - Un apply de `host-baseline`, y también de `platform` y `site`, que aplican
   el mismo rol `host_security`, ya no detiene UFW en un host convergido. Con
   UFW activo, `ufw default` hace siempre un stop/start aunque la política no

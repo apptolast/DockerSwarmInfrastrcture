@@ -369,8 +369,19 @@ def inspected_host_container(name, record):
     return status, resources
 
 
-def validate_live_host_containers(profiles, live_containers):
-    """Active host containers run as declared; every other one is stopped."""
+def validate_live_host_containers(
+    profiles, live_containers, converging_groups=frozenset()
+):
+    """Active host containers are absent, stopped or exactly as declared.
+
+    An absent or stopped container of the active plan runs no process and
+    its budget stays reserved in the plan, so no playbook depends on it
+    running. One that exists, running or stopped, carries exactly its
+    declared limits, so it never runs over its budget. Only the playbook of
+    a group in converging_groups, which creates, starts and converges it,
+    may find that group with other limits; it verifies them itself
+    afterwards. A container of any other group must be absent or stopped.
+    """
     declared = {
         name: (group, container)
         for group, containers in profiles["host_containers"].items()
@@ -403,12 +414,15 @@ def validate_live_host_containers(profiles, live_containers):
                 )
             continue
         if state is None:
-            raise capacity.CapacityError(f"active host container is absent: {name}")
+            continue
         status, resources = state
-        if status != "running":
+        if status != "running" and status not in STOPPED_CONTAINER_STATES:
             raise capacity.CapacityError(
-                f"active host container is {status}, not running: {name}"
+                f"active host container is {status}, "
+                f"neither running nor stopped: {name}"
             )
+        if group in converging_groups:
+            continue
         expected = {
             "Memory": container["resources"]["limits"]["memory_mib"] * MIB,
             "MemoryReservation": (
@@ -557,6 +571,13 @@ def validate_profiles(base_document, profile_document, stacks):
 # The playbooks that converge a parked service to 0/0 may start while it still
 # runs; every other one requires it already parked, or it runs over budget.
 PARKING_PLAYBOOKS = frozenset({"workloads", "site"})
+# The playbooks that converge a host container group instead of a Swarm
+# stack, mapped to that group. Such a playbook is requestable only while the
+# active plan runs its group, and it may start while the group's containers
+# carry other limits, running or stopped, because it is the one that
+# creates, starts and converges them. Every other playbook accepts them
+# absent or stopped, never with other limits.
+HOST_CONTAINER_PLAYBOOKS = {"ax-lab": "ax-lab"}
 
 
 def validate_live(
@@ -587,11 +608,24 @@ def validate_live(
         if total != profile["aggregate"]:
             raise capacity.CapacityError(f"profile {name} has inconsistent arithmetic")
         capacity.validate_budget(base, total)
-    allowed_stacks = profiles["profiles"][profiles["active"]]["stacks"]
-    if requested_stack == "site":
-        requested_stack = "observability"
-    if requested_stack not in allowed_stacks:
-        raise capacity.CapacityError("requested stack is outside the active profile")
+    active_plan = profiles["profiles"][profiles["active"]]
+    allowed_stacks = active_plan["stacks"]
+    converging_groups = frozenset()
+    if requested_stack in HOST_CONTAINER_PLAYBOOKS:
+        group = HOST_CONTAINER_PLAYBOOKS[requested_stack]
+        if group not in active_plan["host_containers"]:
+            raise capacity.CapacityError(
+                "requested stack is outside the active profile: it runs no "
+                f"host container group {group}"
+            )
+        converging_groups = frozenset({group})
+    else:
+        if requested_stack == "site":
+            requested_stack = "observability"
+        if requested_stack not in allowed_stacks:
+            raise capacity.CapacityError(
+                "requested stack is outside the active profile"
+            )
     allowed_names = {
         (stack, f"{stack}_{service}")
         for stack in allowed_stacks
@@ -631,7 +665,7 @@ def validate_live(
             )
     if seen_external != set(external_names):
         raise capacity.CapacityError("a declared external service is not live")
-    validate_live_host_containers(profiles, live_containers)
+    validate_live_host_containers(profiles, live_containers, converging_groups)
 
 
 def main(argv=None):
@@ -664,6 +698,7 @@ def main(argv=None):
             "organizationweb",
             "racinggame",
             "autoupdater",
+            "ax-lab",
             "site",
         ),
     )

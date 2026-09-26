@@ -18,6 +18,11 @@
       - ax_lab_sysctl_path == "/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf"
       - ax_lab_bin_directory == ax_lab.install_root ~ "/bin"
       - ax_lab_architecture == "x86_64"
+      - ax_lab_kind_config_path == ax_lab.install_root ~ "/kind-config.yaml"
+      - ax_lab_state_directory == ax_lab.install_root ~ "/state"
+      - ax_lab_cluster_state_path == ax_lab_state_directory ~ "/cluster.json"
+      - ax_lab_home_directory == ax_lab.install_root ~ "/home"
+      - ax_lab_kubeconfig_path == ax_lab_home_directory ~ "/.kube/config"
     fail_msg: AX lab inputs differ from the versioned contract.
 
 - name: Validate the AX lab contract and its sysctl render locally
@@ -29,6 +34,27 @@
   become: false
   changed_when: false
   check_mode: false
+
+# The validator renders the role's kind-config.yaml.j2 exactly as the
+# template module does. Its digest is what the ownership proof records, and
+# the file rendered on the host must hash to it.
+- name: Compute the digest of the reviewed kind configuration locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-ax-lab.py"
+      - --kind-config-sha256
+  register: ax_lab_kind_config_digest
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Require a sha256 digest of the reviewed kind configuration
+  ansible.builtin.assert:
+    that:
+      - ax_lab_kind_config_digest.stdout is match("^[a-f0-9]{64}$")
+    fail_msg: The validator did not print the kind configuration digest.
 
 - name: Require the lab install root directly under the platform root
   ansible.builtin.assert:
@@ -61,6 +87,12 @@
     - {path: "{{ ax_lab_bin_directory }}", directory: true}
     - {path: "{{ ax_lab_bin_directory }}/kind", directory: false}
     - {path: "{{ ax_lab_bin_directory }}/kubectl", directory: false}
+    - {path: "{{ ax_lab_kind_config_path }}", directory: false}
+    - {path: "{{ ax_lab_state_directory }}", directory: true}
+    - {path: "{{ ax_lab_cluster_state_path }}", directory: false}
+    - {path: "{{ ax_lab_home_directory }}", directory: true}
+    - {path: "{{ ax_lab_home_directory }}/.kube", directory: true}
+    - {path: "{{ ax_lab_kubeconfig_path }}", directory: false}
     - {path: /etc, directory: true}
     - {path: /etc/sysctl.d, directory: true}
     - {path: "{{ ax_lab_sysctl_path }}", directory: false}
@@ -85,8 +117,23 @@
   loop_control:
     label: "{{ item.item.path }}"
 
+# Read-only in both modes, before anything is written: it refuses to go on
+# without the owner acceptance or with a lab container this role cannot
+# prove it created, such as the manual lab.
+- name: Read the lab cluster and registry and prove their ownership
+  ansible.builtin.import_tasks: inspect.yml
+
 # Unlike an application deploy, these tasks also run under --check: every
 # read is check-safe, every write only reports, and the runtime checks wait
 # for a real apply. Nothing here starts a container or touches Swarm.
 - name: Reconcile the lab host prerequisites
   ansible.builtin.import_tasks: host.yml
+
+- name: Report what an apply would change in the lab cluster
+  ansible.builtin.debug:
+    msg: "{{ ax_lab_cluster_plan }}"
+  when: ansible_check_mode
+
+- name: Reconcile the lab cluster and its local registry outside check mode
+  ansible.builtin.import_tasks: cluster.yml
+  when: not ansible_check_mode
