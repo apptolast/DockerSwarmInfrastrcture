@@ -54,10 +54,108 @@ APPLICATION_NETWORKS = {
     "racinggame": "apptolast-edge-racinggame",
     "observatorio": "apptolast-edge-observatorio",
     "satisfactory": "apptolast-edge-satisfactory",
+    "ax": "apptolast-edge-ax",
 }
-ADOPTED_NETWORKS = ["apptolast-edge-observatorio", "apptolast-edge-satisfactory"]
+ADOPTED_NETWORKS = [
+    "apptolast-edge-observatorio",
+    "apptolast-edge-satisfactory",
+    "apptolast-edge-ax",
+]
+NETWORK_SUBNETS = {"apptolast-edge-ax": "10.0.250.0/24"}
 BASICAUTH_SECRETS = {
     "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v1",
+    "basicauth_ax": "edge-basicauth-ax-v1",
+}
+UPSTREAM_MTLS_SECRETS = {
+    "ax_upstream_ca": "edge-ax-upstream-ca-v1",
+    "ax_upstream_client": "edge-ax-upstream-client-v1",
+}
+# What the AX ingress adds to the hand-made live Config (docs/EDGE.md, «Ruta
+# de AX»). EdgeLiveParityTests allows exactly this on top of the live file.
+AX_LIMITS = [
+    "edge-security",
+    "ax-canonical-host",
+    "ax-rl-ip",
+    "ax-rl-host",
+    "ax-inflight",
+]
+AX_ROUTE_ADDITIONS: dict[str, dict[str, Any]] = {
+    "routers": {
+        "ax": {
+            "rule": "Host(`ax.apptolast.com`)",
+            "entryPoints": ["websecure"],
+            "middlewares": [*AX_LIMITS, "ax-auth"],
+            "service": "ax",
+            "tls": {"certResolver": "letsencrypt"},
+        },
+        "ax-health": {
+            "rule": ("Host(`ax.apptolast.com`) && Path(`/healthz`) && Method(`GET`)"),
+            "entryPoints": ["websecure"],
+            "middlewares": [*AX_LIMITS, "ax-strip-authorization"],
+            "service": "ax",
+            "tls": {"certResolver": "letsencrypt"},
+        },
+    },
+    "middlewares": {
+        "ax-canonical-host": {
+            "headers": {"customRequestHeaders": {"Host": "ax.apptolast.com"}}
+        },
+        "ax-rl-ip": {
+            "rateLimit": {
+                "average": 30,
+                "period": "1m",
+                "burst": 30,
+                "sourceCriterion": {"ipStrategy": {"ipv6Subnet": 64}},
+            }
+        },
+        "ax-rl-host": {
+            "rateLimit": {
+                "average": 2,
+                "period": "1s",
+                "burst": 10,
+                "sourceCriterion": {"requestHost": True},
+            }
+        },
+        "ax-inflight": {"inFlightReq": {"amount": 8}},
+        "ax-auth": {
+            "basicAuth": {
+                "usersFile": "/run/secrets/basicauth_ax",
+                "realm": "AX",
+                "removeHeader": True,
+            }
+        },
+        "ax-strip-authorization": {
+            "headers": {"customRequestHeaders": {"Authorization": ""}}
+        },
+    },
+    "services": {
+        "ax": {
+            "loadBalancer": {
+                "passHostHeader": True,
+                "serversTransport": "ax-web-mtls",
+                "servers": [{"url": "https://ax-web-edge:8443"}],
+            }
+        },
+    },
+    "serversTransports": {
+        "ax-web-mtls": {
+            "serverName": "ax-web",
+            "rootCAs": ["/run/secrets/ax_upstream_ca"],
+            "certificates": [
+                {
+                    "certFile": "/run/secrets/ax_upstream_client",
+                    "keyFile": "/run/secrets/ax_upstream_client",
+                }
+            ],
+            "minVersion": "VersionTLS13",
+            "maxVersion": "VersionTLS13",
+            "forwardingTimeouts": {
+                "dialTimeout": "5s",
+                "responseHeaderTimeout": "60s",
+                "idleConnTimeout": "180s",
+            },
+        },
+    },
 }
 # The hand-made Docker Config Traefik ran since 2026-09-22, masked. Configs
 # are immutable, so the name pins the content. Regenerate or re-check with
@@ -164,8 +262,9 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
 
     SECRETS = [
         secret_mount("cloudflare-token", "cloudflare_dns_api_token"),
-        secret_mount(
-            "edge-basicauth-satisfactory-logs-v1", "basicauth_satisfactory_logs"
+        *(
+            secret_mount(name, target)
+            for target, name in {**BASICAUTH_SECRETS, **UPSTREAM_MTLS_SECRETS}.items()
         ),
     ]
 
@@ -228,27 +327,39 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
             "edge_traefik_runtime_gid": 65532,
             "edge_traefik_cloudflare_secret_name": "cloudflare-token",
             "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS,
+            "edge_traefik_upstream_mtls_secrets": UPSTREAM_MTLS_SECRETS,
             "edge_required_networks": ["a", "b"],
             "edge_state_root": "/srv/edge",
         }
 
     def test_identity_gate_requires_every_reviewed_secret_read_only(self) -> None:
-        cloudflare, basicauth = self.SECRETS
+        cloudflare, *files = self.SECRETS
+        by_target = {mount["File"]["Name"]: mount for mount in files}
+        basicauth = by_target["basicauth_satisfactory_logs"]
+        client = by_target["ax_upstream_client"]
+        others = [mount for mount in files if mount is not client]
         for secrets in (
             # The hand-made spec before the codification: token only.
             [cloudflare],
-            [cloudflare, basicauth, secret_mount("extra-v1", "extra")],
-            [cloudflare, dict(basicauth, SecretName="edge-basicauth-other-v1")],
-            [cloudflare, secret_mount(basicauth["SecretName"], "other_target")],
+            # The spec the Satisfactory codification applied, without AX.
+            [cloudflare, basicauth],
+            [*self.SECRETS, secret_mount("extra-v1", "extra")],
+            [cloudflare, *others],
             [
                 cloudflare,
-                secret_mount(
-                    basicauth["SecretName"], "basicauth_satisfactory_logs", 292
-                ),
+                *others,
+                dict(client, SecretName="edge-ax-upstream-client-v2"),
+            ],
+            [cloudflare, *others, secret_mount(client["SecretName"], "other_target")],
+            [
+                cloudflare,
+                *others,
+                secret_mount(client["SecretName"], "ax_upstream_client", 292),
             ],
             [
                 cloudflare,
-                copy.deepcopy(basicauth) | {"File": dict(basicauth["File"], UID="0")},
+                *others,
+                copy.deepcopy(client) | {"File": dict(client["File"], UID="0")},
             ],
         ):
             with self.subTest(secrets=secrets):
@@ -394,6 +505,7 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             "edge_monitoring_network": "apptolast-edge-monitoring",
             "edge_networks": EDGE_NETWORKS,
             "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS,
+            "edge_traefik_upstream_mtls_secrets": UPSTREAM_MTLS_SECRETS,
             "edge_application_networks": APPLICATION_NETWORKS,
             "organizationweb": {
                 "hostname": "organizacion.apptolast.com",
@@ -404,6 +516,7 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
                 "edge_network": "apptolast-edge-racinggame",
             },
             "edge_adopted_attachable_networks": ADOPTED_NETWORKS,
+            "edge_network_subnets": NETWORK_SUBNETS,
             "edge_deployment_profile": "production",
             "edge_traefik_acme_ca_server": (
                 "https://acme-v02.api.letsencrypt.org/directory"
@@ -444,13 +557,13 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             {"edge_adopted_attachable_networks": ADOPTED_NETWORKS[:1]},
             {"edge_traefik_basicauth_secrets": {}},
             {
-                "edge_traefik_basicauth_secrets": {
-                    "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v2"
-                }
+                "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS
+                | {"basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v2"}
             },
             {
                 "edge_traefik_basicauth_secrets": {
-                    "basicauth_logs": "edge-basicauth-satisfactory-logs-v1"
+                    "basicauth_logs": "edge-basicauth-satisfactory-logs-v1",
+                    "basicauth_ax": "edge-basicauth-ax-v1",
                 }
             },
         ):
@@ -462,45 +575,142 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
                     self.MESSAGE,
                 )
 
+    def test_the_ax_network_and_secrets_are_pinned(self) -> None:
+        without_network = dict(APPLICATION_NETWORKS)
+        del without_network["ax"]
+        without_login = dict(BASICAUTH_SECRETS)
+        del without_login["basicauth_ax"]
+        without_client = dict(UPSTREAM_MTLS_SECRETS)
+        del without_client["ax_upstream_client"]
+        for change in (
+            {"edge_application_networks": without_network},
+            {"edge_adopted_attachable_networks": ADOPTED_NETWORKS[:2]},
+            # Same members, another order: the list is compared exactly.
+            {"edge_adopted_attachable_networks": sorted(ADOPTED_NETWORKS)},
+            {"edge_traefik_basicauth_secrets": without_login},
+            {
+                "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS
+                | {"basicauth_ax": "edge-basicauth-ax-v2"}
+            },
+            {"edge_traefik_upstream_mtls_secrets": without_client},
+            {"edge_traefik_upstream_mtls_secrets": {}},
+            {
+                "edge_traefik_upstream_mtls_secrets": UPSTREAM_MTLS_SECRETS
+                | {"ax_upstream_ca": "edge-ax-upstream-ca-v2"}
+            },
+            {
+                "edge_traefik_upstream_mtls_secrets": {
+                    "ax_ca": "edge-ax-upstream-ca-v1",
+                    "ax_upstream_client": "edge-ax-upstream-client-v1",
+                }
+            },
+            # The ACME token must never double as upstream material.
+            {"edge_traefik_cloudflare_secret_name": "edge-ax-upstream-ca-v1"},
+            # The AX forwarder admits only this subnet.
+            {"edge_network_subnets": {}},
+            {"edge_network_subnets": {"apptolast-edge-ax": "10.0.251.0/24"}},
+        ):
+            with self.subTest(change=change):
+                self.assert_task_rejects(
+                    self.MAIN,
+                    self.TASK,
+                    self.inputs(self.pin) | change,
+                    self.MESSAGE,
+                )
+
+    def test_a_secret_or_target_shared_by_both_maps_is_rejected(self) -> None:
+        # Only reachable with the exact-map pins relaxed: the disjointness
+        # asserts are the second line of defence for the stack's targets.
+        task = load_task(self.MAIN, self.TASK)
+        disjoint = [
+            condition
+            for condition in task["ansible.builtin.assert"]["that"]
+            if "intersect(edge_traefik_upstream_mtls_secrets" in condition
+        ]
+        self.assertEqual(len(disjoint), 2)
+        for basicauth, upstream in (
+            ({"a": "same-v1"}, {"b": "same-v1"}),
+            ({"same": "a-v1"}, {"same": "b-v1"}),
+        ):
+            with self.subTest(basicauth=basicauth, upstream=upstream):
+                completed = run_task_definition(
+                    {
+                        "name": "Evaluate the disjointness asserts",
+                        "ansible.builtin.assert": {"that": disjoint},
+                    },
+                    {
+                        "edge_traefik_basicauth_secrets": basicauth,
+                        "edge_traefik_upstream_mtls_secrets": upstream,
+                    },
+                )
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+
 
 class EdgeBasicAuthSecretProvenanceTests(AnsibleTaskAssertions, unittest.TestCase):
     """The users file secrets are checked by metadata only, never read."""
 
     MAIN = "ansible/roles/edge/tasks/main.yml"
     TASK = "Verify the basicAuth users file secret provenance labels"
+    INSPECT = "Verify the basicAuth users file secrets exist"
     MESSAGE = "lacks the reviewed manual-bootstrap provenance"
-    NAME = "edge-basicauth-satisfactory-logs-v1"
+    SECRETS = BASICAUTH_SECRETS
+    REGISTER = "edge_basicauth_secret_inspect"
+    VARIABLE = "edge_traefik_basicauth_secrets"
+    PURPOSE = "traefik-basicauth"
+    OTHER_PURPOSE = "traefik-cloudflare-dns"
+    NAME = "edge-basicauth-ax-v1"
 
-    def run_gate(self, labels: dict[str, str], name: str | None = None):
+    def reviewed_labels(self) -> dict[str, str]:
+        return {
+            "com.apptolast.managed-by": "manual-bootstrap",
+            "com.apptolast.purpose": self.PURPOSE,
+        }
+
+    def run_gate(
+        self,
+        labels: dict[str, str],
+        name: str | None = None,
+        results: list[str] | None = None,
+    ):
+        """Inspect every reviewed secret; the one called NAME gets labels."""
         task = load_task(self.MAIN, self.TASK)
         # no_log hides the failure message this test asserts on; the
         # expressions under test stay exactly the reviewed ones.
         self.assertIs(task.pop("no_log"), True)
-        inspected = {"Spec": {"Name": name or self.NAME, "Labels": labels}}
+
+        def inspected(item: str) -> str:
+            if item != self.NAME:
+                spec = {"Name": item, "Labels": self.reviewed_labels()}
+            else:
+                spec = {"Name": name or item, "Labels": labels}
+            return json.dumps([{"Spec": spec}])
+
+        items = sorted(self.SECRETS.values()) if results is None else results
         return run_task_definition(
             task,
             {
-                "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS,
-                "edge_basicauth_secret_inspect": {
+                self.VARIABLE: self.SECRETS,
+                self.REGISTER: {
                     "results": [
-                        {
-                            "item": self.NAME,
-                            "rc": 0,
-                            "stdout": json.dumps([inspected]),
-                        }
+                        {"item": item, "rc": 0, "stdout": inspected(item)}
+                        for item in items
                     ]
                 },
             },
         )
 
     def test_a_labelled_manual_bootstrap_secret_is_accepted(self) -> None:
-        completed = self.run_gate(
-            {
-                "com.apptolast.managed-by": "manual-bootstrap",
-                "com.apptolast.purpose": "traefik-basicauth",
-            }
-        )
+        completed = self.run_gate(self.reviewed_labels())
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_every_reviewed_secret_must_be_inspected(self) -> None:
+        for results in (
+            sorted(self.SECRETS.values())[:1],
+            [*sorted(self.SECRETS.values()), "edge-extra-v1"],
+        ):
+            with self.subTest(results=results):
+                completed = self.run_gate(self.reviewed_labels(), results=results)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
 
     def test_unreviewed_provenance_is_rejected(self) -> None:
         for labels, name in (
@@ -509,24 +719,18 @@ class EdgeBasicAuthSecretProvenanceTests(AnsibleTaskAssertions, unittest.TestCas
             (
                 {
                     "com.apptolast.managed-by": "ansible",
-                    "com.apptolast.purpose": "traefik-basicauth",
+                    "com.apptolast.purpose": self.PURPOSE,
                 },
                 None,
             ),
             (
                 {
                     "com.apptolast.managed-by": "manual-bootstrap",
-                    "com.apptolast.purpose": "traefik-cloudflare-dns",
+                    "com.apptolast.purpose": self.OTHER_PURPOSE,
                 },
                 None,
             ),
-            (
-                {
-                    "com.apptolast.managed-by": "manual-bootstrap",
-                    "com.apptolast.purpose": "traefik-basicauth",
-                },
-                "edge-basicauth-other-v1",
-            ),
+            (self.reviewed_labels(), "edge-other-v1"),
         ):
             with self.subTest(labels=labels, name=name):
                 completed = self.run_gate(labels, name)
@@ -539,17 +743,37 @@ class EdgeBasicAuthSecretProvenanceTests(AnsibleTaskAssertions, unittest.TestCas
         tasks = yaml.safe_load(
             (REPOSITORY_ROOT / self.MAIN).read_text(encoding="utf-8")
         )
-        inspect = next(
-            task
-            for task in tasks
-            if task.get("name") == "Verify the basicAuth users file secrets exist"
-        )
+        inspect = next(task for task in tasks if task.get("name") == self.INSPECT)
         self.assertIs(inspect["no_log"], True)
         self.assertEqual(
-            inspect["ansible.builtin.command"]["argv"][:3],
-            ["/usr/bin/docker", "secret", "inspect"],
+            inspect["ansible.builtin.command"]["argv"],
+            ["/usr/bin/docker", "secret", "inspect", "{{ item }}"],
         )
         self.assertIs(load_task(self.MAIN, self.TASK)["no_log"], True)
+
+
+class EdgeUpstreamMtlsSecretProvenanceTests(EdgeBasicAuthSecretProvenanceTests):
+    """The AX mTLS material is checked by metadata only, never read."""
+
+    TASK = "Verify the upstream mTLS secret provenance labels"
+    INSPECT = "Verify the upstream mTLS secrets exist"
+    SECRETS = UPSTREAM_MTLS_SECRETS
+    REGISTER = "edge_upstream_mtls_secret_inspect"
+    VARIABLE = "edge_traefik_upstream_mtls_secrets"
+    PURPOSE = "traefik-upstream-mtls"
+    OTHER_PURPOSE = "traefik-basicauth"
+    NAME = "edge-ax-upstream-client-v1"
+
+    def test_the_inspect_loops_over_every_reviewed_secret(self) -> None:
+        tasks = yaml.safe_load(
+            (REPOSITORY_ROOT / self.MAIN).read_text(encoding="utf-8")
+        )
+        inspect = next(task for task in tasks if task.get("name") == self.INSPECT)
+        self.assertEqual(
+            inspect["loop"],
+            "{{ edge_traefik_upstream_mtls_secrets.values() | list | sort }}",
+        )
+        self.assertIs(inspect["check_mode"], False)
 
 
 class EdgeNetworkCreationTests(unittest.TestCase):
@@ -591,6 +815,7 @@ class EdgeNetworkCreationTests(unittest.TestCase):
             {
                 "item": {"item": network},
                 "edge_adopted_attachable_networks": ADOPTED_NETWORKS,
+                "edge_network_subnets": NETWORK_SUBNETS,
                 "expected": expected,
             },
         )
@@ -598,11 +823,78 @@ class EdgeNetworkCreationTests(unittest.TestCase):
 
     def test_adopted_networks_are_created_attachable_and_encrypted(self) -> None:
         for network in ADOPTED_NETWORKS:
+            subnet = (
+                ["--subnet", NETWORK_SUBNETS[network]]
+                if network in NETWORK_SUBNETS
+                else []
+            )
             with self.subTest(network=network):
                 self.assertTrue(
-                    self.argv_matches(network, [*self.BASE, "--attachable", network])
+                    self.argv_matches(
+                        network, [*self.BASE, "--attachable", *subnet, network]
+                    )
                 )
                 self.assertFalse(self.argv_matches(network, [*self.BASE, network]))
+
+    def test_the_ax_network_is_created_with_the_forwarder_subnet(self) -> None:
+        # The AX panel's forwarder admits only this subnet (--allow-cidr).
+        network = "apptolast-edge-ax"
+        self.assertFalse(
+            self.argv_matches(network, [*self.BASE, "--attachable", network])
+        )
+        self.assertTrue(
+            self.argv_matches(
+                network,
+                [*self.BASE, "--attachable", "--subnet", "10.0.250.0/24", network],
+            )
+        )
+
+    def verified(self, network: str, subnets: list[str] | None) -> bool:
+        tasks = yaml.safe_load(
+            (REPOSITORY_ROOT / self.DEPLOY).read_text(encoding="utf-8")
+        )
+        task = next(
+            item
+            for item in tasks
+            if item.get("name") == "Verify every isolated edge network contract"
+        )
+        inspect = {
+            "Driver": "overlay",
+            "Scope": "swarm",
+            "Attachable": network in ADOPTED_NETWORKS,
+            "Internal": False,
+            "Options": {"encrypted": ""},
+            "IPAM": {
+                "Config": (
+                    None
+                    if subnets is None
+                    else [{"Subnet": subnet} for subnet in subnets]
+                )
+            },
+        }
+        completed = run_task_definition(
+            {
+                "name": "Evaluate the reviewed network contract",
+                "ansible.builtin.assert": {
+                    "that": task["ansible.builtin.assert"]["that"]
+                },
+            },
+            {
+                "item": {"item": network, "stdout": json.dumps([inspect])},
+                "edge_adopted_attachable_networks": ADOPTED_NETWORKS,
+                "edge_network_subnets": NETWORK_SUBNETS,
+            },
+        )
+        return completed.returncode == 0
+
+    def test_only_the_fixed_subnet_is_accepted_on_the_ax_network(self) -> None:
+        self.assertTrue(self.verified("apptolast-edge-ax", ["10.0.250.0/24"]))
+        for subnets in (["10.0.30.0/24"], ["10.0.250.0/24", "10.0.31.0/24"], []):
+            with self.subTest(subnets=subnets):
+                self.assertFalse(self.verified("apptolast-edge-ax", subnets))
+        # Swarm numbers every other edge network.
+        self.assertTrue(self.verified("apptolast-edge-satisfactory", ["10.0.7.0/24"]))
+        self.assertTrue(self.verified("apptolast-edge-kropia", ["10.0.3.0/24"]))
 
     def test_every_other_edge_network_is_created_not_attachable(self) -> None:
         network = "apptolast-edge-kropia"
@@ -622,6 +914,7 @@ class EdgeBasicAuthChallengeProbeTests(unittest.TestCase):
         'www-authenticate: Basic realm="Satisfactory logs"\r\n'
         "content-type: text/plain\r\n\r\n"
     )
+    AX_CHALLENGE = CHALLENGE.replace("Satisfactory logs", "AX")
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -670,46 +963,60 @@ class EdgeBasicAuthChallengeProbeTests(unittest.TestCase):
                 }
                 self.assertNotEqual(basicauth_probe_targets(changed), self.probed())
 
-    def converges(self, rc: int, stdout: str) -> bool:
+    def converges(self, rc: int, stdout: str, item: int = 0) -> bool:
         completed = run_task_definition(
             {
                 "name": "Evaluate the reviewed until condition",
                 "ansible.builtin.assert": {"that": self.task["until"]},
             },
             {
-                "item": self.task["loop"][0],
+                "item": self.task["loop"][item],
                 "edge_basicauth_challenges": {"rc": rc, "stdout": stdout},
             },
         )
         return completed.returncode == 0
 
-    def test_the_probe_targets_the_logs_route_without_credentials(self) -> None:
+    def test_the_probe_targets_each_login_route_without_credentials(self) -> None:
         self.assertEqual(
             self.task["loop"],
             [
                 {
                     "hostname": "logs-satisfactory.apptolast.com",
                     "realm": "Satisfactory logs",
-                }
+                },
+                {"hostname": "ax.apptolast.com", "realm": "AX"},
             ],
         )
         argv = self.task["ansible.builtin.command"]["argv"]
         for forbidden in ("--user", "--insecure", "Authorization", "--fail"):
             self.assertNotIn(forbidden, argv)
-        self.assertEqual(self.task["retries"], 36)
+
+    def test_the_probe_waits_five_minutes_for_a_first_certificate(self) -> None:
+        # ax.apptolast.com gets its certificate by DNS-01 on its first deploy
+        # and sniStrict refuses its TLS handshake until then.
+        self.assertEqual(self.task["retries"] * self.task["delay"], 300)
+        self.assertTrue(self.converges(0, self.AX_CHALLENGE, item=1))
+        # curl exit 35: the TLS handshake failed; the next attempt retries.
+        self.assertFalse(self.converges(35, "", item=1))
 
     def test_only_the_reviewed_basic_challenge_converges(self) -> None:
         self.assertTrue(self.converges(0, self.CHALLENGE))
         self.assertTrue(self.converges(0, self.CHALLENGE.replace("HTTP/2", "HTTP/1.1")))
-        for rc, stdout in (
+        for rc, stdout, item in (
             # The router was disabled because the users file did not load.
-            (0, "HTTP/2 404 \r\ncontent-type: text/plain\r\n\r\n"),
-            (0, self.CHALLENGE.replace("Satisfactory logs", "traefik")),
-            (0, self.CHALLENGE.replace("401", "200")),
-            (7, ""),
+            (0, "HTTP/2 404 \r\ncontent-type: text/plain\r\n\r\n", 0),
+            (0, self.CHALLENGE.replace("Satisfactory logs", "traefik"), 0),
+            (0, self.CHALLENGE.replace("401", "200"), 0),
+            (7, "", 0),
+            # Each route answers with its own realm.
+            (0, self.CHALLENGE, 1),
+            (0, self.AX_CHALLENGE, 0),
+            (0, "HTTP/2 404 \r\ncontent-type: text/plain\r\n\r\n", 1),
+            # A route without its login reaches the panel.
+            (0, self.AX_CHALLENGE.replace("401", "502"), 1),
         ):
-            with self.subTest(stdout=stdout, rc=rc):
-                self.assertFalse(self.converges(rc, stdout))
+            with self.subTest(stdout=stdout, rc=rc, item=item):
+                self.assertFalse(self.converges(rc, stdout, item))
 
 
 class EdgeStaticContractTests(unittest.TestCase):
@@ -989,9 +1296,687 @@ class EdgeStaticContractTests(unittest.TestCase):
             detach, "the rendered edge networks differ from the isolation contract"
         )
 
+    # AX ingress (docs/EDGE.md, «Ruta de AX»).
+
+    def test_the_ax_limits_must_run_in_order_before_the_login(self) -> None:
+        reviewed = AX_ROUTE_ADDITIONS["routers"]["ax"]["middlewares"]
+        canonical = ["edge-security", "ax-canonical-host"]
+        for middlewares in (
+            # The design's first order: a rate limiter holding a delayed
+            # request would then occupy an in-flight slot.
+            [*canonical, "ax-inflight", "ax-rl-ip", "ax-rl-host", "ax-auth"],
+            # The login before the limits: every guess costs a bcrypt.
+            [*canonical, "ax-auth", "ax-rl-ip", "ax-rl-host", "ax-inflight"],
+            [m for m in reviewed if m != "ax-rl-host"],
+            [m for m in reviewed if m != "ax-auth"],
+        ):
+            with self.subTest(middlewares=middlewares):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: http["routers"]["ax"].update(
+                            middlewares=middlewares
+                        )
+                    ),
+                    "the ax router differs from the reviewed AX ingress",
+                )
+
+    def test_the_ax_limits_count_one_canonical_host(self) -> None:
+        # rateLimit and inFlightReq group requestHost by the raw Host, while
+        # the router matches it case-insensitively and without its port:
+        # AX.apptolast.com or ax.apptolast.com:443 would each get fresh
+        # counters. The Host is rewritten before the first limit.
+        for router in ("ax", "ax-health"):
+            reviewed = AX_ROUTE_ADDITIONS["routers"][router]["middlewares"]
+            for middlewares in (
+                [m for m in reviewed if m != "ax-canonical-host"],
+                [
+                    "edge-security",
+                    "ax-rl-ip",
+                    "ax-rl-host",
+                    "ax-canonical-host",
+                    "ax-inflight",
+                    reviewed[-1],
+                ],
+            ):
+                with self.subTest(router=router, middlewares=middlewares):
+                    self.assert_contract_rejects(
+                        self.edit_dynamic(
+                            lambda http: http["routers"][router].update(
+                                middlewares=middlewares
+                            )
+                        ),
+                        f"the {router} router differs from the reviewed AX ingress",
+                    )
+        for request_headers in (
+            {"Host": "AX.apptolast.com"},
+            {"Host": "ax.apptolast.com:443"},
+            {"X-Forwarded-Host": "ax.apptolast.com"},
+            {"Host": "ax.apptolast.com", "Authorization": ""},
+        ):
+            with self.subTest(request_headers=request_headers):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: http["middlewares"]["ax-canonical-host"].update(
+                            headers={"customRequestHeaders": request_headers}
+                        )
+                    ),
+                    "the ax-canonical-host middleware differs from the reviewed "
+                    "AX ingress",
+                )
+
+    def test_the_health_route_drops_the_authorization_header(self) -> None:
+        # Browsers resend cached Basic credentials to every path of the
+        # protection space, and ax-health has no basicAuth removeHeader.
+        reviewed = AX_ROUTE_ADDITIONS["routers"]["ax-health"]["middlewares"]
+        self.assert_contract_rejects(
+            self.edit_dynamic(
+                lambda http: http["routers"]["ax-health"].update(
+                    middlewares=reviewed[:-1]
+                )
+            ),
+            "the ax-health router differs from the reviewed AX ingress",
+        )
+        for headers in (
+            {"customRequestHeaders": {"Authorization": "Basic x"}},
+            {"customResponseHeaders": {"Authorization": ""}},
+        ):
+            with self.subTest(headers=headers):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: http["middlewares"][
+                            "ax-strip-authorization"
+                        ].update(headers=headers)
+                    ),
+                    "the ax-strip-authorization middleware differs from the "
+                    "reviewed AX ingress",
+                )
+
+    def test_compression_is_rejected_on_both_ax_routers(self) -> None:
+        for router in ("ax", "ax-health"):
+            for change in (
+                lambda middlewares: middlewares.append("edge-compress"),
+                lambda middlewares: middlewares.__setitem__(0, "edge-default"),
+            ):
+                with self.subTest(router=router, change=change):
+                    self.assert_contract_rejects(
+                        self.edit_dynamic(
+                            lambda http: change(http["routers"][router]["middlewares"])
+                        ),
+                        f"the {router} router differs from the reviewed AX ingress",
+                    )
+
+    def test_the_unauthenticated_health_route_cannot_widen(self) -> None:
+        for rule in (
+            "Host(`ax.apptolast.com`) && Path(`/healthz`)",
+            "Host(`ax.apptolast.com`) && PathPrefix(`/healthz`) && Method(`GET`)",
+            "Host(`ax.apptolast.com`) && Path(`/api/tasks`) && Method(`GET`)",
+        ):
+            with self.subTest(rule=rule):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: http["routers"]["ax-health"].update(rule=rule)
+                    ),
+                    "the ax-health router differs from the reviewed AX ingress",
+                )
+
+    def test_inline_users_on_the_ax_login_are_rejected(self) -> None:
+        def inline(http: Any) -> None:
+            http["middlewares"]["ax-auth"]["basicAuth"]["users"] = ["user:placeholder"]
+
+        self.assert_contract_rejects(
+            self.edit_dynamic(inline),
+            "the ax-auth middleware differs from the reviewed AX ingress",
+        )
+
+    def test_a_loosened_ax_limit_is_rejected(self) -> None:
+        for name, path, value in (
+            ("ax-rl-host", ("rateLimit", "burst"), 100),
+            ("ax-rl-ip", ("rateLimit", "average"), 300),
+            ("ax-inflight", ("inFlightReq", "amount"), 64),
+        ):
+            with self.subTest(name=name):
+
+                def loosen(http: Any) -> None:
+                    http["middlewares"][name][path[0]][path[1]] = value
+
+                self.assert_contract_rejects(
+                    self.edit_dynamic(loosen),
+                    f"the {name} middleware differs from the reviewed AX ingress",
+                )
+
+    def test_insecure_skip_verify_is_rejected_anywhere(self) -> None:
+        for change in (
+            lambda http: http["serversTransports"]["ax-web-mtls"].update(
+                insecureSkipVerify=True
+            ),
+            lambda http: http["serversTransports"]["ax-web-mtls"].update(
+                insecureSkipVerify=False
+            ),
+            lambda http: http["services"]["kropia"]["loadBalancer"][
+                "healthCheck"
+            ].update(insecureSkipVerify=True),
+        ):
+            with self.subTest(change=change):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(change),
+                    "the rendered dynamic configuration skips backend TLS verification",
+                )
+
+    def test_min_version_without_max_version_is_rejected(self) -> None:
+        self.assert_contract_rejects(
+            self.edit_dynamic(
+                lambda http: http["serversTransports"]["ax-web-mtls"].pop("maxVersion")
+            ),
+            "the ax-web-mtls minVersion needs a maxVersion",
+        )
+
+    def test_the_mtls_transport_is_pinned(self) -> None:
+        client = "/run/secrets/ax_upstream_client"
+        for key, value in (
+            ("serverName", "ax-web-edge"),
+            ("rootCAs", []),
+            ("certificates", []),
+            # Cert and key in separate, unmounted files.
+            (
+                "certificates",
+                [{"certFile": client, "keyFile": "/run/secrets/ax_upstream_key"}],
+            ),
+            ("minVersion", "VersionTLS12"),
+            ("maxVersion", "VersionTLS12"),
+            ("forwardingTimeouts", None),
+            (
+                "forwardingTimeouts",
+                {
+                    "dialTimeout": "5s",
+                    "responseHeaderTimeout": "0s",
+                    "idleConnTimeout": "180s",
+                },
+            ),
+        ):
+            with self.subTest(key=key, value=value):
+
+                def change(http: Any) -> None:
+                    transport = http["serversTransports"]["ax-web-mtls"]
+                    if value is None:
+                        del transport[key]
+                    else:
+                        transport[key] = value
+
+                self.assert_contract_rejects(
+                    self.edit_dynamic(change),
+                    "the ax-web-mtls transport differs from the reviewed mTLS contract",
+                )
+
+    def test_a_second_servers_transport_is_rejected(self) -> None:
+        def add(http: Any) -> None:
+            http["serversTransports"]["other"] = copy.deepcopy(
+                http["serversTransports"]["ax-web-mtls"]
+            )
+
+        self.assert_contract_rejects(
+            self.edit_dynamic(add),
+            "the rendered servers transports differ from the reviewed allowlist",
+        )
+
+    def test_the_transport_serves_only_the_ax_backend(self) -> None:
+        def reuse(http: Any) -> None:
+            http["services"]["kropia"]["loadBalancer"][
+                "serversTransport"
+            ] = "ax-web-mtls"
+
+        self.assert_contract_rejects(
+            self.edit_dynamic(reuse),
+            "only the ax backend may use the reviewed servers transport",
+        )
+        for change in (
+            lambda balancer: balancer.pop("serversTransport"),
+            lambda balancer: balancer.update(
+                servers=[{"url": "http://ax-web-edge:8443"}]
+            ),
+            lambda balancer: balancer.update(
+                healthCheck={"path": "/healthz", "interval": "15s", "timeout": "3s"}
+            ),
+            lambda balancer: balancer.update(passHostHeader=False),
+        ):
+            with self.subTest(change=change):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: change(http["services"]["ax"]["loadBalancer"])
+                    ),
+                    "the ax upstream differs from the reviewed AX ingress",
+                )
+
+    def test_a_file_outside_the_mounted_secrets_is_rejected(self) -> None:
+        # The TLS section is otherwise unpinned; Traefik reads a path it
+        # cannot open as inline content, so it would fail quietly.
+        def add(http_and_tls: Any) -> None:
+            http_and_tls["tls"]["certificates"] = [
+                {
+                    "certFile": "/run/secrets/ax_upstream_client",
+                    "keyFile": "/run/secrets/other_key",
+                }
+            ]
+
+        def mutate(root: Path) -> None:
+            self.edit_yaml(root / ".build/edge/dynamic.yml", add)
+
+        self.assert_contract_rejects(
+            mutate, "the dynamic configuration and the mounted secrets differ"
+        )
+
+    def test_a_tcp_router_section_is_rejected(self) -> None:
+        def add(document: Any) -> None:
+            document["tcp"] = {
+                "routers": {"ax": {"rule": "HostSNI(`*`)", "service": "ax"}}
+            }
+
+        def mutate(root: Path) -> None:
+            self.edit_yaml(root / ".build/edge/dynamic.yml", add)
+
+        self.assert_contract_rejects(
+            mutate,
+            "the rendered dynamic configuration has unreviewed top-level sections",
+        )
+
+    def test_an_unreviewed_http_section_is_rejected(self) -> None:
+        self.assert_contract_rejects(
+            self.edit_dynamic(lambda http: http.update(models={"x": {}})),
+            "the rendered dynamic HTTP configuration has unreviewed sections",
+        )
+
+    def test_a_renamed_or_missing_ax_secret_is_rejected(self) -> None:
+        for variable, value, message in (
+            (
+                "edge_traefik_basicauth_secrets",
+                BASICAUTH_SECRETS | {"basicauth_ax": "edge-basicauth-ax-v2"},
+                "the basicAuth users file secrets differ from the reviewed map",
+            ),
+            (
+                "edge_traefik_upstream_mtls_secrets",
+                UPSTREAM_MTLS_SECRETS
+                | {"ax_upstream_client": "edge-ax-upstream-client-v2"},
+                "the upstream mTLS secrets differ from the reviewed map",
+            ),
+            (
+                "edge_traefik_upstream_mtls_secrets",
+                {},
+                "the upstream mTLS secrets differ from the reviewed map",
+            ),
+        ):
+            with self.subTest(variable=variable, value=value):
+                self.assert_contract_rejects(
+                    self.edit_group_vars(
+                        lambda document: document.update({variable: value})
+                    ),
+                    message,
+                )
+
+    def test_an_unmounted_or_writable_ax_secret_is_rejected(self) -> None:
+        for change in (
+            lambda secrets: secrets.pop(),
+            lambda secrets: secrets[-1].update(mode=0o444),
+            lambda secrets: secrets[-1].update(target="ax_client"),
+        ):
+            with self.subTest(change=change):
+
+                def mutate(root: Path) -> None:
+                    self.edit_yaml(
+                        root / ".build/edge/stack.yml",
+                        lambda stack: change(stack["services"]["traefik"]["secrets"]),
+                    )
+
+                self.assert_contract_rejects(
+                    mutate,
+                    "Traefik does not mount exactly the reviewed read-only secrets",
+                )
+
+    def test_the_ax_network_subnet_is_pinned(self) -> None:
+        for subnets in (
+            {},
+            {"apptolast-edge-ax": "10.0.251.0/24"},
+            {**NETWORK_SUBNETS, "apptolast-edge-satisfactory": "10.0.251.0/24"},
+        ):
+            with self.subTest(subnets=subnets):
+                self.assert_contract_rejects(
+                    self.edit_group_vars(
+                        lambda document: document.update(edge_network_subnets=subnets)
+                    ),
+                    "the fixed edge network subnets differ from the contract",
+                )
+
+    def test_the_ax_network_must_stay_attached_and_adopted(self) -> None:
+        self.assert_contract_rejects(
+            self.edit_group_vars(
+                lambda document: document["edge_adopted_attachable_networks"].remove(
+                    "apptolast-edge-ax"
+                )
+            ),
+            "the adopted attachable edge networks differ from the contract",
+        )
+
+        def detach(root: Path) -> None:
+            def change(stack: Any) -> None:
+                del stack["networks"]["edge-ax"]
+                stack["services"]["traefik"]["networks"].remove("edge-ax")
+
+            self.edit_yaml(root / ".build/edge/stack.yml", change)
+
+        self.assert_contract_rejects(
+            detach, "the rendered edge networks differ from the isolation contract"
+        )
+
+    def test_the_access_log_must_drop_the_user_name(self) -> None:
+        def keep(root: Path) -> None:
+            self.edit_yaml(
+                root / ".build/edge/static.yml",
+                lambda static: static["accessLog"]["fields"].pop("names"),
+            )
+
+        self.assert_contract_rejects(
+            keep, "the access log keeps the basicAuth user name"
+        )
+
+
+class EdgeTraefikRenderBootPreparationTests(unittest.TestCase):
+    """scripts/prepare-traefik-validation.py, run without Docker.
+
+    scripts/validate-traefik-config.sh boots the pinned Traefik with its
+    output: the whole render but the ACME resolver and the health checks,
+    and a throwaway stand-in for every secret file.
+    """
+
+    SCRIPT = REPOSITORY_ROOT / "scripts/prepare-traefik-validation.py"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        render_edge()
+
+    def prepare(
+        self, change: Callable[[Any], None] | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        temporary = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temporary)
+        render = temporary / "render"
+        shutil.copytree(REPOSITORY_ROOT / ".build/edge", render)
+        if change is not None:
+            EdgeStaticContractTests.edit_yaml(render / "dynamic.yml", change)
+        output = temporary / "validation"
+        completed = subprocess.run(
+            [sys.executable, str(self.SCRIPT), str(render), str(output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed, output
+
+    @staticmethod
+    def load(path: Path) -> Any:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_only_the_resolver_and_the_health_checks_are_removed(self) -> None:
+        completed, output = self.prepare()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        static = self.load(REPOSITORY_ROOT / ".build/edge/static.yml")
+        del static["certificatesResolvers"]
+        del static["entryPoints"]["websecure"]["http"]["tls"]["certResolver"]
+        self.assertEqual(self.load(output / "static.yml"), static)
+        dynamic = self.load(REPOSITORY_ROOT / ".build/edge/dynamic.yml")
+        for router in dynamic["http"]["routers"].values():
+            router.get("tls", {}).pop("certResolver", None)
+        for service in dynamic["http"]["services"].values():
+            service["loadBalancer"].pop("healthCheck", None)
+        self.assertEqual(self.load(output / "dynamic.yml"), dynamic)
+        # The mTLS transport the boot has to load stays as rendered.
+        self.assertEqual(
+            dynamic["http"]["serversTransports"],
+            AX_ROUTE_ADDITIONS["serversTransports"],
+        )
+
+    def test_every_secret_file_gets_a_throwaway_of_its_kind(self) -> None:
+        from cryptography import x509
+        from cryptography.x509.oid import ExtendedKeyUsageOID
+
+        completed, output = self.prepare()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        secrets = output / "secrets"
+        self.assertEqual(
+            sorted(path.name for path in secrets.iterdir()),
+            sorted({**BASICAUTH_SECRETS, **UPSTREAM_MTLS_SECRETS}),
+        )
+        self.assertEqual(
+            completed.stdout.splitlines(),
+            [
+                "ax_upstream_ca ca",
+                "ax_upstream_client client",
+                "basicauth_ax users",
+                "basicauth_satisfactory_logs users",
+            ],
+        )
+        # Readable by the container's 65532 through the bind mount.
+        for path in (output, secrets):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+        for path in [*secrets.iterdir(), output / "static.yml"]:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        for target in BASICAUTH_SECRETS:
+            self.assertRegex(
+                (secrets / target).read_text(encoding="ascii"),
+                r"\Avalidation:\{SHA\}[A-Za-z0-9+/]{27}=\n\Z",
+            )
+        ca = x509.load_pem_x509_certificate((secrets / "ax_upstream_ca").read_bytes())
+        self.assertTrue(
+            ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+        )
+        client_pem = (secrets / "ax_upstream_client").read_bytes()
+        # One PEM: the certificate, then its key, as the real secret.
+        self.assertEqual(client_pem.count(b"-----BEGIN CERTIFICATE-----"), 1)
+        self.assertEqual(client_pem.count(b"-----BEGIN PRIVATE KEY-----"), 1)
+        self.assertLess(client_pem.index(b"CERTIFICATE"), client_pem.index(b"PRIVATE"))
+        client = x509.load_pem_x509_certificate(client_pem)
+        client.verify_directly_issued_by(ca)
+        self.assertEqual(
+            list(
+                client.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+            ),
+            [ExtendedKeyUsageOID.CLIENT_AUTH],
+        )
+
+    def test_an_unreviewed_secret_file_fails_closed(self) -> None:
+        def elsewhere(document: Any) -> None:
+            document["tls"]["certificates"] = [
+                {
+                    "certFile": "/run/secrets/ax_upstream_client",
+                    "keyFile": "/run/secrets/ax_upstream_client",
+                }
+            ]
+
+        def split_pair(document: Any) -> None:
+            document["http"]["serversTransports"]["ax-web-mtls"]["certificates"] = [
+                {
+                    "certFile": "/run/secrets/ax_upstream_client",
+                    "keyFile": "/run/secrets/ax_upstream_key",
+                }
+            ]
+
+        def two_kinds(document: Any) -> None:
+            document["http"]["middlewares"]["ax-auth"]["basicAuth"][
+                "usersFile"
+            ] = "/run/secrets/ax_upstream_ca"
+
+        def odd_name(document: Any) -> None:
+            document["http"]["middlewares"]["ax-auth"]["basicAuth"][
+                "usersFile"
+            ] = "/run/secrets/../basicauth_ax"
+
+        for change in (elsewhere, split_pair, two_kinds, odd_name):
+            with self.subTest(change=change.__name__):
+                completed, output = self.prepare(change)
+                self.assertEqual(completed.returncode, 1)
+                self.assertTrue(completed.stderr.startswith("ERROR: "))
+                self.assertFalse(output.exists())
+
+    def test_the_validation_boots_the_render_with_the_stand_ins(self) -> None:
+        script = (REPOSITORY_ROOT / "scripts/validate-traefik-config.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("prepare-traefik-validation.py", script)
+        self.assertIn('"${validation_dir}/dynamic.yml"', script)
+        self.assertIn('--volume "${validation_dir}/secrets:/run/secrets:ro"', script)
+        # The rendered static configuration still boots unchanged too.
+        self.assertIn('"${PROJECT_DIR}/.build/edge/static.yml"', script)
+        self.assertEqual(script.count("\nboot_traefik \\\n"), 2)
+
+
+class EdgeAxLoginSecretCommandTests(unittest.TestCase):
+    """The documented creation of the AX users file (docs/EDGE.md).
+
+    The password reaches the host only on the command's stdin and only its
+    bcrypt hash leaves it, into ``docker secret create -``.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = (REPOSITORY_ROOT / "docs/EDGE.md").read_text(encoding="utf-8")
+        section = text.split("### Crear el secret del login\n", 1)[1]
+        section = section.split("\n### ", 1)[0]
+        cls.command = next(
+            block
+            for block in re.findall(r"```bash\n(.*?)```", section, re.S)
+            if "docker secret create" in block
+        )
+        # -I (isolated): no current directory on sys.path and no PYTHON*
+        # variables, so no stray module can stand in for bcrypt or getpass
+        # in the process that holds the password.
+        match = re.search(
+            r"/usr/bin/python3 -I -c '\n(.*?)\n' \"\$\{ax_user\}\" \|\n",
+            cls.command,
+            re.S,
+        )
+        assert match is not None, "the documented bcrypt step changed shape"
+        cls.code = match.group(1)
+
+    def test_the_password_only_travels_on_stdin(self) -> None:
+        self.assertTrue(self.command.startswith("set +x\nset -o pipefail\n"))
+        # The user name is the owner's and never written in this repository.
+        self.assertIn("ax_user='<usuario>'\n", self.command)
+        for forbidden in (
+            "host_global_operation_lock",
+            "echo",
+            "set -x",
+            "tee",
+            "mktemp",
+            "/tmp",
+            "--password",
+        ):
+            self.assertNotIn(forbidden, self.command)
+        self.assertIsNone(re.search(HASH_PATTERN, self.command))
+        self.assertIn("sys.stdin.buffer.read()", self.code)
+        self.assertIn('bcrypt.gensalt(rounds=10, prefix=b"2b")', self.code)
+        self.assertTrue(
+            self.command.endswith(
+                "  sudo -- docker secret create \\\n"
+                "    --label com.apptolast.managed-by=manual-bootstrap \\\n"
+                "    --label com.apptolast.purpose=traefik-basicauth \\\n"
+                f"    {BASICAUTH_SECRETS['basicauth_ax']} - >/dev/null\n"
+            )
+        )
+
+    def run_step(
+        self, user: str, stdin: bytes, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            ["/usr/bin/python3", "-I", "-c", self.code, user],
+            input=stdin,
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+        )
+
+    def require_host_bcrypt(self) -> None:
+        probe = subprocess.run(
+            ["/usr/bin/python3", "-I", "-c", "import bcrypt"],
+            capture_output=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            self.skipTest("the host bcrypt module (python3-bcrypt) is absent")
+
+    def test_the_step_writes_one_users_line_and_prints_no_hash(self) -> None:
+        self.require_host_bcrypt()
+        # A throwaway value, only for this test.
+        password = b"not-a-real-password-" + b"x" * 8
+        completed = self.run_step("labuser", password + b"\n")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, b"hash: prefijo $2 longitud 60\n")
+        self.assertEqual(completed.stdout.count(b"\n"), 1)
+        user, hashed = completed.stdout.rstrip(b"\n").split(b":", 1)
+        self.assertEqual(user, b"labuser")
+        self.assertEqual(len(hashed), 60)
+        self.assertEqual(hashed.split(b"$")[1:3], [b"2b", b"10"])
+        self.assertNotIn(password, completed.stdout + completed.stderr)
+        for user, stdin in (
+            ("<usuario>", password + b"\n"),
+            ("labuser", b""),
+            ("labuser", b"\n"),
+            ("labuser", b"two\nlines\n"),
+            ("labuser", b"x" * 73 + b"\n"),
+        ):
+            with self.subTest(user=user, stdin=stdin):
+                rejected = self.run_step(user, stdin)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertEqual(rejected.stdout, b"")
+
+    def test_a_module_in_the_working_directory_cannot_stand_in(self) -> None:
+        self.require_host_bcrypt()
+        with tempfile.TemporaryDirectory() as temporary:
+            for module in ("bcrypt", "getpass", "re"):
+                (Path(temporary) / f"{module}.py").write_text(
+                    "raise SystemExit('shadowed')\n", encoding="utf-8"
+                )
+            completed = self.run_step(
+                "labuser", b"not-a-real-password\n", Path(temporary)
+            )
+            # Without -I the current directory comes first on sys.path.
+            shadowed = subprocess.run(
+                ["/usr/bin/python3", "-c", self.code, "labuser"],
+                input=b"not-a-real-password\n",
+                capture_output=True,
+                check=False,
+                cwd=temporary,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, b"hash: prefijo $2 longitud 60\n")
+        self.assertNotEqual(shadowed.returncode, 0)
+        self.assertIn(b"shadowed", shadowed.stderr)
+
+    def test_the_lock_runner_would_echo_stdin(self) -> None:
+        # Why the command does not run under host_global_operation_lock.py:
+        # its runner copies stdin into a pseudo-terminal with echo on, so a
+        # line sent on stdin reaches stdout although the command drops it.
+        marker = "throwaway-stdin-marker"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib.util, os, sys\n"
+                "spec = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
+                "module = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "sys.exit(module.run(['/bin/sh', '-c', 'sleep 1; cat >/dev/null'],"
+                " os.getppid()))\n",
+                str(REPOSITORY_ROOT / "scripts/run-locked-command.py"),
+            ],
+            input=marker + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(marker, completed.stdout)
+
 
 class EdgeLiveParityTests(unittest.TestCase):
-    """The render equals the hand-made live Traefik config, bar two changes.
+    """The render equals the hand-made live Traefik config, bar reviewed changes.
 
     The fixture is the Docker Config the live service used when this was
     codified, parsed and with every basicAuth user masked. The only
@@ -1000,7 +1985,9 @@ class EdgeLiveParityTests(unittest.TestCase):
     - ``satisfactory-log-auth`` reads its users from a Docker Secret file
       instead of an inline (hashed) list;
     - a workload parked in ``config/platform.yml`` renders a backend with no
-      server and no probe (PR #59), which the hand-made Config predates.
+      server and no probe (PR #59), which the hand-made Config predates;
+    - the AX ingress adds exactly ``AX_ROUTE_ADDITIONS`` and changes no
+      existing router, middleware or backend.
     """
 
     MASK = "<masked>"
@@ -1027,6 +2014,10 @@ class EdgeLiveParityTests(unittest.TestCase):
                 "passHostHeader": True,
                 "servers": [],
             }
+        for section, additions in AX_ROUTE_ADDITIONS.items():
+            existing = expected["http"].setdefault(section, {})
+            self.assertFalse(set(existing) & set(additions), section)
+            existing.update(copy.deepcopy(additions))
         return expected
 
     def test_the_fixture_holds_no_credential(self) -> None:

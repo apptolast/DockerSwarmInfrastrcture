@@ -1,7 +1,7 @@
 # Panel web de AX: `ax.apptolast.com`
 
 El panel pequeño y propio de `images/ax-web` publicado en
-`https://ax.apptolast.com`, por decisión del propietario del 2026-09-26: se
+`https://ax.apptolast.com`, por decisión del propietario del 2026-09-25: se
 publica el panel y nada más del laboratorio. `ax-server`, que no tiene
 autenticación (google/ax#376), sigue sin publicarse nunca. Sin Cloudflare
 Access y sin lista de IP permitidas, también por decisión del propietario.

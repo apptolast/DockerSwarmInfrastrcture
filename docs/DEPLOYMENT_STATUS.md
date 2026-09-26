@@ -147,10 +147,21 @@ aquí:
   no existe (ver [EDGE.md](EDGE.md), «Rutas de Satisfactory»). Hasta que la
   ventana de aplicación descrita allí cree el secret, aplique `edge` y lo
   verifique, el Traefik vivo sigue en la Config hecha a mano y `edge` solo se
-  aplica siguiendo ese procedimiento. Mientras tanto, con OpenClaw aparcado,
-  la sonda de salud del Traefik vivo lo marca caído (su ruta responde `503`)
-  y registra un WARN `Health check failed.` cada 15 s. El backend sin
-  servidores de este repositorio lo elimina con ese apply.
+  aplica siguiendo ese procedimiento. Desde que se fusione la ruta de AX
+  (EDGE.md, «Ruta de AX»), con el despliegue del panel o después, `edge` y
+  `site` solo se aplican siguiendo «Ventana de aplicación de la ruta», con
+  los tres secrets de esa ruta ya creados. Mientras tanto, con OpenClaw
+  aparcado, la sonda de salud del Traefik vivo lo marca caído (su ruta
+  responde `503`) y registra un WARN `Health check failed.` cada 15 s. El
+  backend sin servidores de este repositorio lo elimina con ese apply.
+- El registro DNS `ax.apptolast.com` (A a `159.195.156.57`, DNS-only) lo creó
+  el propietario a mano en Cloudflare para el panel web de AX, igual que los
+  de OrganizationWeb y RacingGame. Resolvía a esa IP el 2026-09-26. No está
+  en Terraform y no debe crearse desde él: Cloudflare admite varios A con el
+  mismo nombre. Se adoptará con un bloque `import` en la adopción general del
+  DNS (ver [EDGE.md](EDGE.md), «Registro DNS»). Hasta que se aplique la ruta
+  de AX (EDGE.md, «Ruta de AX»), Traefik no tiene certificado para ese nombre
+  y, con `sniStrict`, rechaza su TLS.
 - `fs.suid_dumpable` vale `2` en vivo (leído el 2026-09-25), frente al `0`
   que declaran `ansible/roles/host_baseline/defaults/main.yml` y
   `/etc/sysctl.d/99-z-dockerswarm-host-hardening.conf`. Los otros 24 valores

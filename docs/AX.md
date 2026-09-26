@@ -11,7 +11,7 @@ el entorno de desarrollo del quickstart de Substrate en el commit fijado (su
 Es un laboratorio, no un servicio. Substrate declara en ese mismo `README.md`
 que «is not ready for production use». Del laboratorio solo se publica el
 panel web de `https://ax.apptolast.com`, por decisión del propietario del
-2026-09-26 (ver [AX_WEB.md](AX_WEB.md)); `ax-server` no se publica nunca y
+2026-09-25 (ver [AX_WEB.md](AX_WEB.md)); `ax-server` no se publica nunca y
 nada del laboratorio entra en el backup.
 
 ## Qué codifica este repositorio y qué sigue siendo manual
@@ -1926,12 +1926,13 @@ El kubeconfig de administrador del clúster,
 ## Exposición
 
 Del laboratorio solo se publica el panel web, por decisión del propietario
-del 2026-09-26, sin Cloudflare Access ni lista de IP permitidas. Traefik
-(playbook `edge`) lo sirve en `https://ax.apptolast.com` con `basicAuth` y
-límites de peticiones y llega a él por el reenviador `ax-web-edge` y el
-NodePort 30843 del panel, que solo existe en el puente `kind`; el panel
-solo acepta el certificado cliente de Traefik (ver [AX_WEB.md](AX_WEB.md)).
-Todo lo demás sigue sin publicarse:
+del 2026-09-25, sin Cloudflare Access ni lista de IP permitidas. Traefik
+(playbook `edge`, ver [EDGE.md](EDGE.md), «Ruta de AX») lo sirve en
+`https://ax.apptolast.com` con `basicAuth` y límites de peticiones y llega a
+él por el reenviador `ax-web-edge` y el NodePort 30843 del panel, que solo
+existe en el puente `kind`; el panel solo acepta el certificado cliente de
+Traefik (ver [AX_WEB.md](AX_WEB.md)). El registro DNS se creó a mano y es
+deriva (EDGE.md, «Registro DNS»). Todo lo demás sigue sin publicarse:
 
 - `ax-server` no tiene autenticación ni autorización (google/ax#376). No se
   publica nunca: ni ruta de Traefik, ni NodePort, ni LoadBalancer, ni

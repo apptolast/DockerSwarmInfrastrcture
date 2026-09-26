@@ -176,6 +176,45 @@ http:
       service: satisfactory-logs
       tls:
         certResolver: letsencrypt
+    # Panel web de AX (laboratorio kind, fuera de Swarm). `ax-server` no se
+    # publica nunca. `ax-canonical-host` va primero para que los limites
+    # agrupen por un unico Host, y los limites van antes del basicAuth, que
+    # cuesta un bcrypt por peticion con credenciales. Sin `edge-compress` ni
+    # `edge-default`: compress retiene los primeros bytes de la salida en
+    # directo (SSE) del panel.
+    ax:
+      rule: "Host(`ax.apptolast.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+        - ax-canonical-host
+        - ax-rl-ip
+        - ax-rl-host
+        - ax-inflight
+        - ax-auth
+      service: ax
+      tls:
+        certResolver: letsencrypt
+    # Unica peticion sin credenciales: `GET /healthz` del panel, que solo
+    # responde `ok`. Atraviesa Traefik, el reenviador y el mTLS, asi que un
+    # `200` prueba la cadena entera; cualquier otro metodo o ruta cae en el
+    # router `ax` y su basicAuth. Sin basicAuth que la quite, la cabecera
+    # Authorization que el navegador reenvia por su cuenta se borra aqui.
+    ax-health:
+      rule: "Host(`ax.apptolast.com`) && Path(`/healthz`) && Method(`GET`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+        - ax-canonical-host
+        - ax-rl-ip
+        - ax-rl-host
+        - ax-inflight
+        - ax-strip-authorization
+      service: ax
+      tls:
+        certResolver: letsencrypt
   middlewares:
     edge-security:
       headers:
@@ -218,6 +257,59 @@ http:
         usersFile: /run/secrets/basicauth_satisfactory_logs
         realm: Satisfactory logs
         removeHeader: true
+    # `requestHost` agrupa por el Host crudo de la peticion, no por el que
+    # normaliza el router: sin esto, `AX.apptolast.com` o
+    # `ax.apptolast.com:443` entran en `ax` con contadores nuevos cada uno.
+    # Traefik cambia el Host antes de llamar al siguiente middleware; el
+    # panel solo compara Origin.
+    ax-canonical-host:
+      headers:
+        customRequestHeaders:
+          Host: ax.apptolast.com
+    # Un rateLimit retiene hasta 0,5 s la peticion que admite con retraso;
+    # por eso los dos van antes que inFlightReq, para que esa espera no
+    # ocupe una de sus plazas. Cada router tiene sus propios contadores.
+    # Traefik olvida el contador de una fuente tras 3 s sin peticiones (2 s
+    # en el de host) y el siguiente empieza con la rafaga llena: el tope real
+    # es unas 30 peticiones cada 2-3 s por IP y unas 10 cada 1-2 s para todo
+    # el host, no 30 por minuto ni 2 por segundo (docs/EDGE.md, «Ruta de
+    # AX»). Una rafaga menor corta la carga de una pagina del panel.
+    ax-rl-ip:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 30
+        sourceCriterion:
+          ipStrategy:
+            ipv6Subnet: 64
+    # Un solo contador para todo el host, gracias a `ax-canonical-host`, sea
+    # cual sea la IP: acota el bcrypt a unas 10 peticiones cada 1-2 s.
+    ax-rl-host:
+      rateLimit:
+        average: 2
+        period: 1s
+        burst: 10
+        sourceCriterion:
+          requestHost: true
+    # Sin sourceCriterion, inFlightReq agrupa por Host, ya canonico: como
+    # mucho 8 peticiones a la vez en el router, flujos SSE abiertos incluidos.
+    ax-inflight:
+      inFlightReq:
+        amount: 8
+    # Igual que `satisfactory-log-auth`: el fichero de usuarios es un Docker
+    # Secret que solo existe en el host, y sin clave `users`. removeHeader
+    # quita la cabecera Authorization antes del panel.
+    ax-auth:
+      basicAuth:
+        usersFile: /run/secrets/basicauth_ax
+        realm: AX
+        removeHeader: true
+    # Para `ax-health`, que no pasa por basicAuth: un valor vacio borra la
+    # cabecera, asi que el panel nunca recibe Authorization.
+    ax-strip-authorization:
+      headers:
+        customRequestHeaders:
+          Authorization: ""
 
   services:
     # passHostHeader is load bearing: /info builds the phone-controller
@@ -253,6 +345,16 @@ http:
       loadBalancer:
         servers:
           - url: http://satisfactory-logs:8080
+    # El reenviador TCP `ax-web-edge` (contenedor suelto en la red
+    # `apptolast-edge-ax` y en la de kind) lleva la conexion TLS intacta
+    # hasta el panel. Sin healthCheck: con el panel parado, la ruta responde
+    # 502 despues del login y Traefik no registra un WARN en cada intervalo.
+    ax:
+      loadBalancer:
+        passHostHeader: true
+        serversTransport: ax-web-mtls
+        servers:
+          - url: https://ax-web-edge:8443
     organizationweb:
       loadBalancer:
         passHostHeader: true
@@ -345,6 +447,28 @@ http:
           path: /rest/health
           interval: 15s
           timeout: 3s
+
+  # mTLS de Traefik al panel de AX. Traefik solo acepta el certificado
+  # `ax-web` de la CA privada del panel, y el panel solo acepta TLS 1.3 con
+  # el certificado cliente `edge-traefik` de esa CA. El PEM cliente lleva
+  # certificado y clave. Traefik v3.7.13 compara minVersion con maxVersion
+  # aunque maxVersion falte (vale 0): descarta la configuracion TLS del
+  # transporte y conecta sin certificado cliente. Por eso van los dos. Un
+  # transporte con nombre no hereda los forwardingTimeouts estaticos.
+  serversTransports:
+    ax-web-mtls:
+      serverName: ax-web
+      rootCAs:
+        - /run/secrets/ax_upstream_ca
+      certificates:
+        - certFile: /run/secrets/ax_upstream_client
+          keyFile: /run/secrets/ax_upstream_client
+      minVersion: VersionTLS13
+      maxVersion: VersionTLS13
+      forwardingTimeouts:
+        dialTimeout: 5s
+        responseHeaderTimeout: 60s
+        idleConnTimeout: 180s
 
 tls:
   options:

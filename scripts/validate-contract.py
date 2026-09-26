@@ -305,6 +305,12 @@ expected_stack_networks["edge-satisfactory"] = {
     "external": True,
     "name": "apptolast-edge-satisfactory",
 }
+# The AX web panel runs in the kind lab; its TCP forwarder, a plain
+# container, is the only other member of this network.
+expected_stack_networks["edge-ax"] = {
+    "external": True,
+    "name": "apptolast-edge-ax",
+}
 if stack["networks"] != expected_stack_networks:
     fail("the rendered edge networks differ from the isolation contract")
 if set(traefik_service["networks"]) != set(expected_stack_networks):
@@ -312,17 +318,30 @@ if set(traefik_service["networks"]) != set(expected_stack_networks):
 if group_vars.get("edge_adopted_attachable_networks") != [
     "apptolast-edge-observatorio",
     "apptolast-edge-satisfactory",
+    "apptolast-edge-ax",
 ]:
     fail("the adopted attachable edge networks differ from the contract")
+# The AX panel's forwarder admits only this subnet (docs/EDGE.md, «Ruta de
+# AX»); Swarm allocates every other edge subnet.
+if group_vars.get("edge_network_subnets") != {"apptolast-edge-ax": "10.0.250.0/24"}:
+    fail("the fixed edge network subnets differ from the contract")
 
-# The ACME token plus one users file per basicAuth middleware. Only the
-# versioned name of each Docker Secret is in Git; the users file, and so
-# every password hash, exists only on the host.
+# The ACME token, one users file per basicAuth middleware and the mTLS
+# material of the AX upstream. Only the versioned name of each Docker
+# Secret is in Git; the users files, and so every password hash, and the
+# certificates and key exist only on the host.
 basicauth_secrets = {
     "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v1",
+    "basicauth_ax": "edge-basicauth-ax-v1",
 }
 if group_vars.get("edge_traefik_basicauth_secrets") != basicauth_secrets:
     fail("the basicAuth users file secrets differ from the reviewed map")
+upstream_mtls_secrets = {
+    "ax_upstream_ca": "edge-ax-upstream-ca-v1",
+    "ax_upstream_client": "edge-ax-upstream-client-v1",
+}
+if group_vars.get("edge_traefik_upstream_mtls_secrets") != upstream_mtls_secrets:
+    fail("the upstream mTLS secrets differ from the reviewed map")
 expected_stack_secrets = {
     "cloudflare_dns_api_token": {
         "external": True,
@@ -330,7 +349,7 @@ expected_stack_secrets = {
     },
     **{
         target: {"external": True, "name": name}
-        for target, name in basicauth_secrets.items()
+        for target, name in {**basicauth_secrets, **upstream_mtls_secrets}.items()
     },
 }
 if stack.get("secrets") != expected_stack_secrets:
@@ -343,7 +362,11 @@ if traefik_service.get("secrets") != [
         "gid": "65532",
         "mode": 0o400,
     }
-    for target in ["cloudflare_dns_api_token", *sorted(basicauth_secrets)]
+    for target in [
+        "cloudflare_dns_api_token",
+        *sorted(basicauth_secrets),
+        *sorted(upstream_mtls_secrets),
+    ]
 ]:
     fail("Traefik does not mount exactly the reviewed read-only secrets")
 
@@ -384,6 +407,17 @@ if traefik_labels.get("apptolast.autoupdate") != traefik_channel["label"]:
     fail("the rendered Traefik autoupdate label differs from its channel entry")
 
 dynamic = load_yaml(".build/edge/dynamic.yml")
+# Only HTTP routing and the TLS options: no TCP/UDP router can bypass the
+# reviewed HTTP routers and middlewares.
+if set(dynamic) != {"http", "tls"}:
+    fail("the rendered dynamic configuration has unreviewed top-level sections")
+if set(dynamic["http"]) != {
+    "routers",
+    "middlewares",
+    "services",
+    "serversTransports",
+}:
+    fail("the rendered dynamic HTTP configuration has unreviewed sections")
 health_router = dynamic["http"]["routers"]["edge-health"]
 expected_rule = f"Host(`{hostname}`) && Path(`/ping`)"
 if health_router["rule"] != expected_rule:
@@ -458,6 +492,106 @@ satisfactory_services = {
         "satisfactory-logs": "http://satisfactory-logs:8080",
     }.items()
 }
+# The AX web panel (docs/EDGE.md, «Ruta de AX»). The Host is made canonical
+# first: rateLimit and inFlightReq group `requestHost` by the raw Host, which
+# the router matches case-insensitively and without its port, so every
+# variant would get fresh counters. Its own limits run before the bcrypt of
+# basicAuth, and both rate limits before inFlightReq: a rate limiter holds a
+# delayed request for up to 0.5 s, which must not occupy an in-flight slot.
+# No compress middleware: it holds back the first bytes of the panel's live
+# output (SSE). Only `GET /healthz` skips the login, and it never carries
+# the browser's Authorization header to the panel.
+ax_hostname = "ax.apptolast.com"
+ax_host = f"Host(`{ax_hostname}`)"
+ax_limits = [
+    "edge-security",
+    "ax-canonical-host",
+    "ax-rl-ip",
+    "ax-rl-host",
+    "ax-inflight",
+]
+ax_routers = {
+    "ax": {
+        "rule": ax_host,
+        "entryPoints": ["websecure"],
+        "middlewares": [*ax_limits, "ax-auth"],
+        "service": "ax",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+    "ax-health": {
+        "rule": ax_host + " && Path(`/healthz`) && Method(`GET`)",
+        "entryPoints": ["websecure"],
+        "middlewares": [*ax_limits, "ax-strip-authorization"],
+        "service": "ax",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+}
+# The bursts are what one page load of the panel needs. Traefik recreates a
+# source's bucket full after 3 s (per IP) or 2 s (host) without requests,
+# so the real caps are about 30 requests every 2-3 s per IP and 10 every
+# 1-2 s for the host; docs/EDGE.md states them and the bcrypt budget.
+ax_middlewares = {
+    "ax-canonical-host": {
+        "headers": {"customRequestHeaders": {"Host": ax_hostname}},
+    },
+    "ax-rl-ip": {
+        "rateLimit": {
+            "average": 30,
+            "period": "1m",
+            "burst": 30,
+            "sourceCriterion": {"ipStrategy": {"ipv6Subnet": 64}},
+        },
+    },
+    "ax-rl-host": {
+        "rateLimit": {
+            "average": 2,
+            "period": "1s",
+            "burst": 10,
+            "sourceCriterion": {"requestHost": True},
+        },
+    },
+    "ax-inflight": {"inFlightReq": {"amount": 8}},
+    "ax-auth": {
+        "basicAuth": {
+            "usersFile": "/run/secrets/basicauth_ax",
+            "realm": "AX",
+            "removeHeader": True,
+        },
+    },
+    "ax-strip-authorization": {
+        "headers": {"customRequestHeaders": {"Authorization": ""}},
+    },
+}
+# No healthCheck: a stopped panel answers 502 after the login instead of a
+# WARN every interval. The forwarder passes the TLS session through intact.
+ax_service = {
+    "loadBalancer": {
+        "passHostHeader": True,
+        "serversTransport": "ax-web-mtls",
+        "servers": [{"url": "https://ax-web-edge:8443"}],
+    },
+}
+# Traefik v3.7.13 (pkg/server/service/transport.go) rejects a transport TLS
+# configuration whose minVersion exceeds maxVersion, and an absent
+# maxVersion counts as 0: the transport then dials with the default TLS
+# configuration, without the client certificate. Hence both versions.
+ax_servers_transport = {
+    "serverName": "ax-web",
+    "rootCAs": ["/run/secrets/ax_upstream_ca"],
+    "certificates": [
+        {
+            "certFile": "/run/secrets/ax_upstream_client",
+            "keyFile": "/run/secrets/ax_upstream_client",
+        },
+    ],
+    "minVersion": "VersionTLS13",
+    "maxVersion": "VersionTLS13",
+    "forwardingTimeouts": {
+        "dialTimeout": "5s",
+        "responseHeaderTimeout": "60s",
+        "idleConnTimeout": "180s",
+    },
+}
 if set(dynamic["http"]["routers"]) != {
     "edge-health",
     "edge-ping-internal",
@@ -466,6 +600,7 @@ if set(dynamic["http"]["routers"]) != {
     "monitorizacion",
     *edge_routes,
     *satisfactory_routers,
+    *ax_routers,
 }:
     fail("the rendered edge router allowlist differs from the service catalog")
 if set(dynamic["http"]["services"]) != {
@@ -474,6 +609,7 @@ if set(dynamic["http"]["services"]) != {
     "racinggame",
     "monitorizacion",
     *satisfactory_services,
+    "ax",
 }:
     fail("the rendered edge backend allowlist differs from the service catalog")
 for name, expected_router in satisfactory_routers.items():
@@ -490,6 +626,7 @@ if set(dynamic["http"]["middlewares"]) != {
     "passbolt-forwarded-proto",
     "passbolt-security",
     "satisfactory-log-auth",
+    *ax_middlewares,
 }:
     fail("the rendered edge middleware allowlist differs from the contract")
 # Inline `users` take precedence over `usersFile` and would put a hash in
@@ -502,6 +639,67 @@ if dynamic["http"]["middlewares"]["satisfactory-log-auth"] != {
     },
 }:
     fail("the Satisfactory logs login differs from its users file contract")
+for name, expected_router in ax_routers.items():
+    if dynamic["http"]["routers"][name] != expected_router:
+        fail(f"the {name} router differs from the reviewed AX ingress")
+for name, expected_middleware in ax_middlewares.items():
+    if dynamic["http"]["middlewares"][name] != expected_middleware:
+        fail(f"the {name} middleware differs from the reviewed AX ingress")
+if dynamic["http"]["services"]["ax"] != ax_service:
+    fail("the ax upstream differs from the reviewed AX ingress")
+
+
+def keys_anywhere(document: Any, key: str) -> bool:
+    if isinstance(document, dict):
+        return key in document or any(
+            keys_anywhere(value, key) for value in document.values()
+        )
+    if isinstance(document, list):
+        return any(keys_anywhere(value, key) for value in document)
+    return False
+
+
+# Backend TLS is verified everywhere: the only transport is the AX mTLS one,
+# and only the ax backend uses it.
+if keys_anywhere(dynamic, "insecureSkipVerify"):
+    fail("the rendered dynamic configuration skips backend TLS verification")
+if set(dynamic["http"]["serversTransports"]) != {"ax-web-mtls"}:
+    fail("the rendered servers transports differ from the reviewed allowlist")
+transport = dynamic["http"]["serversTransports"]["ax-web-mtls"]
+if transport.get("minVersion") and not transport.get("maxVersion"):
+    fail(
+        "the ax-web-mtls minVersion needs a maxVersion, or Traefik v3.7.13 "
+        "drops its TLS configuration and the client certificate"
+    )
+if transport != ax_servers_transport:
+    fail("the ax-web-mtls transport differs from the reviewed mTLS contract")
+if {
+    name: service["loadBalancer"]["serversTransport"]
+    for name, service in dynamic["http"]["services"].items()
+    if "serversTransport" in service.get("loadBalancer", {})
+} != {"ax": "ax-web-mtls"}:
+    fail("only the ax backend may use the reviewed servers transport")
+
+
+def secret_paths(document: Any) -> set[str]:
+    if isinstance(document, dict):
+        return set().union(*(secret_paths(value) for value in document.values()))
+    if isinstance(document, list):
+        return set().union(*(secret_paths(value) for value in document))
+    if isinstance(document, str) and document.startswith("/run/secrets/"):
+        return {document}
+    return set()
+
+
+# Traefik reads any path it cannot open as inline content, so a renamed or
+# unmounted secret would fail quietly: each file the dynamic configuration
+# names is a mounted secret, and each mounted secret but the ACME token is
+# named there.
+if secret_paths(dynamic) != {
+    f"/run/secrets/{target}"
+    for target in {**basicauth_secrets, **upstream_mtls_secrets}
+}:
+    fail("the dynamic configuration and the mounted secrets differ")
 for rendered_name in ("stack.yml", "static.yml", "dynamic.yml"):
     rendered_text = (render_dir / rendered_name).read_text(encoding="utf-8")
     if re.search(r"\$(?:2[abxy]?|apr1)\$|\{SHA\}", rendered_text):
@@ -581,6 +779,11 @@ for route, (service_id, upstream) in edge_routes.items():
         fail(f"the rendered {route} upstream differs from the Swarm contract")
 
 static = load_yaml(".build/edge/static.yml")
+# A password typed as the user name must not reach the access log.
+if (static.get("accessLog") or {}).get("fields", {}).get("names") != {
+    "ClientUsername": "drop"
+}:
+    fail("the access log keeps the basicAuth user name")
 if static.get("ping") != {
     "entryPoint": "traefik",
     "manualRouting": True,

@@ -590,6 +590,526 @@ destino de este rollback. No se retiran hasta que el propietario lo decida con
 el edge ya estable, aunque guarden el hash en línea. Un rollback se registra
 el mismo día en `docs/DEPLOYMENT_STATUS.md` y la compuerta 10 sigue abierta.
 
+## Ruta de AX
+
+Por decisión del propietario (2026-09-25), el panel web de AX
+(`images/ax-web`, que corre dentro del laboratorio kind) se publica en
+`https://ax.apptolast.com` detrás del `basicAuth` de Traefik, sin Cloudflare
+Access ni lista de IPs permitidas. `ax-server` sigue sin publicarse nunca
+(ver [AX.md](AX.md), «Exposición»). Este cambio solo añade la parte de
+Traefik. El panel, su reenviador `ax-web-edge` y los dos secrets mTLS llegan
+con el despliegue del panel en el laboratorio: su
+`scripts/ax-web-bootstrap.sh init` crea esos dos secrets.
+
+**Este cambio se fusiona con el despliegue del panel o después, nunca
+antes.** Desde que se fusiona, todo apply de `edge` o de `site`, que incluye
+el rol `edge`, exige los tres secrets de «Secrets de la ruta» y se detiene
+antes de mutar nada, también en `--check`, si falta uno. Por eso `edge` y
+`site` solo se aplican siguiendo «Ventana de aplicación de la ruta», después
+de `ax-web-bootstrap.sh init`. Dentro de esa ventana, entre el apply de
+`edge` y el despliegue del panel, la ruta pide la contraseña y después
+responde `502`.
+
+<!-- markdownlint-disable MD013 -->
+
+| Objeto | Valor |
+| --- | --- |
+| Router `ax` | `Host(ax.apptolast.com)`, `websecure`, `certResolver: letsencrypt`; middlewares `edge-security`, `ax-canonical-host`, `ax-rl-ip`, `ax-rl-host`, `ax-inflight`, `ax-auth`, en ese orden |
+| Router `ax-health` | la regla anterior `&& Path(/healthz) && Method(GET)`, los mismos middlewares con `ax-strip-authorization` en lugar de `ax-auth` |
+| `ax-canonical-host` | `headers` con `customRequestHeaders.Host: ax.apptolast.com`, para que los límites cuenten un solo Host |
+| `ax-rl-ip` | `rateLimit` con `average: 30`, `period: 1m` y `burst: 30` por IP, las IPv6 por su `/64`; tope real de unas 30 peticiones cada 2-3 s |
+| `ax-rl-host` | `rateLimit` con `average: 2`, `period: 1s` y `burst: 10` para todo el host, sea cual sea la IP; tope real de unas 10 peticiones cada 1-2 s |
+| `ax-inflight` | `inFlightReq` de 8 peticiones simultáneas por host, flujos SSE abiertos incluidos |
+| `ax-auth` | `basicAuth` con `usersFile: /run/secrets/basicauth_ax`, `realm: AX`, `removeHeader: true` y sin `users` |
+| `ax-strip-authorization` | `headers` con `customRequestHeaders.Authorization: ""`, que borra esa cabecera |
+| Backend `ax` | `https://ax-web-edge:8443`, `passHostHeader: true`, `serversTransport: ax-web-mtls`, sin `healthCheck` |
+| Transporte `ax-web-mtls` | `serverName: ax-web`, CA `/run/secrets/ax_upstream_ca`, certificado cliente y clave en `/run/secrets/ax_upstream_client`, TLS 1.3 como mínimo y máximo, `dialTimeout` 5 s, `responseHeaderTimeout` 60 s, `idleConnTimeout` 180 s |
+| Red | `apptolast-edge-ax`, overlay cifrada y adoptada (`attachable`), con la subred fija `10.0.250.0/24` |
+
+<!-- markdownlint-enable MD013 -->
+
+`scripts/validate-contract.py` fija cada valor de la tabla. También exige
+que `ax-web-mtls` sea el único transporte y que solo lo use `ax`, rechaza
+`insecureSkipVerify` en cualquier punto del render y comprueba que cada
+fichero `/run/secrets/…` del render sea un secret montado y al revés.
+`tests/test_edge_contract.py` prueba cada una de esas guardas con su
+mutación negativa, y `EdgeLiveParityTests` admite sobre la Config viva
+exactamente estos objetos y ningún cambio en los existentes. Además,
+`scripts/validate-traefik-config.sh` arranca el Traefik fijado con el render
+dinámico entero (ver «Validación con Traefik»).
+
+Por qué es así, contra el código de Traefik v3.7.13, la versión que
+ejecutaba el canal `traefik:v3` el 2026-09-26. La comparación de versiones
+TLS del transporte es la misma en v3.7.9, la base fijada:
+
+- **Host canónico antes de los límites.** El router compara el Host en
+  minúsculas, sin puerto y con o sin punto final
+  (`pkg/middlewares/requestdecorator/request_decorator.go` y
+  `pkg/muxer/http/matcher.go`). En cambio, `rateLimit` e `inFlightReq` con
+  `requestHost` agrupan por el Host tal como llega:
+  `pkg/middlewares/extractor.go` usa el extractor `request.host` de
+  `vulcand/oxy` v2.1.0, la versión que fija el `go.mod` de Traefik, y
+  `utils/source.go` de oxy devuelve `req.Host` sin tocarlo. Sin
+  `ax-canonical-host`, `AX.apptolast.com`, `ax.apptolast.com:443` o
+  `ax.apptolast.com.` entran en `ax` con un contador nuevo cada uno, y el
+  tope de host deja de existir. El middleware `headers` asigna `req.Host`
+  antes de llamar al siguiente (`pkg/middlewares/headers/header.go`), así
+  que desde ahí todas las variantes cuentan como una. Con
+  `passHostHeader: true` el panel recibe ese Host, y solo compara `Origin`.
+- **Orden de los middlewares.** Se aplican en el orden declarado, así que
+  los límites van antes del `basicAuth`: cada petición con credenciales
+  cuesta un bcrypt, también con un usuario inexistente
+  (`pkg/middlewares/auth/basic_auth.go`). Los dos `rateLimit` van antes que
+  `inFlightReq` porque un `rateLimit` retiene hasta 0,5 s la petición que
+  admite con retraso (`pkg/middlewares/ratelimiter/rate_limiter.go`), y así
+  esa espera no ocupa una de las 8 plazas. Cada router construye sus propios
+  middlewares (`pkg/server/middleware/middlewares.go`), así que `ax` y
+  `ax-health` no comparten contadores. Quien agote el cupo de host deja al
+  propietario con `429`.
+- **Topes reales de los `rateLimit`.** Traefik olvida el contador de una
+  fuente tras un TTL sin peticiones suyas: `1 + 1/tasa` segundos, en entero,
+  con menos de una petición por segundo, y 2 s con una o más
+  (`pkg/middlewares/ratelimiter/rate_limiter.go:92-101`), es decir, 3 s en
+  `ax-rl-ip` y 2 s en `ax-rl-host`. La siguiente petición crea un contador
+  nuevo con la ráfaga entera (`rate.NewLimiter(tasa, ráfaga)` en
+  `in_memory_limiter.go:45-58`), y cada petición, también la rechazada,
+  renueva el TTL. La caducidad va en segundos Unix enteros
+  (`ratelimiter/ttlmap/ttlmap.go`), así que puede llegar tras algo más de
+  TTL − 1 s. El tope real es, por tanto, unas 30 peticiones cada 2-3 s por
+  IP y unas 10 cada 1-2 s para todo el host, no 30 por minuto ni 2 por
+  segundo. Solo una ráfaga que no pase de lo que la tasa recarga en TTL − 1 s
+  (1 por IP y 2 para el host) dejaría el tope en el nominal, y con esas
+  ráfagas el panel no carga: una página son 7 peticiones en cuatro tandas (el
+  `401`, `/`, `app.css` con `app.js` y `favicon.ico`, y `/api/status` con
+  `/api/tasks`), y en la prueba de abajo recibieron `429`.
+- **Coste del bcrypt.** Una contraseña fallida cuesta en Traefik v3.7.13
+  unos 66 ms de CPU (bcrypt de Go, coste 10, medido abajo). Al tope real del
+  host, entre 5 y 10 intentos por segundo, son entre 0,33 y 0,66 CPU frente
+  a los `cpus: "0.50"` del servicio (`stacks/edge/stack.yml.j2`), que
+  comparten todos los hostnames: quien espacie sus ráfagas puede llevar
+  Traefik a su límite de CPU y frenar todas las rutas. `ax-inflight` limita
+  peticiones simultáneas, no CPU, y `logs-satisfactory` ya hace bcrypt sin
+  límite. Solo un bloqueo por IP tras fallos lo reduce, y por eso es una
+  precondición de «Ventana de aplicación de la ruta».
+- **Sin `users`.** Traefik añade las líneas de `users` detrás de las del
+  fichero y la última gana (`pkg/middlewares/auth/auth.go`), y pondrían un
+  hash en este repositorio público. El fichero es una sola línea
+  `usuario:hash` bcrypt de coste 10; Traefik acepta los prefijos `2a`, `2b`,
+  `2x` y `2y` (`basic.go` de `containous/go-http-auth`, la versión que fija
+  su `go.mod`). Si el fichero falta o está vacío, Traefik desactiva solo este
+  router, que responde `404` (ver «Rutas de Satisfactory»).
+- **Sin `edge-compress` ni `edge-default`.** `compress` retiene los primeros
+  1024 bytes de cada respuesta (`compression_handler.go`) y solo excluye SSE
+  mirando el `Content-Type` de la petición (`compress.go`), que un
+  `EventSource` no envía: la salida en directo del panel quedaría retenida.
+- **`GET /healthz` sin credenciales.** El panel responde `ok` en su puerto
+  mTLS a esa única ruta. Cualquier otro método o ruta cae en `ax` y su
+  `basicAuth`. Un `200` en `https://ax.apptolast.com/healthz` prueba la
+  cadena entera: Traefik, el reenviador, el NodePort y el mTLS. El navegador
+  reenvía por su cuenta las credenciales Basic guardadas a toda ruta del
+  mismo espacio de protección
+  ([RFC 7617](https://www.rfc-editor.org/rfc/rfc7617), sección 2.2), y este
+  router no pasa por el `removeHeader` de `ax-auth`: `ax-strip-authorization`
+  borra la cabecera, porque Traefik elimina la de `customRequestHeaders` con
+  valor vacío (`header.go`). Así el panel no recibe `Authorization` por
+  ninguno de los dos routers.
+- **TLS 1.3 como mínimo y como máximo.** El panel solo acepta TLS 1.3.
+  Traefik v3.7.13 compara `minVersion` con `maxVersion` aunque `maxVersion`
+  falte, y entonces vale 0 (`pkg/server/service/transport.go`): con solo
+  `minVersion: VersionTLS13` registra `Could not configure HTTP Transport
+  ax-web-mtls@file TLS configuration, fallback on default TLS config` y
+  conecta sin certificado cliente ni CA propia. El validador rechaza
+  `minVersion` sin `maxVersion`.
+- **`serverName`.** Traefik verifica el certificado del panel contra el
+  nombre `ax-web` y no contra el host de la URL, que es el del reenviador.
+- **`forwardingTimeouts` explícitos.** Un transporte con nombre usa solo su
+  propia configuración: no hereda el `serversTransport` estático
+  (`createRoundTripper` en `transport.go`). `responseHeaderTimeout` de 60 s
+  obliga al panel a contestar las operaciones largas con un `202` y seguir
+  por SSE; `idleConnTimeout` iguala el del panel.
+- **Sin `healthCheck`.** Con el laboratorio parado (no arranca solo tras un
+  reinicio del host) la ruta responde `502` después del login y Traefik no
+  registra un WARN en cada intervalo.
+- **Red adoptada.** El reenviador es un contenedor suelto, así que la red es
+  `attachable`, como `apptolast-edge-observatorio` y
+  `apptolast-edge-satisfactory`. Como toda red del edge, es una overlay
+  cifrada: el rol la crea con `--opt encrypted` (y `--attachable`) si falta y
+  rechaza cualquier red del edge sin cifrar
+  (`ansible/roles/edge/tasks/deploy.yml`). Es la única con subred fija,
+  `10.0.250.0/24` (`edge_network_subnets` en `ansible/group_vars/all.yml`):
+  el reenviador solo admite pares de esa subred (`--allow-cidr`), así que el
+  rol la crea con `--subnet` y rechaza la red si Swarm la numeró de otra
+  forma. El despliegue del panel solo la inspecciona y se detiene si no es
+  esa.
+
+Un certificado cliente que no carga no se ve en los logs: Traefik solo lo
+registra en DEBUG (`pkg/tls/certificate.go`), y trata una ruta que no puede
+abrir como el propio contenido PEM (`pkg/types/file_or_content.go`). El panel
+cierra entonces el TLS con `certificate required`, y Traefik devuelve `502`,
+también en DEBUG. Una CA o un `serverName` que no encajan sí dan ERROR
+(`pkg/proxy/httputil/proxy.go`). Por eso la prueba del mTLS es el `200` de
+`/healthz`, no los logs.
+
+Comprobado el 2026-09-26 con el binario oficial de Traefik v3.7.13 (tarball
+de la release con su sha256 verificado contra `traefik_v3.7.13_checksums.txt`),
+como proceso local en loopback, sin Docker, con los objetos de esta sección
+tomados del render (rutas de secrets cambiadas a un directorio temporal,
+certificados y contraseña de prueba). El backend exigía TLS 1.3 y
+certificado cliente de la CA:
+
+- `GET /` sin credenciales: `401` y `WWW-Authenticate: Basic realm="AX"`;
+- `GET /healthz` sin credenciales: `200 ok`, con TLS 1.3 y el certificado
+  cliente `edge-traefik`;
+- `POST` o `HEAD /healthz` sin credenciales: `401`;
+- con credenciales: `200`, sin cabecera `Authorization` en el backend y con
+  el `Host` canónico;
+- un login fallido con un usuario inventado: `401`, y el log de acceso sin
+  `ClientUsername` ni ese usuario;
+- solo `minVersion`: el error de arriba y `500` en `/healthz`;
+- un certificado cliente ausente: `401` en `/`, `502` en `/healthz` y los
+  errores solo en DEBUG.
+
+Con el mismo binario, el mismo día y el render de este cambio (backend mTLS
+local, contraseña de prueba, una IP de loopback distinta por ronda cuando
+hacía falta):
+
+- sin `ax-canonical-host`, tras agotar el cupo de host con
+  `ax.apptolast.com` (10 `401` y después `429`), `AX.apptolast.com`,
+  `Ax.apptolast.com` y `ax.apptolast.com:443` recibieron 5 de 5 `401`, un
+  contador nuevo cada una; con él, las mismas variantes, `ax.apptolast.com.`,
+  `ax.apptolast.com:1` y `aX.APPTOLAST.com` recibieron `429`;
+- tras pausas de 2,2 s, tres rondas de 12 peticiones dieron 10 `401` cada
+  una (a 2 por segundo tocaban unas 4); ocho rondas desde IPs distintas, con
+  pausas de 1,3 a 1,8 s, pasaron 80 peticiones en 16 s, frente a unas 42 con
+  un contador que no se regenerase; tres rondas de 40 peticiones desde una
+  sola IP, con pausas de 3,3 s y solo `ax-rl-ip` en un router de prueba,
+  dieron 30 `200` cada una (a 30 por minuto tocaban unas 2);
+- un login fallido tardó 66 ms de media en Traefik, uno correcto 76 ms
+  (incluido el backend) y una petición sin credenciales 1 ms;
+- `GET /healthz` con `Authorization` y `Host: AX.apptolast.com:443` llegó al
+  panel sin `Authorization` y con `Host: ax.apptolast.com`, igual que un
+  `GET /` con credenciales;
+- una carga de página completa (las 7 peticiones de arriba) recibió `200` en
+  todas; con ráfaga 1 por IP, `429` desde `/`, y con ráfaga 2 para el host,
+  `429` en `app.css`, `app.js`, `/api/status` y `/api/tasks`.
+
+### Validación con Traefik
+
+`scripts/validate-traefik-config.sh`, dentro de `scripts/validate-iac.sh`,
+arranca dos veces el Traefik fijado con el mismo endurecimiento que el
+servicio. La primera, con la configuración estática del render y un fichero
+dinámico mínimo. La segunda, con el render dinámico entero, que prepara
+`scripts/prepare-traefik-validation.py`:
+
+- quita el resolver ACME y toda referencia a él: pediría a Let's Encrypt
+  producción un certificado por hostname con un token de prueba;
+- quita el `healthCheck` de los backends: sus nombres de Swarm y de kind no
+  resuelven ahí, y cada sonda fallida registraría un WARN;
+- monta en `/run/secrets` un sustituto desechable de cada fichero que nombra
+  el render, del mismo tipo: un fichero de usuarios con una contraseña
+  aleatoria para cada `basicAuth`, una CA para `rootCAs` y un PEM con
+  certificado cliente y clave para `certificates`. Un fichero de
+  `/run/secrets` usado en cualquier otro sitio detiene la validación.
+
+Cualquier entrada WARN o superior, salvo los dos avisos conocidos de v3.7,
+hace fallar la validación. Comprobado con el binario oficial el 2026-09-26:
+el render de este cambio arranca solo con esos avisos; `minVersion` sin
+`maxVersion` da el ERROR `Could not configure HTTP Transport`; una clave
+desconocida detiene el proveedor de ficheros con un ERROR y deja `/ping` sin
+router, así que el healthcheck no converge; y `ipStrategy` junto a
+`requestHost` desactiva `ax` y `ax-health` con un ERROR.
+
+### Log de acceso
+
+`basicAuth` guarda en `ClientUsername` lo que se escriba como usuario,
+también cuando el login falla (`basic_auth.go`). Una contraseña tecleada en
+ese campo acabaría en el log de acceso. La configuración estática lo
+descarta con `accessLog.fields.names.ClientUsername: drop`: Traefik pasa los
+nombres a minúsculas al cargarlos y compara en minúsculas
+(`pkg/middlewares/accesslog/logger.go`). Afecta a todas las rutas, pero solo
+los `basicAuth` rellenan ese campo.
+
+### Secrets de la ruta
+
+<!-- markdownlint-disable MD013 -->
+
+| Docker Secret | Fichero en `/run/secrets` | Contenido | Lo crea |
+| --- | --- | --- | --- |
+| `edge-basicauth-ax-v1` | `basicauth_ax` | una línea `usuario:hash` bcrypt de coste 10 | el operador, con la orden de abajo |
+| `edge-ax-upstream-ca-v1` | `ax_upstream_ca` | el certificado PEM de la CA privada del panel | `scripts/ax-web-bootstrap.sh init`, del despliegue del panel |
+| `edge-ax-upstream-client-v1` | `ax_upstream_client` | un PEM con el certificado cliente (CN `edge-traefik`, uso `clientAuth`, emitido por esa CA) seguido de su clave privada sin cifrar | `scripts/ax-web-bootstrap.sh init`, del despliegue del panel |
+
+<!-- markdownlint-enable MD013 -->
+
+Los tres llevan `com.apptolast.managed-by=manual-bootstrap`. El del login
+lleva `com.apptolast.purpose=traefik-basicauth`, como el de Satisfactory, y
+los dos mTLS `com.apptolast.purpose=traefik-upstream-mtls`. Se montan `0400`
+para `65532:65532`. El rol solo inspecciona sus metadatos, con `no_log`, y se
+detiene antes de mutar nada, también en `--check`, si falta uno o no lleva
+esas etiquetas. **Desde que este cambio se fusiona, todo apply de `edge` o
+de `site` exige los tres secrets** (ver el orden de fusión al principio de
+«Ruta de AX»). Traefik lee el mismo fichero como certificado y
+como clave: toma los bloques `CERTIFICATE` para el primero y el bloque de
+clave para la segunda (así cargó en la prueba de arriba).
+
+Los nombres están fijados en `ansible/group_vars/all.yml`
+(`edge_traefik_basicauth_secrets` y `edge_traefik_upstream_mtls_secrets`), en
+las aserciones de valor exacto de `ansible/roles/edge/tasks/main.yml`, en
+`scripts/validate-contract.py` y en `tests/test_edge_contract.py`. Nunca se
+reutiliza un nombre: una contraseña o un certificado nuevos van en un `-v2`
+creado antes, cambiado en esos cuatro sitios en un PR revisado y aplicado en
+otra ventana.
+
+### Crear el secret del login
+
+El usuario lo decide el propietario y no se escribe en este repositorio
+público. La contraseña solo existe fuera del host: al host llega por la
+entrada estándar de esta orden y solo sale de ella su hash, hacia
+`docker secret create`. Nunca va en un argumento (lo verían `ps`, sudo y el
+historial), ni en un `echo`, ni en un fichero, ni con `set -x`.
+
+En el host hay `python3-bcrypt` 5.0.0 (paquete de Ubuntu `5.0.0-3build1`,
+para `/usr/bin/python3` 3.14.4) y `mkpasswd` 5.6.6 (paquete `whois`); no hay
+`htpasswd` (`apache2-utils` no está instalado). Se usa `python3-bcrypt`,
+que rechaza una contraseña de más de 72 bytes en vez de truncarla
+(comprobado con un valor de prueba). Python corre con `-I` (modo aislado):
+sin el directorio actual en `sys.path` ni las variables `PYTHON*`, ningún
+módulo suelto del clon puede suplantar a `bcrypt`, `getpass` o `re` en el
+proceso que tiene la contraseña (comprobado con un `bcrypt.py` de prueba en
+el directorio de trabajo, que sin `-I` se importa en lugar del paquete).
+
+Esta orden **no** va bajo `host_global_operation_lock.py run`. Ese lock
+ejecuta la orden en una pseudoterminal (`pty.fork` en
+`scripts/run-locked-command.py`) y le copia la entrada estándar con el eco
+de la terminal activo: una línea enviada por la entrada sale por la salida
+aunque la orden la descarte (comprobado el 2026-09-26 con un valor de
+prueba). `sudo` sin ese lock no la repite: con la entrada redirigida, la
+orden no recibe una terminal y los sudoers del host no tienen `log_input`.
+`docker secret create` es atómico y rechaza un nombre existente. Antes de
+empezar, sin otra operación en curso:
+
+```bash
+sudo -- docker secret ls --filter name=edge-basicauth-ax --quiet
+ls /run/lock/dockerswarm-*.marker 2>/dev/null
+```
+
+Ambas deben salir vacías. Después, con el usuario en lugar de `<usuario>`:
+
+```bash
+set +x
+set -o pipefail
+sudo -v
+ax_user='<usuario>'
+/usr/bin/python3 -I -c '
+import getpass, re, sys
+import bcrypt
+user = sys.argv[1]
+if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", user):
+    sys.exit("ERROR: usuario no valido")
+if sys.stdin.isatty():
+    password = getpass.getpass("Contrasena: ").encode()
+    if password != getpass.getpass("Repetir: ").encode():
+        sys.exit("ERROR: las contrasenas no coinciden")
+else:
+    password = sys.stdin.buffer.read()
+    if password.endswith(b"\n"):
+        password = password[:-1]
+if not password or len(password) > 72 or re.search(rb"[\r\n]", password):
+    sys.exit("ERROR: la contrasena debe ser una linea de 1 a 72 bytes")
+hashed = bcrypt.hashpw(password, bcrypt.gensalt(rounds=10, prefix=b"2b"))
+ok = bcrypt.checkpw(password, hashed)
+del password
+if not ok or len(hashed) != 60 or hashed.split(b"$")[1:3] != [b"2b", b"10"]:
+    sys.exit("ERROR: el hash no tiene la forma esperada")
+print("hash: prefijo", hashed[:2].decode(), "longitud", len(hashed),
+      file=sys.stderr)
+sys.stdout.buffer.write(user.encode() + b":" + hashed + b"\n")
+' "${ax_user}" |
+  sudo -- docker secret create \
+    --label com.apptolast.managed-by=manual-bootstrap \
+    --label com.apptolast.purpose=traefik-basicauth \
+    edge-basicauth-ax-v1 - >/dev/null
+```
+
+- Quien automatiza la creación conecta su propia tubería a la entrada
+  estándar de la orden y escribe en ella la contraseña y un salto de línea.
+  Nada más la toca.
+- Una persona la ejecuta en su terminal SSH: con la entrada en la terminal,
+  Python la pide dos veces sin eco (`getpass`). `sudo -v` va antes para que
+  una petición de contraseña de sudo no se cruce con esa.
+- La única salida es `hash: prefijo $2 longitud 60`, que comprueba el hash
+  sin mostrarlo. Tras cualquier `ERROR` no se crea nada: Docker rechaza un
+  secret vacío (`ValidateSecretPayload` en `api/validation/secrets.go` de
+  swarmkit).
+
+Comprobación, solo de metadatos:
+
+```bash
+sudo -- docker secret inspect edge-basicauth-ax-v1 \
+  --format '{{.Spec.Name}} {{json .Spec.Labels}}'
+```
+
+Debe mostrar el nombre y las dos etiquetas. El contenido de un Docker Secret
+no se puede leer después ([Docker
+secrets](https://docs.docker.com/engine/swarm/secrets/)). La prueba de que
+Traefik lo cargó es el `401` con `realm="AX"` del apply (un fichero que no
+carga da `404`), y la de la contraseña, el primer login del propietario.
+
+### Registro DNS
+
+`ax.apptolast.com` es un registro A a `159.195.156.57` que el propietario
+creó a mano en Cloudflare, DNS-only, igual que los de OrganizationWeb y
+RacingGame (ver [RACINGGAME.md](RACINGGAME.md), «Alcance y precondiciones»).
+El 2026-09-26 resolvía a esa IP con TTL servido de 300 s y sin AAAA. Es
+deriva frente a Terraform (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Deriva fuera del
+repositorio»):
+
+- No se crea nunca desde Terraform: Cloudflare admite varios A con el mismo
+  nombre, así que un `create` añadiría un segundo registro.
+- Tampoco se ejecuta el root `cloudflare/apptolast-dns` por él (ver
+  «Advertencia sobre Terraform y DNS» en DEPLOYMENT_STATUS.md).
+- Se adoptará con la adopción general del DNS, con un bloque `import` como
+  los de `infra/terraform/cloudflare/apptolast-dns/imports.tf`
+  (`<zone_id>/<dns_record_id>`, provider `5.25.0`), junto con
+  `config/platform.yml`, `contract.tf`, `dns.tf`, `terraform-safety.py`,
+  sus pruebas y el README del root. El TTL configurado no se ha leído de la
+  API; si es «Automático» (la API lo guarda como 1), el plan de adopción
+  mostrará el cambio a los 300 s del contrato.
+- Sigue DNS-only: coincide con `proxied=false` del contrato, CrowdSec y el
+  bouncer ven la IP real y DNS-01 no depende de él.
+
+### Ventana de aplicación de la ruta
+
+Es la parte de `edge` de la ventana del panel. Tiene los mismos riesgos y
+reglas que la de Satisfactory (ver «Ventana de aplicación»): unos 13 s sin
+conexiones nuevas en 80/443 para todos los hostnames, cortes en los
+WebSocket y SSE abiertos, una sola persona, fuera de 22:30–00:40 UTC, desde
+el clon operativo limpio en detached HEAD sobre el commit fusionado, tras
+`git fetch --all --prune`.
+
+Precondiciones. Si falta una, esta ventana no empieza:
+
+- La ventana de Satisfactory ya se hizo y verificó (su apply repetido dio
+  `changed=0`), y `docs/DEPLOYMENT_STATUS.md` registra el `Version.Index` y
+  las dos Configs de `edge_traefik` tras ese apply repetido, o tras una
+  ventana de `edge` posterior también registrada.
+- El despliegue del panel ya está fusionado (este cambio entra con él o
+  después) y `scripts/ax-web-bootstrap.sh init` creó los dos secrets mTLS.
+  El del login también existe (sección anterior).
+- Hay bloqueo tras fallos: CrowdSec lee los logs de Traefik y banea por IP
+  los `401` repetidos de `ax@file`, con las IPs del propietario en su lista
+  permitida (cambio aparte). Los límites solo frenan, con los topes reales y
+  el coste de CPU de arriba (unos 430 000 intentos al día a 5 por segundo).
+  Sin ese cambio, la ventana solo se abre si el propietario deja escrito
+  antes en `docs/DEPLOYMENT_STATUS.md` que acepta publicar el panel sin
+  bloqueo.
+- `getent ahostsv4 ax.apptolast.com` devuelve `159.195.156.57`.
+
+Pasos:
+
+1. Comprobar que nadie tocó `edge_traefik` desde la última ventana
+   registrada, y los secrets (solo metadatos):
+
+   ```bash
+   sudo -- docker service inspect edge_traefik --format \
+     '{{.Version.Index}}{{range .Spec.TaskTemplate.ContainerSpec.Configs}} {{.ConfigName}}{{end}}'
+   for name in edge-basicauth-ax-v1 edge-ax-upstream-ca-v1 \
+     edge-ax-upstream-client-v1; do
+     sudo -- docker secret inspect "${name}" \
+       --format '{{.Spec.Name}} {{json .Spec.Labels}}'
+   done
+   ```
+
+   La primera línea debe ser exactamente el índice y las dos Configs que
+   registró la última ventana en `docs/DEPLOYMENT_STATUS.md` (la de
+   Satisfactory en su paso 9, o una posterior). Otro índice u otra Config
+   significa que alguien tocó el servicio a mano: parar, renderizar el
+   commit que registró esa ventana (detached HEAD y
+   `ansible/playbooks/render-edge.yml`) y compararlo con la Config dinámica
+   viva, que ya no guarda ningún hash:
+
+   ```bash
+   sudo -- docker config inspect <Config dinámica del paso 1> \
+     --format '{{printf "%s" .Spec.Data}}' |
+     diff -u .build/edge/dynamic.yml -
+   ```
+
+   La ventana no sigue hasta que cada diferencia esté explicada y
+   codificada. El spec así verificado es el destino de un rollback. Cada
+   secret debe mostrar su nombre y sus dos etiquetas.
+2. Renderizar y guardar el estado de cada ruta pública con `edge_probe`
+   (ver «Ventana de aplicación»): `edge_probe > /tmp/edge-before-ax.txt`. Las
+   dos líneas de `ax.apptolast.com` salen con `000`: aún no hay certificado y
+   `sniStrict` rechaza el TLS.
+3. `./scripts/deploy-ansible.sh --playbook edge --check --ask-become-pass`.
+   `--check` no ejecuta el despliegue, pero sí la comprobación de los tres
+   secrets. Si está limpio, el apply con `--confirm-production`. Crea
+   `apptolast-edge-ax` si falta (overlay cifrada, `attachable` y con su
+   subred fija), cambia las dos Configs, relanza la tarea y Traefik pide el
+   certificado de `ax.apptolast.com` por DNS-01. La prueba del apply espera
+   hasta 5 minutos el `401` con `realm="AX"`.
+4. `edge_probe > /tmp/edge-after-ax.txt` y
+   `diff /tmp/edge-before-ax.txt /tmp/edge-after-ax.txt`. Solo cambian las
+   dos líneas de `ax.apptolast.com`: `/` pasa a `401 verify=0` y `/healthz`
+   a `502 verify=0` (panel aún no desplegado) o `200 verify=0`. Cualquier
+   otra diferencia es motivo de rollback.
+5. El certificado es de Let's Encrypt producción y cubre el nombre:
+
+   ```bash
+   openssl s_client -connect 159.195.156.57:443 \
+     -servername ax.apptolast.com </dev/null 2>/dev/null |
+     openssl x509 -noout -issuer -subject -ext subjectAltName -enddate
+   ```
+
+6. `sudo -- docker service inspect edge_traefik`: las Configs nuevas, cinco
+   secrets (el token de Cloudflare, los dos ficheros de usuarios y los dos
+   mTLS) y 14 redes. En los logs de la tarea nueva la cuenta es `0`:
+
+   ```bash
+   task="$(sudo -- docker service ps edge_traefik \
+     --filter desired-state=running --quiet --no-trunc)"
+   sudo -- docker service logs --since 10m "${task}" 2>&1 |
+     grep --count -e 'no users found' \
+       -e 'Could not configure HTTP Transport' \
+       -e 'Unable to obtain ACME certificate' -e '"level":"error"'
+   ```
+
+7. Solo si los pasos 4 a 6 salieron bien, repetir el apply: `changed=0` y el
+   mismo ID de tarea. Desde aquí `docker service rollback` ya no vuelve al
+   spec del paso 1.
+8. Registrar la evidencia en `docs/DEPLOYMENT_STATUS.md`, con el
+   `Version.Index` y las dos Configs tras el apply repetido: son la
+   referencia del paso 1 de la siguiente ventana.
+
+Cuando el despliegue del panel esté aplicado, la prueba de extremo a extremo
+es `curl --silent --resolve ax.apptolast.com:443:159.195.156.57
+https://ax.apptolast.com/healthz`, que devuelve `ok`, y después el primer
+login del propietario en el navegador.
+
+#### Rollback de la ruta
+
+Igual que el de Satisfactory (ver «Rollback»), con el spec verificado en el
+paso 1 como destino:
+
+- **Falla `deploy-ansible.sh`** (el `--check`, la sonda HTTPS, la prueba
+  `401` o un rollback automático): Ansible conserva su marker. Se lee qué
+  Config corre y, solo si es la nueva, `sudo -- docker service rollback
+  edge_traefik` sin lock. Después `edge_probe` igual que en
+  `/tmp/edge-before-ax.txt` y se recupera el marker antes de cualquier otro
+  paso.
+- **El apply terminó bien y falla el paso 4, 5 o 6**: rollback bajo el lock
+  (`--operation edge-rollback`), como en la otra ventana.
+
+Un `404` solo en `ax.apptolast.com` es el `basicAuth` sin fichero de
+usuarios, y un fallo solo del certificado deja las demás rutas intactas.
+Ambos se corrigen en otra ventana: un secret `-v2` y su PR, o la causa del
+DNS-01 que muestre el log. Un `502` en `/healthz` con el panel ya desplegado
+se diagnostica desde su despliegue (reenviador, NodePort, certificados): no
+afecta a otras rutas ni pide rollback del edge. El rollback no borra la
+red `apptolast-edge-ax`: queda vacía, y el siguiente apply la reutiliza.
+Después del paso 7, la vuelta atrás es un PR revisado y otro apply de `edge`.
+
 ## Rotación del token ACME
 
 Docker recomienda versionar nombres para rotar secrets. El procedimiento es:

@@ -171,6 +171,58 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   en la ventana del laboratorio: el laboratorio manual no tiene los límites
   declarados y detendría el preflight de todos los playbooks salvo
   `ax-lab`.
+- Ruta de Traefik del panel web de AX en `https://ax.apptolast.com`, por
+  decisión del propietario, sin Cloudflare Access ni lista de IPs (ver
+  [`docs/EDGE.md`](docs/EDGE.md), «Ruta de AX»). Se fusiona con el
+  despliegue del panel o después, nunca antes: desde entonces todo apply de
+  `edge` o `site` exige sus tres secrets y solo se hace con «Ventana de
+  aplicación de la ruta». El router `ax` aplica `edge-security`,
+  `ax-canonical-host`, dos `rateLimit` propios (30 por minuto con ráfaga de
+  30 por IP, con las IPv6 por `/64`, y 2 por segundo con ráfaga de 10 para
+  todo el host), un `inFlightReq` de 8 y el `basicAuth` `ax-auth`, en ese
+  orden. `ax-canonical-host` fija `Host: ax.apptolast.com` antes de los
+  límites: Traefik agrupa `requestHost` por el Host crudo, y variantes como
+  `AX.apptolast.com` o `ax.apptolast.com:443` tenían un contador nuevo cada
+  una (comprobado con el binario oficial). Los límites van antes del bcrypt
+  y los `rateLimit`, que retienen hasta 0,5 s una petición, antes que las
+  plazas de `inFlightReq`. Traefik rehace lleno el contador de una fuente
+  tras 3 s (IP) o 2 s (host) sin peticiones, así que los topes reales son
+  unas 30 peticiones cada 2-3 s por IP y unas 10 cada 1-2 s para el host, y
+  el bcrypt de un intento fallido (66 ms medidos) puede llevar Traefik a su
+  límite de 0,5 CPU. Una ráfaga que respetase el tope nominal rompe la carga
+  de una página del panel, así que la ventana exige antes un bloqueo por IP
+  tras fallos (CrowdSec sobre los `401`, cambio aparte) o la aceptación
+  escrita del propietario. Sin `edge-compress`, que retendría la salida en
+  directo (SSE). Solo `GET /healthz` pasa sin credenciales, por el router
+  `ax-health`, que prueba de extremo a extremo Traefik, el reenviador y el
+  mTLS y borra con `ax-strip-authorization` la cabecera `Authorization` que
+  el navegador reenvía por su cuenta. El backend `https://ax-web-edge:8443`
+  usa el transporte `ax-web-mtls`: `serverName: ax-web`, la CA privada del
+  panel, el certificado cliente `edge-traefik`, TLS 1.3 como mínimo y como
+  máximo (Traefik v3.7.13 descarta la configuración TLS de un transporte con
+  `minVersion` sin `maxVersion` y conecta sin certificado cliente, comprobado
+  con el binario oficial) y `forwardingTimeouts` explícitos. La red
+  `apptolast-edge-ax` es una overlay cifrada adoptada (`attachable`) para el
+  reenviador, que es un contenedor suelto, y la única con subred fija
+  (`edge_network_subnets`, `10.0.250.0/24`): el reenviador solo admite pares
+  de esa subred, así que el rol la crea con ella y rechaza otra. Tres Docker
+  Secrets `manual-bootstrap` nuevos: `edge-basicauth-ax-v1`, que el operador
+  crea con la orden documentada (la contraseña solo por la entrada estándar,
+  hash bcrypt de coste 10 con `python3-bcrypt` en modo aislado `-I`, sin
+  pasar por el lock, cuyo runner repetiría la entrada), y
+  `edge-ax-upstream-ca-v1` y `edge-ax-upstream-client-v1`, que crea
+  `scripts/ax-web-bootstrap.sh init` del despliegue del panel. La prueba
+  `401` del deploy cubre `ax.apptolast.com` con `realm="AX"` y espera hasta
+  5 minutos al certificado DNS-01. El paso 1 de la ventana compara el
+  `Version.Index` y las Configs vivas con los que registró la última ventana
+  de `edge` y se detiene si difieren. `scripts/validate-contract.py` fija
+  routers, middlewares y su orden, backend y transporte, y rechaza un
+  segundo transporte, `insecureSkipVerify` en cualquier punto, `minVersion`
+  sin `maxVersion`, secciones dinámicas no revisadas y cualquier fichero
+  `/run/secrets` que no sea un secret montado. El registro DNS
+  `ax.apptolast.com` se creó a mano en Cloudflare, DNS-only, y queda anotado
+  como deriva; no se crea desde Terraform. `ax-server` sigue sin
+  publicarse. El panel y su reenviador llegan con su despliegue.
 - Las rutas de Satisfactory, hechas a mano en Traefik el 2026-09-22, quedan
   codificadas en `stacks/edge/dynamic.yml.j2` tal como corren en la Docker
   Config `edge-traefik-dynamic-companions-a0952eace071`: los routers
@@ -441,6 +493,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   el reenviador del panel web entra en el grupo `ax-lab` del plan activo,
   que queda en 3 110m/5 682 MiB reservados y 16 900m/12 173 MiB de límite,
   y lo que el plan deja libre, techo de `ate-setup`, pasa a 224 MiB y 600m.
+- `scripts/validate-traefik-config.sh` arranca también el Traefik fijado con
+  el render dinámico entero, que prepara el nuevo
+  `scripts/prepare-traefik-validation.py`: sin el resolver ACME ni los
+  `healthCheck` de los backends, y con un sustituto desechable de cada
+  fichero de `/run/secrets` (fichero de usuarios, CA, certificado cliente
+  con su clave). Cualquier WARN o ERROR nuevo hace fallar la validación, así
+  que un transporte que Traefik descarta (`Could not configure HTTP
+  Transport`), una clave desconocida o un middleware que no se construye ya
+  no se descubren en el apply de producción.
 - `docs/DEPLOYMENT_STATUS.md` registra el apply de `host-baseline` desde
   `0028bca` (#71): `changed=2` de metadatos y una repetición con
   `changed=0`, sin reiniciar el bouncer de CrowdSec.
@@ -687,6 +748,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   desaconseja: oculta las violaciones en vez de mostrarlas.
 
 ### Security
+
+- El log de acceso de Traefik descarta `ClientUsername`
+  (`accessLog.fields.names`): `basicAuth` guarda ahí lo que se escriba como
+  usuario, también si el login falla, y una contraseña tecleada en ese campo
+  acabaría en el log. `scripts/validate-contract.py` lo fija.
 
 - El login de `logs-satisfactory.apptolast.com` lee sus usuarios de
   `usersFile`, un Docker Secret `manual-bootstrap` montado `0400` para

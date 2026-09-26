@@ -256,7 +256,8 @@ antes de repetir el apply; después, la vuelta atrás es un PR revisado y otro
 apply. Si el apply falló, su marker sigue presente y bloquea el lock: el
 rollback va sin lock y el marker se recupera antes de cualquier otro paso. El
 procedimiento del primer apply tras codificar Satisfactory está en
-[EDGE.md](EDGE.md) («Ventana de aplicación»).
+[EDGE.md](EDGE.md) («Ventana de aplicación»), y el de la ruta de AX, en
+«Ventana de aplicación de la ruta».
 
 ## Aparcar un servicio
 
