@@ -14,3 +14,11 @@ ax_lab_cluster_state_path: "{{ ax_lab_state_directory }}/cluster.json"
 # HOME of kind and kubectl, with the lab's own admin kubeconfig (root 0600).
 ax_lab_home_directory: "{{ ax_lab.install_root }}/home"
 ax_lab_kubeconfig_path: "{{ ax_lab_home_directory }}/.kube/config"
+# Agent Substrate: the pinned checkout whose manifests ate-setup applies and
+# the fallback build compiles, the build caches, the install state file and
+# the image and install manager with the lock helpers it imports.
+ax_lab_substrate_source_path: "{{ ax_lab.install_root }}/src/substrate"
+ax_lab_cache_directory: "{{ ax_lab.install_root }}/cache"
+ax_lab_substrate_state_path: "{{ ax_lab_state_directory }}/substrate.json"
+ax_lab_substrate_manager: >-
+  {{ ax_lab_bin_directory }}/manage-ax-lab-substrate.py

@@ -1,7 +1,8 @@
 ---
 # The lab cluster and its local registry, read without changing anything:
 # the same in --check and in an apply. It stops the run without the owner
-# acceptance or with a lab container this role cannot prove it created.
+# acceptance, with a lab container this role cannot prove it created or
+# with a transient Substrate container left from an earlier run.
 - name: Refuse to create or touch the lab cluster without the owner acceptance
   ansible.builtin.assert:
     that:
@@ -99,6 +100,57 @@
 
 - name: Prove that every existing lab container is this role's
   ansible.builtin.import_tasks: ownership.yml
+
+# The manager names each bounded Substrate container: the fallback build of
+# every image and the ate-setup run. One left from an earlier run, killed
+# after an error or still running under a controller that was interrupted,
+# is outside every capacity budget, so nothing goes on until it is reviewed
+# and removed.
+- name: Read the transient Substrate build and install containers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - "{% raw %}{{json .State.Status}}{% endraw %}"
+      - "{{ item }}"
+  loop: >-
+    {{
+      (
+        ax_lab.substrate.images | list
+        | map("regex_replace", "^", "ax-lab-build-") | list
+      )
+      + ["ax-lab-ate-setup"]
+    }}
+  register: ax_lab_substrate_transient_reads
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Refuse a transient Substrate container left from an earlier run
+  ansible.builtin.assert:
+    that:
+      - item.rc != 0
+      - item.stdout | length == 0
+      - >-
+        item.stderr | trim is match(
+          "^(.*: )?No such container: " ~ (item.item | regex_escape) ~ "$"
+        )
+    fail_msg: >-
+      {% if item.rc != 0 %}Cannot read the container {{ item.item }}:
+      {{ item.stderr | trim }}{% elif item.stdout | from_json == "running"
+      %}{{ item.item }} is still running under an earlier ax-lab run that
+      the controller no longer waits for: wait until it exits (its own
+      timeout bounds it) and apply again; if it is left stopped, read its
+      logs and remove it with docker rm first (docs/AX.md, «Contenedores
+      transitorios»).{% else %}{{ item.item
+      }} is left from an earlier run: read its logs, remove it with docker rm
+      and apply again (docs/AX.md, «Contenedores transitorios»).{% endif %}
+    quiet: true
+  loop: "{{ ax_lab_substrate_transient_reads.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
 - name: Describe what an apply would change in the lab cluster
   ansible.builtin.set_fact:

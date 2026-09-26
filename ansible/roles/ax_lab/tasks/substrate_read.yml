@@ -1,0 +1,263 @@
+---
+# Read Substrate in the lab cluster and prove its ownership, without
+# changing anything: in --check as the host is, and in the apply after
+# node.yml. The cluster is read only while the node runs with its
+# kubeconfig; the reads never register Secret data or a workload's
+# environment. As with the node, ate-setup's create-once objects are never
+# adopted: only a state file for this exact node proves this role installed
+# them, and after a verified install their UIDs are pinned there.
+- name: Inspect the Substrate state file without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_substrate_state_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_substrate_state_file
+
+- name: Require a root-only regular Substrate state file when there is one
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ax_lab_substrate_state_file.stat.exists or (
+          ax_lab_substrate_state_file.stat.isreg
+          and not ax_lab_substrate_state_file.stat.islnk
+          and ax_lab_substrate_state_file.stat.uid == 0
+          and ax_lab_substrate_state_file.stat.gid == 0
+          and ax_lab_substrate_state_file.stat.mode == "0600"
+        )
+    fail_msg: >-
+      {{ ax_lab_substrate_state_path }} is not a root:root 0600 regular file.
+
+- name: Read the Substrate state file
+  ansible.builtin.slurp:
+    src: "{{ ax_lab_substrate_state_path }}"
+  register: ax_lab_substrate_state_content
+  when: ax_lab_substrate_state_file.stat.exists
+
+- name: Inspect the lab kubeconfig before reading the cluster
+  ansible.builtin.stat:
+    path: "{{ ax_lab_kubeconfig_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_substrate_kubeconfig
+
+- name: Read Substrate in the lab cluster
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            role_path + "/../../../scripts/manage-ax-lab-substrate.py",
+            "cluster-status",
+            "--kubectl",
+            ax_lab_bin_directory ~ "/kubectl",
+            "--kubeconfig",
+            ax_lab_kubeconfig_path,
+            "--home",
+            ax_lab_home_directory,
+            "--context",
+            "kind-" ~ ax_lab.cluster.name,
+            "--node",
+            ax_lab.cluster.node_container,
+            "--registry-port",
+            ax_lab.registry.host_port | string,
+            "--tag",
+            ax_lab.substrate.version,
+          ]
+          + ax_lab_substrate_installed_args
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_substrate_cluster_raw
+  changed_when: false
+  check_mode: false
+  when:
+    - ax_lab_node is not none
+    - ax_lab_node.status == "running"
+    - ax_lab_substrate_kubeconfig.stat.exists
+
+- name: Record Substrate as read
+  ansible.builtin.set_fact:
+    ax_lab_substrate_state: >-
+      {{
+        (ax_lab_substrate_state_content.content | b64decode | from_json)
+        if ax_lab_substrate_state_file.stat.exists else none
+      }}
+    ax_lab_substrate_cluster: >-
+      {{
+        none if ax_lab_substrate_cluster_raw is skipped else
+        ax_lab_substrate_cluster_raw.stdout_lines
+        | select("match", "^[{]") | last | from_json
+      }}
+
+- name: Record the create-once Substrate objects and their identities
+  ansible.builtin.set_fact:
+    ax_lab_substrate_present: >-
+      {{
+        [] if ax_lab_substrate_cluster is none else
+        ax_lab_substrate_cluster.create_once | dict2items
+        | rejectattr("value", "none") | map(attribute="key") | list
+      }}
+    ax_lab_substrate_expected_state: >-
+      {{
+        none if ax_lab_node is none else
+        ax_lab_substrate_identity
+        | combine({"node_container_id": ax_lab_node.id})
+      }}
+
+- name: Record the Substrate UIDs and whether the state is this node's
+  ansible.builtin.set_fact:
+    ax_lab_substrate_uids: >-
+      {{
+        dict(
+          ax_lab_substrate_present
+          | zip(
+            ax_lab_substrate_present
+            | map("extract", ax_lab_substrate_cluster.create_once)
+            | map(attribute="uid")
+          )
+        )
+        if ax_lab_substrate_present else {}
+      }}
+    ax_lab_substrate_state_for_node: >-
+      {{
+        ax_lab_substrate_state is not none
+        and ax_lab_node is not none
+        and ax_lab_substrate_state.node_container_id | default("")
+        == ax_lab_node.id
+      }}
+
+# What a verified install of this node recorded, and what an interrupted
+# reinstall carries over; nothing for a first install or another node.
+- name: Record the create-once UIDs the state holds for this node
+  ansible.builtin.set_fact:
+    ax_lab_substrate_recorded: >-
+      {{
+        (ax_lab_substrate_state.create_once | default({}))
+        if ax_lab_substrate_state_for_node else {}
+      }}
+
+# Drift is the only trigger of an install: a state file that is missing,
+# not `installed`, or pinned to another install; no version label on the
+# node; or workloads and images other than the reviewed ones.
+- name: Record the Substrate drift
+  ansible.builtin.set_fact:
+    ax_lab_substrate_drift: >-
+      {{
+        [] if ax_lab_substrate_cluster is none else
+        (
+          ["state"]
+          if not ax_lab_substrate_state_for_node
+          or ax_lab_substrate_state.phase | default("") != "installed"
+          or ax_lab_substrate_state
+          | dict2items
+          | rejectattr("key", "in", ["phase", "create_once"])
+          | items2dict != ax_lab_substrate_expected_state
+          else []
+        )
+        + (["label"] if ax_lab_substrate_cluster.node_label is none else [])
+        + (
+          ["workloads"]
+          if ax_lab_substrate_cluster.workloads != ax_lab.substrate.workloads
+          else []
+        )
+      }}
+
+- name: Refuse a Substrate node label other than the pinned version
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_cluster.node_label is none
+        or ax_lab_substrate_cluster.node_label == ax_lab.substrate.version
+    fail_msg: >-
+      The lab node carries ate.dev/substrate-version
+      {{ ax_lab_substrate_cluster.node_label }}, not
+      {{ ax_lab.substrate.version }}; ate-setup never relabels a node. A
+      Substrate version change means recreating the cluster (docs/AX.md,
+      «Recrear el clúster»).
+  when: ax_lab_substrate_cluster is not none
+
+- name: Refuse create-once Substrate objects this role did not install
+  ansible.builtin.assert:
+    that:
+      - ax_lab_substrate_present == [] or ax_lab_substrate_state_for_node
+    fail_msg: >-
+      {{ ax_lab_substrate_present | join(", ") }} exist, but no state file
+      for this node proves this role installed them, and they are never
+      adopted. Recreate the cluster in an exclusive window (docs/AX.md,
+      «Recrear el clúster»).
+  when: ax_lab_substrate_cluster is not none
+
+# ate-setup creates each of them whenever it is missing (prereqs.go lines
+# 36-61; create.go lines 204-224 and 245-270), and a new one would
+# invalidate every certificate and token issued from the old. Every UID the
+# state records for this node must still be there, whatever the phase, so
+# an interrupted reinstall is held to them too; a verified install records
+# all of them, and then nothing else may appear either.
+- name: Refuse regenerated or missing create-once Substrate objects
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_uids | dict2items
+        | selectattr("key", "in", ax_lab_substrate_recorded)
+        | items2dict == ax_lab_substrate_recorded
+      - >-
+        ax_lab_substrate_state.phase | default("") != "installed"
+        or ax_lab_substrate_uids == ax_lab_substrate_recorded
+    fail_msg: >-
+      A create-once Substrate object is missing or was regenerated since
+      {{ ax_lab_substrate_state_path }} recorded it. Recreate the cluster in
+      an exclusive window (docs/AX.md, «Recrear el clúster»).
+  when:
+    - ax_lab_substrate_cluster is not none
+    - ax_lab_substrate_state_for_node
+
+# `deploy ate-system` mints a missing pod certificate pool beside the one
+# that exists (deploy.go line 99, csi.go line 72, prereqs.go lines 67-77,
+# create.go lines 94-103 and 209-223): a live pod CA would be regenerated.
+- name: Refuse a partial pair of pod certificate CA pools
+  ansible.builtin.assert:
+    that:
+      - >-
+        ("podcertificate-controller-system/Secret/service-dns-ca-pool"
+        in ax_lab_substrate_present)
+        == ("podcertificate-controller-system/Secret/pod-identity-ca-pool"
+        in ax_lab_substrate_present)
+    fail_msg: >-
+      Only one of the pod certificate CA pools exists, and ate-setup would
+      regenerate the other beside it. Recreate the cluster in an exclusive
+      window (docs/AX.md, «Recrear el clúster»).
+  when: ax_lab_substrate_cluster is not none
+
+# actor-id-ca-certs holds the root of actor-id-ca-pool and is derived only
+# while it is missing (prereqs.go lines 39-44): without its pool, ate-setup
+# would mint a new pool beside the old root.
+- name: Refuse the actor identity root without its CA pool
+  ansible.builtin.assert:
+    that:
+      - >-
+        "ate-system/Secret/actor-id-ca-certs" not in ax_lab_substrate_present
+        or "ate-system/Secret/actor-id-ca-pool" in ax_lab_substrate_present
+    fail_msg: >-
+      actor-id-ca-certs exists without actor-id-ca-pool, and ate-setup would
+      mint a new pool beside that root. Recreate the cluster in an exclusive
+      window (docs/AX.md, «Recrear el clúster»).
+  when: ax_lab_substrate_cluster is not none
+
+# ate-setup writes Opaque Secrets holding the key `pool`
+# (cmd/ate-setup/internal/steps/create.go lines 277-283, kube/resources.go
+# line 45); the shell installer's kubernetes.io/tls ones are not its own.
+- name: Refuse create-once Secrets that ate-setup did not create
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_cluster.create_once | dict2items
+        | rejectattr("value", "none")
+        | selectattr("key", "search", "/Secret/")
+        | map(attribute="value.type")
+        | reject("equalto", "Opaque") | list == []
+    fail_msg: >-
+      A create-once Substrate Secret is not of type Opaque, so the shell
+      installer or a hand made it. Recreate the cluster in an exclusive
+      window (docs/AX.md, «Recrear el clúster»).
+  when: ax_lab_substrate_cluster is not none

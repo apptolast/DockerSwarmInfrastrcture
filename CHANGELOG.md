@@ -8,6 +8,52 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- El playbook `ax-lab` instala Agent Substrate en el clúster del
+  laboratorio AX (ver [`docs/AX.md`](docs/AX.md), «Substrate»). El host
+  nunca compila en un apply normal: `config/ax-lab.yml` (esquema 2) fija por
+  digest las siete imágenes de Substrate (las seis del laboratorio manual,
+  que el job de reproducibilidad compiló de nuevo con el mismo digest, y
+  `ate-setup`, que solo compiló ese job), la versión `67253354`, la
+  imagen `golang:1.27.1` y un inventario de las cargas que despliega
+  `ate-setup --kind`, sacado de su código y de los manifiestos fijados.
+  `scripts/manage-ax-lab-substrate.py` copia las imágenes byte a byte por la
+  API HTTP del registro, nunca con `docker pull`/`push`, entre el registro
+  local y una copia de seguridad OCI en `/var/backups/dockerswarm/ax-lab`
+  (`root 0700/0600`), que se siembra desde el laboratorio manual antes de
+  retirarlo y restaura el registro en cada apply. Una compilación de reserva
+  acotada (3 072 MiB sin swap, sin capacidades, raíz de solo lectura, sin
+  `docker.sock`, con el nodo parado, una imagen cada vez, suelo de
+  `MemAvailable`, sin `--rm` para leer `OOMKilled`) solo compila las imágenes
+  que el propietario liste en `ax_lab_substrate_fallback_builds`, y su digest
+  tiene que ser el fijado; `--check` anuncia que el apply se detendrá si el
+  nodo corre. `ate-setup` corre desde su imagen fijada, en modo precompilado
+  y acotado a 256 MiB y 0,5 CPU, dentro de lo que el plan de capacidad
+  activo deja libre, y a 6 480 s, más que todas sus esperas; solo corre
+  cuando hay deriva (fichero de estado, etiqueta del nodo o cargas). Nunca
+  adopta ni deja regenerar los objetos que crea una sola vez: una
+  reinstalación interrumpida conserva los UID ya verificados, y el rol se
+  detiene ante un pool de certificados de pod sin su pareja o la raíz de
+  `actor-id-ca-certs` sin su pool. Retoma una instalación interrumpida,
+  comprueba después la generación del StatefulSet `postgres` y el UID del
+  Job `rustfs-bucket-init` y espera a que todo esté listo. Un contenedor de
+  compilación o de instalación que falla mientras corre se mata y se
+  conserva con sus logs, y `inspect.yml` detiene todo `--check` y apply
+  mientras quede uno. `forget` retira de la copia la entrada de un digest
+  anterior cuando se vuelve a fijar una imagen con la misma versión. Un nodo
+  parado arranca en `node.yml`, después de restaurar las imágenes (el que
+  `kind create cluster` acaba de crear ya corre, pero nada descarga una
+  imagen de Substrate antes de `ate-setup`), y `cluster.yml` solo exige el
+  registro en marcha y el nodo presente. El nuevo workflow
+  `ax-lab-reproducibility` recompila las imágenes desde el commit fijado con
+  la misma compilación, en un `registry:3` desechable, y exige cada digest;
+  no publica nada. El validador añade las reglas de Substrate y
+  `--substrate-plan`; `docs/AX.md` documenta la ventana del laboratorio, la
+  semilla, la copia, la reserva, la reproducibilidad, la instalación y sus
+  límites, y `docs/CAPACITY.md`, `docs/OPERATIONS.md` y `docs/REBUILD.md`
+  los contenedores transitorios, el reinicio y la reconstrucción. Solo se
+  fusiona en la ventana del laboratorio, junto con el cambio del ciclo de
+  vida del clúster y después de él (ver `docs/AX.md`, «Ventana del
+  laboratorio»).
 - El playbook `ax-lab` crea y reconcilia el clúster kind del laboratorio AX
   y su registro local desde el repositorio (ver [`docs/AX.md`](docs/AX.md),
   «Ciclo de vida del clúster»). `config/ax-lab.yml` fija el clúster `kind`

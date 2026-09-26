@@ -1,0 +1,138 @@
+---
+# Apply only, before cluster.yml: the Substrate manager, the pinned
+# checkout and the explicit fallback build. A build borrows the budget of
+# the stopped node, so it runs before cluster.yml can create or start it.
+- name: Install the Substrate manager and the lock helpers it imports
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../scripts/{{ item }}"
+    dest: "{{ ax_lab_bin_directory }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - ansible-operation-lock.py
+    - host_global_operation_lock.py
+    - manage-ax-lab-substrate.py
+    - run-locked-command.py
+
+# The backup layout itself is created by the manager, inside its parent.
+- name: Create the Substrate source, cache and backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ ax_lab.install_root }}/src", mode: "0750"}
+    - {path: "{{ ax_lab_cache_directory }}", mode: "0700"}
+    - {path: /var/backups/dockerswarm, mode: "0700"}
+    - path: "{{ ax_lab.substrate.backup_directory | dirname }}"
+      mode: "0700"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Inspect the Substrate checkout without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_substrate_source_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_substrate_checkout
+
+# ate-setup reads its manifests from this checkout and a fallback build
+# compiles it. Only a missing checkout is cloned, so a converged host needs
+# no network; one at another commit is never moved, the check below stops.
+- name: Clone the pinned Substrate commit only when the checkout is missing
+  ansible.builtin.git:
+    repo: "{{ ax_lab.sources.substrate.repository }}"
+    dest: "{{ ax_lab_substrate_source_path }}"
+    version: "{{ ax_lab.sources.substrate.commit }}"
+    update: false
+  when: not ax_lab_substrate_checkout.stat.exists
+
+# No `git describe`: its output depends on reachable tags and on git's
+# abbreviation length, and VERSION is passed explicitly instead.
+- name: Read the identity of the Substrate checkout
+  ansible.builtin.command:
+    argv: "{{ ['/usr/bin/git', '-C', ax_lab_substrate_source_path] + item }}"
+  loop:
+    - [rev-parse, HEAD]
+    - [remote, get-url, origin]
+    - [status, --porcelain, --untracked-files=all]
+  register: ax_lab_substrate_checkout_identity
+  changed_when: false
+
+# A tracked or untracked change would also reach Go's VCS stamp.
+- name: Require the pristine pinned Substrate checkout
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_checkout_identity.results[0].stdout
+        == ax_lab.sources.substrate.commit
+      - >-
+        ax_lab_substrate_checkout_identity.results[1].stdout
+        == ax_lab.sources.substrate.repository
+      - ax_lab_substrate_checkout_identity.results[2].stdout == ""
+    fail_msg: >-
+      {{ ax_lab_substrate_source_path }} is not a clean checkout of
+      {{ ax_lab.sources.substrate.repository }} at
+      {{ ax_lab.sources.substrate.commit }}. Remove it in an exclusive
+      window and apply again (docs/AX.md, «Substrate»).
+
+- name: Read the pinned Substrate images before the cluster changes
+  ansible.builtin.import_tasks: images_read.yml
+
+- name: Refuse a fallback build while the lab node runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_builds == []
+        or ax_lab_node is none
+        or ax_lab_node.status != "running"
+    fail_msg: >-
+      {{ ax_lab_substrate_builds | join(", ") }} must be built here, and a
+      build borrows the node's budget. Suspend the AX Tasks and stop
+      {{ ax_lab.cluster.node_container }} under the host-global lock, then
+      apply again (docs/AX.md, «Compilación de reserva»).
+
+# One image per container, in turn, each within the manager's own timeout,
+# and each must reproduce its pinned digest before it reaches the backup.
+- name: Build each missing Substrate image in the bounded toolbox
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ ax_lab_substrate_manager }}"
+      - build
+      - --image
+      - "{{ item }}={{ ax_lab.substrate.images[item] }}"
+      - --toolbox-image
+      - "{{ ax_lab.images.toolbox }}"
+      - --source
+      - "{{ ax_lab_substrate_source_path }}"
+      - --cache
+      - "{{ ax_lab_cache_directory }}"
+      - --layout
+      - "{{ ax_lab.substrate.backup_directory }}"
+      - --version
+      - "{{ ax_lab.substrate.version }}"
+      - --node-container
+      - "{{ ax_lab.cluster.node_container }}"
+      - --memory-mib
+      - "{{ ax_lab.substrate.build.memory_limit_mib }}"
+      - --memory-reservation-mib
+      - "{{ ax_lab.substrate.build.memory_reservation_mib }}"
+      - --cpu-millicores
+      - "{{ ax_lab.substrate.build.cpu_limit_millicores }}"
+      - --pids-limit
+      - "{{ ax_lab.substrate.build.pids_limit }}"
+      - --timeout-seconds
+      - "{{ ax_lab.substrate.build.timeout_seconds }}"
+      - --min-mem-available-mib
+      - "{{ ax_lab.substrate.build.min_mem_available_mib }}"
+      - --mem-available-floor-mib
+      - "{{ ax_lab.substrate.build.mem_available_floor_mib }}"
+  loop: "{{ ax_lab_substrate_builds }}"
+  environment: "{{ operation_lock_guard_environment }}"
+  async: "{{ ax_lab.substrate.build.timeout_seconds + 600 }}"
+  poll: 30
+  changed_when: true

@@ -1,0 +1,178 @@
+---
+# Apply only, after node.yml: install Agent Substrate with upstream's
+# ate-setup in prebuilt mode, only when it drifts from the pinned install,
+# then verify it and wait for it. ate-setup keeps what it creates only once
+# and applies everything else server-side (cmd/ate-setup/differences.md).
+- name: Read Substrate in the lab cluster and prove its ownership
+  ansible.builtin.import_tasks: substrate_read.yml
+
+- name: Require Substrate to be readable in the running lab node
+  ansible.builtin.assert:
+    that:
+      - ax_lab_substrate_cluster is not none
+    fail_msg: >-
+      Substrate could not be read in {{ ax_lab.cluster.node_container }}.
+
+- name: Keep the Substrate reads from before any install
+  ansible.builtin.set_fact:
+    ax_lab_substrate_before: "{{ ax_lab_substrate_cluster }}"
+    ax_lab_substrate_uids_before: "{{ ax_lab_substrate_uids }}"
+    ax_lab_substrate_drift_before: "{{ ax_lab_substrate_drift }}"
+
+# Written before ate-setup runs: a run interrupted from here on leaves
+# `installing` for this node, which the next apply resumes with ate-setup,
+# which keeps whatever it already created. The UIDs a verified install
+# recorded for this node are carried over, so an interrupted reinstall still
+# refuses a create-once object that went missing or changed; a first install
+# has none to carry.
+- name: Record the Substrate install intent
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_substrate_expected_state
+        | combine({
+          "phase": "installing",
+          "create_once": ax_lab_substrate_recorded,
+        })
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_substrate_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_substrate_drift | length > 0
+
+# The manager checks each tag against its own pin right before the run,
+# then runs the pinned ate-setup image once, bounded, and removes it.
+- name: Install Substrate with the pinned ate-setup only on drift
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "install",
+          "--registry-port",
+          ax_lab.registry.host_port | string,
+          "--tag",
+          ax_lab.substrate.version,
+          "--installer",
+          "ate-setup=" ~ ax_lab.substrate.images["ate-setup"],
+          "--source",
+          ax_lab_substrate_source_path,
+          "--kubeconfig",
+          ax_lab_kubeconfig_path,
+          "--context",
+          "kind-" ~ ax_lab.cluster.name,
+          "--atenet-router",
+          ax_lab.substrate.install.atenet_router,
+          "--rollout-timeout-seconds",
+          ax_lab.substrate.install.rollout_timeout_seconds | string,
+          "--memory-mib",
+          ax_lab.substrate.install.memory_limit_mib | string,
+          "--memory-reservation-mib",
+          ax_lab.substrate.install.memory_reservation_mib | string,
+          "--cpu-millicores",
+          ax_lab.substrate.install.cpu_limit_millicores | string,
+          "--pids-limit",
+          ax_lab.substrate.install.pids_limit | string,
+          "--timeout-seconds",
+          ax_lab.substrate.install.timeout_seconds | string,
+          "--min-mem-available-mib",
+          ax_lab.substrate.install.min_mem_available_mib | string,
+          "--mem-available-floor-mib",
+          ax_lab.substrate.install.mem_available_floor_mib | string,
+        ]
+        + ax_lab_substrate_installed_args
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  async: "{{ ax_lab.substrate.install.timeout_seconds + 300 }}"
+  poll: 30
+  when: ax_lab_substrate_drift | length > 0
+  changed_when: true
+
+- name: Read Substrate after the install
+  ansible.builtin.import_tasks: substrate_read.yml
+
+# ate-setup applies with force, so a changed immutable field would surface
+# here: the StatefulSet generation and the bucket Job UID stay what they
+# were, and so does every create-once object that existed before.
+- name: Verify the installed Substrate identity
+  ansible.builtin.assert:
+    that:
+      - ax_lab_substrate_cluster.node_label == ax_lab.substrate.version
+      - ax_lab_substrate_cluster.workloads == ax_lab.substrate.workloads
+      - >-
+        ax_lab_substrate_present | sort
+        == ax_lab_substrate_cluster.create_once | list | sort
+      - >-
+        ax_lab_substrate_uids | dict2items
+        | selectattr("key", "in", ax_lab_substrate_uids_before)
+        | items2dict == ax_lab_substrate_uids_before
+      - >-
+        ax_lab_substrate_before.immutable | dict2items
+        | rejectattr("value", "none")
+        | rejectattr(
+          "value", "in", ax_lab_substrate_cluster.immutable.values() | list
+        )
+        | list == []
+    fail_msg: >-
+      Substrate differs from its pinned install after ate-setup: the node
+      label, a workload or its images, a create-once object, the postgres
+      StatefulSet generation or the rustfs-bucket-init Job. Nothing further
+      is recorded (docs/AX.md, «Instalación de Substrate»).
+
+- name: Record the proof of the installed Substrate
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_substrate_expected_state
+        | combine({"phase": "installed", "create_once": ax_lab_substrate_uids})
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_substrate_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_substrate_drift_before | length > 0
+
+# Health, separate from drift: a workload that is not ready fails the run
+# and never triggers a reinstall.
+- name: Wait for every Substrate workload to be ready
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            role_path + "/../../../scripts/manage-ax-lab-substrate.py",
+            "cluster-status",
+            "--kubectl",
+            ax_lab_bin_directory ~ "/kubectl",
+            "--kubeconfig",
+            ax_lab_kubeconfig_path,
+            "--home",
+            ax_lab_home_directory,
+            "--context",
+            "kind-" ~ ax_lab.cluster.name,
+            "--node",
+            ax_lab.cluster.node_container,
+            "--registry-port",
+            ax_lab.registry.host_port | string,
+            "--tag",
+            ax_lab.substrate.version,
+          ]
+          + ax_lab_substrate_installed_args
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_substrate_health
+  until: >-
+    ax_lab_substrate_health.rc == 0
+    and (
+      ax_lab_substrate_health.stdout_lines
+      | select("match", "^[{]") | last | from_json
+    ).not_ready == []
+  retries: 60
+  delay: 10
+  changed_when: false

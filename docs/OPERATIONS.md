@@ -379,7 +379,8 @@ Después:
 5. comprobar réplicas, healthchecks, rutas y alertas;
 6. el laboratorio AX queda parado (política de reinicio `no`) y ningún
    playbook de producción lo necesita; si se quiere de vuelta, aplicar
-   `ax-lab`.
+   `ax-lab`, que arranca el registro, comprueba las imágenes de Substrate,
+   arranca el nodo y espera a que Substrate esté listo sin reinstalarlo.
 
 `live-restore` no conserva el plano de control de Swarm durante un reinicio de
 Docker.

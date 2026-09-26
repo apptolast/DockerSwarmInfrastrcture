@@ -6,14 +6,16 @@ the install root under /opt/dockerswarm, the credential directory as a path
 only, the inotify limits kind recommends (disjoint from every sysctl key the
 host_baseline and platform roles manage), the AX and Substrate source
 commits, the official kind and kubectl release assets with their sha256, the
-upstream images by tag and digest, and the kind cluster and local registry:
+upstream images by tag and digest, the kind cluster and local registry:
 loopback-only binds, positive limits within the memory limit/reservation
 ratio of config/capacity.yml, restart policy "no", and the same limits as
-their host_containers.ax-lab entry in config/capacity-profiles.yml. It
-rejects secret-like keys and values anywhere in the file, then renders the
-role's sysctl file and kind configuration and checks both against the
-contract. It reads nothing outside this repository, so CI runs it without a
-production host.
+their host_containers.ax-lab entry in config/capacity-profiles.yml, and Agent
+Substrate: its version, its images by digest, the backup directory, the
+bounded fallback build and the ate-setup install with their limits, and the
+workloads ate-setup deploys. It rejects secret-like keys and values anywhere
+in the file, then renders the role's sysctl file and kind configuration and
+checks both against the contract. It reads nothing outside this repository,
+so CI runs it without a production host.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import ipaddress
+import json
 import posixpath
 import re
 import sys
@@ -48,7 +51,12 @@ PLATFORM_SYSCTL_FILE = (
     ROOT / "ansible/roles/platform/files/99-z-dockerswarm-network.conf"
 )
 
-TOP_LEVEL_KEYS = {"ax_lab", "ax_lab_privileged_node_accepted"}
+TOP_LEVEL_KEYS = {
+    "ax_lab",
+    "ax_lab_privileged_node_accepted",
+    "ax_lab_substrate_fallback_builds",
+}
+SCHEMA_VERSION = 2
 LAB_KEYS = {
     "schema_version",
     "install_root",
@@ -59,6 +67,7 @@ LAB_KEYS = {
     "images",
     "cluster",
     "registry",
+    "substrate",
 }
 CLUSTER_KEYS = {
     "name",
@@ -169,12 +178,86 @@ IMAGE_REPOSITORIES = {
     "registry": "docker.io/library/registry",
     "redis": "docker.io/library/redis",
     "openai_proxy": "docker.io/nginxinc/nginx-unprivileged",
+    "toolbox": "docker.io/library/golang",
 }
+# The Go release the manual lab built every pinned image with; Substrate's
+# go.mod at the pinned commit says `go 1.27.0` with no toolchain line.
+REVIEWED_TOOLBOX_TAG = "1.27.1"
 IMAGE_RE = re.compile(
     r"(?P<repository>[a-z0-9]+(?:[._-][a-z0-9]+)*"
     r"(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+)"
     r":(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})"
     r"@sha256:(?P<digest>[a-f0-9]{64})"
+)
+
+SUBSTRATE_KEYS = {
+    "version",
+    "images",
+    "backup_directory",
+    "build",
+    "install",
+    "workloads",
+}
+# ko images of ./cmd/<name>: the five ate-setup installs
+# (cmd/ate-setup/internal/images/images.go, Components), the WorkerPool's
+# gVisor worker image and ate-setup itself.
+INSTALLED_IMAGES = ("ateapi", "atecontroller", "atelet", "atenet", "podcertcontroller")
+SUBSTRATE_IMAGES = (*INSTALLED_IMAGES, "ateom-gvisor", "ate-setup")
+# Only ate-setup has no digest of the manual lab: the reproducibility
+# workflow prints it, and the role refuses to run until it is pinned.
+PENDING_IMAGES = {"ate-setup"}
+SUBSTRATE_DIGEST_RE = re.compile(r"sha256:[a-f0-9]{64}")
+# A label value (at most 63 characters, alphanumeric at both ends) whose
+# lowercase form is also the atelet DaemonSet suffix, capped at 30
+# characters (internal/versionlabel/versionlabel.go at the pinned commit).
+SUBSTRATE_VERSION_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,28}[a-z0-9])?")
+BACKUP_DIRECTORY = "/var/backups/dockerswarm/ax-lab/images"
+BUILD_KEYS = {
+    "memory_limit_mib",
+    "memory_reservation_mib",
+    "cpu_limit_millicores",
+    "pids_limit",
+    "timeout_seconds",
+    "min_mem_available_mib",
+    "mem_available_floor_mib",
+}
+INSTALL_KEYS = {
+    "atenet_router",
+    "rollout_timeout_seconds",
+    "timeout_seconds",
+    "memory_limit_mib",
+    "memory_reservation_mib",
+    "cpu_limit_millicores",
+    "pids_limit",
+    "min_mem_available_mib",
+    "mem_available_floor_mib",
+}
+BUILD_TIMEOUT_RANGE = range(600, 7201)
+ROLLOUT_TIMEOUT_RANGE = range(300, 1801)
+# ate-setup deploy ate-system waits, in sequence, for the namespace (60 s),
+# two CRDs (30 s each), then with --rollout-timeout for the
+# podcertificate-controller rollout and its trust bundles
+# (cmd/ate-setup/internal/steps/deploy.go lines 55-98). SetupCSI runs even
+# with no driver (deploy.go line 99) and, before it returns, waits for the
+# namespace again and, with --rollout-timeout, for the same rollout and trust
+# bundles (csi.go lines 61-104; its CRDs already exist). Six rollouts follow
+# (deploy.go lines 150-174). --rollout-timeout reaches every wait once it is
+# set (internal/config/config.go lines 343-347). The runner's own timeout
+# must outlast all of them, with margin, so that ate-setup reports its own
+# error.
+INSTALL_FIXED_WAIT_SECONDS = 180
+INSTALL_ROLLOUT_WAITS = 10
+INSTALL_MARGIN_SECONDS = 300
+INSTALL_TIMEOUT_MAX = 10800
+WORKLOAD_KEYS = {"kind", "namespace", "name", "images"}
+WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "Job"}
+SUBSTRATE_NAMESPACES = {"ate-system", "otel-system", "podcertificate-controller-system"}
+DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
+# An upstream reference exactly as a pinned manifest carries it: a Docker Hub
+# short name is allowed, but always with a tag and a sha256 digest.
+UPSTREAM_IMAGE_RE = re.compile(
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*"
+    r":[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}@sha256:[a-f0-9]{64}"
 )
 
 # Names and shapes of credentials. This public file holds paths and public
@@ -465,6 +548,61 @@ def load_capacity_declaration(
     return ratio, group
 
 
+def load_free_limit_budget() -> tuple[int, int]:
+    """The memory (MiB) and CPU (millicores) of limits every plan that runs
+    the ax-lab group leaves free under the budget of config/capacity.yml.
+
+    A transient container beside the node, such as the ate-setup run, has to
+    fit in it: the budgets are those of scripts/validate-capacity.py
+    (validate_budget), the aggregates the reviewed ones of
+    config/capacity-profiles.yml, which scripts/validate-capacity-profiles.py
+    recomputes. The operational headroom stays apart, as docs/CAPACITY.md
+    requires.
+    """
+    try:
+        contract = load_yaml(CAPACITY_CONTRACT)["capacity_contract"]
+        profiles = load_yaml(CAPACITY_PROFILES)["capacity_profiles"]["profiles"]
+        memory_budget = int(
+            Decimal(
+                contract["host"]["minimum_memory_mib"]
+                - contract["system_reserve"]["memory_mib"]
+                - contract["operational_headroom"]["memory_mib"]
+            )
+            * Decimal(contract["policy"]["aggregate_memory_limit_overcommit_ratio"])
+        )
+        cpu_budget = int(
+            Decimal(
+                contract["host"]["minimum_cpu_millicores"]
+                - contract["system_reserve"]["cpu_millicores"]
+            )
+            * Decimal(contract["policy"]["aggregate_cpu_limit_overcommit_ratio"])
+        )
+        limits = [
+            plan["aggregate"]["limits"]
+            for plan in profiles.values()
+            if CAPACITY_GROUP in plan["host_containers"]
+        ]
+        if not limits:
+            raise AxLabError(f"no capacity plan runs the {CAPACITY_GROUP} group")
+        free = (
+            min(memory_budget - limit["memory_mib"] for limit in limits),
+            min(cpu_budget - limit["cpu_millicores"] for limit in limits),
+        )
+    except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+        raise AxLabError("cannot read the capacity plans that run the lab") from error
+    return free
+
+
+def load_operational_headroom() -> int:
+    """The memory config/capacity.yml keeps free for work outside budgets."""
+    contract = load_yaml(CAPACITY_CONTRACT)
+    try:
+        headroom = contract["capacity_contract"]["operational_headroom"]["memory_mib"]
+    except (KeyError, TypeError) as error:
+        raise AxLabError("cannot read the operational memory headroom") from error
+    return exact_int(headroom, "operational_headroom memory_mib")
+
+
 def validate_resources(resources: Any, context: str, ratio: Decimal) -> None:
     exact_keys(resources, RESOURCE_KEYS, f"{context}.resources")
     for key in sorted(RESOURCE_KEYS):
@@ -555,10 +693,204 @@ def validate_capacity_group(lab: dict[str, Any], group: Any) -> None:
             )
 
 
+def validate_substrate_images(images: Any) -> dict[str, str | None]:
+    exact_keys(images, set(SUBSTRATE_IMAGES), "substrate images")
+    for name, digest in images.items():
+        if digest is None and name in PENDING_IMAGES:
+            continue
+        if not isinstance(digest, str) or not SUBSTRATE_DIGEST_RE.fullmatch(digest):
+            raise AxLabError(
+                f"substrate image {name} must be pinned as sha256:<64 hex>"
+            )
+    return images
+
+
+def validate_build(build: Any, cluster: dict[str, Any], ratio: Decimal, headroom: int):
+    """The fallback build borrows the stopped node's budget, never more."""
+    exact_keys(build, BUILD_KEYS, "substrate build")
+    for key in sorted(BUILD_KEYS):
+        exact_int(build[key], f"substrate build {key}")
+    node = cluster["resources"]
+    for key in (
+        "memory_limit_mib",
+        "memory_reservation_mib",
+        "cpu_limit_millicores",
+        "pids_limit",
+    ):
+        if build[key] > node[key]:
+            raise AxLabError(f"substrate build {key} exceeds the node's")
+    if (
+        build["memory_reservation_mib"] > build["memory_limit_mib"]
+        or Decimal(build["memory_limit_mib"])
+        > Decimal(build["memory_reservation_mib"]) * ratio
+    ):
+        raise AxLabError(
+            f"substrate build memory limit/reservation ratio exceeds {ratio}"
+        )
+    if build["cpu_limit_millicores"] % 1000:
+        raise AxLabError("substrate build CPU limit must be whole CPUs (GOMAXPROCS)")
+    if build["timeout_seconds"] not in BUILD_TIMEOUT_RANGE:
+        raise AxLabError("substrate build timeout_seconds is outside 600-7200")
+    if build["mem_available_floor_mib"] != headroom:
+        raise AxLabError("substrate build floor must be the operational headroom")
+    if build["min_mem_available_mib"] != build["memory_limit_mib"] + headroom:
+        raise AxLabError(
+            "substrate build min_mem_available_mib must be its limit plus the "
+            "operational headroom"
+        )
+
+
+def validate_install(
+    install: Any, ratio: Decimal, headroom: int, free: tuple[int, int]
+) -> None:
+    """ate-setup runs beside the node: it has to fit in what the plan leaves.
+
+    free is load_free_limit_budget(): the memory and CPU of limits the
+    plans running the lab leave free. The operational headroom is not spent.
+    """
+    exact_keys(install, INSTALL_KEYS, "substrate install")
+    # B2 of the PR-4 review: the egress MITM CA pool and the agentgateway
+    # dataplane are not reviewed (create.go lines 84-90, overlay.go lines
+    # 35-46), and there is no key for sdsmint at all.
+    if install["atenet_router"] != "envoy":
+        raise AxLabError("substrate install atenet_router must be envoy")
+    for key in sorted(INSTALL_KEYS - {"atenet_router"}):
+        exact_int(install[key], f"substrate install {key}")
+    rollout = install["rollout_timeout_seconds"]
+    if rollout not in ROLLOUT_TIMEOUT_RANGE:
+        raise AxLabError(
+            "substrate install rollout_timeout_seconds is outside 300-1800"
+        )
+    minimum = (
+        INSTALL_ROLLOUT_WAITS * rollout
+        + INSTALL_FIXED_WAIT_SECONDS
+        + INSTALL_MARGIN_SECONDS
+    )
+    if not minimum <= install["timeout_seconds"] <= INSTALL_TIMEOUT_MAX:
+        raise AxLabError(
+            f"substrate install timeout_seconds must cover ate-setup's own waits "
+            f"({minimum} s) and stay under {INSTALL_TIMEOUT_MAX} s"
+        )
+    free_memory, free_cpu = free
+    if install["memory_limit_mib"] > free_memory:
+        raise AxLabError(
+            f"substrate install memory limit exceeds the {free_memory} MiB of "
+            "limits the capacity plan leaves free"
+        )
+    if install["cpu_limit_millicores"] > free_cpu:
+        raise AxLabError(
+            f"substrate install CPU limit exceeds the {free_cpu}m of limits the "
+            "capacity plan leaves free"
+        )
+    if (
+        install["memory_reservation_mib"] > install["memory_limit_mib"]
+        or Decimal(install["memory_limit_mib"])
+        > Decimal(install["memory_reservation_mib"]) * ratio
+    ):
+        raise AxLabError(
+            f"substrate install memory limit/reservation ratio exceeds {ratio}"
+        )
+    if install["pids_limit"] > 1024:
+        raise AxLabError("substrate install PID limit is above the reviewed one")
+    if install["mem_available_floor_mib"] != headroom:
+        raise AxLabError("substrate install floor must be the operational headroom")
+    if install["min_mem_available_mib"] != install["memory_limit_mib"] + headroom:
+        raise AxLabError(
+            "substrate install min_mem_available_mib must be its limit plus the "
+            "operational headroom"
+        )
+
+
+def validate_workloads(workloads: Any, version: str) -> None:
+    if not isinstance(workloads, list) or not workloads:
+        raise AxLabError("substrate workloads must be a non-empty list")
+    keys = []
+    referenced = set()
+    for index, workload in enumerate(workloads):
+        context = f"substrate workloads[{index}]"
+        allowed = (
+            WORKLOAD_KEYS | {"init_images"}
+            if isinstance(workload, dict) and "init_images" in workload
+            else WORKLOAD_KEYS
+        )
+        exact_keys(workload, allowed, context)
+        if workload["kind"] not in WORKLOAD_KINDS:
+            raise AxLabError(f"{context} kind is not a reviewed workload kind")
+        if workload["namespace"] not in SUBSTRATE_NAMESPACES:
+            raise AxLabError(f"{context} is outside ate-setup's namespaces")
+        if not isinstance(workload["name"], str) or not DNS_LABEL_RE.fullmatch(
+            workload["name"]
+        ):
+            raise AxLabError(f"{context} name must be a DNS label")
+        for field in sorted(allowed - {"kind", "namespace", "name"}):
+            images = workload[field]
+            if not isinstance(images, list) or not images:
+                raise AxLabError(f"{context} {field} must be a non-empty list")
+            for image in images:
+                if image in INSTALLED_IMAGES:
+                    referenced.add(image)
+                elif not isinstance(image, str) or not UPSTREAM_IMAGE_RE.fullmatch(
+                    image
+                ):
+                    raise AxLabError(
+                        f"{context} image must be an installed Substrate image "
+                        "or an upstream reference with a tag and a sha256 digest"
+                    )
+        keys.append((workload["namespace"], workload["kind"], workload["name"]))
+    if keys != sorted(set(keys)):
+        raise AxLabError("substrate workloads must be unique and sorted")
+    if referenced != set(INSTALLED_IMAGES):
+        raise AxLabError("substrate workloads must run every installed image")
+    atelet = [key for key in keys if key[1] == "DaemonSet"]
+    if atelet != [("ate-system", "DaemonSet", f"atelet-{version}")]:
+        raise AxLabError("substrate workloads need the one atelet-<version> DaemonSet")
+
+
+def validate_substrate(
+    substrate: Any,
+    lab: dict[str, Any],
+    ratio: Decimal,
+    headroom: int,
+    free: tuple[int, int],
+) -> dict[str, Any]:
+    exact_keys(substrate, SUBSTRATE_KEYS, "substrate")
+    version = substrate["version"]
+    if (
+        not isinstance(version, str)
+        or not SUBSTRATE_VERSION_RE.fullmatch(version)
+        or len(version) < 7
+        or not lab["sources"]["substrate"]["commit"].startswith(version)
+    ):
+        raise AxLabError(
+            "substrate version must be a label-safe abbreviation of the pinned "
+            "Substrate commit (at least 7 characters)"
+        )
+    validate_substrate_images(substrate["images"])
+    if substrate["backup_directory"] != BACKUP_DIRECTORY:
+        raise AxLabError(f"substrate backup_directory must be {BACKUP_DIRECTORY}")
+    validate_build(substrate["build"], lab["cluster"], ratio, headroom)
+    validate_install(substrate["install"], ratio, headroom, free)
+    validate_workloads(substrate["workloads"], version)
+    return substrate
+
+
+def validate_fallback_builds(value: Any, substrate: dict[str, Any]) -> None:
+    """The images the owner lets the role build here, each once and pinned."""
+    if not isinstance(value, list) or len(set(map(str, value))) != len(value):
+        raise AxLabError("ax_lab_substrate_fallback_builds must list distinct images")
+    for name in value:
+        if name not in SUBSTRATE_IMAGES:
+            raise AxLabError(f"fallback build {name!r} is not a Substrate image")
+        if substrate["images"][name] is None:
+            raise AxLabError(f"fallback build {name} has no pinned digest to reproduce")
+
+
 def validate_catalog(
     document: Any,
     reserved: dict[str, str] | None = None,
     capacity: tuple[Decimal, Any] | None = None,
+    headroom: int | None = None,
+    free: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """Validate the whole file and return the `ax_lab` mapping."""
     reject_secret_like(document)
@@ -566,7 +898,10 @@ def validate_catalog(
     if type(document["ax_lab_privileged_node_accepted"]) is not bool:
         raise AxLabError("ax_lab_privileged_node_accepted must be a boolean")
     lab = exact_keys(document["ax_lab"], LAB_KEYS, "ax_lab")
-    if type(lab["schema_version"]) is not int or lab["schema_version"] != 1:
+    if (
+        type(lab["schema_version"]) is not int
+        or lab["schema_version"] != SCHEMA_VERSION
+    ):
         raise AxLabError("ax_lab schema_version is unsupported")
     validate_install_root(lab["install_root"])
     validate_credential_directory(lab["credential_directory"])
@@ -578,11 +913,35 @@ def validate_catalog(
     images = validate_images(lab["images"])
     if images["kind_node"]["tag"] != lab["binaries"]["kubectl"]["version"]:
         raise AxLabError("the kind node image and kubectl must share one version")
+    if images["toolbox"]["tag"] != REVIEWED_TOOLBOX_TAG:
+        raise AxLabError(f"the toolbox must be golang {REVIEWED_TOOLBOX_TAG}")
     ratio, group = capacity if capacity is not None else load_capacity_declaration()
     cluster = validate_cluster(lab["cluster"], ratio)
     validate_registry(lab["registry"], cluster, ratio)
     validate_capacity_group(lab, group)
+    substrate = validate_substrate(
+        lab["substrate"],
+        lab,
+        ratio,
+        load_operational_headroom() if headroom is None else headroom,
+        load_free_limit_budget() if free is None else free,
+    )
+    validate_fallback_builds(document["ax_lab_substrate_fallback_builds"], substrate)
     return lab
+
+
+def substrate_plan(lab: dict[str, Any]) -> dict[str, Any]:
+    """What the reproducibility workflow builds and compares, as JSON."""
+    substrate = lab["substrate"]
+    return {
+        "version": substrate["version"],
+        "commit": lab["sources"]["substrate"]["commit"],
+        "repository": lab["sources"]["substrate"]["repository"],
+        "toolbox_image": lab["images"]["toolbox"],
+        "registry_image": lab["images"]["registry"],
+        "build": substrate["build"],
+        "images": substrate["images"],
+    }
 
 
 def render_sysctl(lab: dict[str, Any]) -> str:
@@ -682,6 +1041,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the sha256 of the rendered kind configuration",
     )
+    parser.add_argument(
+        "--substrate-plan",
+        action="store_true",
+        help="print only the Substrate build plan as JSON",
+    )
     args = parser.parse_args(argv)
     try:
         lab = validate_catalog(load_yaml(CONFIG))
@@ -701,6 +1065,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.kind_config_sha256:
         print(kind_config_sha256(kind_config))
+        return 0
+    if args.substrate_plan:
+        print(json.dumps(substrate_plan(lab), sort_keys=True))
         return 0
     print("AX lab contract, pins, sysctl and kind configuration renders passed.")
     return 0

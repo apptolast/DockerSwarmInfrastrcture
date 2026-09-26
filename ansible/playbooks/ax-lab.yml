@@ -1,6 +1,7 @@
 ---
-# The AX lab (docs/AX.md): host prerequisites, then the kind cluster and its
-# local registry. capacity_preflight runs under the lock and before the role:
+# The AX lab (docs/AX.md): host prerequisites, the kind cluster and its
+# local registry, then Agent Substrate from its pinned images, installed only
+# on drift. capacity_preflight runs under the lock and before the role:
 # the active plan must run the ax-lab host container group, whose containers
 # this playbook may find absent, stopped or drifted, because it is the one
 # that creates, starts and converges them.
