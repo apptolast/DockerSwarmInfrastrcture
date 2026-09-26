@@ -1,0 +1,146 @@
+---
+name: AX web panel
+
+# Tests the AX web panel (images/ax-web) and builds its image twice with ko,
+# the second time with an empty Go build cache, requiring the same digest:
+# the image is reproducible from this tree, so the production host never
+# has to compile it (docs/AX.md, «Reproducibilidad»). Everything runs in
+# the official Go 1.27.1 image the AX lab's toolbox pins. Nothing is pushed
+# anywhere and no credential is used; the OCI layout of the build is kept
+# as a run artifact for the deployment change to seed from.
+
+"on":
+  pull_request:
+    paths:
+      - images/ax-web/**
+      - .github/workflows/ax-web.yml
+  push:
+    branches:
+      - main
+    paths:
+      - images/ax-web/**
+      - .github/workflows/ax-web.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ax-web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  KO_VERSION: v0.19.1
+  GOVULNCHECK_VERSION: v1.8.0
+
+jobs:
+  test:
+    name: Vet, race tests and vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # docker.io/library/golang:1.27.1, as config/ax-lab.yml's toolbox.
+    container:
+      image: "docker.io/library/golang:1.27.1@sha256:\
+        3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    defaults:
+      run:
+        working-directory: images/ax-web
+
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify the module sums and the formatting
+        run: |
+          set -eu
+          go mod verify
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "gofmt: ${unformatted}"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+      - name: Scan for known vulnerabilities
+        run: |
+          go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" \
+            ./...
+
+  build:
+    name: Build the image twice and compare the digests
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: "docker.io/library/golang:1.27.1@sha256:\
+        3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    defaults:
+      run:
+        working-directory: images/ax-web
+
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned ko
+        run: go install "github.com/google/ko@${KO_VERSION}"
+
+      # KO_DOCKER_REPO only names the image inside the layout: --push=false
+      # never contacts a registry. The lab's registry serves it as
+      # localhost:5001/ax-web. --image-user makes the image run as the
+      # distroless nonroot uid, 65532, unless a deployment says otherwise:
+      # the base's own config has no user, which means root.
+      - name: Build twice and require one digest
+        env:
+          KO_DOCKER_REPO: localhost:5001/ax-web
+        run: |
+          set -eu
+          # Under the workspace (.build is ignored by Git): a container
+          # job's runner.temp names a host path.
+          out="${GITHUB_WORKSPACE}/.build/ax-web"
+          rm -rf "${out}"
+          mkdir -p "${out}"
+          first="$(
+            ko build --bare --push=false --sbom=none --image-user=65532 \
+              --oci-layout-path="${out}/layout" . | tail -n 1
+          )"
+          GOCACHE="$(mktemp -d)" ko build --bare --push=false --sbom=none \
+            --image-user=65532 --oci-layout-path="${out}/rebuild" . |
+            tail -n 1 >"${out}/second"
+          first="${first##*@}"
+          second="$(sed 's/.*@//' "${out}/second")"
+          echo "${first}" | grep -Eq '^sha256:[a-f0-9]{64}$'
+          {
+            echo "## AX web panel image"
+            echo ""
+            echo "| Build | Digest |"
+            echo "| --- | --- |"
+            echo "| first | \`${first}\` |"
+            echo "| empty build cache | \`${second}\` |"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          if [ "${first}" != "${second}" ]; then
+            echo "the rebuild produced another digest"
+            exit 1
+          fi
+          echo "${first}" >"${out}/layout/DIGEST"
+
+      - name: Keep the OCI layout of the image
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ax-web-oci-layout
+          path: .build/ax-web/layout
+          if-no-files-found: error
+          retention-days: 30

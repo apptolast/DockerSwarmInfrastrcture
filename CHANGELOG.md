@@ -107,6 +107,30 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   antes de repetir el apply y que, si el apply falló, pasa por recuperar su
   marker. La compuerta STOP 10 sigue abierta hasta que esa ventana lo
   verifique.
+- Panel web de AX en `images/ax-web` (ver
+  [`images/ax-web/README.md`](images/ax-web/README.md)), primer paso para servir
+  `https://ax.apptolast.com` por decisión del propietario; no despliega nada ni
+  toca el host. Lista tareas, gateways y workspaces; suspende, reanuda y borra
+  tareas (borrar exige el nombre exacto y espera a que AX la retire), y lanza
+  una sola ejecución a la vez de `ax-agent claude -p --restricted
+  --strict-mcp-config --output-format stream-json` sobre un repositorio público
+  de github.com, con salida en directo por SSE y Cancelar. Antes comprueba el
+  clon con un `git` sin credencial. El token de Claude solo viaja en
+  `StartProcess.env`, nunca en la tarea ni en el navegador, que recibe una lista
+  blanca de campos. Exige mTLS con TLS 1.3 al certificado cliente de Traefik,
+  CSRF por origen, JSON y cabecera propia, y una CSP estricta. Rechaza
+  ejecuciones que se crucen con la ventana del Observatorio (22:30-00:40 UTC) o
+  con la antelación de su vigilante, cancela la activa antes de ella y limpia
+  tarea y workspace tras cualquier final. Sigue a un agente en marcha aunque
+  atenet-router corte sus flujos de salida. El reenviador `ax-web forward` solo
+  admite las redes de `--allow-cidr` y libera la plaza de un cliente mudo cuando
+  el panel cierra. El workflow `ax-web.yml` pasa `go vet`, `go test -race` y
+  `govulncheck` en la imagen oficial de Go 1.27.1 fijada por digest, construye
+  la imagen dos veces con ko v0.19.1 sobre la base distroless que ya fija
+  Substrate, como el uid 65532 y no como root, y exige el mismo digest.
+  `tests/test_ax_web_contract.py` fija las órdenes, la ruta de la credencial,
+  las cabeceras y las entradas de la construcción, y el guardián de rutas
+  sensibles cubre `images/ax-web/`.
 - Playbook `ax-lab` con los prerrequisitos del host del laboratorio AX, el
   primer paso para codificarlo (ver [`docs/AX.md`](docs/AX.md)). El contrato
   `config/ax-lab.yml`, validado sin red por `scripts/validate-ax-lab.py`,

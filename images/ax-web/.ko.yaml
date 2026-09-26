@@ -1,0 +1,23 @@
+---
+# ko build of the AX web panel. The base is the distroless image Agent
+# Substrate pins at the lab's commit (.ko.yaml, line 15, at 672533541dbf),
+# so the lab gains no new base image. One platform, no cgo, no VCS stamp
+# and no build id: the digest depends only on this tree, go.sum, Go 1.27.1
+# and ko v0.19.1, which .github/workflows/ax-web.yml checks by building it
+# twice.
+defaultBaseImage: "gcr.io/distroless/static-debian13:latest@sha256:\
+  f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe"
+defaultPlatforms:
+  - linux/amd64
+builds:
+  - id: ax-web
+    main: .
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s
+      - -w
+      - -buildid=
