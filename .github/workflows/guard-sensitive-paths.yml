@@ -99,6 +99,7 @@ jobs:
           ^ansible/roles/host_security/
           ^ansible/roles/host_baseline/
           ^ansible/roles/ax_lab/
+          ^images/ax-web/
           ^infra/terraform/
           ^stacks/workloads/config/
           ^\.gitleaks\.toml$
