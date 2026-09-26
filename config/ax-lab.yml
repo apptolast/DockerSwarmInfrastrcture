@@ -6,13 +6,11 @@
 #
 # The playbook codifies the host prerequisites (the inotify limits kind
 # needs and the pinned kind and kubectl binaries), the lifecycle of the kind
-# cluster and its local registry, and Agent Substrate: its pinned images, a
-# backup of them and its install with upstream's ate-setup. AX is still the
-# manual trial of docs/DEPLOYMENT_STATUS.md until a later change in
-# docs/AX.md codifies it; `sources.ax` and the redis and openai_proxy images
-# are its reviewed pins, not yet used.
+# cluster and its local registry, Agent Substrate (its pinned images, a
+# backup of them and its install with upstream's ate-setup) and AX on top of
+# it: its seeded images, control plane, WorkerPool, CLI and operator helpers.
 ax_lab:
-  schema_version: 2
+  schema_version: 3
   # Under platform_install_root (config/platform.yml), root:root 0750.
   install_root: /opt/dockerswarm/ax-lab
   # Owner-provisioned, root-only credential files for AX live here. Only
@@ -32,6 +30,14 @@ ax_lab:
     ax:
       repository: https://github.com/google/ax
       commit: f009cc81c9a571073bc1dd58cd2ed934bf2d5b1c
+      # google/ax#375 as proposed on arkady-emelyanov/ax local-models
+      # (c7fd10b, 89fa366), without its committed __pycache__, byte for byte
+      # the diff the manual lab staged over the commit above and built every
+      # AX image from (images/ax/README.md). Only the reproducibility
+      # workflow applies it; the host never compiles AX.
+      patch:
+        path: images/ax/google-ax-375.patch
+        sha256: 7b8bff50ffc90f06970352f4576ee1dc0d3d9c2fcfb520fea86249beeeae9d72
     substrate:
       repository: https://github.com/agent-substrate/substrate
       commit: 672533541dbfcd29084e4de2475267088bda3651
@@ -56,10 +62,9 @@ ax_lab:
       a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
     registry: "docker.io/library/registry:3@sha256:\
       852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696"
+    # AX's own Redis (deploy/redis.yaml, line 40, at sources.ax), by digest.
     redis: "docker.io/library/redis:7-alpine@sha256:\
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
-    openai_proxy: "docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:\
-      4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5"
     # The official Go image that the explicit fallback build and the
     # reproducibility workflow run: Go 1.27.1 (Substrate's go.mod says
     # `go 1.27.0`), git and make. The manual lab built every pinned
@@ -267,6 +272,61 @@ ax_lab:
         namespace: podcertificate-controller-system
         name: podcertificate-controller
         images: [podcertcontroller]
+  # AX at sources.ax with the #375 patch (docs/AX.md, «AX»).
+  ax:
+    # The tag of the four AX images in the local registry and in the backup
+    # layout: the AX commit and the patch the images were built from.
+    tag: f009cc8-issue375
+    # Seeded byte for byte from the manual lab's registry, never compiled on
+    # the host, and pinned by the digest of their single-platform manifest.
+    # The two ko images are the manifests the manual lab pushed, vendored in
+    # images/ax/manifests. The runner and the agents images are the linux/amd64
+    # manifests of the buildx indexes the manual lab pushed
+    # (ax-task-runner@sha256:5d536baa..., ax-agents@sha256:f82e9848...),
+    # whose other entry is a build attestation.
+    images:
+      ax-controller: >-
+        sha256:2a744737051c6e877213e25f49ff2408b3399e8f3176f4e203df9c515fc351d2
+      ax-server: >-
+        sha256:621ce24e8887a6fcbf4d4b31da1dc005e0c54210bc28275a912640b97c2667f1
+      ax-task-runner: >-
+        sha256:a5f9ee65df155af434ecf06cb79be4beb7d09b2621d05b38730c682925220bd4
+      ax-agents: >-
+        sha256:d136aebb3f8393e4c994ecd7e4dd4296d5eea7b38e2a32d8087776dae9bb2682
+    # /usr/local/bin/ax-task-runner inside ax-task-runner and ax-agents, as
+    # the reproducibility workflow rebuilds it (Makefile, line 49).
+    task_runner_binary_sha256: >-
+      0bcf4930c56d9a0b2343f8bfd493aa23bff1d4688cb2ddba6b3f0587a283faec
+    # The ko base the manual lab resolved cgr.dev/chainguard/static:latest to
+    # (.ko.yaml, line 15), for the reproducibility workflow only.
+    ko_base_image: "cgr.dev/chainguard/static@sha256:\
+      41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f"
+    # The ax CLI (Makefile, line 36), dynamically linked: seeded once from
+    # the manual lab into this root-only file and installed from it by sha256.
+    cli_sha256: acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7
+    cli_backup: /var/backups/dockerswarm/ax-lab/binaries/ax
+    # Where the controller keeps suspend snapshots: Substrate's kind rustfs
+    # bucket (manifests/ate-install/kind/rustfs.yaml, lines 121-126).
+    snapshots_bucket: gs://ate-snapshots/ax/
+    # Redis keeps AX's Tasks on a local-path volume, as RDB snapshots only.
+    redis:
+      volume_mib: 1024
+      save_seconds: 60
+    # The lab's one WorkerPool. The workers' CPU limits together (replicas x
+    # cpu_limit_millicores) leave at least 500m of the node to etcd, the API
+    # server and Substrate, and their memory together leaves
+    # node_platform_reserve_mib of the node's limit to everything else.
+    worker_pool:
+      namespace: ax-workers
+      name: ax
+      replicas: 1
+      memory_mib: 1536
+      cpu_request_millicores: 250
+      cpu_limit_millicores: 1500
+    node_platform_reserve_mib: 1792
+    # atenet-router's --route-timeout, so that an agent's long `ax ssh`
+    # stream is not cut (cmd/atenet/internal/router/cmd.go, line 73).
+    router_route_timeout: 1h
 # Owner acceptance that the kind node runs root-equivalent: kind starts it
 # with --privileged and seccomp and AppArmor unconfined (kind v0.33.0
 # pkg/cluster/internal/providers/docker/provision.go, lines 226-228). The

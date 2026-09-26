@@ -1,0 +1,30 @@
+#!/bin/sh
+# Managed by Ansible (role ax_lab); see docs/AX.md, «Herramientas del operador».
+#
+# CLI oficial de AX con la configuración del laboratorio.
+#
+# La CLI de google/ax deja vivos sus port-forward a ax-server (sin
+# autenticación, google/ax#376) y al router de Substrate, en loopback, y los
+# reutiliza entre ejecuciones guardando su PID en $AX_HOME/tunnels. Aquí cada
+# ejecución usa su propio AX_HOME temporal y corre en un scope de systemd que
+# se para al terminar, de modo que no queda ningún túnel abierto.
+set -u
+[ "$(id -u)" = 0 ] || { echo "ejecútalo con sudo" >&2; exit 1; }
+export KUBECONFIG={{ ax_lab_kubeconfig_path }} HOME={{ ax_lab_home_directory }}
+export PATH="{{ ax_lab_bin_directory }}:$PATH"
+AX_HOME=$(mktemp -d {{ ax_lab_ax_runtime_directory }}/ax-cli.XXXXXX) || exit 1
+export AX_HOME
+unidad="ax-cli-$$-$(date +%s)"
+limpiar() {
+  systemctl stop "$unidad.scope" 2>/dev/null
+  rm -rf -- "$AX_HOME"
+}
+# Con Ctrl+C el port-forward de la CLI no recibe la señal (va en su propio
+# grupo de procesos): sh espera a que termine la orden y entonces limpia.
+trap 'limpiar; exit 130' INT
+trap 'limpiar; exit 143' TERM
+trap 'limpiar; exit 129' HUP
+systemd-run --quiet --scope --collect --unit="$unidad" {{ ax_lab_ax_cli }} "$@"
+rc=$?
+limpiar
+exit "$rc"

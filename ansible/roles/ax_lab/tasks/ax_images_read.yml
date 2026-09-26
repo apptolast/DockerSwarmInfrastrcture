@@ -1,0 +1,72 @@
+---
+# Read-only in both modes, as images_read.yml for Substrate: which pinned AX
+# images the local registry serves under ax.tag, which the shared backup
+# layout holds complete, and what an apply has to move or refuse. AX images
+# are never built on this host, so one in neither place is lost.
+- name: Read the pinned AX images in the registry and the backup
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            role_path + "/../../../scripts/manage-ax-lab-substrate.py",
+            "image-status",
+            "--image-set",
+            "ax",
+            "--layout",
+            ax_lab.substrate.backup_directory,
+            "--tag",
+            ax_lab.ax.tag,
+          ]
+          + (
+            ["--registry", "127.0.0.1:" ~ ax_lab.registry.host_port]
+            if ax_lab_registry is not none
+            and ax_lab_registry.status == "running"
+            else []
+          )
+          + ax_lab_ax_image_args
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_ax_image_status_raw
+  changed_when: false
+  check_mode: false
+
+- name: Record the pinned AX images as read
+  ansible.builtin.set_fact:
+    ax_lab_ax_image_status: >-
+      {{
+        ax_lab_ax_image_status_raw.stdout_lines
+        | select("match", "^[{]") | last | from_json
+      }}
+
+- name: Record where each pinned AX image is held
+  ansible.builtin.set_fact:
+    ax_lab_ax_in_backup: >-
+      {{
+        ax_lab_ax_image_status.backup | dict2items
+        | selectattr("value", "equalto", "complete")
+        | map(attribute="key") | list
+      }}
+    ax_lab_ax_in_registry: >-
+      {{
+        (ax_lab_ax_image_status.registry or {}) | dict2items
+        | selectattr("value", "equalto", "pinned")
+        | map(attribute="key") | list
+      }}
+
+# A registry that is absent, stopped or unread holds nothing here, and
+# exports and imports only happen once it runs.
+- name: Record which pinned AX images move or are lost
+  ansible.builtin.set_fact:
+    ax_lab_ax_exports: >-
+      {{ ax_lab_ax_in_registry | difference(ax_lab_ax_in_backup) }}
+    ax_lab_ax_imports: >-
+      {{ ax_lab_ax_in_backup | difference(ax_lab_ax_in_registry) }}
+    ax_lab_ax_lost: >-
+      {{
+        ax_lab.ax.images | list
+        | difference(ax_lab_ax_in_backup)
+        | difference(ax_lab_ax_in_registry)
+      }}

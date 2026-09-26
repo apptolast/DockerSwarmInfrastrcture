@@ -1,0 +1,32 @@
+---
+# The lab's WorkerPool, applied server-side by the ax_lab role only on drift
+# (docs/AX.md, «WorkerPool y capacidad dentro del nodo»). AX creates none
+# (its ActorTemplates carry no worker selector, google/ax#368), so any pool
+# on the node takes its actors.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ ax_lab.ax.worker_pool.namespace }}
+  labels:
+    com.apptolast.managed-by: ansible
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: {{ ax_lab.ax.worker_pool.name }}
+  namespace: {{ ax_lab.ax.worker_pool.namespace }}
+spec:
+  replicas: {{ ax_lab.ax.worker_pool.replicas }}
+  sandboxClass: gvisor
+  workerImage: localhost:5001/ateom-gvisor:{{ ax_lab.substrate.version }}@{{
+    ax_lab.substrate.images["ateom-gvisor"] }}
+  template:
+    nodeSelector:
+      ate.dev/substrate-version: "{{ ax_lab.substrate.version }}"
+    resources:
+      requests:
+        cpu: {{ ax_lab.ax.worker_pool.cpu_request_millicores }}m
+        memory: {{ ax_lab.ax.worker_pool.memory_mib }}Mi
+      limits:
+        cpu: {{ ax_lab.ax.worker_pool.cpu_limit_millicores }}m
+        memory: {{ ax_lab.ax.worker_pool.memory_mib }}Mi

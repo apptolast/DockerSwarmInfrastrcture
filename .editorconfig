@@ -13,3 +13,11 @@ indent_size = 2
 
 [*.go]
 indent_style = tab
+
+# Fijados byte a byte por su sha256 (images/ax/README.md): ningún editor debe
+# tocar sus espacios ni su final.
+[images/ax/google-ax-375.patch]
+trim_trailing_whitespace = false
+
+[images/ax/manifests/*.json]
+insert_final_newline = false

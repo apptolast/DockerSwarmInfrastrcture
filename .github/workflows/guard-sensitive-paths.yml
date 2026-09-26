@@ -93,6 +93,7 @@ jobs:
           ^scripts/[^/]*operation[_-]lock[^/]*\.py$
           ^scripts/r2-operation-lease\.py$
           ^scripts/manage-ax-lab-substrate\.py$
+          ^images/ax(-[a-z-]+)?/
           ^scripts/apply-terraform\.sh$
           ^scripts/deploy-ansible\.sh$
           ^config/

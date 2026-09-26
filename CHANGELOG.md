@@ -8,6 +8,46 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- El playbook `ax-lab` instala AX sobre Agent Substrate (ver
+  [`docs/AX.md`](docs/AX.md), «AX»). `config/ax-lab.yml` (esquema 3) fija el
+  parche google/ax#375 versionado byte a byte en `images/ax/` con su sha256, las
+  cuatro imágenes de AX por el digest de su manifiesto de una plataforma
+  (sembradas desde el laboratorio manual con `manage-ax-lab-substrate.py export
+  --image-set ax`, copiadas y restauradas como las de Substrate y nunca
+  compiladas en el host), la CLI `ax` desde una copia `root 0600` por su sha256,
+  el WorkerPool (1 × 1 536 MiB, con límites de CPU que, sumados, dejan 500m al
+  nodo y memoria dentro del límite del nodo menos 1 792 MiB) y el
+  `--route-timeout=1h` del router. Retira el pin del proxy de OpenAI, que no se
+  codifica. Los manifiestos de `ax-system` y `ax-workers` son los de upstream
+  sin RBAC, sin token de la API de Kubernetes en ningún pod, con el bucket de
+  snapshots, Redis en un volumen con RDB, `type: ClusterIP` explícito y dos
+  NetworkPolicies; el validador los renderiza y rechaza cualquier objeto,
+  publicación, token o imagen fuera de lo revisado, y el rol los aplica con
+  `kubectl apply --server-side` solo si `kubectl diff --server-side` o su
+  fichero de estado detectan deriva, sin adoptar nunca espacios de nombres que
+  no creó, y solo exige el log de arranque al controlador que ese apply arranca.
+  Tras un reinicio del nodo recrea los workers creados antes de su arranque, y
+  exige `oom 0` en el `memory.events.local` del nodo. Ni reinstala Substrate ni
+  cambia AX mientras corre una orden `ax` o un `ax-tarea`. Instala
+  `/usr/local/sbin/ax` y `/usr/local/sbin/ax-tarea`, las herramientas del
+  laboratorio manual codificadas como estaban en el host: scope de systemd con
+  `AX_HOME` temporal y trampas de `INT`, `TERM` y `HUP`, sin túneles vivos al
+  terminar ni tras un `Ctrl+C`, solo repositorios `https`, entradas validadas,
+  `flock`, sin correr junto a una operación bajo el lock host-global,
+  autorreparación, Claude con `--setting-sources user --strict-mcp-config`,
+  borrado de la Task confirmado por el `NotFound` de `ax-server`, y la copia de
+  vuelta, validada, acotada y atómica, de la sesión de Codex que se renueva
+  dentro del sandbox, también tras una interrupción. Antes de un reinicio
+  planificado del host o de Docker, las Tasks de AX que queden se borran en
+  lugar de suspenderse (ver [`docs/OPERATIONS.md`](docs/OPERATIONS.md)):
+  suspender una no la conserva entera. El job `reproduce-ax` del workflow
+  `ax-lab-reproducibility` recompila la CLI y el binario del runner byte a byte
+  y las imágenes ko salvo la anotación de su base, y exige que el parche no
+  añada fallos de `go test`; las imágenes del runner y de agentes solo se
+  siembran, con sus entradas en `images/ax-task-runner/` e `images/ax-agents/`.
+  Se aplica en su propia ventana, después de la de los cambios del clúster y de
+  Substrate, en la que se siembran sus copias (ver `docs/AX.md`, «Ventana del
+  cambio 4»).
 - El playbook `ax-lab` instala Agent Substrate en el clúster del
   laboratorio AX (ver [`docs/AX.md`](docs/AX.md), «Substrate»). El host
   nunca compila en un apply normal: `config/ax-lab.yml` (esquema 2) fija por

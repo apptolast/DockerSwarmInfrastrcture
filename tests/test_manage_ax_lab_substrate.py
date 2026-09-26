@@ -480,6 +480,155 @@ class SeedBackupRestoreTests(RegistryCase):
             manager.parse_manifest(duplicate, sha(duplicate))
 
 
+class AxImageSetTests(unittest.TestCase):
+    """--image-set ax: seeded from the manual lab, backed up, restored."""
+
+    AX_TAG = "f009cc8-issue375"
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.layout_path = Path(self.temporary.name) / "backup"
+        self.images = {name: make_image(name) for name in manager.AX_IMAGE_NAMES}
+        self.pins = {name: image["digest"] for name, image in self.images.items()}
+        self.source = FakeRegistry()
+        self.target = FakeRegistry()
+        # The manual lab: ko's md5 names for the two ko images, the image's
+        # own name for the two buildx ones.
+        for name, image in self.images.items():
+            repository = (
+                manager.ko_md5_repository(name, manager.AX_MODULE_PATH)
+                if name in manager.AX_KO_IMAGES
+                else name
+            )
+            self.source.add(repository, image)
+
+    def tearDown(self) -> None:
+        self.source.close()
+        self.target.close()
+        self.temporary.cleanup()
+
+    def export(self, pins: dict[str, str], naming: str) -> dict[str, str]:
+        with manager.Layout(self.layout_path) as layout:
+            return manager.export_images(
+                manager.Registry(self.source.address),
+                layout,
+                self.AX_TAG,
+                pins,
+                naming,
+                "ax",
+            )
+
+    def test_ax_ko_names_are_the_manual_lab_repositories(self) -> None:
+        # `curl http://127.0.0.1:5001/v2/_catalog` on the manual lab.
+        self.assertEqual(
+            {
+                name: manager.ko_md5_repository(name, manager.AX_MODULE_PATH)
+                for name in manager.AX_KO_IMAGES
+            },
+            {
+                "ax-controller": "ax-controller-7ebf6094b73be08cb227c879d4802a93",
+                "ax-server": "ax-server-340c3583cc4a989b584acf55b1619e8e",
+            },
+        )
+        self.assertEqual(
+            manager.IMAGE_SETS["ax"],
+            (
+                "github.com/google/ax",
+                ("ax-controller", "ax-server", "ax-task-runner", "ax-agents"),
+                ("ax-controller", "ax-server"),
+            ),
+        )
+
+    def test_the_ax_seed_and_restore_are_byte_exact(self) -> None:
+        ko = {name: self.pins[name] for name in manager.AX_KO_IMAGES}
+        buildx = {name: digest for name, digest in self.pins.items() if name not in ko}
+        self.assertEqual(
+            self.export(ko, "ko-md5"),
+            {"ax-controller": "exported", "ax-server": "exported"},
+        )
+        self.assertEqual(
+            self.export(buildx, "base"),
+            {"ax-agents": "exported", "ax-task-runner": "exported"},
+        )
+        with manager.Layout(self.layout_path) as layout:
+            self.assertEqual(
+                manager.import_images(
+                    manager.Registry(self.target.address),
+                    layout,
+                    self.AX_TAG,
+                    self.pins,
+                ),
+                dict.fromkeys(self.pins, "imported"),
+            )
+            status = manager.image_status(
+                manager.Registry(self.target.address), layout, self.AX_TAG, self.pins
+            )
+        self.assertEqual(
+            status,
+            {
+                "registry": dict.fromkeys(sorted(self.pins), "pinned"),
+                "backup": dict.fromkeys(sorted(self.pins), "complete"),
+            },
+        )
+        for name, image in self.images.items():
+            with self.subTest(image=name):
+                body, _media_type = self.target.manifests[(name, self.AX_TAG)]
+                self.assertEqual(body, image["manifest"])
+
+    def test_ko_naming_only_names_the_images_ko_built(self) -> None:
+        for name in ("ax-task-runner", "ax-agents"):
+            with (
+                self.subTest(image=name),
+                self.assertRaisesRegex(manager.SubstrateError, "not a ko image"),
+            ):
+                self.export({name: self.pins[name]}, "ko-md5")
+        self.assertFalse(self.layout_path.exists())
+
+    def test_each_image_set_names_only_its_own_images(self) -> None:
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(
+            manager.parse_pins([f"ax-agents={digest}"], names=manager.AX_IMAGE_NAMES),
+            {"ax-agents": digest},
+        )
+        for values, names in (
+            ([f"ax-agents={digest}"], manager.IMAGE_NAMES),
+            ([f"ateapi={digest}"], manager.AX_IMAGE_NAMES),
+            (["ax-agents=pending"], manager.AX_IMAGE_NAMES),
+        ):
+            with (
+                self.subTest(values=values),
+                self.assertRaises(manager.SubstrateError),
+            ):
+                manager.parse_pins(values, names=names)
+        # Only the copies know the AX set; nothing ever builds or installs
+        # an AX image on this host.
+        root = manager.parser()
+        for command in ("image-status", "export", "import", "forget"):
+            arguments = (
+                ["--registry", "127.0.0.1:5001"]
+                if command in ("export", "import")
+                else []
+            )
+            parsed = root.parse_args([command, "--image-set", "ax", *arguments, "--layout", "/x", "--tag", "t"])  # fmt: skip
+            self.assertEqual(parsed.image_set, "ax")
+        for command in ("build", "install", "cluster-status"):
+            with (
+                self.subTest(command=command),
+                redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                root.parse_args([command, "--image-set", "ax"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            root.parse_args(["image-status", "--image-set", "other", "--layout", "/x", "--tag", "t"])  # fmt: skip
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            code = manager.main(
+                ["image-status", "--image-set", "ax", "--layout", "/nonexistent/x", "--tag", "t", "--image", f"ateapi={digest}"]
+            )  # fmt: skip
+        self.assertEqual(code, 1)
+        self.assertIn("is not one known image", stderr.getvalue())
+
+
 class ArgumentTests(unittest.TestCase):
     def test_the_registry_is_only_ever_loopback(self) -> None:
         self.assertEqual(manager.parse_registry("127.0.0.1:5001"), ("127.0.0.1", 5001))

@@ -1,0 +1,101 @@
+---
+# Both modes, after host.yml: the ax CLI from its root-only backup and the
+# two operator helpers. Check mode only reports what an apply would write.
+# The backup is seeded once from the manual lab (docs/AX.md, «Semilla de
+# AX»); nothing here downloads or compiles the CLI.
+- name: Inspect the AX CLI backup without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab.ax.cli_backup }}"
+    follow: false
+    checksum_algorithm: sha256
+  register: ax_lab_ax_cli_backup
+
+- name: Require the seeded AX CLI backup
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_cli_backup.stat.exists
+      - ax_lab_ax_cli_backup.stat.isreg
+      - not ax_lab_ax_cli_backup.stat.islnk
+      - ax_lab_ax_cli_backup.stat.uid == 0
+      - ax_lab_ax_cli_backup.stat.gid == 0
+      - ax_lab_ax_cli_backup.stat.mode == "0600"
+      - ax_lab_ax_cli_backup.stat.checksum == ax_lab.ax.cli_sha256
+    fail_msg: >-
+      {{ ax_lab.ax.cli_backup }} is not the seeded root:root 0600 ax CLI whose
+      sha256 is {{ ax_lab.ax.cli_sha256 }}. Seed it from the manual lab
+      (docs/AX.md, «Semilla de AX»): it is never downloaded or built here.
+
+# Like the kind and kubectl assets, only once host.yml has the binary
+# directory; copy compares checksums and writes only when they differ.
+- name: Install the AX CLI from its backup only when it differs
+  ansible.builtin.copy:
+    src: "{{ ax_lab.ax.cli_backup }}"
+    remote_src: true
+    dest: "{{ ax_lab_ax_cli }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: ax_lab_bin_directory_state.stat.isdir | default(false)
+
+- name: Inspect the installed AX CLI without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_ax_cli }}"
+    follow: false
+    checksum_algorithm: sha256
+  register: ax_lab_ax_cli_installed
+
+- name: Verify the installed AX CLI is its pinned build
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_cli_installed.stat.exists
+      - ax_lab_ax_cli_installed.stat.isreg
+      - not ax_lab_ax_cli_installed.stat.islnk
+      - ax_lab_ax_cli_installed.stat.uid == 0
+      - ax_lab_ax_cli_installed.stat.gid == 0
+      - ax_lab_ax_cli_installed.stat.mode == "0755"
+      - ax_lab_ax_cli_installed.stat.checksum == ax_lab.ax.cli_sha256
+    fail_msg: "{{ ax_lab_ax_cli }} is not the pinned ax CLI."
+  when: not ansible_check_mode
+
+# The wrapper and ax-tarea, rendered with the lab's paths and pins. Both run
+# only as root; main.yml already refused a symlink at either path, such as
+# the manual lab's /usr/local/sbin/ax-tarea.
+- name: Install the AX operator helpers
+  ansible.builtin.template:
+    src: "ax/{{ item.template }}"
+    dest: "{{ ax_lab_ax_helper_directory }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0750"
+    validate: /bin/sh -n %s
+  loop:
+    - {name: ax, template: ax.sh.j2}
+    - {name: ax-tarea, template: ax-tarea.sh.j2}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Inspect the AX operator helpers without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_ax_helper_directory }}/{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: [ax, ax-tarea]
+  register: ax_lab_ax_helpers
+
+- name: Verify the AX operator helpers
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == "0750"
+    fail_msg: >-
+      {{ ax_lab_ax_helper_directory }}/{{ item.item }} is not a root:root 0750
+      regular file.
+    quiet: true
+  loop: "{{ ax_lab_ax_helpers.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode

@@ -1,0 +1,65 @@
+---
+# Apply only, from ax.yml: every worker pod created before the lab node last
+# started keeps an IP that Substrate no longer routes to (ax_read.yml), so
+# it is deleted and its WorkerPool creates a new one; a pod created after
+# the start is kept. proxy_arp and proxy_ndp, the other half of the repair
+# after a restart, are node.yml's. It only fires after a node restart, when
+# every actor on those workers is already gone.
+- name: Recreate each worker pod created before the lab node started
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - delete
+      - pod
+      - "{{ item[1] }}"
+      - --namespace
+      - "{{ item[0] }}"
+      - --ignore-not-found
+      - --wait=false
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  loop: "{{ ax_lab_ax_stale_workers }}"
+  loop_control:
+    label: "{{ item[0] }}/{{ item[1] }}"
+  changed_when: true
+
+# Bounded polls, never a watch: every kubectl call gives up after 10 s.
+- name: Wait until no worker pod predates the lab node's start
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - pods
+      - --all-namespaces
+      - --selector
+      - ate.dev/worker-pool
+      - --no-headers
+      - --output
+      - >-
+        custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CREATED:.metadata.creationTimestamp
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_workers_after
+  until: >-
+    ax_lab_ax_workers_after.rc == 0
+    and ax_lab_ax_workers_after.stdout_lines | select | map("split")
+    | selectattr(
+      "2", "lt", (ax_lab_ax_node_started.stdout | from_json)[:19]
+    )
+    | list == []
+  retries: 18
+  delay: 10
+  changed_when: false
+  when: ax_lab_ax_stale_workers | length > 0

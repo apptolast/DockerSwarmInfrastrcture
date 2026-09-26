@@ -22,3 +22,11 @@ ax_lab_cache_directory: "{{ ax_lab.install_root }}/cache"
 ax_lab_substrate_state_path: "{{ ax_lab_state_directory }}/substrate.json"
 ax_lab_substrate_manager: >-
   {{ ax_lab_bin_directory }}/manage-ax-lab-substrate.py
+# AX: the CLI installed from its root-only backup, the state file that proves
+# this role installed the AX namespaces, the operator helpers, and where the
+# helpers keep their temporary AX_HOME and their locks.
+ax_lab_ax_cli: "{{ ax_lab_bin_directory }}/ax"
+ax_lab_ax_state_path: "{{ ax_lab_state_directory }}/ax.json"
+ax_lab_ax_helper_directory: /usr/local/sbin
+ax_lab_ax_runtime_directory: /run
+ax_lab_ax_lock_directory: /run/lock

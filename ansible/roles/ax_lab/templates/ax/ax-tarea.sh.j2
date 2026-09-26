@@ -1,0 +1,398 @@
+#!/bin/sh
+# Managed by Ansible (role ax_lab); see docs/AX.md, «Herramientas del operador».
+#
+# ax-tarea: lanza una tarea de AX con un agente (Claude Code o Codex) sobre un
+# repositorio git, dentro del sandbox gVisor del laboratorio.
+#
+#   sudo ax-tarea <repo-git> "<instrucción>" [claude|codex]
+#
+# Variables opcionales: RAMA (main), TURNOS (20, solo Claude), CPU (1) y
+# MEMORIA (1Gi), que AX pide pero aún no aplica (google/ax#369), y
+# CONSERVAR=1 para no borrar la tarea al terminar (quedará el token en su
+# definición mientras exista).
+set -eu
+umask 077
+LAB_BIN={{ ax_lab_bin_directory }}
+LAB_HOME={{ ax_lab_home_directory }}
+LAB_KUBECONFIG={{ ax_lab_kubeconfig_path }}
+RUNTIME={{ ax_lab_ax_runtime_directory }}
+LOCKS={{ ax_lab_ax_lock_directory }}
+CREDENCIALES={{ ax_lab.credential_directory }}
+NODO={{ ax_lab.cluster.node_container }}
+WORKERS_NS={{ ax_lab.ax.worker_pool.namespace }}
+WORKERS_POOL={{ ax_lab.ax.worker_pool.name }}
+IMG=localhost:5001/ax-agents:{{ ax_lab.ax.tag }}@{{ ax_lab.ax.images["ax-agents"] }}
+TECHO="{{ ax_lab.ax.worker_pool.cpu_limit_millicores }}m de CPU y {{ ax_lab.ax.worker_pool.memory_mib }} MiB"
+{% raw %}
+uso() {
+  cat >&2 <<'USO'
+uso: sudo ax-tarea <repo-git> "<instrucción>" [claude|codex]
+
+Variables opcionales: RAMA (main), TURNOS (20, solo Claude), CPU (1) y
+MEMORIA (1Gi), que AX pide pero aún no aplica (google/ax#369), y
+CONSERVAR=1 para no borrar la tarea al terminar (quedará el token en su
+definición mientras exista).
+USO
+}
+
+[ "$(id -u)" = 0 ] || { echo "ejecútalo con sudo" >&2; exit 1; }
+# Todo el script corre en un scope de systemd con un AX_HOME propio; al
+# terminar se para el scope y se borra el estado, así no queda ningún túnel
+# de la CLI (ax-server no tiene autenticación, google/ax#376) abierto.
+if [ -z "${AX_TAREA_SCOPE:-}" ]; then
+  AX_HOME=$(mktemp -d "$RUNTIME/ax-tarea.XXXXXX")
+  export AX_HOME AX_TAREA_SCOPE=1
+  unidad="ax-tarea-$$-$(date +%s)"
+  fuera() {
+    systemctl stop "$unidad.scope" 2>/dev/null || true
+    rm -rf -- "$AX_HOME"
+  }
+  # Con Ctrl+C la parte de dentro borra antes la tarea (su trap EXIT); sh
+  # espera a que acabe y solo entonces para el scope y sus túneles.
+  trap 'fuera; exit 130' INT
+  trap 'fuera; exit 143' TERM
+  trap 'fuera; exit 129' HUP
+  rc=0
+  systemd-run --quiet --scope --collect --unit="$unidad" "$0" "$@" || rc=$?
+  fuera
+  exit "$rc"
+fi
+[ $# -ge 2 ] || { uso; exit 64; }
+REPO=$1; PROMPT=$2; AGENTE=${3:-claude}
+RAMA=${RAMA:-main}; CPU=${CPU:-1}; MEMORIA=${MEMORIA:-1Gi}; TURNOS=${TURNOS:-20}
+case "$AGENTE" in claude|codex) ;; *) echo "agente: claude o codex" >&2; exit 64;; esac
+case "$REPO" in https://*) ;; *) echo "solo repositorios https://" >&2; exit 64;; esac
+case "$TURNOS" in ''|*[!0-9]*) echo "TURNOS tiene que ser un número entero" >&2; exit 64;; esac
+# Cada valor acaba dentro del YAML de la tarea o del `sh -c` del sandbox: sin
+# comillas, espacios, saltos de línea, credenciales en la URL ni rutas fuera
+# de /workspace. grep compara línea a línea, así que un salto de línea se
+# rechaza antes.
+NL='
+'
+valida() {
+  case $2 in *"$NL"*) echo "$1 no es válido: tiene un salto de línea" >&2; exit 64;; esac
+  printf '%s' "$2" | grep -Eqx -- "$3" || { echo "$1 no es válido: $2" >&2; exit 64; }
+}
+valida repositorio "$REPO" 'https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~-]+)+/?'
+valida RAMA "$RAMA" '[A-Za-z0-9._][A-Za-z0-9._/-]{0,99}'
+valida CPU "$CPU" '[0-9]+(\.[0-9]+)?m?'
+valida MEMORIA "$MEMORIA" '[0-9]+(Ki|Mi|Gi)?'
+DIR=$(basename "${REPO%/}" .git)
+valida directorio "$DIR" '[A-Za-z0-9._-]+'
+case "$DIR" in .|..) echo "directorio no es válido: $DIR" >&2; exit 64;; esac
+if [ "$AGENTE" = codex ]; then
+  echo "aviso: Codex usa un refresh token de un solo uso; al terminar se copia de vuelta la sesión que renueve dentro del sandbox" >&2
+fi
+# Una sola ejecución a la vez: un apply del laboratorio o una segunda tarea
+# no deben recrear workers ni cruzarse con esta.
+exec 9>"$LOCKS/ax-tarea.lock"
+flock -w 600 9 || { echo "otra ax-tarea sigue en marcha" >&2; exit 75; }
+# Tampoco junto a una operación del host bajo el lock host-global (un apply
+# de ax-lab recrea workers y reinicia el router): su marca solo existe
+# mientras dura, o hasta que se recupere si quedó de una caída (CLAUDE.md).
+for marca in "$LOCKS"/dockerswarm-*.marker; do
+  [ -e "$marca" ] || continue
+  echo "hay una operación del host en marcha ($marca): espera a que termine o recupérala antes" >&2
+  exit 75
+done
+export KUBECONFIG="$LAB_KUBECONFIG" HOME="$LAB_HOME" PATH="$LAB_BIN:$PATH"
+# Tras un reinicio del nodo kind, Substrate pierde proxy_arp/proxy_ndp dentro
+# del nodo (hack/create-kind-cluster.sh, paso 2.5) y conserva las IPs viejas
+# de los workers: las tareas arrancan pero nadie puede entrar en ellas. Se
+# repara solo en ese caso, antes de crear la tarea: si algún worker de
+# $WORKERS_NS es anterior al arranque del nodo, se recrean todos los de ese
+# espacio de nombres (el playbook borra solo los anteriores, en todos).
+reparar_laboratorio() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$NODO" 2>/dev/null)" = true ] || { echo "el nodo $NODO no está en marcha" >&2; exit 1; }
+  if [ "$(docker exec "$NODO" sysctl -n net.ipv4.conf.all.proxy_arp)" != 1 ]; then
+    echo "reparando proxy_arp/proxy_ndp en el nodo"
+    docker exec "$NODO" sysctl -q net.ipv4.conf.all.proxy_arp=1
+    docker exec "$NODO" sysctl -q -e net.ipv6.conf.all.proxy_ndp=1
+  fi
+  arranque=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' "$NODO")" +%s)
+  viejos=0
+  for c in $(docker exec "$NODO" kubectl get pods -n "$WORKERS_NS" -l ate.dev/worker-pool -o jsonpath='{range .items[*]}{.metadata.creationTimestamp}{"\n"}{end}'); do
+    [ "$(date -d "$c" +%s)" -lt "$arranque" ] && viejos=$((viejos + 1))
+  done
+  if [ "$viejos" -gt 0 ]; then
+    echo "recreando $viejos workers anteriores al arranque del nodo"
+    docker exec "$NODO" kubectl delete pod -n "$WORKERS_NS" -l ate.dev/worker-pool --wait=true >/dev/null
+    docker exec "$NODO" kubectl rollout status -n "$WORKERS_NS" "deploy/$WORKERS_POOL" --timeout=180s >/dev/null
+  fi
+}
+reparar_laboratorio
+N=tarea-$(date +%Y%m%d-%H%M%S)
+if [ "$AGENTE" = claude ]; then
+  VAR=CLAUDE_CODE_OAUTH_TOKEN; VAL=$(cat "$CREDENCIALES/claude-oauth-token")
+else
+  VAR=CODEX_AUTH_JSON_B64; VAL=$(base64 -w0 "$CREDENCIALES/codex/auth.json")
+fi
+# Solo un NotFound de ax-server (internal/server/server.go, líneas 83-84 y
+# 315-316) prueba que ya no existe: un túnel o un servidor caídos también
+# hacen fallar `ax get`. Su salida, con la definición y el token, se tira.
+# shellcheck disable=SC2329 # la llama limpiar, desde el trap de salida
+borrada() {
+  error=$(ax get "$1" "$2" -a default 2>&1 >/dev/null) && return 1
+  case $error in *"code = NotFound"*) return 0;; esac
+  return 1
+}
+# `ax delete` solo marca la tarea para borrar. Mientras exista, su definición
+# (con el token del agente) sigue en Redis, así que se espera a que
+# desaparezca de verdad y, si no, se avisa con la orden para reintentar.
+# Antes, si Codex llegó a arrancar, se lee de vuelta su sesión, también tras
+# una interrupción: pudo renovarla y el sandbox tiene la única copia válida.
+# shellcheck disable=SC2329 # la llama el trap de salida
+limpiar() {
+  if [ "$AGENTE" = codex ] && [ "$listo" = True ]; then
+    copiar_sesion_codex
+  fi
+  if [ "${CONSERVAR:-0}" = 1 ]; then
+    echo "CONSERVAR=1: la tarea $N sigue existiendo y guarda el token; bórrala con: sudo ax delete task $N -a default; sudo ax delete workspace ws-$N -a default" >&2
+    return 0
+  fi
+  ax delete task "$N" -a default >/dev/null 2>&1 || true
+  ax delete workspace "ws-$N" -a default >/dev/null 2>&1 || true
+  for _ in $(seq 1 45); do
+    borrada task "$N" && borrada workspace "ws-$N" && return 0
+    sleep 2
+  done
+  echo "ATENCIÓN: la tarea $N o su workspace siguen existiendo y guardan el token." >&2
+  echo "Reintenta: sudo ax delete task $N -a default; sudo ax delete workspace ws-$N -a default" >&2
+}
+listo=""
+copiada=0
+trap limpiar EXIT
+# Cada señal sale con su código y así pasa por limpiar: sin la de HUP,
+# cerrar la terminal dejaría la tarea y su token en Redis.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+# Codex renueva su sesión con un refresh token de un solo uso: si lo hace
+# dentro del sandbox, la copia del host deja de valer. Se lee la del sandbox,
+# una sola vez, y solo sustituye a la del host, de forma atómica, si es JSON
+# de la misma forma y cuenta, con otro refresh token y renovada durante esta
+# tarea. Son comprobaciones contra un error, no contra un sandbox hostil, que
+# ya tiene la sesión entera (docs/AX.md, «Herramientas del operador»). Nunca
+# se imprime.
+copiar_sesion_codex() {
+  [ "$copiada" = 0 ] || return 0
+  copiada=1
+  sesion="$AX_HOME/codex-auth.json"
+  leida="$AX_HOME/codex-auth.rc"
+  # Como mucho 64 KiB y un byte: un auth.json que sea un flujo sin fin no
+  # llena /run, que es memoria del host.
+  # shellcheck disable=SC2016 # se expande dentro del sandbox
+  {
+    salida=0
+    ax ssh "$N" -a default -- sh -c 'cat "${CODEX_HOME:-$HOME/.codex}/auth.json"' 2>/dev/null || salida=$?
+    echo "$salida" >"$leida"
+  } | head -c 65537 >"$sesion"
+  if [ "$(wc -c <"$sesion")" -gt 65536 ]; then
+    rm -f -- "$sesion" "$leida"
+    echo "ATENCIÓN: la sesión de Codex del sandbox mide más de 64 KiB; $CREDENCIALES/codex/auth.json no se ha tocado." >&2
+    return 0
+  fi
+  if [ "$(cat "$leida")" != 0 ]; then
+    rm -f -- "$sesion" "$leida"
+    echo "ATENCIÓN: no se pudo leer la sesión de Codex del sandbox; si Codex la renovó, $CREDENCIALES/codex/auth.json ha quedado obsoleta." >&2
+    return 0
+  fi
+  rm -f -- "$leida"
+  /usr/bin/python3 - "$CREDENCIALES/codex" auth.json "$sesion" "$CREADA" <<'PY' || echo "ATENCIÓN: $CREDENCIALES/codex/auth.json no se ha tocado." >&2
+import json
+import os
+import re
+import stat
+import sys
+from datetime import datetime, timedelta, timezone
+
+LIMITE = 64 * 1024
+# Cubre el redondeo de CREADA a segundos y un reloj algo desviado.
+MARGEN = timedelta(minutes=2)
+ISO = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z")
+
+
+def sin_repetidas(pares):
+    documento = {}
+    for clave, valor in pares:
+        if clave in documento:
+            raise ValueError("una clave está repetida")
+        documento[clave] = valor
+    return documento
+
+
+def leer(fd, que):
+    estado = os.fstat(fd)
+    if (
+        not stat.S_ISREG(estado.st_mode)
+        or estado.st_nlink != 1
+        or estado.st_uid != os.geteuid()
+        or estado.st_mode & 0o077
+        or estado.st_size > LIMITE
+    ):
+        raise ValueError(f"{que} no es un fichero regular 0600 de root")
+    datos = b""
+    while True:
+        trozo = os.read(fd, LIMITE)
+        if not trozo:
+            break
+        datos += trozo
+        if len(datos) > LIMITE:
+            raise ValueError(f"{que} es demasiado grande")
+    try:
+        return datos, json.loads(datos.decode("utf-8"), object_pairs_hook=sin_repetidas)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{que} no es JSON") from error
+
+
+def momento(valor):
+    fecha = ISO.fullmatch(valor) if isinstance(valor, str) else None
+    if fecha is None:
+        raise ValueError("last_refresh no es una fecha RFC 3339 en UTC")
+    return (
+        datetime.strptime(fecha[1], "%Y-%m-%dT%H:%M:%S"),
+        int((fecha[2] or "").ljust(9, "0")),
+    )
+
+
+def comprobar(actual, nueva):
+    if not isinstance(actual, dict) or not isinstance(nueva, dict):
+        raise ValueError("no es un objeto JSON")
+    if set(nueva) != set(actual):
+        raise ValueError("tiene otras claves")
+    tokens, nuevos = actual.get("tokens"), nueva.get("tokens")
+    if not isinstance(tokens, dict) or not isinstance(nuevos, dict):
+        raise ValueError("no tiene tokens")
+    if set(nuevos) != set(tokens):
+        raise ValueError("sus tokens tienen otras claves")
+    if nuevos.get("account_id") != tokens.get("account_id"):
+        raise ValueError("es de otra cuenta")
+    if any(not isinstance(valor, str) or not valor for valor in nuevos.values()):
+        raise ValueError("tiene un token vacío")
+    for clave in set(actual) - {"tokens", "last_refresh"}:
+        if nueva[clave] != actual[clave]:
+            raise ValueError(f"cambia {clave}")
+
+
+def main():
+    directorio, nombre, candidata, creada = sys.argv[1:5]
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    dfd = os.open(directorio, flags | os.O_DIRECTORY)
+    try:
+        fd = os.open(nombre, flags, dir_fd=dfd)
+        try:
+            _bytes, actual = leer(fd, "la sesión del host")
+        finally:
+            os.close(fd)
+        fd = os.open(candidata, flags)
+        try:
+            datos, nueva = leer(fd, "la sesión del sandbox")
+        finally:
+            os.close(fd)
+        comprobar(actual, nueva)
+        if nueva == actual:
+            print("la sesión de Codex no cambió en el sandbox")
+            return
+        renovada = momento(nueva.get("last_refresh"))
+        if renovada <= momento(actual.get("last_refresh")):
+            raise ValueError("no es más reciente que la del host")
+        # Renovada durante esta tarea: ni antes de crearla ni en el futuro,
+        # así una fecha lejana no bloquea las copias de vuelta siguientes.
+        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+        if not momento(creada)[0] - MARGEN <= renovada[0] <= ahora + MARGEN:
+            raise ValueError("last_refresh no cae dentro de esta tarea")
+        if nueva["tokens"].get("refresh_token") == actual["tokens"].get(
+            "refresh_token"
+        ):
+            raise ValueError("no cambia el refresh token")
+        temporal = f".{nombre}.{os.getpid()}.tmp"
+        fd = os.open(
+            temporal,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dfd,
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            vista = memoryview(datos)
+            while vista:
+                vista = vista[os.write(fd, vista):]
+            os.fsync(fd)
+        except BaseException:
+            os.close(fd)
+            os.unlink(temporal, dir_fd=dfd)
+            raise
+        os.close(fd)
+        os.replace(temporal, nombre, src_dir_fd=dfd, dst_dir_fd=dfd)
+        os.fsync(dfd)
+        print(f"sesión de Codex renovada copiada de vuelta a {directorio}/{nombre}")
+    finally:
+        os.close(dfd)
+
+
+try:
+    main()
+except (OSError, ValueError) as error:
+    print(f"no se copia la sesión de Codex del sandbox: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+  rm -f -- "$sesion"
+}
+# Antes de crearla: la sesión de Codex solo se copia de vuelta si se renovó
+# después.
+CREADA=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat <<EOF | ax apply -f - >/dev/null
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: ws-$N
+  atespace: default
+spec:
+  git:
+    - name: origin
+      repo: "$REPO"
+      branch: "$RAMA"
+---
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: $N
+  atespace: default
+spec:
+  debug: true
+  image: "$IMG"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "$CPU"
+      memory: "$MEMORIA"
+  env:
+    - name: $VAR
+      value: "$VAL"
+  workspaces:
+    - name: ws-$N
+      path: "/workspace"
+EOF
+unset VAL
+echo "tarea $N: $AGENTE sobre $REPO ($RAMA); cpu=$CPU y memoria=$MEMORIA pedidas, que AX no aplica (google/ax#369): el techo es el del worker, $TECHO"
+for _ in $(seq 1 90); do
+  listo=$(ax describe task "$N" -a default 2>/dev/null | awk '$1=="Ready"{print $2}')
+  [ "$listo" = True ] && break; sleep 2
+done
+[ "$listo" = True ] || { echo "la tarea no quedó lista en 3 min:" >&2; ax describe task "$N" -a default | sed -n '/Conditions/,$p' >&2; exit 1; }
+PQ=$(printf '%s' "$PROMPT" | base64 -w0)
+rc=0
+# Solo la configuración de usuario del sandbox y ningún servidor MCP del
+# repositorio: un .claude/settings.json o un .mcp.json ajenos no pueden meter
+# hooks, permisos ni servidores junto al token (Claude Code 2.1.274,
+# --setting-sources y --strict-mcp-config).
+if [ "$AGENTE" = claude ]; then
+  ax ssh "$N" -a default -- sh -c "cd /workspace/$DIR && ax-agent claude -p \"\$(echo $PQ | base64 -d)\" --max-turns $TURNOS --setting-sources user --strict-mcp-config" || rc=$?
+else
+  ax ssh "$N" -a default -- sh -c "cd /workspace/$DIR && ax-agent codex exec \"\$(echo $PQ | base64 -d)\" 2>/tmp/codex.err; rc=\$?; [ \$rc = 0 ] || { echo codex_exit=\$rc; grep -iE \"error|fail|expired|unauthor|401|403\" /tmp/codex.err | head -5; }" || rc=$?
+  copiar_sesion_codex
+fi
+exit "$rc"
+{% endraw %}

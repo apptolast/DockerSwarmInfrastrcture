@@ -91,7 +91,8 @@
         or ax_lab_node.status != "running"
     fail_msg: >-
       {{ ax_lab_substrate_builds | join(", ") }} must be built here, and a
-      build borrows the node's budget. Suspend the AX Tasks and stop
+      build borrows the node's budget. Delete the remaining AX Tasks (sudo
+      ax delete task <name> -a default) and stop
       {{ ax_lab.cluster.node_container }} under the host-global lock, then
       apply again (docs/AX.md, «Compilación de reserva»).
 

@@ -38,6 +38,11 @@
       - >-
         ax_lab_substrate_manager
         == ax_lab_bin_directory ~ "/manage-ax-lab-substrate.py"
+      - ax_lab_ax_cli == ax_lab_bin_directory ~ "/ax"
+      - ax_lab_ax_state_path == ax_lab_state_directory ~ "/ax.json"
+      - ax_lab_ax_helper_directory == "/usr/local/sbin"
+      - ax_lab_ax_runtime_directory == "/run"
+      - ax_lab_ax_lock_directory == "/run/lock"
     fail_msg: AX lab inputs differ from the versioned contract.
 
 - name: Validate the AX lab contract and its sysctl render locally
@@ -70,6 +75,69 @@
     that:
       - ax_lab_kind_config_digest.stdout is match("^[a-f0-9]{64}$")
     fail_msg: The validator did not print the kind configuration digest.
+
+# The same for the AX manifests: what the role applies must be what the
+# validator rendered and checked.
+- name: Compute the digests of the reviewed AX manifests locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-ax-lab.py"
+      - --ax-manifests-sha256
+  register: ax_lab_ax_manifests_digest
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Render the AX manifests the role applies
+  ansible.builtin.set_fact:
+    ax_lab_ax_manifests:
+      ax-system.yaml: >-
+        {{
+          lookup(
+            "ansible.builtin.template",
+            role_path ~ "/templates/ax/ax-system.yaml.j2"
+          )
+        }}
+      ax-workers.yaml: >-
+        {{
+          lookup(
+            "ansible.builtin.template",
+            role_path ~ "/templates/ax/ax-workers.yaml.j2"
+          )
+        }}
+
+- name: Require the AX manifests the validator checked
+  ansible.builtin.assert:
+    that:
+      - >-
+        dict(
+          ax_lab_ax_manifests | dict2items | map(attribute="key")
+          | zip(
+            ax_lab_ax_manifests | dict2items | map(attribute="value")
+            | map("hash", "sha256")
+          )
+        )
+        == ax_lab_ax_manifests_digest.stdout | from_json
+    fail_msg: >-
+      The AX manifests Ansible renders differ from those the validator
+      checked.
+
+# What the AX state file records and compares: any difference reapplies.
+- name: Derive the pinned AX image arguments and install identity
+  ansible.builtin.set_fact:
+    ax_lab_ax_image_args: >-
+      {{
+        ax_lab.ax.images | dict2items | map(attribute="key")
+        | zip(ax_lab.ax.images | dict2items | map(attribute="value"))
+        | map("join", "=") | map("regex_replace", "^", "--image=") | list
+      }}
+    ax_lab_ax_identity:
+      schema_version: 1
+      tag: "{{ ax_lab.ax.tag }}"
+      images: "{{ ax_lab.ax.images }}"
+      manifests_sha256: "{{ ax_lab_ax_manifests_digest.stdout | from_json }}"
 
 # The validator accepts ate-setup's digest as pending until the
 # reproducibility workflow prints it; nothing runs until it is pinned.
@@ -187,6 +255,16 @@
     - {path: /etc, directory: true}
     - {path: /etc/sysctl.d, directory: true}
     - {path: "{{ ax_lab_sysctl_path }}", directory: false}
+    - {path: "{{ ax_lab_ax_cli }}", directory: false}
+    - {path: "{{ ax_lab_ax_state_path }}", directory: false}
+    - {path: "{{ ax_lab.ax.cli_backup | dirname }}", directory: true}
+    - {path: "{{ ax_lab.ax.cli_backup }}", directory: false}
+    - {path: /usr, directory: true}
+    - {path: /usr/local, directory: true}
+    - {path: "{{ ax_lab_ax_helper_directory }}", directory: true}
+    - {path: "{{ ax_lab_ax_helper_directory }}/ax", directory: false}
+    - path: "{{ ax_lab_ax_helper_directory }}/ax-tarea"
+      directory: false
   loop_control:
     label: "{{ item.path }}"
   register: ax_lab_install_paths
@@ -219,6 +297,10 @@
 # for a real apply. Nothing here starts a container or touches Swarm.
 - name: Reconcile the lab host prerequisites
   ansible.builtin.import_tasks: host.yml
+
+# Like host.yml, in both modes: check mode reports what would be written.
+- name: Install the AX CLI and the operator helpers
+  ansible.builtin.import_tasks: ax_host.yml
 
 - name: Report what an apply would change in the lab cluster
   ansible.builtin.debug:
@@ -260,8 +342,9 @@
           [
             "the apply stops before building "
             ~ ax_lab_substrate_builds | join(", ") ~ ": "
-            ~ ax_lab.cluster.node_container ~ " runs, so suspend the AX"
-            ~ " Tasks, stop it under the host-global lock and apply again"
+            ~ ax_lab.cluster.node_container ~ " runs, so delete the"
+            ~ " remaining AX Tasks (sudo ax delete task <name> -a default),"
+            ~ " stop it under the host-global lock and apply again"
             ~ " (docs/AX.md, «Compilación de reserva»)"
           ]
         )
@@ -298,6 +381,76 @@
     msg: "{{ ax_lab_substrate_plan }}"
   when: ansible_check_mode
 
+- name: Read the pinned AX images in the registry and the backup
+  ansible.builtin.import_tasks: ax_images_read.yml
+  when: ansible_check_mode
+
+- name: Read AX in the lab cluster and prove its ownership
+  ansible.builtin.import_tasks: ax_read.yml
+  when: ansible_check_mode
+
+- name: Describe what an apply would change in AX
+  ansible.builtin.set_fact:
+    ax_lab_ax_plan: >-
+      {{
+        (
+          (
+            ax_lab_ax_exports
+            | map("regex_replace", "^", "back up from the registry: ") | list
+          )
+          + (
+            ax_lab_ax_imports
+            | map("regex_replace", "^", "restore into the registry: ") | list
+          )
+          + (
+            ax_lab_ax_lost
+            | map("regex_replace", "^", "in neither backup nor registry: ")
+            | list
+          )
+          if ax_lab_ax_image_status.registry is not none else
+          ["the local registry is read once the apply starts it"]
+        )
+        + (
+          [
+            "AX is read once the lab node runs and Substrate matches its"
+            ~ " pinned install"
+          ]
+          if not ax_lab_ax_readable else
+          (
+            (
+              ["apply AX server-side: " ~ ax_lab_ax_drift | join(", ")]
+              if ax_lab_ax_drift else ["AX matches its pinned install"]
+            )
+            + (
+              ["set " ~ ax_lab_ax_router_arg ~ " on ate-system/atenet-router"]
+              if ax_lab_ax_router_drift else []
+            )
+            + (
+              [
+                "recreate " ~ ax_lab_ax_stale_workers | length
+                ~ " worker pods created before the lab node started"
+              ]
+              if ax_lab_ax_stale_workers else []
+            )
+          )
+        )
+        + (
+          ["the apply stops: an ax-tarea or the ax CLI is running"]
+          if ax_lab_ax_helper_scopes.stdout_lines | select | list
+          and (
+            ax_lab_substrate_drift or ax_lab_ax_drift
+            or ax_lab_ax_router_drift or ax_lab_ax_stale_workers
+          )
+          else []
+        )
+      }}
+  when: ansible_check_mode
+
+- name: Report what an apply would change in AX
+  ansible.builtin.debug:
+    msg: "{{ ax_lab_ax_plan }}"
+  when: ansible_check_mode
+
 # The fallback build runs before cluster.yml can create or start the node
 # whose budget it borrows.
 - name: Keep the Substrate checkout and fallback builds outside check mode
@@ -315,10 +468,18 @@
   ansible.builtin.import_tasks: images.yml
   when: not ansible_check_mode
 
+- name: Seed and verify the pinned AX images outside check mode
+  ansible.builtin.import_tasks: ax_images.yml
+  when: not ansible_check_mode
+
 - name: Start and prepare the lab node outside check mode
   ansible.builtin.import_tasks: node.yml
   when: not ansible_check_mode
 
 - name: Install Substrate only on drift outside check mode
   ansible.builtin.import_tasks: substrate.yml
+  when: not ansible_check_mode
+
+- name: Install AX only on drift and repair its workers outside check mode
+  ansible.builtin.import_tasks: ax.yml
   when: not ansible_check_mode

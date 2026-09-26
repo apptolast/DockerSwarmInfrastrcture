@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the AX lab's pinned Agent Substrate images, and install Substrate.
+"""Keep the AX lab's pinned Substrate and AX images, and install Substrate.
 
 config/ax-lab.yml pins every image by the digest of its manifest. The local
 registry serves each one as <name>:<version>, the name that `ate-setup
@@ -9,6 +9,10 @@ all of them. Images move between the two only through the registry HTTP API,
 never with `docker pull` and `docker push`, which store and re-serialise
 manifests and so change their digests. Every manifest and every blob is
 hashed on the way and must equal its descriptor.
+
+Two image sets share the layout and the registry: Substrate's, the default,
+and AX's (--image-set ax), which this host never builds: they are only ever
+seeded from the manual lab, backed up and restored.
 
 Subcommands:
 
@@ -64,6 +68,17 @@ IMAGE_NAMES = (
     "ate-setup",
 )
 INSTALLER = "ate-setup"
+# AX at the pinned commit with the #375 patch. ko built the controller and the
+# server with its default namer; the runner and the agents images were pushed
+# under their own names. Nothing here builds any of them.
+AX_MODULE_PATH = "github.com/google/ax"
+AX_IMAGE_NAMES = ("ax-controller", "ax-server", "ax-task-runner", "ax-agents")
+AX_KO_IMAGES = ("ax-controller", "ax-server")
+# Per image set: its Go module, its images and those ko named by md5.
+IMAGE_SETS = {
+    "substrate": (MODULE_PATH, IMAGE_NAMES, IMAGE_NAMES),
+    "ax": (AX_MODULE_PATH, AX_IMAGE_NAMES, AX_KO_IMAGES),
+}
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
 MANIFEST_TYPES = (OCI_MANIFEST, DOCKER_MANIFEST)
@@ -155,12 +170,17 @@ class PathMissing(SubstrateError):
 # Arguments
 
 
-def parse_pins(values: Sequence[str], *, allow_pending: bool = False) -> dict:
-    """NAME=sha256:<hex> pairs, each a known image, each named once."""
+def parse_pins(
+    values: Sequence[str],
+    *,
+    allow_pending: bool = False,
+    names: Sequence[str] = IMAGE_NAMES,
+) -> dict:
+    """NAME=sha256:<hex> pairs, each a known image of the set, each named once."""
     pins: dict[str, str | None] = {}
     for value in values:
         name, separator, digest = value.partition("=")
-        if not separator or name not in IMAGE_NAMES or name in pins:
+        if not separator or name not in names or name in pins:
             raise SubstrateError(f"--image {value!r} is not one known image")
         if allow_pending and digest == "pending":
             pins[name] = None
@@ -188,15 +208,16 @@ def require_tag(tag: str) -> str:
     return tag
 
 
-def ko_md5_repository(name: str) -> str:
+def ko_md5_repository(name: str, module: str = MODULE_PATH) -> str:
     """ko's default repository name for ./cmd/<name> (packageWithMD5).
 
     ko v0.19.1 pkg/commands/options/publish.go, lines 109-113: the base of
     the import path, a dash and the md5 of the whole import path. The
     manual lab pushed with that namer, so its registry holds
-    ateapi-752889f8b0bcdbee32172ac9fe056025 and so on.
+    ateapi-752889f8b0bcdbee32172ac9fe056025 and so on, and for AX
+    ax-controller-7ebf6094b73be08cb227c879d4802a93.
     """
-    import_path = f"{MODULE_PATH}/cmd/{name}"
+    import_path = f"{module}/cmd/{name}"
     digest = hashlib.md5(import_path.encode(), usedforsecurity=False).hexdigest()
     return f"{name}-{digest}"
 
@@ -903,15 +924,27 @@ def export_images(
     tag: str,
     pins: dict[str, str],
     source_naming: str,
+    image_set: str = "substrate",
 ) -> dict[str, str]:
-    """Registry to layout, byte for byte; the layout is created if missing."""
+    """Registry to layout, byte for byte; the layout is created if missing.
+
+    ko-md5 names the source repositories as ko's default namer did, which
+    only applies to the images ko built.
+    """
+    module, _names, ko_images = IMAGE_SETS[image_set]
+    if source_naming == "ko-md5":
+        for name in pins:
+            if name not in ko_images:
+                raise SubstrateError(f"{name} is not a ko image: use base naming")
     layout.open(create=True)
     results = {}
     for name, digest in sorted(pins.items()):
         if layout.status(name, tag, digest) == "complete":
             results[name] = "present"
             continue
-        repository = ko_md5_repository(name) if source_naming == "ko-md5" else name
+        repository = (
+            ko_md5_repository(name, module) if source_naming == "ko-md5" else name
+        )
         raw, content_type = registry.get_manifest(repository, digest)
         media_type, blobs = parse_manifest(raw, digest)
         if content_type.split(";")[0].strip() != media_type:
@@ -1853,6 +1886,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     status = commands.add_parser("image-status")
+    status.add_argument("--image-set", choices=sorted(IMAGE_SETS), default="substrate")
     status.add_argument("--registry")
     status.add_argument("--layout", type=absolute, required=True)
     status.add_argument("--tag", required=True)
@@ -1870,6 +1904,9 @@ def parser() -> argparse.ArgumentParser:
 
     for name in ("export", "import"):
         copy = commands.add_parser(name)
+        copy.add_argument(
+            "--image-set", choices=sorted(IMAGE_SETS), default="substrate"
+        )
         copy.add_argument("--registry", required=True)
         copy.add_argument("--layout", type=absolute, required=True)
         copy.add_argument("--tag", required=True)
@@ -1880,6 +1917,7 @@ def parser() -> argparse.ArgumentParser:
             )
 
     forget = commands.add_parser("forget")
+    forget.add_argument("--image-set", choices=sorted(IMAGE_SETS), default="substrate")
     forget.add_argument("--layout", type=absolute, required=True)
     forget.add_argument("--tag", required=True)
     forget.add_argument("--image", action="append", default=[])
@@ -1943,7 +1981,7 @@ def dispatch(
             registry,
             Layout(arguments.layout),
             require_tag(arguments.tag),
-            parse_pins(arguments.image),
+            parse_pins(arguments.image, names=IMAGE_SETS[arguments.image_set][1]),
         )
     if command == "cluster-status":
         return cluster_status(
@@ -1960,18 +1998,25 @@ def dispatch(
         )
     if command in ("export", "import"):
         registry = Registry(arguments.registry)
-        pins = parse_pins(arguments.image)
+        pins = parse_pins(arguments.image, names=IMAGE_SETS[arguments.image_set][1])
         tag = require_tag(arguments.tag)
         with Layout(arguments.layout) as layout:
             if command == "export":
                 return export_images(
-                    registry, layout, tag, pins, arguments.source_naming
+                    registry,
+                    layout,
+                    tag,
+                    pins,
+                    arguments.source_naming,
+                    arguments.image_set,
                 )
             return import_images(registry, layout, tag, pins)
     if command == "forget":
         with Layout(arguments.layout) as layout:
             return forget_images(
-                layout, require_tag(arguments.tag), parse_pins(arguments.image)
+                layout,
+                require_tag(arguments.tag),
+                parse_pins(arguments.image, names=IMAGE_SETS[arguments.image_set][1]),
             )
     if command == "build":
         pins = parse_pins([arguments.image], allow_pending=True)

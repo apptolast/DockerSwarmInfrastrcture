@@ -135,11 +135,14 @@ runbook marca `STOP`.
     ausente o parado un contenedor del host del plan activo y su presupuesto
     sigue reservado (ver [CAPACITY.md](CAPACITY.md), «Contenedores del
     host»). `ax-lab` crea el clúster kind y su registro desde este
-    repositorio e instala Substrate desde las imágenes fijadas. Su copia de
-    seguridad vivía en el host perdido: antes, llevar al nuevo host una copia
-    de `/var/backups/dockerswarm/ax-lab/images` o autorizar la compilación
-    de reserva en un cambio revisado (ver [AX.md](AX.md), «Compilación de
-    reserva»).
+    repositorio e instala Substrate y AX desde las imágenes fijadas. Su copia
+    de seguridad vivía en el host perdido: antes, llevar al nuevo host una
+    copia de `/var/backups/dockerswarm/ax-lab` (imágenes y CLI de AX). Sin
+    ella, Substrate vuelve autorizando la compilación de reserva en un cambio
+    revisado (ver [AX.md](AX.md), «Compilación de reserva»), pero las
+    imágenes de AX y su CLI solo con un cambio revisado que las recompile con
+    pins nuevos (ver [AX.md](AX.md), «Lo que no se puede codificar
+    fielmente»).
 
 `site` termina en observabilidad. Backup es deliberadamente un target separado:
 omitirlo tras preparar sus entradas deja la reconstrucción incompleta.
