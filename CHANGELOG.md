@@ -89,6 +89,24 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   en la ventana del laboratorio: el laboratorio manual no tiene los límites
   declarados y detendría el preflight de todos los playbooks salvo
   `ax-lab`.
+- Las rutas de Satisfactory, hechas a mano en Traefik el 2026-09-22, quedan
+  codificadas en `stacks/edge/dynamic.yml.j2` tal como corren en la Docker
+  Config `edge-traefik-dynamic-companions-a0952eace071`: los routers
+  `satisfactory-web`, `satisfactory-ws` (prioridad 100),
+  `satisfactory-companions` (prioridad 120) y `satisfactory-logs`, sus
+  cuatro backends, el middleware `satisfactory-log-auth` y la red adoptada
+  `apptolast-edge-satisfactory`. `scripts/validate-contract.py` fija cada
+  router, backend y middleware, y `EdgeLiveParityTests` compara el render con
+  la Config viva enmascarada: solo difieren el `usersFile` y el backend
+  aparcado de OpenClaw. El spec vivo del servicio coincide salvo en la Config
+  dinámica, el secret nuevo y el alias `traefik` de esa red.
+  [`docs/EDGE.md`](docs/EDGE.md) («Rutas de Satisfactory») describe cómo
+  crear el secret desde el hash vivo sin imprimirlo y la ventana de
+  aplicación, con sondeo de cada ruta pública antes y después, el corte de
+  unos 13 s y el rollback a las Configs anteriores, que solo es posible
+  antes de repetir el apply y que, si el apply falló, pasa por recuperar su
+  marker. La compuerta STOP 10 sigue abierta hasta que esa ventana lo
+  verifique.
 - Playbook `ax-lab` con los prerrequisitos del host del laboratorio AX, el
   primer paso para codificarlo (ver [`docs/AX.md`](docs/AX.md)). El contrato
   `config/ax-lab.yml`, validado sin red por `scripts/validate-ax-lab.py`,
@@ -560,6 +578,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- El login de `logs-satisfactory.apptolast.com` lee sus usuarios de
+  `usersFile`, un Docker Secret `manual-bootstrap` montado `0400` para
+  `65532:65532` (`edge_traefik_basicauth_secrets`), y no de un hash en línea:
+  este repositorio es público. El rol solo inspecciona los metadatos del
+  secret, con `no_log`, antes de mutar nada. El contrato rechaza la clave
+  `users`, cualquier middleware no revisado y cualquier `$2…$`, `$apr1$` o
+  `{SHA}` en los ficheros renderizados. Como un fichero de usuarios que no
+  carga desactiva solo su router (`404`) sin tumbar el task, el deploy exige
+  además un `401` con `Basic realm="Satisfactory logs"` en esa ruta. Una
+  prueba deriva del render los routers detrás de un `basicAuth` y exige que
+  sean exactamente los que sondea el deploy.
+
 - Un apply de `host-baseline` sobre un host convergido, y en su parte de
   `host_security` también de `platform` y `site`, ya no deja el host sin
   filtrado de CrowdSec. La prueba `crowdsec-firewall-bouncer -t` no es un
@@ -751,6 +781,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
 ### Fixed
+
+- El rol `edge` crea las redes adoptadas (`edge_adopted_attachable_networks`)
+  ya `attachable` cuando faltan; antes las creaba no-`attachable` y, en un host
+  reconstruido, los contenedores Compose del Observatorio y de Satisfactory
+  no podían unirse. La verificación del servicio desplegado en el rol exige
+  el conjunto exacto de secrets, cada uno con su destino, modo `0400` y dueño
+  `65532:65532`, en lugar de un único secret. `scripts/validate-edge.sh` exige
+  el mismo conjunto de nombres.
 
 - Un segundo apply de `host-baseline` sobre un host convergido debe informar
   `changed=0`; el 2026-09-25 informó `changed=6`. Con este cambio, medido el

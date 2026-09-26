@@ -1,0 +1,481 @@
+{
+  "http": {
+    "middlewares": {
+      "edge-compress": {
+        "compress": {}
+      },
+      "edge-default": {
+        "chain": {
+          "middlewares": [
+            "edge-security",
+            "edge-compress"
+          ]
+        }
+      },
+      "edge-rate-limit": {
+        "rateLimit": {
+          "average": 20,
+          "burst": 40,
+          "period": "1s"
+        }
+      },
+      "edge-security": {
+        "headers": {
+          "contentTypeNosniff": true,
+          "customResponseHeaders": {
+            "Server": ""
+          },
+          "frameDeny": true,
+          "permissionsPolicy": "camera=(), microphone=(), geolocation=()",
+          "referrerPolicy": "no-referrer",
+          "stsSeconds": 31536000
+        }
+      },
+      "passbolt-forwarded-proto": {
+        "headers": {
+          "customRequestHeaders": {
+            "X-Forwarded-Proto": "https"
+          },
+          "customResponseHeaders": {
+            "X-Robots-Tag": "noindex, nofollow"
+          }
+        }
+      },
+      "passbolt-security": {
+        "chain": {
+          "middlewares": [
+            "passbolt-forwarded-proto",
+            "edge-security"
+          ]
+        }
+      },
+      "satisfactory-log-auth": {
+        "basicAuth": {
+          "realm": "Satisfactory logs",
+          "removeHeader": true,
+          "users": [
+            "<masked>"
+          ]
+        }
+      }
+    },
+    "routers": {
+      "edge-health": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security",
+          "edge-rate-limit"
+        ],
+        "rule": "Host(`edge.apptolast.com`) && Path(`/ping`)",
+        "service": "ping@internal",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "edge-ping-internal": {
+        "entryPoints": [
+          "traefik"
+        ],
+        "rule": "Path(`/ping`)",
+        "service": "ping@internal"
+      },
+      "kropia": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-default"
+        ],
+        "rule": "Host(`kropia.apptolast.com`)",
+        "service": "kropia",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "minecraft-stats": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-default"
+        ],
+        "rule": "Host(`minecraft-stats.apptolast.com`)",
+        "service": "minecraft-stats",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "monitorizacion": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "rule": "Host(`monitor.apptolast.com`)",
+        "service": "monitorizacion",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "n8n": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "rule": "Host(`n8n.apptolast.com`)",
+        "service": "n8n",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "openclaw": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "rule": "Host(`openclaw.apptolast.com`)",
+        "service": "openclaw",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "organizationweb": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security",
+          "edge-rate-limit"
+        ],
+        "rule": "Host(`organizacion.apptolast.com`)",
+        "service": "organizationweb",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "passbolt": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "passbolt-security"
+        ],
+        "rule": "Host(`passbolt.apptolast.com`)",
+        "service": "passbolt",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "portfolio-alberto": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-default"
+        ],
+        "rule": "Host(`albertohidalgo.apptolast.com`)",
+        "service": "portfolio-alberto",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "portfolio-pablo": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-default"
+        ],
+        "rule": "Host(`pablohurtadohg.apptolast.com`)",
+        "service": "portfolio-pablo",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "racinggame": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "rule": "Host(`racinggame.apptolast.com`)",
+        "service": "racinggame",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "satisfactory-companions": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "priority": 120,
+        "rule": "Host(`satisfactory.apptolast.com`) && (Path(`/companions`) || PathPrefix(`/companions/`))",
+        "service": "satisfactory-companions",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "satisfactory-logs": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security",
+          "satisfactory-log-auth"
+        ],
+        "rule": "Host(`logs-satisfactory.apptolast.com`)",
+        "service": "satisfactory-logs",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "satisfactory-web": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "rule": "Host(`satisfactory.apptolast.com`)",
+        "service": "satisfactory-web",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "satisfactory-ws": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-security"
+        ],
+        "priority": 100,
+        "rule": "Host(`satisfactory.apptolast.com`) && PathPrefix(`/app/`)",
+        "service": "satisfactory-reverb",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      },
+      "shlink": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "edge-default"
+        ],
+        "rule": "Host(`generadorcodigosqr.apptolast.com`)",
+        "service": "shlink",
+        "tls": {
+          "certResolver": "letsencrypt"
+        }
+      }
+    },
+    "services": {
+      "kropia": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/health",
+            "timeout": "3s"
+          },
+          "servers": [
+            {
+              "url": "http://workloads_kropia:80"
+            }
+          ]
+        }
+      },
+      "minecraft-stats": {
+        "loadBalancer": {
+          "healthCheck": {
+            "hostname": "minecraft-stats.apptolast.com",
+            "interval": "15s",
+            "path": "/actuator/health",
+            "timeout": "3s"
+          },
+          "servers": [
+            {
+              "url": "http://workloads_minecraft-stats:8080"
+            }
+          ]
+        }
+      },
+      "monitorizacion": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://monitor-api:8080"
+            }
+          ]
+        }
+      },
+      "n8n": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/healthz",
+            "timeout": "3s"
+          },
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://workloads_n8n:5678"
+            }
+          ]
+        }
+      },
+      "openclaw": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/readyz",
+            "timeout": "3s"
+          },
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://workloads_openclaw:18789"
+            }
+          ]
+        }
+      },
+      "organizationweb": {
+        "loadBalancer": {
+          "healthCheck": {
+            "hostname": "organizacion.apptolast.com",
+            "interval": "15s",
+            "path": "/healthz",
+            "timeout": "3s"
+          },
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://organizationweb_web:8080"
+            }
+          ]
+        }
+      },
+      "passbolt": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://workloads_passbolt:80"
+            }
+          ]
+        }
+      },
+      "portfolio-alberto": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/",
+            "timeout": "3s"
+          },
+          "servers": [
+            {
+              "url": "http://workloads_portfolio-alberto:3000"
+            }
+          ]
+        }
+      },
+      "portfolio-pablo": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/",
+            "timeout": "3s"
+          },
+          "servers": [
+            {
+              "url": "http://workloads_portfolio-pablo:3000"
+            }
+          ]
+        }
+      },
+      "racinggame": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/info",
+            "timeout": "3s"
+          },
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://racinggame_web:3000"
+            }
+          ]
+        }
+      },
+      "satisfactory-companions": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://satisfactory-companions_web:8080"
+            }
+          ]
+        }
+      },
+      "satisfactory-logs": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://satisfactory-logs:8080"
+            }
+          ]
+        }
+      },
+      "satisfactory-reverb": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://satisfactory-reverb:8080"
+            }
+          ]
+        }
+      },
+      "satisfactory-web": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://satisfactory-web:80"
+            }
+          ]
+        }
+      },
+      "shlink": {
+        "loadBalancer": {
+          "healthCheck": {
+            "interval": "15s",
+            "path": "/rest/health",
+            "timeout": "3s"
+          },
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://workloads_shlink:8080"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "tls": {
+    "options": {
+      "default": {
+        "minVersion": "VersionTLS12",
+        "sniStrict": true
+      }
+    }
+  }
+}

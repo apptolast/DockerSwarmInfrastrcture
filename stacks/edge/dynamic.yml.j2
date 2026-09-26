@@ -129,6 +129,53 @@ http:
       service: monitorizacion
       tls:
         certResolver: letsencrypt
+    # Satisfactory se despliega fuera de este repositorio (Compose
+    # `satisfactory` y stack `satisfactory-companions`). Sus rutas se
+    # codificaron tal como corrian en la Docker Config hecha a mano
+    # `edge-traefik-dynamic-companions-a0952eace071`, sin `edge-rate-limit`.
+    # Las prioridades explicitas hacen que `/app/` (websocket de Reverb) y
+    # `/companions` ganen a la ruta general del mismo host.
+    satisfactory-web:
+      rule: "Host(`satisfactory.apptolast.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: satisfactory-web
+      tls:
+        certResolver: letsencrypt
+    satisfactory-ws:
+      rule: "Host(`satisfactory.apptolast.com`) && PathPrefix(`/app/`)"
+      priority: 100
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: satisfactory-reverb
+      tls:
+        certResolver: letsencrypt
+    satisfactory-companions:
+      rule: >-
+        Host(`satisfactory.apptolast.com`) && (Path(`/companions`) ||
+        PathPrefix(`/companions/`))
+      priority: 120
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+      service: satisfactory-companions
+      tls:
+        certResolver: letsencrypt
+    satisfactory-logs:
+      rule: "Host(`logs-satisfactory.apptolast.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-security
+        - satisfactory-log-auth
+      service: satisfactory-logs
+      tls:
+        certResolver: letsencrypt
   middlewares:
     edge-security:
       headers:
@@ -162,6 +209,15 @@ http:
         middlewares:
           - passbolt-forwarded-proto
           - edge-security
+    # El fichero de usuarios (`usuario:hash-bcrypt`) es un Docker Secret que
+    # solo existe en el host; ningun hash entra en este repositorio publico.
+    # Sin clave `users`: Traefik la antepone a `usersFile`. Si el fichero
+    # falta o esta vacio, Traefik desactiva solo este router (404).
+    satisfactory-log-auth:
+      basicAuth:
+        usersFile: /run/secrets/basicauth_satisfactory_logs
+        realm: Satisfactory logs
+        removeHeader: true
 
   services:
     # passHostHeader is load bearing: /info builds the phone-controller
@@ -181,6 +237,22 @@ http:
         passHostHeader: true
         servers:
           - url: http://monitor-api:8080
+    satisfactory-web:
+      loadBalancer:
+        servers:
+          - url: http://satisfactory-web:80
+    satisfactory-reverb:
+      loadBalancer:
+        servers:
+          - url: http://satisfactory-reverb:8080
+    satisfactory-companions:
+      loadBalancer:
+        servers:
+          - url: http://satisfactory-companions_web:8080
+    satisfactory-logs:
+      loadBalancer:
+        servers:
+          - url: http://satisfactory-logs:8080
     organizationweb:
       loadBalancer:
         passHostHeader: true

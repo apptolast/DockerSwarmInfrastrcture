@@ -244,6 +244,20 @@ ningún push a Docker Hub puede iniciarlo por sí solo.
 Los writers Terraform y Ansible tienen fronteras distintas. No se ejecutan en
 paralelo si afectan al mismo servidor o ventana de cutover.
 
+Todo apply de `edge` que cambie la Config dinámica, un secret o una red
+reemplaza la única tarea de Traefik: unos 13 s sin conexiones nuevas en
+80/443 para todos los hostnames y cortes en los WebSocket y SSE abiertos. Se
+hace en una ventana, con el estado de cada ruta pública registrado antes y
+comparado después. `docker service rollback edge_traefik` vuelve a los
+nombres de Config anteriores solo hasta el siguiente apply de `edge`:
+`docker stack deploy` actualiza el servicio aunque no cambie y guarda el spec
+en uso como `PreviousSpec`. Toda comprobación que pueda pedir un rollback va
+antes de repetir el apply; después, la vuelta atrás es un PR revisado y otro
+apply. Si el apply falló, su marker sigue presente y bloquea el lock: el
+rollback va sin lock y el marker se recupera antes de cualquier otro paso. El
+procedimiento del primer apply tras codificar Satisfactory está en
+[EDGE.md](EDGE.md) («Ventana de aplicación»).
+
 ## Aparcar un servicio
 
 `platform_parked_workloads` (`config/platform.yml`) detiene servicios del

@@ -38,6 +38,13 @@ services:
         uid: "{{ edge_traefik_runtime_uid }}"
         gid: "{{ edge_traefik_runtime_gid }}"
         mode: 0400
+{% for secret_target in edge_traefik_basicauth_secrets | sort %}
+      - source: {{ secret_target }}
+        target: {{ secret_target }}
+        uid: "{{ edge_traefik_runtime_uid }}"
+        gid: "{{ edge_traefik_runtime_gid }}"
+        mode: 0400
+{% endfor %}
     networks:
 {% for network_key in edge_networks | combine(edge_application_networks) %}
       - edge-{{ network_key }}
@@ -116,6 +123,11 @@ secrets:
   cloudflare_dns_api_token:
     external: true
     name: "{{ edge_traefik_cloudflare_secret_name }}"
+{% for secret_target, secret_name in edge_traefik_basicauth_secrets | dictsort %}
+  {{ secret_target }}:
+    external: true
+    name: "{{ secret_name }}"
+{% endfor %}
 
 configs:
   traefik_static:

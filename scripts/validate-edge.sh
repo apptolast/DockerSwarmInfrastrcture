@@ -72,7 +72,17 @@ print(
 print(traefik["mode"])
 print(traefik["spec_exact"] or "")
 print(traefik["spec_pattern"])
-print(group_vars["edge_traefik_cloudflare_secret_name"])
+# The ACME token plus every reviewed basicAuth users file.
+print(
+    json.dumps(
+        sorted(
+            [
+                group_vars["edge_traefik_cloudflare_secret_name"],
+                *group_vars["edge_traefik_basicauth_secrets"].values(),
+            ]
+        )
+    )
+)
 print(
     json.dumps(
         group_vars.get("edge_adopted_attachable_networks", []),
@@ -90,7 +100,7 @@ edge_network_map_json="${edge_contract[3]}"
 traefik_image_mode="${edge_contract[4]}"
 traefik_image_exact="${edge_contract[5]}"
 traefik_image_pattern="${edge_contract[6]}"
-secret_name="${edge_contract[7]}"
+secret_names_json="${edge_contract[7]}"
 adopted_attachable_json="${edge_contract[8]}"
 [[ "${traefik_image_mode}" == hold || "${traefik_image_mode}" == channel ]] ||
   fail "the Traefik image channel mode is invalid"
@@ -138,7 +148,7 @@ jq --exit-status \
   --arg image_mode "${traefik_image_mode}" \
   --arg image_exact "${traefik_image_exact}" \
   --arg image_pattern "${traefik_image_pattern}" \
-  --arg secret "${secret_name}" \
+  --argjson secrets "${secret_names_json}" \
   --argjson network_ids "${expected_network_ids_json}" \
   '
     length == 1 and
@@ -157,7 +167,7 @@ jq --exit-status \
     .[0].Spec.RollbackConfig.Order == "stop-first" and
     (
       .[0].Spec.TaskTemplate.ContainerSpec.Secrets |
-      length == 1 and .[0].SecretName == $secret
+      map(.SecretName) | sort == $secrets
     ) and
     (
       .[0].Spec.TaskTemplate.ContainerSpec.Configs |

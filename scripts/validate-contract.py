@@ -299,10 +299,53 @@ expected_stack_networks["edge-observatorio"] = {
     "external": True,
     "name": "apptolast-edge-observatorio",
 }
+# Satisfactory also lives outside this repository; only its ingress is
+# reviewed here.
+expected_stack_networks["edge-satisfactory"] = {
+    "external": True,
+    "name": "apptolast-edge-satisfactory",
+}
 if stack["networks"] != expected_stack_networks:
     fail("the rendered edge networks differ from the isolation contract")
 if set(traefik_service["networks"]) != set(expected_stack_networks):
     fail("Traefik is not attached to every and only reviewed edge network")
+if group_vars.get("edge_adopted_attachable_networks") != [
+    "apptolast-edge-observatorio",
+    "apptolast-edge-satisfactory",
+]:
+    fail("the adopted attachable edge networks differ from the contract")
+
+# The ACME token plus one users file per basicAuth middleware. Only the
+# versioned name of each Docker Secret is in Git; the users file, and so
+# every password hash, exists only on the host.
+basicauth_secrets = {
+    "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v1",
+}
+if group_vars.get("edge_traefik_basicauth_secrets") != basicauth_secrets:
+    fail("the basicAuth users file secrets differ from the reviewed map")
+expected_stack_secrets = {
+    "cloudflare_dns_api_token": {
+        "external": True,
+        "name": group_vars["edge_traefik_cloudflare_secret_name"],
+    },
+    **{
+        target: {"external": True, "name": name}
+        for target, name in basicauth_secrets.items()
+    },
+}
+if stack.get("secrets") != expected_stack_secrets:
+    fail("the rendered edge secrets differ from the reviewed contract")
+if traefik_service.get("secrets") != [
+    {
+        "source": target,
+        "target": target,
+        "uid": "65532",
+        "gid": "65532",
+        "mode": 0o400,
+    }
+    for target in ["cloudflare_dns_api_token", *sorted(basicauth_secrets)]
+]:
+    fail("Traefik does not mount exactly the reviewed read-only secrets")
 
 def load_image_channels() -> dict[str, Any]:
     import importlib.util
@@ -369,6 +412,52 @@ edge_routes = {
     ),
     "shlink": ("shlink", "http://workloads_shlink:8080"),
 }
+# Satisfactory runs outside this repository. Its four routes are pinned
+# exactly as they ran in the hand-made Docker Config of 2026-09-22, except
+# that the logs login reads its users from a Docker Secret.
+satisfactory_host = "Host(`satisfactory.apptolast.com`)"
+satisfactory_routers = {
+    "satisfactory-web": {
+        "rule": satisfactory_host,
+        "entryPoints": ["websecure"],
+        "middlewares": ["edge-security"],
+        "service": "satisfactory-web",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+    "satisfactory-ws": {
+        "rule": satisfactory_host + " && PathPrefix(`/app/`)",
+        "priority": 100,
+        "entryPoints": ["websecure"],
+        "middlewares": ["edge-security"],
+        "service": "satisfactory-reverb",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+    "satisfactory-companions": {
+        "rule": satisfactory_host
+        + " && (Path(`/companions`) || PathPrefix(`/companions/`))",
+        "priority": 120,
+        "entryPoints": ["websecure"],
+        "middlewares": ["edge-security"],
+        "service": "satisfactory-companions",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+    "satisfactory-logs": {
+        "rule": "Host(`logs-satisfactory.apptolast.com`)",
+        "entryPoints": ["websecure"],
+        "middlewares": ["edge-security", "satisfactory-log-auth"],
+        "service": "satisfactory-logs",
+        "tls": {"certResolver": "letsencrypt"},
+    },
+}
+satisfactory_services = {
+    name: {"loadBalancer": {"servers": [{"url": url}]}}
+    for name, url in {
+        "satisfactory-web": "http://satisfactory-web:80",
+        "satisfactory-reverb": "http://satisfactory-reverb:8080",
+        "satisfactory-companions": "http://satisfactory-companions_web:8080",
+        "satisfactory-logs": "http://satisfactory-logs:8080",
+    }.items()
+}
 if set(dynamic["http"]["routers"]) != {
     "edge-health",
     "edge-ping-internal",
@@ -376,6 +465,7 @@ if set(dynamic["http"]["routers"]) != {
     "racinggame",
     "monitorizacion",
     *edge_routes,
+    *satisfactory_routers,
 }:
     fail("the rendered edge router allowlist differs from the service catalog")
 if set(dynamic["http"]["services"]) != {
@@ -383,8 +473,39 @@ if set(dynamic["http"]["services"]) != {
     "organizationweb",
     "racinggame",
     "monitorizacion",
+    *satisfactory_services,
 }:
     fail("the rendered edge backend allowlist differs from the service catalog")
+for name, expected_router in satisfactory_routers.items():
+    if dynamic["http"]["routers"][name] != expected_router:
+        fail(f"the {name} router differs from the reviewed ingress")
+for name, expected_service in satisfactory_services.items():
+    if dynamic["http"]["services"][name] != expected_service:
+        fail(f"the {name} upstream differs from the reviewed ingress")
+if set(dynamic["http"]["middlewares"]) != {
+    "edge-security",
+    "edge-rate-limit",
+    "edge-compress",
+    "edge-default",
+    "passbolt-forwarded-proto",
+    "passbolt-security",
+    "satisfactory-log-auth",
+}:
+    fail("the rendered edge middleware allowlist differs from the contract")
+# Inline `users` take precedence over `usersFile` and would put a hash in
+# this public repository, so the only reviewed shape is a secret file.
+if dynamic["http"]["middlewares"]["satisfactory-log-auth"] != {
+    "basicAuth": {
+        "usersFile": "/run/secrets/basicauth_satisfactory_logs",
+        "realm": "Satisfactory logs",
+        "removeHeader": True,
+    },
+}:
+    fail("the Satisfactory logs login differs from its users file contract")
+for rendered_name in ("stack.yml", "static.yml", "dynamic.yml"):
+    rendered_text = (render_dir / rendered_name).read_text(encoding="utf-8")
+    if re.search(r"\$(?:2[abxy]?|apr1)\$|\{SHA\}", rendered_text):
+        fail(f"the rendered {rendered_name} contains a password hash")
 organizationweb_route = dynamic["http"]["routers"]["organizationweb"]
 if organizationweb_route != {
     "rule": "Host(`organizacion.apptolast.com`)",

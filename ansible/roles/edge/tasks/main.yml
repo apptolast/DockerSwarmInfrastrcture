@@ -20,6 +20,15 @@
       - edge_traefik_hostname is match("^[a-z0-9.-]+$")
       - edge_traefik_acme_email is match("^[^@ ]+@[^@ ]+$")
       - edge_traefik_cloudflare_secret_name is match("^[a-zA-Z0-9_.-]+$")
+      # Each key is the file Traefik reads under /run/secrets and is pinned
+      # in stacks/edge/dynamic.yml.j2; each value is a versioned secret.
+      - >-
+        edge_traefik_basicauth_secrets == {
+          'basicauth_satisfactory_logs': 'edge-basicauth-satisfactory-logs-v1'
+        }
+      - >-
+        edge_traefik_cloudflare_secret_name
+        not in edge_traefik_basicauth_secrets.values() | list
       - >-
         edge_traefik_acme_storage_filename
         is match("^[a-zA-Z0-9][a-zA-Z0-9_.-]*\\.json$")
@@ -40,7 +49,8 @@
         edge_application_networks == {
           'organizationweb': 'apptolast-edge-organizationweb',
           'racinggame': 'apptolast-edge-racinggame',
-          'observatorio': 'apptolast-edge-observatorio'
+          'observatorio': 'apptolast-edge-observatorio',
+          'satisfactory': 'apptolast-edge-satisfactory'
         }
       - >-
         edge_application_networks.values() | list
@@ -51,7 +61,7 @@
       - racinggame.edge_network == 'apptolast-edge-racinggame'
       - >-
         edge_adopted_attachable_networks
-        == ['apptolast-edge-observatorio']
+        == ['apptolast-edge-observatorio', 'apptolast-edge-satisfactory']
       - >-
         edge_adopted_attachable_networks
         | difference(edge_application_networks.values() | list)
@@ -120,6 +130,44 @@
       The external Cloudflare secret exists but lacks the reviewed
       manual-bootstrap provenance.
     quiet: true
+  no_log: true
+
+# Metadata only: the users file itself is never read, printed or compared
+# here. A missing or unlabelled secret stops the play before any mutation.
+- name: Verify the basicAuth users file secrets exist
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ item }}"
+  loop: "{{ edge_traefik_basicauth_secrets.values() | list | sort }}"
+  register: edge_basicauth_secret_inspect
+  changed_when: false
+  no_log: true
+  check_mode: false
+
+- name: Verify the basicAuth users file secret provenance labels
+  ansible.builtin.assert:
+    that:
+      - >-
+        edge_basicauth_secret_inspect.results | map(attribute="item") | list
+        == edge_traefik_basicauth_secrets.values() | list | sort
+      - item.rc | default(1) == 0
+      - (item.stdout | from_json | first).Spec.Name == item.item
+      - >-
+        (item.stdout | from_json | first).
+        Spec.Labels["com.apptolast.managed-by"] == "manual-bootstrap"
+      - >-
+        (item.stdout | from_json | first).
+        Spec.Labels["com.apptolast.purpose"] == "traefik-basicauth"
+    fail_msg: >-
+      A Traefik basicAuth users file secret exists but lacks the reviewed
+      manual-bootstrap provenance.
+    quiet: true
+  loop: "{{ edge_basicauth_secret_inspect.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   no_log: true
 
 - name: Reconcile edge runtime state outside dry-run

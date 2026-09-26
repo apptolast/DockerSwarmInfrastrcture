@@ -284,6 +284,312 @@ Con una réplica y `stop-first`, una interrupción breve es esperable durante
 actualizaciones. Si se requiere cero downtime hay que rediseñar topología,
 publicación y número de nodos; no basta con cambiar `order`.
 
+## Rutas de Satisfactory
+
+Satisfactory se despliega fuera de este repositorio: el proyecto Compose
+`satisfactory` (`/srv/satisfactory`, contenedores `satisfactory-web`,
+`satisfactory-reverb` y `satisfactory-logs`) y el stack Swarm
+`satisfactory-companions`. Su entrada se añadió a mano el 2026-09-22 con la
+Docker Config `edge-traefik-dynamic-companions-a0952eace071` y la red
+`apptolast-edge-satisfactory`. `stacks/edge/dynamic.yml.j2` la codifica igual
+que `monitorizacion`: solo la entrada, tal como corría.
+
+<!-- markdownlint-disable MD013 -->
+
+| Router | Regla | Prioridad | Middlewares | Backend |
+| --- | --- | --- | --- | --- |
+| `satisfactory-web` | `Host(satisfactory.apptolast.com)` | implícita | `edge-security` | `http://satisfactory-web:80` |
+| `satisfactory-ws` | la anterior `&& PathPrefix(/app/)` | 100 | `edge-security` | `http://satisfactory-reverb:8080` |
+| `satisfactory-companions` | la anterior `&& (Path(/companions) \|\| PathPrefix(/companions/))` | 120 | `edge-security` | `http://satisfactory-companions_web:8080` |
+| `satisfactory-logs` | `Host(logs-satisfactory.apptolast.com)` | implícita | `edge-security`, `satisfactory-log-auth` | `http://satisfactory-logs:8080` |
+
+<!-- markdownlint-enable MD013 -->
+
+Ninguna lleva `edge-rate-limit`, como en vivo. La red es una red adoptada
+(`edge_adopted_attachable_networks`): los contenedores Compose solo pueden
+unirse a una overlay `attachable`. En un host reconstruido el rol crea las
+redes adoptadas ya `attachable` y el resto no.
+
+La única diferencia buscada con la Config viva es el login de los logs. El
+middleware `satisfactory-log-auth` ya no lleva `users` en línea sino
+`usersFile: /run/secrets/basicauth_satisfactory_logs`, con el mismo realm
+(`Satisfactory logs`) y `removeHeader: true`. Traefik da prioridad a `users`
+sobre `usersFile`, así que la clave `users` no existe en el render y
+`scripts/validate-contract.py` la rechaza, igual que cualquier `$2…$`,
+`$apr1$` o `{SHA}` en los ficheros renderizados
+([basicAuth v3.7](https://doc.traefik.io/traefik/v3.7/reference/routing-configuration/http/middlewares/basicauth/)).
+El fichero es el Docker Secret `edge-basicauth-satisfactory-logs-v1`
+(`edge_traefik_basicauth_secrets` en `ansible/group_vars/all.yml`), montado
+`0400` para `65532:65532` en un tmpfs del task
+([Docker secrets](https://docs.docker.com/engine/swarm/secrets/)). Contiene
+una línea `usuario:hash-bcrypt` y solo existe en el host: ningún hash entra
+en este repositorio público. El rol solo inspecciona sus metadatos, con
+`no_log`, y se detiene antes de mutar nada si falta o no lleva
+`com.apptolast.managed-by=manual-bootstrap` y
+`com.apptolast.purpose=traefik-basicauth`.
+
+Traefik lee el fichero una vez, al construir el middleware. Si falta, está
+vacío o no se puede leer, desactiva solo ese router, que responde `404`, y el
+task sigue sano, así que el rollback automático no salta. Por eso el deploy
+exige, después de `/ping`, que `logs-satisfactory.apptolast.com` responda
+`401` con `WWW-Authenticate: Basic realm="Satisfactory logs"`. La petición va
+sin credenciales y no cuesta ningún bcrypt. `EdgeBasicAuthChallengeProbeTests`
+deriva del render cada router que pasa por un `basicAuth`, con su realm, y
+exige que sea exactamente la lista que sondea el deploy: un router protegido
+nuevo necesita su propia sonda.
+
+`EdgeLiveParityTests` (`tests/test_edge_contract.py`) compara el render con
+`tests/fixtures/edge-live-dynamic-companions-a0952eace071.masked.json`, la
+Config viva con cada usuario enmascarado. Solo admite dos diferencias: el
+`usersFile` y el backend sin servidores de OpenClaw mientras siga aparcado
+(PR #59), que la Config hecha a mano no tenía. Las Docker Configs son
+inmutables, así que el nombre fija el contenido. Este comando, de solo
+lectura, regenera la fixture o comprueba que sigue siendo la Config viva; el
+hash solo pasa por la tubería:
+
+```bash
+sudo -- docker config inspect edge-traefik-dynamic-companions-a0952eace071 \
+  --format '{{printf "%s" .Spec.Data}}' |
+  /usr/bin/python3 -c 'import json, sys, yaml
+d = yaml.safe_load(sys.stdin)
+a = d["http"]["middlewares"]["satisfactory-log-auth"]["basicAuth"]
+a["users"] = ["<masked>" for _ in a["users"]]
+print(json.dumps(d, indent=2, sort_keys=True))' |
+  diff -u tests/fixtures/edge-live-dynamic-companions-a0952eace071.masked.json -
+```
+
+El spec vivo de `edge_traefik` se comparó campo a campo con el render el
+2026-09-25, con `Version.Index` 147489: imagen, etiquetas, usuario, entorno,
+healthcheck, montaje, puertos, recursos (`256M`/`128M` de memoria, aplicados
+a mano ese día), reinicio, update, rollback y placement coinciden. Un apply
+cambia solo tres cosas:
+
+- el nombre de la Config dinámica;
+- un secret más, el del fichero de usuarios;
+- el alias `traefik` en `apptolast-edge-satisfactory`, que la conexión hecha
+  a mano no tenía y que `docker stack deploy` añade en todas las redes.
+
+### Crear el secret desde el hash vivo
+
+El secret se crea una sola vez, antes del primer apply, copiando la línea en
+uso sin imprimirla, así que la contraseña no cambia. Precondiciones:
+
+- `edge_traefik` sigue usando `edge-traefik-dynamic-companions-a0952eace071`;
+- el secret no existe (`sudo -- docker secret ls`);
+- no hay otra operación en curso.
+
+Cuerpo del script root-only revisado, por ejemplo
+`/root/edge-basicauth-satisfactory-logs-v1.sh` (`0700`):
+
+```bash
+set +x
+set -euo pipefail
+name=edge-basicauth-satisfactory-logs-v1
+source_config=edge-traefik-dynamic-companions-a0952eace071
+if docker secret inspect "${name}" >/dev/null 2>&1; then
+  printf 'ERROR: %s already exists\n' "${name}" >&2
+  exit 1
+fi
+users_line="$(
+  docker config inspect "${source_config}" \
+    --format '{{printf "%s" .Spec.Data}}' |
+    /usr/bin/python3 -c 'import re, sys, yaml
+a = yaml.safe_load(sys.stdin)["http"]["middlewares"]["satisfactory-log-auth"]
+u = a["basicAuth"].get("users")
+ok = "usersFile" not in a["basicAuth"] and isinstance(u, list) and len(u) == 1
+if not ok or not re.fullmatch(r"[^:\s]+:\$2[aby]\$1[0-9]\$[./A-Za-z0-9]{53}", u[0]):
+    sys.exit("ERROR: the live users entry has an unexpected shape")
+sys.stdout.write(u[0])'
+)"
+printf '%s\n' "${users_line}" |
+  docker secret create \
+    --label com.apptolast.managed-by=manual-bootstrap \
+    --label com.apptolast.purpose=traefik-basicauth \
+    "${name}" - >/dev/null
+unset users_line
+docker secret inspect "${name}" --format '{{.Spec.Name}} {{json .Spec.Labels}}'
+```
+
+`printf` es un builtin: la línea no llega a ningún `argv` ni al historial, y
+`docker secret create` la lee de stdin. Ejecutarlo bajo el lock real:
+
+```bash
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation edge-basicauth-satisfactory-logs -- \
+  /bin/bash /root/edge-basicauth-satisfactory-logs-v1.sh
+```
+
+Para cambiar la contraseña más adelante, o para sustituir un fichero de
+usuarios que no carga, se crea `edge-basicauth-satisfactory-logs-v2` con una
+línea nueva; nunca se reutiliza un nombre. El hash se genera en un prompt
+oculto (`mkpasswd -m bcrypt -R 10`, paquete `whois`), nunca en un argumento.
+El nombre exacto `…-v1` está fijado en cuatro sitios, así que cambiar solo la
+variable detiene el siguiente apply en la validación de entradas del rol. El
+nombre nuevo entra en un único PR revisado que cambia a la vez
+`edge_traefik_basicauth_secrets` (`ansible/group_vars/all.yml`), la aserción
+de valor exacto de `ansible/roles/edge/tasks/main.yml`, el mapa revisado de
+`scripts/validate-contract.py` y sus pruebas en
+`tests/test_edge_contract.py`. Después se aplica siguiendo la ventana de
+abajo.
+
+### Ventana de aplicación
+
+El primer apply de `edge` desde este repositorio reemplaza la única tarea de
+Traefik. Con `stop-first`, puertos en modo `host` y el `graceTimeOut` de 10 s,
+80/443 rechazan conexiones nuevas unos 13 s en todos los hostnames (medido
+el 2026-09-25 en dos relevos) y se cortan los WebSocket y SSE abiertos. Una
+sola persona, fuera de 22:30–00:40 UTC (ventana del Observatorio), desde el
+clon operativo limpio y en detached HEAD sobre el commit fusionado, tras
+`git fetch --all --prune`.
+
+1. Comprobar que el servicio no cambió desde la comparación:
+
+   ```bash
+   sudo -- docker service inspect edge_traefik --format \
+     '{{.Version.Index}}{{range .Spec.TaskTemplate.ContainerSpec.Configs}} {{.ConfigName}}{{end}}'
+   ```
+
+   Debe mostrar `147489 edge-traefik-static-1f7dc2751eef366d
+   edge-traefik-dynamic-companions-a0952eace071`. Otro índice significa
+   que alguien tocó el servicio: parar y repetir la comparación de esta
+   sección antes de seguir.
+2. Renderizar (`ansible/playbooks/render-edge.yml`) y guardar el estado de
+   cada ruta pública con la función de abajo: `edge_probe >
+   /tmp/edge-before.txt`.
+3. Crear el secret (sección anterior).
+4. `./scripts/deploy-ansible.sh --playbook edge --check --ask-become-pass`
+   y, si está limpio, el apply con `--confirm-production`.
+5. `edge_probe > /tmp/edge-after.txt` y
+   `diff /tmp/edge-before.txt /tmp/edge-after.txt`, sin diferencias. Antes
+   de este cambio OpenClaw ya respondía `503` (sonda caída) y sigue así.
+   Cualquier otra diferencia es motivo de rollback (ver «Rollback» abajo).
+6. `sudo -- docker service inspect edge_traefik`: la Config dinámica nueva,
+   los secrets `cloudflare_dns_api_token_v3` y
+   `edge-basicauth-satisfactory-logs-v1`, y 13 redes. Los logs se leen solo
+   de la tarea nueva: los del servicio incluyen también las tareas paradas
+   ([`docker service logs`](https://docs.docker.com/reference/cli/docker/service/logs/)
+   acepta un servicio o una tarea), y la anterior registró el WARN de
+   OpenClaw cada 15 s hasta el relevo, minutos antes. `${task}` debe ser un
+   único ID y la cuenta, `0`: ni `no users found` ni el WARN de la sonda de
+   `workloads_openclaw`.
+
+   ```bash
+   task="$(sudo -- docker service ps edge_traefik \
+     --filter desired-state=running --quiet --no-trunc)"
+   sudo -- docker service logs --since 10m "${task}" 2>&1 |
+     grep --count -E 'no users found|workloads_openclaw'
+   ```
+
+7. El propietario entra una vez en `https://logs-satisfactory.apptolast.com`
+   con su contraseña de siempre.
+8. Solo si los pasos 5 a 7 salieron bien, repetir el apply: `changed=0` y el
+   mismo ID de tarea en `sudo -- docker service ps edge_traefik`. Desde aquí
+   `docker service rollback` ya no vuelve a la Config hecha a mano (ver
+   «Rollback»).
+9. Registrar la evidencia en `docs/DEPLOYMENT_STATUS.md` y actualizar la
+   compuerta STOP 10 de `CLAUDE.md` en el mismo cambio.
+
+La función de sondeo solo hace un `GET` sin credenciales a cada URL que sale
+de las reglas `Host`/`Path`/`PathPrefix` del render, forzando la IP pública
+del contrato:
+
+```bash
+edge_routes() {
+  .venv/bin/python - <<'PY'
+import re
+import yaml
+routers = yaml.safe_load(open(".build/edge/dynamic.yml"))["http"]["routers"]
+urls = set()
+for router in routers.values():
+    paths = re.findall(r"Path(?:Prefix)?\(`([^`]+)`\)", router["rule"])
+    for host in re.findall(r"Host\(`([^`]+)`\)", router["rule"]):
+        urls.update(f"https://{host}{path}" for path in paths or ["/"])
+print("\n".join(sorted(urls)))
+PY
+}
+edge_probe() {
+  local ip url host
+  ip="$(.venv/bin/python -c 'import yaml
+print(yaml.safe_load(open("config/platform.yml"))["platform_public_ipv4"])')"
+  for url in $(edge_routes); do
+    host="${url#https://}"
+    host="${host%%/*}"
+    printf '%s ' "${url}"
+    curl --silent --output /dev/null --connect-timeout 5 --max-time 20 \
+      --resolve "${host}:443:${ip}" \
+      --write-out '%{http_code} verify=%{ssl_verify_result}\n' "${url}" ||
+      true
+  done
+}
+```
+
+El 2026-09-25 devolvía `401` en `logs-satisfactory` y en `/companions`,
+`503` en OpenClaw, `404` en `/app/` y en `generadorcodigosqr`, `302`/`307`
+en Passbolt y Alberto, y `200` en el resto, todas con `verify=0`.
+
+#### Rollback
+
+Si la tarea nueva no queda sana en los 90 s de `monitor`, Swarm vuelve solo
+al spec anterior (`failure_action: rollback`), deja el `PreviousSpec` nulo
+(ver «Crash tras un rollback» en [AUTOUPDATE.md](AUTOUPDATE.md)) y el apply
+falla. A mano, `docker service rollback edge_traefik` vuelve al
+`PreviousSpec`, con otro corte de unos 13 s.
+
+Ese `PreviousSpec` es el estado hecho a mano (la Config
+`edge-traefik-dynamic-companions-a0952eace071`, solo el secret de Cloudflare
+y la red sin alias) únicamente entre el paso 4 y el paso 8. `docker stack
+deploy` actualiza cada servicio de la pila aunque no cambie, y cada
+actualización guarda el spec en uso como `PreviousSpec`: en vivo, servicios
+de `workloads` que el último deploy no cambió tienen un `PreviousSpec` igual
+a su spec. Tras el paso 8, un rollback reaplicaría el spec de este cambio y
+no haría nada. Por eso toda comprobación que pueda pedir un rollback (pasos
+5 a 7) va antes del paso 8. Más tarde, la vuelta atrás es un PR revisado que
+revierta o corrija lo que falla y un apply de `edge` en otra ventana como
+esta. Revertir este cambio entero no devuelve el estado hecho a mano: quitaría
+las rutas de Satisfactory del render.
+
+Cómo volver depende de si Ansible dejó su marker:
+
+- **Falla `deploy-ansible.sh`** (el `--check`, la sonda HTTPS, la prueba
+  `401` o un rollback automático). Un fallo de Ansible conserva
+  `/run/lock/dockerswarm-ansible.marker` (ver «Bloqueo de cambios Ansible» en
+  [OPERATIONS.md](OPERATIONS.md)) y `host_global_operation_lock.py run` se
+  niega mientras exista, así que el rollback va sin lock, como la parada de
+  emergencia de «Apply rechazado por un update en curso»:
+  1. Leer qué spec corre:
+
+     ```bash
+     sudo -- docker service inspect edge_traefik --format \
+       '{{range .Spec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}} {{end}}{{.UpdateStatus.State}}'
+     ```
+
+  2. Si la Config dinámica ya es `…companions-a0952eace071`, no se lanza
+     ningún rollback: Swarm ya volvió (`rollback_completed`), está volviendo
+     (`rollback_started`: esperar y repetir la lectura) o el fallo llegó antes
+     del deploy. Si es la Config nueva, rollback de emergencia:
+     `sudo -- docker service rollback edge_traefik`.
+  3. `edge_probe` igual que en `/tmp/edge-before.txt`.
+  4. Recuperar el marker con «Recuperar un marker abandonado» de
+     [OPERATIONS.md](OPERATIONS.md): primero el dry-run y después
+     `--apply --confirm`. Solo entonces se crea un secret o se repite un apply.
+- **El apply terminó bien y falla el paso 5, 6 o 7.** No queda marker, así
+  que el rollback va bajo el lock, como los demás rollbacks manuales:
+
+  ```bash
+  sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+    --operation edge-rollback -- \
+    /usr/bin/docker service rollback edge_traefik
+  ```
+
+Un `404` solo en `logs-satisfactory` es el router desactivado por el fichero
+de usuarios, y el apply falla en la prueba `401`: primer caso. Se corrige con
+un secret `-v2` y su PR revisado (ver «Crear el secret desde el hash vivo») en
+otra ventana. Las Configs antiguas nunca se borran en un deploy. Las dos hechas
+a mano (`…companions-a0952eace071` y `…satisfactory-2af1d9e1a890`) son el
+destino de este rollback. No se retiran hasta que el propietario lo decida con
+el edge ya estable, aunque guarden el hash en línea. Un rollback se registra
+el mismo día en `docs/DEPLOYMENT_STATUS.md` y la compuerta 10 sigue abierta.
+
 ## Rotación del token ACME
 
 Docker recomienda versionar nombres para rotar secrets. El procedimiento es:

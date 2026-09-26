@@ -18,6 +18,7 @@ edge_traefik_stack_name: edge
 edge_traefik_hostname: ""
 edge_traefik_acme_email: ""
 edge_traefik_cloudflare_secret_name: ""
+edge_traefik_basicauth_secrets: {}
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json
 edge_deployment_profile: >-
