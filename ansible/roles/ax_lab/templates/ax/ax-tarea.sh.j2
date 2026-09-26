@@ -130,7 +130,7 @@ fi
 # Solo un NotFound de ax-server (internal/server/server.go, líneas 83-84 y
 # 315-316) prueba que ya no existe: un túnel o un servidor caídos también
 # hacen fallar `ax get`. Su salida, con la definición y el token, se tira.
-# shellcheck disable=SC2329 # la llama limpiar, desde el trap de salida
+# shellcheck disable=SC2317,SC2329 # la llama limpiar, desde el trap de salida
 borrada() {
   error=$(ax get "$1" "$2" -a default 2>&1 >/dev/null) && return 1
   case $error in *"code = NotFound"*) return 0;; esac
@@ -141,7 +141,7 @@ borrada() {
 # desaparezca de verdad y, si no, se avisa con la orden para reintentar.
 # Antes, si Codex llegó a arrancar, se lee de vuelta su sesión, también tras
 # una interrupción: pudo renovarla y el sandbox tiene la única copia válida.
-# shellcheck disable=SC2329 # la llama el trap de salida
+# shellcheck disable=SC2317,SC2329 # la llama el trap de salida
 limpiar() {
   if [ "$AGENTE" = codex ] && [ "$listo" = True ]; then
     copiar_sesion_codex
