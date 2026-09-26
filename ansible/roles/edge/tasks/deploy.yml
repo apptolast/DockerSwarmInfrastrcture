@@ -441,6 +441,16 @@
 # Con `detach: true` el cliente regresa antes de que swarmkit cierre su
 # ventana `monitor`, asi que un servicio revertido seguiria en 1/1 pero con el
 # spec anterior. Esta comprobacion recupera esa senal.
+#
+# Tambien espera a que el relevo termine. Mientras dura `updating`, la tarea
+# anterior sigue siendo la unica en marcha (stop-first y su graceTimeOut), y
+# la puerta de salud de abajo la elegiria a ella: el 2026-09-26 el primer
+# apply de este edge fallo asi con la tarea nueva sana. swarmkit deja el estado
+# nulo al actualizar el servicio (manager/controlapi/service.go, linea 918),
+# el updater lo pasa a `updating` al empezar (update/updater.go, linea 551) y
+# a `completed` al terminar la ventana `monitor` (linea 641). Sin cambios en
+# el spec no hay relevo y el estado queda nulo: pasa a la primera. El tope de
+# 4 minutos cubre stop-first, el arranque y los 90 s de `monitor`.
 - name: Read the Traefik update state
   ansible.builtin.command:
     argv:
@@ -453,6 +463,14 @@
   register: edge_traefik_update_state
   changed_when: false
   check_mode: false
+  until: >-
+    (
+      edge_traefik_update_state.stdout
+      | from_json | default({}, true)
+    ).get("State", "none")
+    not in ["updating", "rollback_started"]
+  retries: 48
+  delay: 5
 
 - name: Reject a Traefik update that rolled back or paused
   ansible.builtin.assert:
