@@ -394,7 +394,7 @@ class AutoupdaterWiringTests(unittest.TestCase):
         ]
         self.assertEqual(
             [record["item"] for record in host_containers],
-            ["kind-control-plane", "kind-registry"],
+            ["kind-control-plane", "kind-registry", "ax-web-edge"],
         )
         live = json.dumps({"services": services, "host_containers": host_containers})
         with mock.patch("sys.stdin", io.StringIO(live)), mock.patch(

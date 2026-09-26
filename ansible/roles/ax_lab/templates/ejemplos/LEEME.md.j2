@@ -1,0 +1,322 @@
+{# Managed by Ansible (role ax_lab); see docs/AX.md, «Ejemplos». #}
+# AX en este servidor: cómo usarlo
+
+AX (github.com/google/ax) corre aquí como laboratorio: un clúster kind con
+Agent Substrate y el plano de control de AX, en el commit `{{ ax_lab.sources.ax.commit[:7] }}` más el
+parche local de google/ax#375. Todo se maneja con dos órdenes, siempre con
+`sudo`, o desde el panel web (ver «El panel web»):
+
+- `sudo ax …`: la CLI oficial de AX.
+- `sudo ax-tarea <repo> "<instrucción>" [claude|codex]`: lanza Claude Code
+  o Codex sobre un repositorio dentro del sandbox y borra la tarea al acabar.
+
+Esta carpeta está en `{{ ax_lab_examples_directory }}` y la instala el
+playbook `ax-lab`. `{{ ax_lab.install_root }}` solo lo puede abrir root, así
+que los ejemplos se usan con su ruta completa y `sudo`
+(`sudo ax apply -f {{ ax_lab_examples_directory }}/…`). Para leer esta guía:
+`sudo cat {{ ax_lab_examples_directory }}/LEEME.md | less`. No edites los
+ficheros aquí: el siguiente apply los devuelve a su versión revisada. Copia
+el que quieras cambiar (ver «Ejemplos de esta carpeta»).
+
+## El panel web
+
+`{{ ax_lab.web.origin }}` es un panel pequeño y propio (AX no trae
+interfaz web): lista las tareas, lanza Claude sobre un repositorio público
+`https://` de {{ ax_lab.web.repo_hosts | join(", ") }}, muestra la salida en directo y borra la
+tarea al terminar. Pide usuario y contraseña, y entre Traefik y el panel
+hay un certificado cliente (mTLS). Quien tenga la contraseña puede gastar
+tu cuota de Claude: guárdala como guardas el token. El panel rechaza una
+ejecución si hay una tarea `tarea-*` de `ax-tarea` o si se cruzaría con la
+ventana {{ ax_lab.web.blackout_utc }} UTC. Con un solo worker, no lances `ax-tarea`
+mientras el panel tiene una ejecución en marcha (una tarea `web-*`): se
+quedaría esperando al worker. Todo lo demás está en `docs/AX_WEB.md` del
+repositorio de infraestructura.
+
+## ¿Se puede exponer `ax-server` a Internet?
+
+No, y el panel no lo hace: `ax-server` sigue sin publicarse. `ax-server`
+habla gRPC sin TLS y sin ninguna autenticación
+(google/ax#376, abierta): `grpc.NewServer()` sin opciones
+(`internal/server/server.go`, línea 42) y la CLI conecta con
+`insecure.NewCredentials()` (`cmd/ax/main.go`, línea 204). Quien llegue a
+él puede crear, parar y borrar cualquier tarea y leer su definición
+completa, incluidos los tokens que `ax-tarea` pone en `spec.env`. Esas líneas
+siguen igual en la última versión publicada (v0.3.1) y en la rama principal
+(`2fbce2e`, 2026-09-25), y ningún cambio abierto en google/ax añade
+autenticación. AX no tiene interfaz web ni API HTTP propias.
+
+Para la CLI, lo seguro es lo que ya tienes: SSH. Mira «Desde tu ordenador».
+
+## Por qué «no sale nada»
+
+- Los listados (`get tasks`, `get workspaces`, `get gateways`,
+  `get models`) solo imprimen la cabecera cuando no hay objetos. Lo normal
+  es que no haya ninguno: `ax-tarea` borra su tarea al terminar.
+- Las salidas del README de google/ax (`default-gateway`, `default-model`,
+  `gemini-3.8-flash`…) son del entorno de Google, no de este servidor.
+- `examples/task.yaml` de google/ax no está en tu directorio actual y usa
+  recursos que aquí no existen: la imagen de gcr.io, el secreto de Gemini,
+  el servidor git-mcp y los registros de MCP y skills de Google. Usa los
+  ejemplos de esta carpeta.
+- Sin `sudo`, `ax` responde «ejecútalo con sudo».
+- `ax tunnel list` siempre sale vacío, a propósito: cada `sudo ax` abre su
+  propio túnel hacia `ax-server` y lo cierra al terminar.
+- `ax version` no consulta el servidor: siempre imprime
+  `ax version v1alpha1 (standalone redis engine)`.
+
+## Órdenes
+
+```sh
+sudo ax apply -f {{ ax_lab_examples_directory }}/01-tarea-sencilla.yaml
+sudo ax get tasks                     # solo el atespace default
+sudo ax get tasks -a '*'              # todos los atespaces
+sudo ax describe task ejemplo-sencilla
+sudo ax watch task ejemplo-sencilla
+sudo ax ssh ejemplo-sencilla -- sh -c 'ls -la /workspace'
+sudo ax suspend task ejemplo-sencilla
+sudo ax resume task ejemplo-sencilla  # lee «Suspender y reanudar»
+sudo ax delete task ejemplo-sencilla
+sudo ax get workspaces
+sudo ax ctx
+```
+
+Tres avisos:
+
+- Usa `describe`, no `get task <nombre>`. `get task <nombre>` imprime la
+  tarea entera en YAML (`cmd/ax/main.go`, línea 412), con `spec.env`, y en
+  una tarea de `ax-tarea` eso es el token del agente. `describe` no muestra
+  el entorno.
+- `watch` termina en cuanto la tarea llega a Running, Completed o Failed
+  (`cmd/ax/main.go`, línea 818). Si la tarea no existe, se queda esperando:
+  sal con Ctrl-C.
+- Pon el atespace en `metadata.atespace` de cada manifiesto: `apply -a X`
+  no lo cambia si el manifiesto no lo trae (google/ax#414).
+
+## Ejemplos de esta carpeta
+
+| Fichero | Qué crea |
+| --- | --- |
+| `01-tarea-sencilla.yaml` | Una tarea sin workspace (`ejemplo-sencilla`) |
+| `02-workspace.yaml` | Un workspace con el repositorio público chalk |
+| `03-tarea-con-workspace.yaml` | Una tarea que monta ese workspace |
+| `cliente/ax-remoto` | El ayudante para Linux y macOS |
+| `cliente/ax-remoto.ps1` | El ayudante para Windows (PowerShell 7.4+) |
+
+Para tener una copia tuya que puedas editar:
+
+```sh
+sudo cat {{ ax_lab_examples_directory }}/01-tarea-sencilla.yaml > ~/mi-tarea.yaml
+```
+
+Las tareas 01 y 03 no tienen `command`: se quedan en Running hasta que las
+borres, y cada una ocupa un worker. El laboratorio tiene {{ ax_lab.ax.worker_pool.replicas }}
+({{ ax_lab.ax.worker_pool.namespace }}/{{ ax_lab.ax.worker_pool.name }}): bórralas al terminar.
+
+No hay ejemplo de Model: el de google/ax necesita el secreto de Gemini. No
+hay ejemplo de Gateway: google/ax#395 ya ha eliminado ese tipo en las
+versiones nuevas y, con el Substrate fijado aquí, su lista de salida no se
+aplica (ver «Limitaciones»).
+
+`resources` tampoco aparece: AX lo ignora (google/ax#369; el arreglo,
+google/ax#405, sigue sin fusionar). El tope real de cada tarea es el de su
+worker: {{ ax_lab.ax.worker_pool.cpu_limit_millicores }}m de CPU y {{ ax_lab.ax.worker_pool.memory_mib }}Mi.
+
+No escribas tokens ni contraseñas en un manifiesto: AX guarda la
+definición entera en claro y `get task` la imprime.
+
+## Tareas con agente: `ax-tarea`
+
+```sh
+sudo ax-tarea https://github.com/usuario/repo.git "explica este repo" claude
+sudo RAMA=dev TURNOS=10 ax-tarea https://github.com/usuario/repo.git "…" claude
+```
+
+- Variables: `RAMA` (por defecto `main`), `TURNOS` (20, solo Claude) y
+  `CONSERVAR=1` para no borrar la tarea al terminar. Con `CONSERVAR=1` la
+  tarea sigue guardando el token hasta que la borres.
+- `CPU` y `MEMORIA` existen, pero no sirven: AX no aplica esos límites
+  (google/ax#369).
+- Solo corre una a la vez. La segunda espera hasta 10 minutos y, si no
+  puede, sale con el código 75.
+- Nada secreto en la instrucción ni en la URL del repositorio (nada de
+  `https://usuario:token@…`). `sudo` guarda la orden completa en el registro
+  del sistema, y la URL queda en la definición del workspace.
+- Usa solo repositorios y ramas de confianza: AX no valida la URL ni la
+  rama (google/ax#363).
+
+Una tarea con agente puede durar bastante. Lánzala dentro de `tmux`: si se
+corta la conexión, sigue, y al acabar borra la tarea como siempre.
+
+```sh
+ssh -t apptolast tmux new -s ax        # dentro: sudo ax-tarea …
+ssh -t apptolast tmux attach -t ax     # para volver
+```
+
+Si la lanzas sin `tmux` y se corta la conexión, `ax-tarea` puede morir sin
+borrar la tarea. Compruébalo con `sudo ax get tasks` y borra lo que quede:
+
+```sh
+sudo ax delete task tarea-AAAAMMDD-HHMMSS
+sudo ax delete workspace ws-tarea-AAAAMMDD-HHMMSS
+```
+
+## Suspender y reanudar
+
+`sudo ax resume task X` contesta «resumed» y sale con 0 aunque la
+reanudación vaya a fallar: solo marca la tarea para reanudar
+(`internal/server/server.go`, línea 194). La reanudación la hace después el
+controlador. Si falla, la tarea pasa a
+Failed y `sudo ax describe task X` muestra, en «Conditions», el motivo
+`ActorResumeFailed` (`internal/controller/reconciler.go`, línea 231). El
+controlador no lo reintenta solo.
+
+El fallo conocido es este. La primera vez que suspendes una tarea de una
+plantilla nueva, Substrate sube en segundo plano la instantánea «golden».
+Si reanudas antes de que termine, falla con:
+
+```text
+a Golden data resume requires the ActorTemplate golden snapshot, which is not available
+```
+
+El mensaje viene de Substrate
+(`cmd/ateapi/internal/controlapi/workflow_resume.go`, línea 223). No se
+pierde nada: basta con volver a pedir `resume`. Si el actor ya está en
+marcha, Substrate no hace nada con un `resume` de más (el mismo fichero,
+líneas 95-97). En la prueba del 2026-09-25 el segundo intento funcionó y
+`/workspace` conservaba su contenido.
+
+Para no estar pendiente:
+
+```sh
+T=ejemplo-sencilla
+sudo ax resume task "$T"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sleep 5
+  fase=$(sudo ax get tasks | awk -v t="$T" '$1 == t { print $3 }')
+  echo "fase: $fase"
+  [ "$fase" = Running ] && break
+  if [ "$fase" = Failed ]; then sudo ax resume task "$T"; fi
+done
+```
+
+Si tras un minuto no está en Running, mira `sudo ax describe task "$T"`.
+
+## Limitaciones conocidas
+
+- `ax ssh <tarea>` sin orden no abre ninguna shell (google/ax#374). Pasa
+  siempre una orden.
+- `ax ssh` no reenvía la entrada estándar ni Ctrl-C (google/ax#389; el
+  arreglo, google/ax#413, sigue sin fusionar). Nada de vim, top ni
+  programas interactivos.
+- La CLI se come `-a`, `-n`, `--server` y `--context` aunque vayan detrás
+  de `--` (google/ax#410; arreglo en google/ax#411, sin fusionar). Envuelve
+  la orden en `sh -c '…'`.
+- La salida a Internet de los sandboxes no se filtra con el Substrate
+  fijado: en la prueba del 2026-09-25 las pasarelas dejaron pasar
+  `github.com` y `api.openai.com` (docs/AX.md del repositorio de
+  infraestructura, «Límites conocidos»).
+- Si el clon de un workspace falla, la tarea arranca igual
+  (`internal/workspace/setup.go`, línea 111). Comprueba con `ax ssh` que el
+  repositorio está.
+
+## Desde tu ordenador
+
+No hace falta exponer nada. Todo va por SSH, con la misma cuenta y la misma
+clave que ya usas.
+
+Define el servidor una vez en `~/.ssh/config` (en Windows,
+`%USERPROFILE%\.ssh\config`):
+
+```text
+Host apptolast
+  HostName <IP o nombre del servidor>
+  User admin
+```
+
+Sin ayudante:
+
+```sh
+ssh apptolast sudo ax get tasks
+ssh apptolast sudo ax apply -f - < mi-tarea.yaml
+ssh apptolast "sudo ax get tasks -a '*'"
+```
+
+En el último, las comillas dobles hacen falta: sin ellas el shell del
+servidor cambiaría `*` por los ficheros de tu carpeta personal.
+
+Con el ayudante `ax-remoto`, que se ocupa de las comillas, manda tu fichero
+en `apply -f`, pide terminal solo para `watch` y `ssh` y devuelve el mismo
+código de salida que la orden. No abre puertos ni túneles.
+
+En Linux o macOS:
+
+```sh
+ssh apptolast sudo cat {{ ax_lab_examples_directory }}/cliente/ax-remoto > ax-remoto
+chmod +x ax-remoto
+./ax-remoto get tasks -a '*'
+./ax-remoto apply -f mi-tarea.yaml
+./ax-remoto describe task ejemplo-sencilla
+./ax-remoto watch task ejemplo-sencilla
+./ax-remoto ssh ejemplo-sencilla -- ls -la /workspace
+./ax-remoto delete task ejemplo-sencilla
+```
+
+En Windows, con PowerShell 7.4 o posterior (las versiones anteriores
+pueden cambiar los bytes al guardar en un fichero la salida de `ssh`):
+
+```powershell
+ssh apptolast sudo cat {{ ax_lab_examples_directory }}/cliente/ax-remoto.ps1 > ax-remoto.ps1
+.\ax-remoto.ps1 get tasks -a '*'
+.\ax-remoto.ps1 ssh ejemplo-sencilla ls -la /workspace
+```
+
+Si PowerShell se niega a ejecutar el script, mira
+`Get-ExecutionPolicy -List`: con `RemoteSigned`, los scripts creados en tu
+equipo se ejecutan sin firma (about_Execution_Policies).
+
+`./ax-remoto -h` explica el resto. Tres cosas a saber:
+
+- `ax-tarea` no va por el ayudante. Entra con `ssh -t apptolast` y lánzala
+  dentro de `tmux`, como arriba.
+- No uses `ssh -L` ni ninguna otra redirección de puertos. El servidor las
+  tiene desactivadas (`DisableForwarding yes`), y además dejarían
+  `ax-server`, que no tiene autenticación, al alcance de cualquier programa
+  de tu ordenador.
+- Si se corta la conexión durante un `watch` o un `ssh` remoto, en el
+  servidor pueden quedar un `kubectl port-forward` y su scope. Revisa el
+  apartado siguiente.
+
+## Comprobar que no queda nada abierto
+
+```sh
+sudo ax get tasks -a '*'              # ninguna tarea olvidada
+sudo ax get workspaces -a '*'
+sudo pgrep -a kubectl                 # ningún port-forward
+systemctl list-units --all 'ax-cli-*' 'ax-tarea-*'
+ls -d /run/ax-cli.* /run/ax-tarea.* 2>/dev/null
+```
+
+`pgrep` y `ls` no deben mostrar nada, y `systemctl` debe decir
+«0 loaded units listed». Si queda algo de `ax-cli` y no hay ningún
+`sudo ax` en marcha, límpialo:
+
+```sh
+sudo systemctl stop 'ax-cli-*.scope'
+sudo rm -rf /run/ax-cli.*
+```
+
+Un scope `ax-tarea-*` significa que hay una `ax-tarea` en marcha: deja que
+termine, porque es ella la que borra su tarea.
+
+## Estado de los problemas citados (2026-09-25)
+
+| google/ax | Qué | Estado |
+| --- | --- | --- |
+| #376 | Sin autenticación en `ax-server` | Abierta |
+| #369 | `resources` no se aplica | Abierta; arreglo #405 sin fusionar |
+| #374 | `ax ssh` sin orden no hace nada | Abierta |
+| #389 | `ax ssh` no reenvía la entrada | Abierta; arreglo #413 sin fusionar |
+| #410 | La CLI lee opciones tras `--` | Abierta; arreglo #411 sin fusionar |
+| #414 | `apply -a` ignorado | Abierta; arreglo #415 sin fusionar |
+| #363 | URL y rama de git sin validar | Abierta |
+| #395 | Elimina el tipo Gateway | Fusionado después de `f009cc8` |

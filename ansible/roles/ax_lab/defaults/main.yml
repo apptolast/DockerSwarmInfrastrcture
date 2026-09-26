@@ -30,3 +30,7 @@ ax_lab_ax_state_path: "{{ ax_lab_state_directory }}/ax.json"
 ax_lab_ax_helper_directory: /usr/local/sbin
 ax_lab_ax_runtime_directory: /run
 ax_lab_ax_lock_directory: /run/lock
+# The AX web panel (docs/AX_WEB.md): the state file that proves this role
+# created its namespace on this node, and the owner's examples it installs.
+ax_lab_web_state_path: "{{ ax_lab_state_directory }}/web.json"
+ax_lab_examples_directory: "{{ ax_lab.install_root }}/ejemplos"

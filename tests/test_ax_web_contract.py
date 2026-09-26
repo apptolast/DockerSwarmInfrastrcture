@@ -279,7 +279,11 @@ class BuildContract(unittest.TestCase):
         for event in ("pull_request", "push"):
             self.assertEqual(
                 workflow["on"][event]["paths"],
-                ["images/ax-web/**", ".github/workflows/ax-web.yml"],
+                [
+                    "images/ax-web/**",
+                    "config/ax-lab.yml",
+                    ".github/workflows/ax-web.yml",
+                ],
             )
 
     def test_sensitive_path_guard_covers_the_panel(self) -> None:

@@ -43,6 +43,8 @@
       - ax_lab_ax_helper_directory == "/usr/local/sbin"
       - ax_lab_ax_runtime_directory == "/run"
       - ax_lab_ax_lock_directory == "/run/lock"
+      - ax_lab_web_state_path == ax_lab_state_directory ~ "/web.json"
+      - ax_lab_examples_directory == ax_lab.install_root ~ "/ejemplos"
     fail_msg: AX lab inputs differ from the versioned contract.
 
 - name: Validate the AX lab contract and its sysctl render locally
@@ -123,6 +125,62 @@
     fail_msg: >-
       The AX manifests Ansible renders differ from those the validator
       checked.
+
+# The same for the web panel manifest (docs/AX_WEB.md).
+- name: Compute the digest of the reviewed web panel manifest locally
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../../scripts/validate-ax-lab.py"
+      - --web-manifest-sha256
+  register: ax_lab_web_manifest_digest
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+
+- name: Render the web panel manifest the role applies
+  ansible.builtin.set_fact:
+    ax_lab_web_manifest: >-
+      {{
+        lookup(
+          "ansible.builtin.template",
+          role_path ~ "/templates/ax-web.yaml.j2"
+        )
+      }}
+
+- name: Require the web panel manifest the validator checked
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_manifest_digest.stdout is match("^[a-f0-9]{64}$")
+      - >-
+        ax_lab_web_manifest | hash("sha256")
+        == ax_lab_web_manifest_digest.stdout
+    fail_msg: >-
+      The web panel manifest Ansible renders differs from the one the
+      validator checked.
+
+# What the web state file records and the forwarder runs: the image by its
+# pinned digest, and the argv the panel's forward subcommand takes.
+- name: Derive the pinned web panel image and install identity
+  ansible.builtin.set_fact:
+    ax_lab_web_image_args:
+      - "--image={{ ax_lab.web.image.name }}={{ ax_lab.web.image.digest }}"
+    ax_lab_web_forwarder_image: >-
+      localhost:{{ ax_lab.registry.host_port }}/{{ ax_lab.web.image.name
+      }}@{{ ax_lab.web.image.digest }}
+    ax_lab_web_forwarder_command:
+      - forward
+      - --listen
+      - ":{{ ax_lab.web.forwarder.port }}"
+      - --target
+      - "{{ ax_lab.cluster.node_container }}:{{ ax_lab.web.node_port }}"
+      - --allow-cidr
+      - "{{ ax_lab.web.forwarder.edge_subnet }}"
+    ax_lab_web_identity:
+      schema_version: 1
+      image: "{{ ax_lab.web.image.digest }}"
+      manifest_sha256: "{{ ax_lab_web_manifest_digest.stdout }}"
 
 # What the AX state file records and compares: any difference reapplies.
 - name: Derive the pinned AX image arguments and install identity
@@ -302,6 +360,11 @@
 - name: Install the AX CLI and the operator helpers
   ansible.builtin.import_tasks: ax_host.yml
 
+# The same: the owner's AX examples and remote clients (docs/AX.md,
+# «Ejemplos»), with this lab's paths and pins.
+- name: Install the AX examples
+  ansible.builtin.import_tasks: examples.yml
+
 - name: Report what an apply would change in the lab cluster
   ansible.builtin.debug:
     msg: "{{ ax_lab_cluster_plan }}"
@@ -451,6 +514,15 @@
     msg: "{{ ax_lab_ax_plan }}"
   when: ansible_check_mode
 
+- name: Read the web panel and its forwarder and prove their ownership
+  ansible.builtin.import_tasks: web_read.yml
+  when: ansible_check_mode
+
+- name: Report what an apply would change in the web panel
+  ansible.builtin.debug:
+    msg: "{{ ax_lab_web_plan }}"
+  when: ansible_check_mode
+
 # The fallback build runs before cluster.yml can create or start the node
 # whose budget it borrows.
 - name: Keep the Substrate checkout and fallback builds outside check mode
@@ -482,4 +554,8 @@
 
 - name: Install AX only on drift and repair its workers outside check mode
   ansible.builtin.import_tasks: ax.yml
+  when: not ansible_check_mode
+
+- name: Deploy the web panel and its forwarder outside check mode
+  ansible.builtin.import_tasks: web.yml
   when: not ansible_check_mode

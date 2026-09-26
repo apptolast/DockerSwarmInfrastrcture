@@ -15,8 +15,8 @@ capacity_profiles:
     # config/platform.yml parks them (config/capacity.yml reviewed_totals),
     # and include the external stacks (50m/16 MiB reserved, 2050m/896 MiB
     # limited). Only the active plan runs the AX lab (host container group
-    # ax-lab: 550m/1920 MiB reserved, 2500m/3840 MiB limited), which leaves
-    # it 256 MiB under the 12397 MiB memory limit budget. The observability
+    # ax-lab: 560m/1936 MiB reserved, 2750m/3872 MiB limited), which leaves
+    # it 224 MiB under the 12397 MiB memory limit budget. The observability
     # plan requires the lab stopped.
     observability:
       stacks: [edge, workloads, observability, autoupdater]
@@ -28,8 +28,8 @@ capacity_profiles:
       stacks: [edge, workloads, organizationweb, racinggame, autoupdater]
       host_containers: [ax-lab]
       aggregate:
-        reservations: {cpu_millicores: 3100, memory_mib: 5666}
-        limits: {cpu_millicores: 16650, memory_mib: 12141}
+        reservations: {cpu_millicores: 3110, memory_mib: 5682}
+        limits: {cpu_millicores: 16900, memory_mib: 12173}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:
@@ -85,9 +85,10 @@ capacity_profiles:
   # while that group carries other limits. A container of any other group
   # must be absent or stopped.
   host_containers:
-    # The AX lab's kind node and local registry (docs/AX.md). The memory
-    # limits, reservations, CPU limits and pids limits equal `resources` of
-    # config/ax-lab.yml, which the role applies with `docker update`. The
+    # The AX lab's kind node, local registry and web forwarder (docs/AX.md,
+    # docs/AX_WEB.md). The memory limits, reservations, CPU limits and pids
+    # limits equal `resources` of config/ax-lab.yml, which the role applies
+    # with `docker update` (the forwarder with `docker run`). The
     # node used 1.62-1.70 GiB steady and peaked at 3082 MiB while starting
     # (2026-09-25). The registry used 17-29 MiB without page cache (12.6 MiB
     # anonymous); its memory.peak of 376.8 MiB is mostly the reclaimable file
@@ -103,3 +104,10 @@ capacity_profiles:
         reservations: {cpu_millicores: 50, memory_mib: 128}
         limits: {cpu_millicores: 500, memory_mib: 256}
         pids_limit: 256
+      # The AX web panel's TCP forwarder (docs/AX_WEB.md): a Go pipe with at
+      # most 64 connections, run with the limits of `web.forwarder` in
+      # config/ax-lab.yml. Its CPU reservation only counts in the budget.
+      ax-web-edge:
+        reservations: {cpu_millicores: 10, memory_mib: 16}
+        limits: {cpu_millicores: 250, memory_mib: 32}
+        pids_limit: 64

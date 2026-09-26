@@ -1,0 +1,28 @@
+# Managed by Ansible (role ax_lab); see docs/AX.md, «Ejemplos».
+#
+# La tarea más pequeña: sin Workspace ni Model, con la imagen de este
+# servidor. Adaptado de examples/simple.yaml de google/ax (Apache-2.0,
+# Copyright 2026 Google LLC); cambian la imagen, el nombre y los comentarios.
+#
+# No tiene `command`: se queda en Running hasta que la borres y mientras
+# tanto ocupa {{ "el único worker" if ax_lab.ax.worker_pool.replicas == 1 else "uno de los " ~ ax_lab.ax.worker_pool.replicas ~ " workers" }} del laboratorio. Bórrala al terminar.
+#
+#   sudo ax apply -f {{ ax_lab_examples_directory }}/01-tarea-sencilla.yaml
+#   sudo ax get tasks
+#   sudo ax describe task ejemplo-sencilla
+#   sudo ax ssh ejemplo-sencilla -- sh -c 'ls -la /workspace'
+#   sudo ax delete task ejemplo-sencilla
+#
+# Sin `resources`: AX no lo aplica (google/ax#369). El tope real es el de
+# cada worker del laboratorio: {{ ax_lab.ax.worker_pool.cpu_limit_millicores }}m de CPU y {{ ax_lab.ax.worker_pool.memory_mib }}Mi.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: ejemplo-sencilla
+  atespace: default
+spec:
+  image: "localhost:5001/ax-agents:{{ ax_lab.ax.tag }}@{{ ax_lab.ax.images['ax-agents'] }}"
+  env:
+    - name: ENVIRONMENT
+      value: "prueba"
+  debug: true # sirve los servicios guest para que `ax ssh` funcione

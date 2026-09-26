@@ -63,6 +63,8 @@ CHECK_MODE_FILES = (
     AX_HOST,
     AX_IMAGES_READ,
     AX_READ,
+    "ansible/roles/ax_lab/tasks/examples.yml",
+    "ansible/roles/ax_lab/tasks/web_read.yml",
 )
 SYSCTL_PATH = "/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf"
 WATCHES = "fs.inotify.max_user_watches"
@@ -128,6 +130,8 @@ def role_variables() -> dict[str, Any]:
         "ax_lab_ax_helper_directory": "/usr/local/sbin",
         "ax_lab_ax_runtime_directory": "/run",
         "ax_lab_ax_lock_directory": "/run/lock",
+        "ax_lab_web_state_path": lab["install_root"] + "/state/web.json",
+        "ax_lab_examples_directory": lab["install_root"] + "/ejemplos",
         "platform_install_root": "/opt/dockerswarm",
         "role_path": str(ROLE),
     }
@@ -1095,7 +1099,9 @@ class AxLabValidatorTests(unittest.TestCase):
     def test_limits_must_equal_the_capacity_declaration(self) -> None:
         ratio, group = self.module.load_capacity_declaration()
         self.assertEqual(ratio, self.module.Decimal("2.50"))
-        self.assertEqual(set(group), {"kind-control-plane", "kind-registry"})
+        self.assertEqual(
+            set(group), {"kind-control-plane", "kind-registry", "ax-web-edge"}
+        )
         self.module.validate_catalog(self.document, self.reserved, (ratio, group))
 
         def rejected(change, message: str) -> None:
@@ -1362,6 +1368,8 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "ax_lab_ax_helper_directory": "/usr/local/sbin",
                 "ax_lab_ax_runtime_directory": "/run",
                 "ax_lab_ax_lock_directory": "/run/lock",
+                "ax_lab_web_state_path": "{{ ax_lab_state_directory }}/web.json",
+                "ax_lab_examples_directory": "{{ ax_lab.install_root }}/ejemplos",
             },
         )
         self.assertFalse((ROLE / "handlers").exists())
@@ -1835,6 +1843,7 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "{{ ax_lab_ax_state_path }}",
                 "{{ ax_lab_cluster_state_path }}",
                 "{{ ax_lab_substrate_state_path }}",
+                "{{ ax_lab_web_state_path }}",
             ],
         )
         for path in role_task_files():
@@ -2593,6 +2602,12 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     argv = (task.get("ansible.builtin.command") or {}).get("argv")
                     if not isinstance(argv, list):
                         continue
+                    # The one exception: the web forwarder, a stateless
+                    # container of this role's own, is recreated on drift.
+                    if task["name"] == "Remove the web forwarder only when it drifted":
+                        self.assertEqual(path.name, "web.yml")
+                        self.assertEqual(task["when"], "ax_lab_web_edge_drift")
+                        continue
                     for forbidden in ("delete", "rm", "kill", "stop", "restart"):
                         self.assertNotIn(forbidden, argv[1:3], task["name"])
                 self.assertNotIn("ansible.builtin.shell", text)
@@ -3134,7 +3149,15 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                 kubectl_tasks += 1
                 with self.subTest(task=task["name"]):
                     self.assertIn(
-                        path.name, ("node.yml", "ax_read.yml", "ax.yml", "workers.yml")
+                        path.name,
+                        (
+                            "node.yml",
+                            "ax_read.yml",
+                            "ax.yml",
+                            "workers.yml",
+                            "web_read.yml",
+                            "web.yml",
+                        ),
                     )
                     self.assertEqual(argv[0], "{{ ax_lab_bin_directory }}/kubectl")
                     self.assertEqual(
@@ -3151,10 +3174,10 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     self.assertEqual(
                         task["environment"], {"HOME": "{{ ax_lab_home_directory }}"}
                     )
-        # node.yml's five, and AX's: five reads, nine apply steps (with the
+        # node.yml's five, AX's: five reads, nine apply steps (with the
         # controller pods read before and after the apply) and the worker
-        # repair's two.
-        self.assertEqual(kubectl_tasks, 21)
+        # repair's two, and the web panel's three reads and two apply steps.
+        self.assertEqual(kubectl_tasks, 26)
 
     def test_check_mode_reports_the_planned_changes(self) -> None:
         describe = self.inspect[

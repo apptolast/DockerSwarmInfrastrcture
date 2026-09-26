@@ -1,0 +1,334 @@
+---
+# Apply only, after ax.yml (docs/AX_WEB.md): the panel's image from the
+# backup into the registry, its manifest server-side only on drift, the
+# owner's two Secrets checked by metadata, the rollout, and the forwarder
+# with its exact HostConfig, recreated only when it drifts. Then everything
+# is read again and verified, and only then is the proof recorded.
+- name: Read the web panel and its forwarder and prove their ownership
+  ansible.builtin.import_tasks: web_read.yml
+
+- name: Require the web panel to be readable once AX is installed
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_readable
+    fail_msg: >-
+      The web panel cannot be read: AX is not installed in
+      {{ ax_lab.cluster.node_container }}.
+
+# The edge playbook creates the network (never this role): apply it first.
+- name: Require the edge network the forwarder joins
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_network_ready
+    fail_msg: >-
+      {{ ax_lab.web.forwarder.edge_network }} is missing or is not the
+      attachable swarm overlay with subnet
+      {{ ax_lab.web.forwarder.edge_subnet }}: apply the edge playbook that
+      routes ax.apptolast.com first (docs/AX_WEB.md, «Ventana»). This role
+      never creates it.
+
+- name: Refuse a web panel image held by neither backup nor registry
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_image_status.registry is not none
+      - ax_lab_web_in_backup or ax_lab_web_in_registry
+    fail_msg: >-
+      {{ ax_lab.web.image.name }}@{{ ax_lab.web.image.digest }} is in neither
+      the backup layout nor the local registry, and it is never built here.
+      Seed the backup from the ax-web workflow's OCI layout with
+      manage-ax-lab-substrate.py seed-layout (docs/AX_WEB.md, «Imagen»).
+
+- name: Back up the pinned web panel image the backup lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "export",
+          "--image-set",
+          "web",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.web.image.tag,
+        ]
+        + ax_lab_web_image_args
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: not ax_lab_web_in_backup
+  changed_when: true
+
+- name: Restore the pinned web panel image the registry lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "import",
+          "--image-set",
+          "web",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.web.image.tag,
+        ]
+        + ax_lab_web_image_args
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: not ax_lab_web_in_registry
+  changed_when: true
+
+- name: Keep the web panel reads from before any change
+  ansible.builtin.set_fact:
+    ax_lab_web_drift_before: "{{ ax_lab_web_drift }}"
+    ax_lab_web_edge_before: "{{ ax_lab_web_edge }}"
+
+# Written before the first apply: an interrupted run leaves `installing`
+# for this node, which the next apply resumes. The recorded namespace UID is
+# kept unless the namespace was deleted since.
+- name: Record the web panel install intent
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_web_expected_state
+        | combine({
+          "phase": "installing",
+          "namespace": ax_lab_web_namespace_uid,
+        })
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_web_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_web_drift | length > 0
+
+- name: Apply the web panel manifest server-side only on drift
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - apply
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_web_manifest }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  when: ax_lab_web_drift | length > 0
+  changed_when: true
+
+- name: Read the web panel after applying its manifest
+  ansible.builtin.import_tasks: web_read.yml
+
+# The namespace exists from here on: its UID is recorded before anything
+# can stop the run, so no other hand can swap it unnoticed.
+- name: Record the web panel namespace this role created
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_web_expected_state
+        | combine({
+          "phase": "installing",
+          "namespace": ax_lab_web_namespace_uid,
+        })
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_web_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_web_drift_before | length > 0
+
+# The Secrets are the owner's: the role never creates, reads or prints
+# them. The pod waits for them on its own, so the next apply goes on.
+- name: Stop until the owner creates the web panel Secrets
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_secrets_missing == []
+    fail_msg: >-
+      {{ ax_lab.web.namespace }} lacks {{ ax_lab_web_secrets_missing
+      | join(", ") }} (or their keys). The owner creates them from the
+      root-only files in their own SSH session:
+      `sudo -- ./scripts/ax-web-bootstrap.sh k8s` from a checkout of this
+      commit (docs/AX_WEB.md, «Arranque»), then applies ax-lab again.
+
+- name: Wait for the web panel to roll out
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - rollout
+      - status
+      - deployment/ax-web
+      - --namespace
+      - "{{ ax_lab.web.namespace }}"
+      - --timeout=10s
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_web_rollout
+  until: ax_lab_web_rollout.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+# The host's Docker pulls from the lab registry on the loopback, which
+# Docker treats as insecure by default (127.0.0.0/8), by digest only.
+- name: Read whether the host holds the pinned web panel image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - --format
+      - "{% raw %}{{json .RepoDigests}}{% endraw %}"
+      - "{{ ax_lab_web_forwarder_image }}"
+  register: ax_lab_web_host_image
+  changed_when: false
+  failed_when: false
+
+- name: Pull the pinned web panel image when the host lacks it
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - pull
+      - --quiet
+      - "{{ ax_lab_web_forwarder_image }}"
+  when: ax_lab_web_host_image.rc != 0
+  changed_when: true
+
+- name: Remove the web forwarder only when it drifted
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - rm
+      - --force
+      - "{{ ax_lab.web.forwarder.container }}"
+  when: ax_lab_web_edge_drift
+  changed_when: true
+
+# The same flags every apply checks in web_read.yml. It joins the kind
+# network at creation and Traefik's network right after; it publishes
+# nothing on the host.
+- name: Create the web forwarder with its reviewed settings
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/docker", "run", "--detach", "--pull", "never",
+          "--name", ax_lab.web.forwarder.container,
+          "--restart", ax_lab.web.forwarder.restart_policy,
+          "--user", ax_lab_web_edge_expected.user,
+          "--read-only",
+          "--cap-drop", "ALL",
+          "--security-opt", "no-new-privileges",
+          "--memory", ax_lab_web_edge_expected.memory | string,
+          "--memory-swap", ax_lab_web_edge_expected.memory_swap | string,
+          "--memory-reservation",
+          ax_lab_web_edge_expected.memory_reservation | string,
+          "--cpus",
+          "%d.%03d" | format(
+            ax_lab.web.forwarder.resources.cpu_limit_millicores // 1000,
+            ax_lab.web.forwarder.resources.cpu_limit_millicores % 1000
+          ),
+          "--pids-limit", ax_lab.web.forwarder.resources.pids_limit | string,
+          "--label", "com.apptolast.managed-by=ansible",
+          "--label", "com.apptolast.ax-lab=web-edge",
+          "--network", ax_lab.cluster.network,
+          ax_lab_web_forwarder_image,
+        ]
+        + ax_lab_web_forwarder_command
+      }}
+  when: ax_lab_web_edge_before is none or ax_lab_web_edge_drift
+  register: ax_lab_web_edge_created
+  changed_when: true
+
+- name: Connect the new web forwarder to the edge network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - connect
+      - "{{ ax_lab.web.forwarder.edge_network }}"
+      - "{{ ax_lab.web.forwarder.container }}"
+  when: ax_lab_web_edge_created is not skipped
+  changed_when: true
+
+- name: Start the web forwarder when it is stopped
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - start
+      - "{{ ax_lab.web.forwarder.container }}"
+  when:
+    - ax_lab_web_edge_created is skipped
+    - ax_lab_web_edge_before is not none
+    - ax_lab_web_edge_before.status != "running"
+  changed_when: true
+
+- name: Read the web panel and its forwarder after the changes
+  ansible.builtin.import_tasks: web_read.yml
+
+# Everything the apply converges, read back: no manifest the server would
+# still change, the same namespace, the Secrets, the image in both places
+# and the forwarder running as reviewed on both networks, with an address
+# of the reviewed edge subnet.
+- name: Verify the web panel and its forwarder
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_drift | reject("equalto", "state") | list == []
+      - ax_lab_web_namespace_uid != ""
+      - ax_lab_web_secrets_missing == []
+      - ax_lab_web_in_backup and ax_lab_web_in_registry
+      - ax_lab_web_edge is not none
+      - ax_lab_web_edge.status == "running"
+      - not ax_lab_web_edge_drift
+      # The subnet is a /24 (scripts/validate-ax-lab.py).
+      - >-
+        (
+          ax_lab_web_edge.networks[ax_lab.web.forwarder.edge_network]
+          .IPAddress | default("", true)
+        ).split(".")[:3]
+        == ax_lab.web.forwarder.edge_subnet.split("/")[0].split(".")[:3]
+    fail_msg: >-
+      The web panel or its forwarder differs from its pinned install after
+      the apply. Nothing further is recorded (docs/AX_WEB.md).
+
+- name: Record the proof of the installed web panel
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_web_expected_state
+        | combine({
+          "phase": "installed",
+          "namespace": ax_lab_web_namespace_uid,
+        })
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_web_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_web_drift | length > 0

@@ -100,8 +100,8 @@ exige reducir otro en la misma revisión. El vigilante `autoupdater` es
 distinto: su interruptor `enabled: false` renderiza `replicas: 0` sin liberar
 el presupuesto (`SUSPENDABLE_SERVICES`). En el perfil activo
 `organizationweb`, con los stacks externos y el laboratorio AX, las sumas
-son 5 666 MiB reservados y 12 141 MiB de límite, con 3 100m y 16 650m de
-CPU: 256 MiB por debajo del techo de memoria. Sin el laboratorio serían
+son 5 682 MiB reservados y 12 173 MiB de límite, con 3 110m y 16 900m de
+CPU: 224 MiB por debajo del techo de memoria. Sin el laboratorio serían
 3 746 y 8 301 MiB, con 2 550m y 14 150m.
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
@@ -220,7 +220,8 @@ Hoy hay un grupo declarado, `ax-lab`, que solo ejecuta el plan activo
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `kind-control-plane` | 1 792 MiB | 3 584 MiB | 500m | 2 000m | 4 096 |
 | `kind-registry` | 128 MiB | 256 MiB | 50m | 500m | 256 |
-| **Total** | **1 920 MiB** | **3 840 MiB** | **550m** | **2 500m** | |
+| `ax-web-edge` | 16 MiB | 32 MiB | 10m | 250m | 64 |
+| **Total** | **1 936 MiB** | **3 872 MiB** | **560m** | **2 750m** | |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -249,16 +250,17 @@ mientras exista (ver [AX.md](AX.md), «Contenedores transitorios»). La
 compilación de reserva de una imagen de Substrate (3 072 MiB sin swap,
 1 536 MiB reservados, 2 CPU, 1 024 PIDs) solo corre con el nodo parado o
 ausente, así que usa su presupuesto: registro y compilación suman
-3 328 MiB, por debajo de los 3 840 MiB del grupo. `ate-setup` (256 MiB sin
-swap, 128 MiB reservados, 0,5 CPU, 256 PIDs) corre junto al nodo y cabe en
-los 256 MiB y 850m de límites que el plan activo deja libres bajo el
-presupuesto (12 397 MiB y 17 500m); el margen operativo de 512 MiB sigue
+3 328 MiB, por debajo de los 3 872 MiB del grupo. `ate-setup` (224 MiB sin
+swap, 112 MiB reservados, 0,5 CPU, 256 PIDs) corre junto al nodo y cabe en
+los 224 MiB y 600m de límites que el plan activo deja libres bajo el
+presupuesto (12 397 MiB y 17 500m) desde que el reenviador del panel web
+entró en el grupo; el margen operativo de 512 MiB sigue
 aparte. `scripts/validate-ax-lab.py` calcula ese margen libre de cada plan
 que ejecuta el grupo `ax-lab` y lo exige como techo de sus límites. Los dos
 se niegan a arrancar sin su `MemAvailable` mínimo y se matan si baja del
 margen operativo. Ninguna cifra de los planes cambia.
 
-El plan `observability` no incluye el grupo, así que exige los dos
+El plan `observability` no incluye el grupo, así que exige sus tres
 contenedores ausentes o parados. `scripts/validate-ax-lab.py` exige que los
 límites de `config/ax-lab.yml`, los que aplica el rol, sean exactamente los
 declarados aquí.

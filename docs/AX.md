@@ -9,8 +9,10 @@ el entorno de desarrollo del quickstart de Substrate en el commit fijado (su
 `README.md`, «Quickstart (Development)»); el otro es GKE.
 
 Es un laboratorio, no un servicio. Substrate declara en ese mismo `README.md`
-que «is not ready for production use». Nada del laboratorio se publica a
-Internet y nada de él entra en el backup.
+que «is not ready for production use». Del laboratorio solo se publica el
+panel web de `https://ax.apptolast.com`, por decisión del propietario del
+2026-09-26 (ver [AX_WEB.md](AX_WEB.md)); `ax-server` no se publica nunca y
+nada del laboratorio entra en el backup.
 
 ## Qué codifica este repositorio y qué sigue siendo manual
 
@@ -135,6 +137,9 @@ planificación del Swarm y sin tocar sus redes overlay.
 | `ansible/roles/ax_lab/templates/ax/` | Manifiestos de AX y las herramientas del operador `ax` y `ax-tarea` |
 | `images/ax/` | El parche google/ax#375 byte a byte y los manifiestos fijados de las dos imágenes ko |
 | `images/ax-task-runner/`, `images/ax-agents/` | Las entradas con las que el laboratorio manual compiló las imágenes del runner y de agentes, como registro de su procedencia |
+| `ansible/roles/ax_lab/templates/ax-web.yaml.j2`, `tasks/web*.yml` | El panel web y su reenviador (ver [AX_WEB.md](AX_WEB.md)) |
+| `ansible/roles/ax_lab/templates/ejemplos/`, `files/ejemplos/` | Los ejemplos y los clientes remotos del propietario (ver «Ejemplos») |
+| `scripts/ax-web-bootstrap.sh` | Arranque de las credenciales del panel, que ejecuta el propietario |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -186,7 +191,7 @@ El validador rechaza:
   tiempo fuera de 600 a 7 200 s; una instalación con otro router que
   `envoy` (ni `agentgateway` ni sdsmint, que no tienen clave), con más
   memoria o CPU de las que el plan de capacidad que ejecuta el laboratorio
-  deja libres bajo el presupuesto de límites (256 MiB y 850m hoy), sin el
+  deja libres bajo el presupuesto de límites (224 MiB y 600m hoy), sin el
   suelo de `MemAvailable` o con un tiempo que no cubra las esperas del
   propio `ate-setup`; y un inventario de cargas desordenado, repetido,
   fuera de los tres espacios de nombres, sin el DaemonSet
@@ -449,6 +454,7 @@ loopback.
 | --- | ---: | ---: | --- | ---: | ---: | --- |
 | `kind-control-plane` | 3 584 MiB | 1 792 MiB | ninguna | 2 CPU | 4 096 | `no` |
 | `kind-registry` | 256 MiB | 128 MiB | ninguna | 0,5 CPU | 256 | `no` |
+| `ax-web-edge` | 32 MiB | 16 MiB | ninguna | 0,25 CPU | 64 | `no` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -699,7 +705,7 @@ Solo compila una imagen que cumpla todo esto:
 - no está completa en la copia de seguridad ni la sirve el registro;
 - el nodo no está en marcha: la compilación corre antes de que
   `cluster.yml` cree o arranque el nodo, y usa su presupuesto (registro
-  256 MiB más compilación 3 072 MiB, dentro de los 3 840 MiB del grupo
+  256 MiB más compilación 3 072 MiB, dentro de los 3 872 MiB del grupo
   `ax-lab`). Si el nodo corre, el apply se detiene: se borran las Tasks de
   AX que queden (ver «Redis») y se para el nodo con el lock host-global,
   `sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run
@@ -795,7 +801,7 @@ ate-setup --kind --no-dev-env --kubeconfig /kubeconfig --context kind-kind \
   --image-repo localhost:5001 --image-tag 67253354 deploy ate-system
 ```
 
-Corre junto al nodo, así que sus límites caben en los 256 MiB y los 850m
+Corre junto al nodo, así que sus límites caben en los 224 MiB y los 600m
 de límites que el plan de capacidad activo deja libres bajo su presupuesto;
 el margen operativo de 512 MiB queda aparte (ver
 [CAPACITY.md](CAPACITY.md), «Contenedores del host»). El gestor lo acota a
@@ -1455,6 +1461,20 @@ y se avisa. Nunca se imprime ningún valor.
 No se lanzan Tasks durante las ventanas de medida del Observatorio: los
 sandboxes de gVisor inundan su auditoría de `ptrace`.
 
+### Ejemplos
+
+El rol instala en `/opt/dockerswarm/ax-lab/ejemplos` (`root 0755`, ficheros
+`0644`) los ejemplos que el propietario escribió a mano en el laboratorio
+manual (`/opt/ax-lab/ejemplos`): la guía `LEEME.md`, tres manifiestos
+(`01-tarea-sencilla.yaml`, `02-workspace.yaml` y
+`03-tarea-con-workspace.yaml`) y los clientes remotos `cliente/ax-remoto` y
+`cliente/ax-remoto.ps1`. La guía y los manifiestos se renderizan con las
+rutas de este laboratorio, su WorkerPool y la imagen de agentes fijada por
+digest; los clientes se copian byte a byte. Ninguno lleva credenciales. En
+`--check` solo informa. Se leen con `sudo`, porque
+`/opt/dockerswarm/ax-lab` es `root 0750`:
+`sudo cat /opt/dockerswarm/ax-lab/ejemplos/LEEME.md | less`.
+
 ### Modo check de AX
 
 Con `--check`, el rol lee las imágenes de AX en el registro y en la copia,
@@ -1470,14 +1490,18 @@ CLI o las herramientas.
 ## Capacidad
 
 `config/capacity-profiles.yml` declara el grupo `ax-lab` en
-`host_containers` con los límites y reservas de la tabla anterior y 500m y
-50m de CPU reservada, que solo cuentan en el presupuesto porque Docker no
-reserva CPU para un contenedor suelto. El validador exige que coincidan con
-`config/ax-lab.yml`. Solo lo ejecuta el plan activo `organizationweb`, que
-queda en 3 100m y 5 666 MiB reservados y 16 650m y 12 141 MiB de límite:
-256 MiB por debajo de los 12 397 MiB del presupuesto de memoria. El plan
-`observability` no lo incluye, así que exige el laboratorio ausente o
-parado (ver [CAPACITY.md](CAPACITY.md), «Contenedores del host»).
+`host_containers` con los límites y reservas de la tabla anterior y 500m,
+50m y 10m de CPU reservada, que solo cuentan en el presupuesto porque Docker
+no reserva CPU para un contenedor suelto. El tercer contenedor es
+`ax-web-edge`, el reenviador del panel web (ver [AX_WEB.md](AX_WEB.md)). El
+validador exige que coincidan con `config/ax-lab.yml`. Solo lo ejecuta el
+plan activo `organizationweb`, que queda en 3 110m y 5 682 MiB reservados y
+16 900m y 12 173 MiB de límite: 224 MiB por debajo de los 12 397 MiB del
+presupuesto de memoria. Por eso `ate-setup`, que corre junto al nodo y
+tiene que caber en lo que el plan deja libre, baja de 256 a 224 MiB (ver
+«Instalación de Substrate»). El plan `observability` no lo incluye, así que
+exige el laboratorio ausente o parado (ver [CAPACITY.md](CAPACITY.md),
+«Contenedores del host»).
 
 Ningún playbook de producción depende de que el laboratorio esté en marcha.
 Con el grupo en el plan activo, el preflight de cada playbook acepta los dos
@@ -1744,6 +1768,13 @@ compilar nada, y reinstala AX. Los ficheros `state/substrate.json` y
 `state/ax.json` del nodo anterior no se borran: se sobrescriben con los del
 nuevo.
 
+El panel web también se pierde con el clúster, junto con sus dos Secrets
+de Kubernetes. El apply siguiente crea su espacio de nombres y se detiene
+pidiendo `sudo -- ./scripts/ax-web-bootstrap.sh k8s`, que los crea de nuevo
+desde `/etc/dockerswarm/ax/web-tls` y el token; un segundo apply termina
+(ver [AX_WEB.md](AX_WEB.md), «Recrear el clúster»). El reenviador y los
+Docker Secrets de Traefik no cambian.
+
 ## Aceptación del nodo privilegiado
 
 `ax_lab_privileged_node_accepted` en `config/ax-lab.yml` es la aceptación
@@ -1838,13 +1869,27 @@ documento solo recoge sus metadatos:
 | `codex/` | `root:root 0700` | Configuración de Codex CLI |
 | `codex/auth.json`, `codex/config.toml` | `root:root 0600` | Sesión y configuración de Codex CLI |
 | `openai-api-key` | `root:root 0600` | Sin uso: la clave del proxy de OpenAI, que no se codifica |
+| `web-tls/` | `root:root 0700` | Certificado, clave y CA cliente del panel web (`tls.crt`, `tls.key`, `client-ca.crt`, `0600`), que crea `ax-web-bootstrap.sh init` |
 
 <!-- markdownlint-enable MD013 -->
 
 El rol nunca lee, copia ni imprime esos ficheros, ni comprueba su
 existencia: solo `ax-tarea`, que ejecuta el propietario, lee
 `claude-oauth-token` o `codex/auth.json`, y escribe de vuelta este último
-cuando Codex lo renueva (ver «Herramientas del operador»). El proxy de
+cuando Codex lo renueva (ver «Herramientas del operador»), y solo
+`scripts/ax-web-bootstrap.sh`, que también ejecuta el propietario, crea
+`web-tls/` y lleva `claude-oauth-token` y `web-tls/` a los Secrets
+`ax-web/ax-web-agent` y `ax-web/ax-web-tls` con
+`kubectl create secret generic --from-file`. El panel no pone el token en
+`Task.spec.env`: lo lee del volumen del Secret al arrancar cada ejecución y
+solo viaja en `StartProcess.env`. Queda además en claro en el etcd del nodo
+(Kubernetes no cifra los Secrets en reposo por defecto), cruza el Envoy de
+atenet-router sin cifrar dentro del nodo y lo puede leer cualquier
+controlador que lea Secrets en todo el clúster: hoy `ate-controller` de
+Substrate, cuyo ClusterRole tiene `get`, `list` y `watch` sobre `secrets`.
+De los Secrets el rol solo lee
+el nombre, el tipo y el número de claves (ver [AX_WEB.md](AX_WEB.md),
+«Propiedad»). El proxy de
 OpenAI del laboratorio manual no se codifica: `ax-tarea` nunca usa `goal`,
 no atendió ninguna petición desde el reinicio del 2026-09-25 y cualquier pod
 o sandbox podía gastar su clave; su fichero queda sin uso.
@@ -1880,13 +1925,22 @@ El kubeconfig de administrador del clúster,
 
 ## Exposición
 
-Nada del laboratorio se publica:
+Del laboratorio solo se publica el panel web, por decisión del propietario
+del 2026-09-26, sin Cloudflare Access ni lista de IP permitidas. Traefik
+(playbook `edge`) lo sirve en `https://ax.apptolast.com` con `basicAuth` y
+límites de peticiones y llega a él por el reenviador `ax-web-edge` y el
+NodePort 30843 del panel, que solo existe en el puente `kind`; el panel
+solo acepta el certificado cliente de Traefik (ver [AX_WEB.md](AX_WEB.md)).
+Todo lo demás sigue sin publicarse:
 
 - `ax-server` no tiene autenticación ni autorización (google/ax#376). No se
   publica nunca: ni ruta de Traefik, ni NodePort, ni LoadBalancer, ni
   Ingress, ni `hostPort`, y el validador lo rechaza. Sus Services escriben
   `type: ClusterIP`, así que el diff de cada apply ve que otra mano los
-  publique (ver «Plano de control de AX»). Solo se alcanza con
+  publique (ver «Plano de control de AX»). El único NodePort del
+  laboratorio es el del panel, y el validador exige que sea el único puerto
+  de su Service. La NetworkPolicy `ax-web-to-ax-server` solo deja llegar a
+  `ax-server` a los pods del panel. Solo se alcanza con
   `kubectl port-forward` desde el propio host, que la CLI abre y las órdenes
   `ax` y `ax-tarea` cierran al terminar (ver «Herramientas del operador»);
   mientras una corre, cualquier proceso local puede usar ese puerto.
@@ -2001,19 +2055,27 @@ Se retira a mano, en una ventana exclusiva y con el mismo lock que en
    aplicar.
 3. Borrar el registro y su volumen:
    `/usr/bin/docker rm --force kind-registry` y
-   `/usr/bin/docker volume rm ax-lab-registry`.
+   `/usr/bin/docker volume rm ax-lab-registry`, y el reenviador del panel
+   web, que también está en la red `kind`:
+   `/usr/bin/docker rm --force ax-web-edge`.
 4. Borrar la red `kind`, que `kind delete cluster` no borra, después de
    comprobar que no le queda ningún contenedor: `/usr/bin/docker network rm
    kind`.
 5. Borrar `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf`,
    `/usr/local/sbin/ax`, `/usr/local/sbin/ax-tarea`,
    `/opt/dockerswarm/ax-lab` (con el checkout, las cachés, la CLI y los
-   ficheros de estado) y `/var/backups/dockerswarm/ax-lab` (con las
-   imágenes y la CLI), y las imágenes
+   ficheros de estado), `/var/backups/dockerswarm/ax-lab` (con las
+   imágenes y la CLI) y `/etc/dockerswarm/ax/web-tls` (el material del
+   panel que creó `ax-web-bootstrap.sh init`), y las imágenes
    que Docker guardó en el host: `localhost:5001/ate-setup@<digest>`, que
-   descargó para ejecutarlo, y `golang@<digest>` de `images.toolbox`. Los
-   límites de inotify vuelven a sus valores previos en el siguiente
-   arranque.
+   descargó para ejecutarlo, `localhost:5001/ax-web@<digest>`, que
+   descargó para el reenviador, y `golang@<digest>` de `images.toolbox`.
+   Los límites de inotify vuelven a sus valores previos en el siguiente
+   arranque. La ruta de Traefik del panel se retira con el playbook `edge`
+   (ver [EDGE.md](EDGE.md)) y, solo después, porque Traefik los monta
+   mientras tiene la ruta, los Docker Secrets `edge-ax-upstream-client-v1`
+   y `edge-ax-upstream-ca-v1` que creó el arranque del panel, con
+   `docker secret rm` y el mismo lock.
 6. Un cambio revisado quita `ax-lab` de la lista `host_containers` del plan
    activo, con su agregado, y devuelve `ax_lab_privileged_node_accepted` a
    `false`. El grupo sigue declarado en `host_containers`, porque
@@ -2084,8 +2146,8 @@ container outside the active profile is running».
   manifiestos fijados llevan en claro el par de claves S3 estático de
   upstream para rustfs, dentro del clúster y solo en loopback, que el rol
   nunca lee ni registra.
-- Un `ate-setup` en marcha ocupa hasta 256 MiB y 0,5 CPU que ningún plan
-  declara, dentro de los 256 MiB y 850m de límites que el plan activo deja
+- Un `ate-setup` en marcha ocupa hasta 224 MiB y 0,5 CPU que ningún plan
+  declara, dentro de los 224 MiB y 600m de límites que el plan activo deja
   libres bajo su presupuesto; el margen operativo no se toca (ver
   [CAPACITY.md](CAPACITY.md)).
 - Si se interrumpe el controlador durante una compilación de reserva o una

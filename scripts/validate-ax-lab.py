@@ -14,10 +14,15 @@ Substrate: its version, its images by digest, the backup directory, the
 bounded fallback build and the ate-setup install with their limits, and the
 workloads ate-setup deploys, and AX: the vendored #375 patch and ko manifests
 by sha256, its four images by digest, the CLI backup, the WorkerPool within
-the node's CPU and memory, and the router timeout. It rejects secret-like keys
-and values anywhere in the file, then renders the role's sysctl file, kind
-configuration and AX manifests and checks them against the contract: AX is
-never published, never granted RBAC and never mounts a Kubernetes API token.
+the node's CPU and memory, and the router timeout, and the AX web panel: its
+image by digest, the NodePort, the forwarder with its edge network and
+subnet and the same limits as its host_containers.ax-lab entry. It rejects
+secret-like keys and values anywhere in the file, then renders the role's
+sysctl file, kind configuration, AX manifests and web panel manifest and
+checks them against the contract: AX is never published, never granted RBAC
+and never mounts a Kubernetes API token, and the panel is published only as
+its one NodePort on the kind bridge, runs non-root and read-only under the
+restricted Pod Security Standard, and renders no Secret.
 It reads nothing outside this repository, so CI runs it without a production
 host.
 """
@@ -47,6 +52,8 @@ SYSCTL_TEMPLATE = "99-z-dockerswarm-ax-lab.conf.j2"
 KIND_CONFIG_TEMPLATE = "kind-config.yaml.j2"
 # The AX manifests the role applies server-side, in this order.
 AX_MANIFEST_TEMPLATES = ("ax-system.yaml", "ax-workers.yaml")
+# The web panel's manifest, applied after AX (docs/AX_WEB.md).
+WEB_MANIFEST_TEMPLATE = "ax-web.yaml"
 CAPACITY_CONTRACT = ROOT / "config/capacity.yml"
 CAPACITY_PROFILES = ROOT / "config/capacity-profiles.yml"
 # The host_containers group of config/capacity-profiles.yml that budgets the
@@ -75,6 +82,7 @@ LAB_KEYS = {
     "registry",
     "substrate",
     "ax",
+    "web",
 }
 CLUSTER_KEYS = {
     "name",
@@ -352,6 +360,87 @@ SERVICE_PUBLISHING_FIELDS = (
     "loadBalancerIP",
     "loadBalancerSourceRanges",
 )
+
+# The AX web panel (docs/AX_WEB.md). The names the edge playbook routes to
+# and the owner's bootstrap script creates are fixed here, like the public
+# origin the owner chose on 2026-09-26.
+WEB_KEYS = {
+    "namespace",
+    "image",
+    "port",
+    "node_port",
+    "health_port",
+    "pod_subnet",
+    "origin",
+    "server_name",
+    "client_common_name",
+    "tls_directory",
+    "repo_hosts",
+    "blackout_utc",
+    "watchdog_lead_minutes",
+    "max_turns",
+    "max_timeout_minutes",
+    "prompt_mode",
+    "forwarder",
+}
+WEB_IMAGE_KEYS = {"name", "tag", "digest"}
+FORWARDER_KEYS = {
+    "container",
+    "port",
+    "edge_network",
+    "edge_subnet",
+    "resources",
+    "restart_policy",
+}
+WEB_NAMESPACE = "ax-web"
+WEB_IMAGE_NAME = "ax-web"
+WEB_ORIGIN = "https://ax.apptolast.com"
+WEB_SERVER_NAME = "ax-web"
+WEB_CLIENT_COMMON_NAME = "edge-traefik"
+WEB_FORWARDER = "ax-web-edge"
+WEB_EDGE_NETWORK = "apptolast-edge-ax"
+WEB_PORT = 8443
+WEB_HEALTH_PORT = 8081
+# The Observatorio window, 22:30-00:40 UTC (docs/AX.md).
+WEB_BLACKOUT = "22:30-00:40"
+# kind's default IPv4 pod subnet: kind-config.yaml.j2 sets none, and
+# validate_kind_config_render refuses any other networking key.
+KIND_POD_SUBNET = "10.244.0.0/16"
+# Kubernetes' default --service-cluster-ip-range for kind and the default
+# --service-node-port-range (kubernetes.io, «Service», type NodePort).
+KIND_SERVICE_SUBNET = "10.96.0.0/16"
+NODE_PORT_RANGE = range(30000, 32768)
+# The panel's own bounds (images/ax-web/internal/config/config.go).
+WEB_TURNS_RANGE = range(1, 51)
+WEB_TIMEOUT_RANGE = range(5, 46)
+WEB_WATCHDOG_RANGE = range(1, 61)
+WEB_PROMPT_MODES = {"stdin", "argument"}
+WEB_TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+HOST_NAME_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+)
+# Every object the web manifest holds, in its order. No Secret, no RBAC: the
+# only object outside its namespace widens the ax-server policy by the panel.
+WEB_INVENTORY = [
+    ("Namespace", None, WEB_NAMESPACE),
+    ("ServiceAccount", WEB_NAMESPACE, "ax-web"),
+    ("ConfigMap", WEB_NAMESPACE, "ax-web"),
+    ("Deployment", WEB_NAMESPACE, "ax-web"),
+    ("Service", WEB_NAMESPACE, "ax-web"),
+    ("NetworkPolicy", WEB_NAMESPACE, "ax-web"),
+    ("NetworkPolicy", AX_SYSTEM_NAMESPACE, "ax-web-to-ax-server"),
+]
+WEB_NAMESPACE_LABELS = {
+    "com.apptolast.managed-by": "ansible",
+    "pod-security.kubernetes.io/enforce": "restricted",
+    "pod-security.kubernetes.io/enforce-version": "v1.37",
+}
+# distroless «nonroot», the user ko's --image-user gave the image.
+WEB_UID = 65532
+WEB_CONFIG_PATH = "/etc/ax-web/config.json"
+WEB_TLS_MOUNT = "/var/run/ax-web/tls"
+WEB_AGENT_MOUNT = "/var/run/ax-web/agent"
+WEB_AGENT_KEY = "claude-oauth-token"
 
 # Names and shapes of credentials. This public file holds paths and public
 # pins only, so any match is refused before the schema is even read.
@@ -776,11 +865,12 @@ def validate_capacity_group(lab: dict[str, Any], group: Any) -> None:
     declared = {
         lab["cluster"]["node_container"]: lab["cluster"]["resources"],
         lab["registry"]["container"]: lab["registry"]["resources"],
+        lab["web"]["forwarder"]["container"]: lab["web"]["forwarder"]["resources"],
     }
     if not isinstance(group, dict) or set(group) != set(declared):
         raise AxLabError(
-            f"host_containers.{CAPACITY_GROUP} must declare exactly the node "
-            "and the registry"
+            f"host_containers.{CAPACITY_GROUP} must declare exactly the node, "
+            "the registry and the web forwarder"
         )
     for name, resources in declared.items():
         budget = group[name]
@@ -1079,6 +1169,96 @@ def validate_ax(ax: Any, lab: dict[str, Any]) -> dict[str, Any]:
     return ax
 
 
+def bounded_int(value: Any, allowed: range, context: str) -> int:
+    if type(value) is not int or value not in allowed:
+        raise AxLabError(
+            f"{context} must be an integer from {allowed.start} to {allowed.stop - 1}"
+        )
+    return value
+
+
+def validate_web(web: Any, lab: dict[str, Any], ratio: Decimal) -> dict[str, Any]:
+    """The web panel: fixed names, its image by digest, ports and forwarder."""
+    exact_keys(web, WEB_KEYS, "web")
+    fixed = {
+        "namespace": WEB_NAMESPACE,
+        "origin": WEB_ORIGIN,
+        "server_name": WEB_SERVER_NAME,
+        "client_common_name": WEB_CLIENT_COMMON_NAME,
+        "blackout_utc": WEB_BLACKOUT,
+        "pod_subnet": KIND_POD_SUBNET,
+        "tls_directory": f"{lab['credential_directory']}/web-tls",
+    }
+    for key, value in fixed.items():
+        if web[key] != value or type(web[key]) is not str:
+            raise AxLabError(f"web {key} must be {value}")
+    image = exact_keys(web["image"], WEB_IMAGE_KEYS, "web image")
+    if image["name"] != WEB_IMAGE_NAME:
+        raise AxLabError(f"web image name must be {WEB_IMAGE_NAME}")
+    if (
+        not isinstance(image["tag"], str)
+        or not WEB_TAG_RE.fullmatch(image["tag"])
+        or "latest" in image["tag"]
+    ):
+        raise AxLabError("web image tag must be a fixed image tag")
+    if not isinstance(image["digest"], str) or not SUBSTRATE_DIGEST_RE.fullmatch(
+        image["digest"]
+    ):
+        raise AxLabError("web image must be pinned as sha256:<64 hex>")
+    if web["port"] != WEB_PORT or type(web["port"]) is not int:
+        raise AxLabError(f"web port must be {WEB_PORT}")
+    if web["health_port"] != WEB_HEALTH_PORT or type(web["health_port"]) is not int:
+        raise AxLabError(f"web health_port must be {WEB_HEALTH_PORT}")
+    bounded_int(web["node_port"], NODE_PORT_RANGE, "web node_port")
+    hosts = web["repo_hosts"]
+    if (
+        not isinstance(hosts, list)
+        or not hosts
+        or len(set(map(str, hosts))) != len(hosts)
+        or not all(isinstance(h, str) and HOST_NAME_RE.fullmatch(h) for h in hosts)
+        or any(h.replace(".", "").isdigit() for h in hosts)
+    ):
+        raise AxLabError("web repo_hosts must list distinct lower-case host names")
+    bounded_int(web["watchdog_lead_minutes"], WEB_WATCHDOG_RANGE, "web watchdog")
+    bounded_int(web["max_turns"], WEB_TURNS_RANGE, "web max_turns")
+    bounded_int(web["max_timeout_minutes"], WEB_TIMEOUT_RANGE, "web max_timeout")
+    if web["prompt_mode"] not in WEB_PROMPT_MODES:
+        raise AxLabError("web prompt_mode must be stdin or argument")
+    forwarder = exact_keys(web["forwarder"], FORWARDER_KEYS, "web forwarder")
+    if forwarder["container"] != WEB_FORWARDER:
+        raise AxLabError(f"web forwarder container must be {WEB_FORWARDER}")
+    if forwarder["port"] != WEB_PORT or type(forwarder["port"]) is not int:
+        raise AxLabError(f"web forwarder port must be {WEB_PORT}")
+    if forwarder["edge_network"] != WEB_EDGE_NETWORK:
+        raise AxLabError(f"web forwarder edge_network must be {WEB_EDGE_NETWORK}")
+    try:
+        subnet = ipaddress.ip_network(forwarder["edge_subnet"])
+    except (TypeError, ValueError) as error:
+        raise AxLabError("web forwarder edge_subnet must be a network") from error
+    if (
+        str(subnet) != forwarder["edge_subnet"]
+        or subnet.version != 4
+        or subnet.prefixlen != 24
+        or not subnet.is_private
+        or any(
+            subnet.overlaps(ipaddress.ip_network(other))
+            for other in (KIND_POD_SUBNET, KIND_SERVICE_SUBNET)
+        )
+    ):
+        raise AxLabError(
+            "web forwarder edge_subnet must be a private IPv4 /24 outside the "
+            "kind pod and service subnets"
+        )
+    validate_resources(forwarder["resources"], "web forwarder", ratio)
+    restart_policy(forwarder["restart_policy"], "web forwarder")
+    if forwarder["container"] in (
+        lab["cluster"]["node_container"],
+        lab["registry"]["container"],
+    ):
+        raise AxLabError("web forwarder container must differ from the lab's")
+    return web
+
+
 def validate_catalog(
     document: Any,
     reserved: dict[str, str] | None = None,
@@ -1112,6 +1292,7 @@ def validate_catalog(
     ratio, group = capacity if capacity is not None else load_capacity_declaration()
     cluster = validate_cluster(lab["cluster"], ratio)
     validate_registry(lab["registry"], cluster, ratio)
+    validate_web(lab["web"], lab, ratio)
     validate_capacity_group(lab, group)
     substrate = validate_substrate(
         lab["substrate"],
@@ -1495,6 +1676,289 @@ def ax_manifests_sha256(rendered: dict[str, str]) -> dict[str, str]:
     }
 
 
+def ansible_hash(data: str, hashtype: str = "sha1") -> str:
+    """Ansible's `hash` filter (ansible.builtin.hash): hashlib over UTF-8."""
+    return hashlib.new(hashtype, data.encode("utf-8")).hexdigest()
+
+
+def render_web_manifest(lab: dict[str, Any]) -> str:
+    """Render the web panel manifest as Ansible's template lookup would."""
+    environment = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(SYSCTL_TEMPLATE_DIRECTORY),
+        undefined=jinja2.StrictUndefined,
+        trim_blocks=True,
+        keep_trailing_newline=True,
+    )
+    environment.filters["hash"] = ansible_hash
+    return environment.get_template(WEB_MANIFEST_TEMPLATE + ".j2").render(ax_lab=lab)
+
+
+def web_image(lab: dict[str, Any]) -> str:
+    image = lab["web"]["image"]
+    return f"localhost:5001/{image['name']}:{image['tag']}@{image['digest']}"
+
+
+def web_panel_config(lab: dict[str, Any]) -> dict[str, Any]:
+    """The panel configuration the ConfigMap must carry, key for key."""
+    web = lab["web"]
+    return {
+        "ax_server": "ax-server.ax-system.svc.cluster.local:8080",
+        "router": "atenet-router.ate-system.svc.cluster.local:80",
+        "atespace": "default",
+        "agent_image": registry_image(lab, "ax-agents"),
+        "repo_hosts": web["repo_hosts"],
+        "origin": web["origin"],
+        "blackout": web["blackout_utc"],
+        "watchdog_lead_minutes": web["watchdog_lead_minutes"],
+        "max_turns": web["max_turns"],
+        "max_timeout_minutes": web["max_timeout_minutes"],
+        "prompt_mode": web["prompt_mode"],
+        "token_directory": WEB_AGENT_MOUNT,
+        "token_key": WEB_AGENT_KEY,
+        "tls_cert_file": f"{WEB_TLS_MOUNT}/tls.crt",
+        "tls_key_file": f"{WEB_TLS_MOUNT}/tls.key",
+        "client_ca_file": f"{WEB_TLS_MOUNT}/client-ca.crt",
+        "client_common_name": web["client_common_name"],
+        "listen": f":{web['port']}",
+        "health_listen": f":{web['health_port']}",
+    }
+
+
+def web_expected_network_policies(lab: dict[str, Any]) -> dict[str, Any]:
+    web = lab["web"]
+    return {
+        (WEB_NAMESPACE, "ax-web"): {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "ax-web"}},
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "ipBlock": {
+                                "cidr": "0.0.0.0/0",
+                                "except": [web["pod_subnet"]],
+                            }
+                        }
+                    ],
+                    # Only the panel's port: the kubelet's probes come from
+                    # the pod's node, which a NetworkPolicy never isolates.
+                    "ports": [{"protocol": "TCP", "port": web["port"]}],
+                }
+            ],
+            "egress": [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": namespace
+                                }
+                            },
+                            "podSelector": {"matchLabels": labels},
+                        }
+                    ],
+                    "ports": ports,
+                }
+                for namespace, labels, ports in (
+                    (
+                        "kube-system",
+                        {"k8s-app": "kube-dns"},
+                        [
+                            {"protocol": "UDP", "port": 53},
+                            {"protocol": "TCP", "port": 53},
+                        ],
+                    ),
+                    (
+                        AX_SYSTEM_NAMESPACE,
+                        {"app.kubernetes.io/name": "ax-server"},
+                        [{"protocol": "TCP", "port": 8080}],
+                    ),
+                    (
+                        "ate-system",
+                        {"app": "atenet-router"},
+                        [{"protocol": "TCP", "port": 8080}],
+                    ),
+                )
+            ],
+        },
+        (AX_SYSTEM_NAMESPACE, "ax-web-to-ax-server"): {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "ax-server"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": WEB_NAMESPACE
+                                }
+                            },
+                            "podSelector": {
+                                "matchLabels": {"app.kubernetes.io/name": "ax-web"}
+                            },
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
+def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
+    """Non-root, read-only, no capability, the pinned image, mounted Secrets."""
+    web = lab["web"]
+    spec = deployment.get("spec") or {}
+    if spec.get("replicas") != 1 or spec.get("strategy") != {"type": "Recreate"}:
+        raise AxLabError("the ax-web Deployment must run one pod, replaced")
+    pod = pod_spec(deployment, "ax-web")
+    validate_ax_pod(pod, [web_image(lab)], "ax-web")
+    if pod.get("serviceAccountName") != "ax-web":
+        raise AxLabError("ax-web must run as its own service account")
+    if pod.get("terminationGracePeriodSeconds") != 120:
+        raise AxLabError("ax-web must keep 120 s to clean up its run")
+    if pod.get("securityContext") != {
+        "runAsNonRoot": True,
+        "runAsUser": WEB_UID,
+        "runAsGroup": WEB_UID,
+        "fsGroup": WEB_UID,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }:
+        raise AxLabError("ax-web must run as non-root 65532 with RuntimeDefault")
+    (container,) = pod["containers"]
+    if container.get("securityContext") != {
+        "readOnlyRootFilesystem": True,
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }:
+        raise AxLabError("ax-web must run read-only with every capability dropped")
+    if container.get("args") != ["serve", "--config", WEB_CONFIG_PATH]:
+        raise AxLabError("ax-web must only serve its mounted configuration")
+    if container.get("command") is not None or container.get("env") is not None:
+        raise AxLabError("ax-web takes no command or environment")
+    if [
+        (port.get("containerPort"), port.get("name"))
+        for port in container.get("ports") or []
+    ] != [(web["port"], "https"), (web["health_port"], "health")]:
+        raise AxLabError("ax-web must expose exactly its mTLS and probe ports")
+    if container.get("resources") != {
+        "requests": {"cpu": "20m", "memory": "32Mi"},
+        "limits": {"cpu": "250m", "memory": "128Mi"},
+    }:
+        raise AxLabError("ax-web resources differ from the reviewed ones")
+    for probe, path in (("readinessProbe", "/readyz"), ("livenessProbe", "/healthz")):
+        if (container.get(probe) or {}).get("httpGet") != {
+            "path": path,
+            "port": web["health_port"],
+        }:
+            raise AxLabError(f"ax-web {probe} must use the plain probe port")
+    mounts = [
+        (mount.get("name"), mount.get("mountPath"), mount.get("readOnly"))
+        for mount in container.get("volumeMounts") or []
+    ]
+    if mounts != [
+        ("config", WEB_CONFIG_PATH.rsplit("/", 1)[0], True),
+        ("tls", WEB_TLS_MOUNT, True),
+        ("agent", WEB_AGENT_MOUNT, True),
+    ]:
+        raise AxLabError("ax-web must mount exactly its configuration and Secrets")
+    if pod.get("volumes") != [
+        {"name": "config", "configMap": {"name": "ax-web"}},
+        {"name": "tls", "secret": {"secretName": "ax-web-tls", "defaultMode": 0o440}},
+        {
+            "name": "agent",
+            "secret": {"secretName": "ax-web-agent", "defaultMode": 0o440},
+        },
+    ]:
+        raise AxLabError("ax-web volumes differ from the reviewed ones")
+
+
+def validate_web_manifest(rendered: str, lab: dict[str, Any]) -> None:
+    """Exactly the reviewed objects; one NodePort on the kind bridge only."""
+    web = lab["web"]
+    try:
+        documents = [
+            document
+            for document in yaml.load_all(rendered, Loader=UniqueKeyLoader)
+            if document is not None
+        ]
+    except yaml.YAMLError as error:
+        raise AxLabError(f"the web manifest is not YAML: {error}") from error
+    objects: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    keys = []
+    for document in documents:
+        if not isinstance(document, dict) or not isinstance(
+            document.get("metadata"), dict
+        ):
+            raise AxLabError("the web manifest holds an object without metadata")
+        key = (
+            document.get("kind"),
+            document["metadata"].get("namespace"),
+            document["metadata"].get("name"),
+        )
+        keys.append(key)
+        objects[key] = document
+    if keys != WEB_INVENTORY:
+        raise AxLabError("the web manifest holds other objects than the reviewed ones")
+    namespace = objects[("Namespace", None, WEB_NAMESPACE)]
+    if namespace["metadata"].get("labels") != WEB_NAMESPACE_LABELS:
+        raise AxLabError("namespace ax-web must enforce the restricted standard")
+    account = objects[("ServiceAccount", WEB_NAMESPACE, "ax-web")]
+    if account.get("automountServiceAccountToken") is not False:
+        raise AxLabError("the ax-web service account must not mount a token")
+    config = objects[("ConfigMap", WEB_NAMESPACE, "ax-web")]
+    data = config.get("data")
+    if not isinstance(data, dict) or set(data) != {"config.json"}:
+        raise AxLabError("the ax-web ConfigMap must hold only config.json")
+    try:
+        panel = json.loads(data["config.json"])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise AxLabError("the ax-web config.json is not JSON") from error
+    if panel != web_panel_config(lab) or not data["config.json"].endswith("}\n"):
+        raise AxLabError("the ax-web config.json differs from config/ax-lab.yml")
+    deployment = objects[("Deployment", WEB_NAMESPACE, "ax-web")]
+    annotations = (
+        ((deployment.get("spec") or {}).get("template") or {}).get("metadata") or {}
+    ).get("annotations")
+    if annotations != {
+        "ax.apptolast.com/config-sha256": hashlib.sha256(
+            data["config.json"].encode("utf-8")
+        ).hexdigest()
+    }:
+        raise AxLabError("the ax-web pod must roll with its configuration")
+    validate_web_pod(deployment, lab)
+    service = objects[("Service", WEB_NAMESPACE, "ax-web")]
+    spec = service.get("spec") or {}
+    if any(field in spec for field in SERVICE_PUBLISHING_FIELDS) or spec != {
+        "type": "NodePort",
+        "externalTrafficPolicy": "Local",
+        "selector": {"app.kubernetes.io/name": "ax-web"},
+        "ports": [
+            {
+                "name": "https",
+                "protocol": "TCP",
+                "port": web["port"],
+                "targetPort": web["port"],
+                "nodePort": web["node_port"],
+            }
+        ],
+    }:
+        raise AxLabError(
+            "Service ax-web must be one NodePort with externalTrafficPolicy Local"
+        )
+    for (policy_namespace, name), expected in web_expected_network_policies(
+        lab
+    ).items():
+        if objects[("NetworkPolicy", policy_namespace, name)].get("spec") != expected:
+            raise AxLabError(f"NetworkPolicy {name} differs from the reviewed one")
+    if "kind: Secret" in rendered or "stringData" in rendered:
+        raise AxLabError("the web manifest must never render a Secret")
+
+
+def web_manifest_sha256(rendered: str) -> str:
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="write the rendered sysctl file")
@@ -1521,6 +1985,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the sha256 of each rendered AX manifest, as JSON",
     )
+    parser.add_argument(
+        "--web-manifest-sha256",
+        action="store_true",
+        help="print only the sha256 of the rendered web panel manifest",
+    )
     args = parser.parse_args(argv)
     try:
         lab = validate_catalog(load_yaml(CONFIG))
@@ -1530,6 +1999,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_kind_config_render(kind_config, lab)
         ax_manifests = render_ax_manifests(lab)
         validate_ax_manifests(ax_manifests, lab)
+        web_manifest = render_web_manifest(lab)
+        validate_web_manifest(web_manifest, lab)
         for path, text in (
             (args.output, rendered),
             (args.kind_config_output, kind_config),
@@ -1552,9 +2023,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.ax_manifests_sha256:
         print(json.dumps(ax_manifests_sha256(ax_manifests), sort_keys=True))
         return 0
+    if args.web_manifest_sha256:
+        print(web_manifest_sha256(web_manifest))
+        return 0
     print(
-        "AX lab contract, pins, sysctl, kind configuration and AX manifest "
-        "renders passed."
+        "AX lab contract, pins, sysctl, kind configuration, AX manifest and "
+        "web panel manifest renders passed."
     )
     return 0
 
