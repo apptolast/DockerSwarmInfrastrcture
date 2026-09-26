@@ -1,0 +1,30 @@
+# Managed by Ansible (role ax_lab); see docs/AX.md, «Ejemplos».
+#
+# Una tarea que monta el Workspace de 02-workspace.yaml: el repositorio se
+# clona dentro del sandbox, en /workspace/chalk. Adaptado de
+# examples/task.yaml de google/ax (Apache-2.0, Copyright 2026 Google LLC),
+# sin Gateway, Model ni `resources`.
+#
+# Aplica antes 02-workspace.yaml. Igual que 01, no tiene `command`: se
+# queda en Running y ocupa un worker hasta que la borres.
+#
+#   sudo ax apply -f {{ ax_lab_examples_directory }}/02-workspace.yaml
+#   sudo ax apply -f {{ ax_lab_examples_directory }}/03-tarea-con-workspace.yaml
+#   sudo ax watch task ejemplo-con-workspace
+#   sudo ax ssh ejemplo-con-workspace -- sh -c 'ls -la /workspace/chalk'
+#   sudo ax delete task ejemplo-con-workspace
+#   sudo ax delete workspace ejemplo-workspace
+#
+# Si el clon falla, la tarea arranca igual (internal/workspace/setup.go,
+# línea 111): comprueba con `ax ssh` que el repositorio está.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: ejemplo-con-workspace
+  atespace: default
+spec:
+  image: "localhost:5001/ax-agents:{{ ax_lab.ax.tag }}@{{ ax_lab.ax.images['ax-agents'] }}"
+  workspaces:
+    - name: ejemplo-workspace
+      path: "/workspace"
+  debug: true

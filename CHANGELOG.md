@@ -8,6 +8,48 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Despliegue del panel web de AX en el laboratorio (ver
+  [`docs/AX_WEB.md`](docs/AX_WEB.md)): del laboratorio solo se publica el
+  panel de `https://ax.apptolast.com`, por decisión del propietario del
+  2026-09-26, y `ax-server` sigue sin publicarse. `config/ax-lab.yml` gana
+  `web`: la imagen `ax-web` por el digest que la CI reproduce, el NodePort
+  fijo 30843, los nombres TLS, `/etc/dockerswarm/ax/web-tls`, `github.com`
+  como único host de repositorios, la ventana 22:30-00:40 UTC, los topes de
+  turnos y tiempo, y el reenviador `ax-web-edge` con la red
+  `apptolast-edge-ax`, su subred fija `10.0.250.0/24` (que el playbook
+  `edge` tiene que usar al crearla) y sus límites, que
+  `config/capacity-profiles.yml` presupuesta en el grupo `ax-lab`.
+  `scripts/validate-ax-lab.py` valida `web` y renderiza el manifiesto: un
+  Namespace con el estándar `restricted`, una ServiceAccount sin token ni
+  RBAC, la configuración del panel, un Deployment de una réplica, no root
+  (65532), sin capacidades, de solo lectura y con 120 s para limpiar su
+  ejecución, un Service NodePort con `externalTrafficPolicy: Local` y un
+  solo puerto, y NetworkPolicies que solo admiten el 8443 y no desde pods
+  (las sondas llegan del nodo, que nunca se aísla) y solo salen a DNS,
+  `ax-server` y el router, más la única excepción de entrada a `ax-server`.
+  No renderiza ningún Secret. El rol lo aplica tras AX solo con deriva, sin
+  adoptar nunca un espacio de nombres que no creó (`state/web.json`),
+  restaura la imagen de la copia, comprueba los Secrets solo por sus
+  metadatos y se detiene con la orden exacta si faltan, inspecciona la red
+  sin crearla y ejecuta el reenviador con su `HostConfig` exacto
+  (`--user 65532:65532 --read-only --cap-drop ALL`, `no-new-privileges`,
+  `--restart no`, sus límites y ningún espacio de nombres del host,
+  dispositivo, grupo extra ni tmpfs), que solo recrea si difiere.
+  `manage-ax-lab-substrate.py seed-layout` copia la imagen fijada del layout
+  OCI que guarda la CI a la copia de seguridad, verificando cada blob. El
+  workflow `ax-web.yml` exige además el digest fijado antes de guardar el
+  layout. `scripts/ax-web-bootstrap.sh`, que ejecuta el propietario con el
+  lock host-global, crea la CA privada P-256 y los dos certificados, los
+  Docker Secrets `edge-ax-upstream-client-v1` y `edge-ax-upstream-ca-v1`, el
+  material del panel y, en el clúster, los Secrets `ax-web-tls` y
+  `ax-web-agent` con `--from-file`; nunca sobrescribe nada ni imprime una
+  clave. El rol instala también los ejemplos y los clientes remotos del
+  propietario en `/opt/dockerswarm/ax-lab/ejemplos`, con las rutas y la
+  imagen de agentes de este laboratorio. `docs/AX.md` cambia la regla de
+  publicación, «Exposición», «Credenciales», «Recrear el clúster»,
+  «Capacidad» y «Si se descarta el laboratorio», y añade «Ejemplos»; `tests/test_ax_web_deploy_contract.py`
+  fija el manifiesto, el reenviador, el arranque y el workflow con tablas
+  de mutaciones negativas.
 - El playbook `ax-lab` instala AX sobre Agent Substrate (ver
   [`docs/AX.md`](docs/AX.md), «AX»). `config/ax-lab.yml` (esquema 3) fija el
   parche google/ax#375 versionado byte a byte en `images/ax/` con su sha256, las
@@ -395,6 +437,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `ate-setup` corre acotado a 224 MiB (112 MiB reservados) en vez de 256 MiB:
+  el reenviador del panel web entra en el grupo `ax-lab` del plan activo,
+  que queda en 3 110m/5 682 MiB reservados y 16 900m/12 173 MiB de límite,
+  y lo que el plan deja libre, techo de `ate-setup`, pasa a 224 MiB y 600m.
 - `docs/DEPLOYMENT_STATUS.md` registra el apply de `host-baseline` desde
   `0028bca` (#71): `changed=2` de metadatos y una repetición con
   `changed=0`, sin reiniciar el bouncer de CrowdSec.

@@ -251,19 +251,19 @@ class CapacityProfileTests(unittest.TestCase):
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
         # The active plan now carries the game and the AX lab (host container
-        # group ax-lab: 550m/1920 MiB reserved, 2500m/3840 MiB limited) as
-        # well; both plans leave out Minecraft and OpenClaw while
-        # config/platform.yml parks them and count the external stacks
-        # (16/896 MiB, 50m/2050m).
+        # group ax-lab: 560m/1936 MiB reserved, 2750m/3872 MiB limited, with
+        # the web forwarder) as well; both plans leave out Minecraft and
+        # OpenClaw while config/platform.yml parks them and count the
+        # external stacks (16/896 MiB, 50m/2050m).
         self.assertEqual(
             totals["organizationweb"],
             {
-                "reservations": {"cpu_millicores": 3100, "memory_mib": 5666},
-                "limits": {"cpu_millicores": 16650, "memory_mib": 12141},
+                "reservations": {"cpu_millicores": 3110, "memory_mib": 5682},
+                "limits": {"cpu_millicores": 16900, "memory_mib": 12173},
             },
         )
-        # 256 MiB under the 15981 - 3072 - 512 = 12397 MiB memory limit budget.
-        self.assertEqual(15981 - 3072 - 512 - 12141, 256)
+        # 224 MiB under the 15981 - 3072 - 512 = 12397 MiB memory limit budget.
+        self.assertEqual(15981 - 3072 - 512 - 12173, 224)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 8941)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 16000)
         # Without the lab, the active plan is what it was before it.
@@ -838,6 +838,11 @@ class HostContainerTests(unittest.TestCase):
                         "limits": {"cpu_millicores": 500, "memory_mib": 256},
                         "pids_limit": 256,
                     },
+                    "ax-web-edge": {
+                        "reservations": {"cpu_millicores": 10, "memory_mib": 16},
+                        "limits": {"cpu_millicores": 250, "memory_mib": 32},
+                        "pids_limit": 64,
+                    },
                 }
             },
         )
@@ -856,7 +861,7 @@ class HostContainerTests(unittest.TestCase):
             yaml.safe_load((ROOT / "config/ax-lab.yml").read_text())["ax_lab"],
             contract["host_containers"]["ax-lab"],
         )
-        # The preflight inspects both names: absent, stopped or exact.
+        # The preflight inspects every name: absent, stopped or exact.
         completed = subprocess.run(
             [
                 sys.executable,
@@ -869,13 +874,15 @@ class HostContainerTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
-            json.loads(completed.stdout), ["kind-control-plane", "kind-registry"]
+            json.loads(completed.stdout),
+            ["ax-web-edge", "kind-control-plane", "kind-registry"],
         )
         running = live_host_containers(self.profiles)
         self.assertEqual(
             [record["item"] for record in running],
-            ["kind-control-plane", "kind-registry"],
+            ["kind-control-plane", "kind-registry", "ax-web-edge"],
         )
+        edge = absent("ax-web-edge")
         self.check_live(self.profiles, running)
         code, _stdout, stderr = self.run_cli(
             ["--live", "--requested-stack", "edge"],
@@ -887,14 +894,19 @@ class HostContainerTests(unittest.TestCase):
         # Docker restart) runs no process and stays budgeted in the plan.
         node = contract["host_containers"]["ax-lab"]["kind-control-plane"]
         registry = contract["host_containers"]["ax-lab"]["kind-registry"]
+        forwarder = contract["host_containers"]["ax-lab"]["ax-web-edge"]
         for label, containers in (
-            ("absent", [absent("kind-control-plane"), absent("kind-registry")]),
-            ("registry absent", [running[0], absent("kind-registry")]),
+            (
+                "absent",
+                [absent("kind-control-plane"), absent("kind-registry"), edge],
+            ),
+            ("registry absent", [running[0], absent("kind-registry"), running[2]]),
             (
                 "stopped after a reboot",
                 [
                     as_declared("kind-control-plane", node, status="exited"),
                     as_declared("kind-registry", registry, status="exited"),
+                    as_declared("ax-web-edge", forwarder, status="exited"),
                 ],
             ),
             (
@@ -902,6 +914,7 @@ class HostContainerTests(unittest.TestCase):
                 [
                     as_declared("kind-control-plane", node, status="exited"),
                     running[1],
+                    edge,
                 ],
             ),
         ):
@@ -927,8 +940,8 @@ class HostContainerTests(unittest.TestCase):
             "stdout": json.dumps({**manual_node, "status": "exited"}),
         }
         for label, containers in (
-            ("the manual lab", [manual, running[1]]),
-            ("the manual lab, stopped", [stopped_manual, running[1]]),
+            ("the manual lab", [manual, running[1], edge]),
+            ("the manual lab, stopped", [stopped_manual, running[1], edge]),
         ):
             with self.subTest(case=label):
                 with self.assertRaisesRegex(
@@ -955,6 +968,7 @@ class HostContainerTests(unittest.TestCase):
         group = self.profiles["capacity_profiles"]["host_containers"]["ax-lab"]
         node = group["kind-control-plane"]
         registry = group["kind-registry"]
+        forwarder = group["ax-web-edge"]
         drifted_node = as_declared("kind-control-plane", node)
         document = json.loads(drifted_node["stdout"])
         document["host_config"].update(Memory=0, NanoCpus=0, PidsLimit=None)
@@ -987,7 +1001,11 @@ class HostContainerTests(unittest.TestCase):
             ("converged", live_host_containers(self.profiles), None),
             (
                 "absent",
-                [absent("kind-control-plane"), absent("kind-registry")],
+                [
+                    absent("kind-control-plane"),
+                    absent("kind-registry"),
+                    absent("ax-web-edge"),
+                ],
                 None,
             ),
             (
@@ -995,6 +1013,7 @@ class HostContainerTests(unittest.TestCase):
                 [
                     as_declared("kind-control-plane", node, status="exited"),
                     as_declared("kind-registry", registry, status="exited"),
+                    as_declared("ax-web-edge", forwarder, status="exited"),
                 ],
                 None,
             ),
@@ -1003,17 +1022,22 @@ class HostContainerTests(unittest.TestCase):
                 [
                     as_declared("kind-control-plane", node, status="created"),
                     absent("kind-registry"),
+                    absent("ax-web-edge"),
                 ],
                 None,
             ),
             (
                 "drifted",
-                [drifted_node, as_declared("kind-registry", registry)],
+                [
+                    drifted_node,
+                    as_declared("kind-registry", registry),
+                    absent("ax-web-edge"),
+                ],
                 "differs from its declaration: kind-control-plane Memory",
             ),
             (
                 "drifted and stopped",
-                [stopped_drifted_node, absent("kind-registry")],
+                [stopped_drifted_node, absent("kind-registry"), absent("ax-web-edge")],
                 "differs from its declaration: kind-control-plane Memory",
             ),
             (
@@ -1021,6 +1045,7 @@ class HostContainerTests(unittest.TestCase):
                 [
                     as_declared("kind-control-plane", node, status="exited"),
                     drifted_registry,
+                    absent("ax-web-edge"),
                 ],
                 "differs from its declaration: kind-registry PidsLimit",
             ),
@@ -1050,6 +1075,7 @@ class HostContainerTests(unittest.TestCase):
             containers = [
                 as_declared("kind-control-plane", node, status=status),
                 as_declared("kind-registry", registry),
+                absent("ax-web-edge"),
             ]
             for requested in ("ax-lab", "edge"):
                 with self.subTest(status=status, requested=requested):
@@ -1073,12 +1099,13 @@ class HostContainerTests(unittest.TestCase):
                 [
                     {**absent("kind-control-plane"), "stderr": "permission denied"},
                     absent("kind-registry"),
+                    absent("ax-web-edge"),
                 ],
                 "cannot inspect live host container kind-control-plane",
             ),
             (
                 "missing read",
-                [absent("kind-control-plane")],
+                [absent("kind-control-plane"), absent("ax-web-edge")],
                 "live host container data is missing: kind-registry",
             ),
             (
@@ -1100,6 +1127,7 @@ class HostContainerTests(unittest.TestCase):
                         ),
                     },
                     absent("kind-registry"),
+                    absent("ax-web-edge"),
                 ],
                 "inspected container is not kind-control-plane",
             ),
@@ -1137,7 +1165,7 @@ class HostContainerTests(unittest.TestCase):
         plan["aggregate"]["limits"]["memory_mib"] += 2
         plan["aggregate"]["limits"]["cpu_millicores"] += 1
         extra = contract["host_containers"]["extra"]["extra-box"]
-        lab = [drifted_node, absent("kind-registry")]
+        lab = [drifted_node, absent("kind-registry"), absent("ax-web-edge")]
         for state in (
             as_declared("extra-box", extra),
             as_declared("extra-box", extra, status="exited"),
@@ -1168,7 +1196,11 @@ class HostContainerTests(unittest.TestCase):
         # The observability plan requires the lab stopped: ax-lab is outside it.
         observability = json.loads(json.dumps(self.profiles))
         observability["capacity_profiles"]["active"] = "observability"
-        stopped = [absent("kind-control-plane"), absent("kind-registry")]
+        stopped = [
+            absent("kind-control-plane"),
+            absent("kind-registry"),
+            absent("ax-web-edge"),
+        ]
         services = [
             {"name": "observability_prometheus", "stack": "observability"},
             *external_live(self.profiles),
@@ -1200,7 +1232,7 @@ class HostContainerTests(unittest.TestCase):
             live_containers=stopped,
         )
         with self.assertRaisesRegex(
-            self.error, "outside the active profile is running: kind-control-plane"
+            self.error, "outside the active profile is running: ax-web-edge"
         ):
             self.module.validate_live(
                 self.base,

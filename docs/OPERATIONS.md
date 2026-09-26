@@ -397,7 +397,9 @@ Después:
    `ax-lab`, que arranca el registro, comprueba las imágenes de Substrate y
    de AX, arranca el nodo, espera a que Substrate esté listo sin
    reinstalarlo y recrea los workers de AX anteriores al arranque (ver
-   [AX.md](AX.md), «Workers tras un reinicio»).
+   [AX.md](AX.md), «Workers tras un reinicio»). Hasta entonces
+   `ax.apptolast.com` responde 502: el mismo apply arranca de nuevo el
+   reenviador `ax-web-edge` del panel (ver [AX_WEB.md](AX_WEB.md)).
 
 `live-restore` no conserva el plano de control de Swarm durante un reinicio de
 Docker.

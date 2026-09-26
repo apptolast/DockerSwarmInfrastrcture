@@ -1,0 +1,144 @@
+#!/bin/sh
+# ax-remoto: usa la CLI de AX del servidor desde tu ordenador, por SSH.
+#
+#   ax-remoto <orden de ax> [argumentos...]
+#   ax-remoto get tasks -a '*'
+#   ax-remoto apply -f mi-tarea.yaml
+#   ax-remoto ssh <tarea> -- ls -la /workspace
+#
+# Cada llamada es `ssh <servidor> sudo -n ax ...`: no abre ningún puerto ni
+# túnel, y ax-server sigue sin publicarse (no tiene autenticación,
+# google/ax#376). Diferencias con la CLI en el servidor:
+#   - `apply -f fichero` manda tu fichero local por la entrada estándar;
+#     `apply -f -` reenvía tu entrada estándar.
+#   - `ssh <tarea> [--] orden...` envuelve la orden en `sh -c` para que la
+#     CLI no se coma -a/-n/--server/--context de la orden (google/ax#410).
+#     `ssh <tarea>` sin orden no abre ninguna shell (google/ax#374): se
+#     rechaza.
+#   - `ctx` y `tunnel` hablan del servidor, no de tu ordenador.
+#   - ax-tarea no va por aquí: entra con `ssh -t` (ver LEEME.md).
+#
+# Variables: AX_REMOTO_HOST (apptolast, un Host de ~/.ssh/config),
+# AX_REMOTO_SSH (ssh; un solo ejecutable), AX_REMOTO_TTY (auto, si o no).
+# Sale con el código de la orden remota, 255 si falla ssh, 127 si no
+# encuentra ssh y 64 o 66 si el error es local.
+set -u
+
+HOST=${AX_REMOTO_HOST:-apptolast}
+SSH=${AX_REMOTO_SSH:-ssh}
+TTY=${AX_REMOTO_TTY:-auto}
+
+# La ayuda es el comentario de cabecera (de la línea 2 a la primera que no
+# es un comentario).
+ayuda() { sed -n '2,/^[^#]/s/^# \{0,1\}//p' "$0"; }
+uso() { ayuda >&2; exit 64; }
+fallo() { echo "ax-remoto: $1" >&2; exit "${2:-64}"; }
+
+# Cita un argumento para el shell remoto con comillas simples (POSIX).
+citar() {
+  s=$1 r=''
+  while :; do
+    case $s in
+      *\'*) r=$r${s%%\'*}\'\\\'\'; s=${s#*\'} ;;
+      *) r=$r$s; break ;;
+    esac
+  done
+  printf "'%s'" "$r"
+}
+
+[ $# -ge 1 ] || uso
+case $1 in -h|--help|ayuda) ayuda; exit 0 ;; esac
+
+remoto="sudo -n ax"
+anadir() { remoto="$remoto $(citar "$1")"; }
+entrada=cerrada   # cerrada | heredada | fichero
+fichero=
+
+# Localiza la orden igual que cmd/ax/main.go: el primer argumento que no es
+# una opción global ni el valor de una.
+orden='' saltar=''
+for a do
+  if [ -n "$saltar" ]; then saltar=; continue; fi
+  case $a in
+    -a|--atespace|--server|--context|-n|--namespace) saltar=1 ;;
+    -*) ;;
+    *) [ -z "$orden" ] && orden=$a ;;
+  esac
+done
+[ -n "$orden" ] || uso
+
+case $orden in
+  tarea|ax-tarea)
+    fallo "ax-tarea no se lanza con ax-remoto: entra con ssh -t y ejecútala allí (ver LEEME.md)"
+    ;;
+  apply)
+    nf=0 siguiente=''
+    for a do
+      if [ -n "$siguiente" ]; then
+        siguiente=
+        if [ "$a" = - ]; then entrada=heredada
+        else
+          [ -f "$a" ] && [ -r "$a" ] || fallo "no puedo leer el fichero local: $a" 66
+          entrada=fichero fichero=$a a=-
+        fi
+      fi
+      case $a in -f|--file) nf=$((nf + 1)); siguiente=1 ;; esac
+      anadir "$a"
+    done
+    # La CLI solo lee el primer -f (manifestFromArgs, cmd/ax/main.go).
+    [ "$nf" -eq 1 ] && [ -z "$siguiente" ] || fallo "apply necesita exactamente un -f <fichero> (o -f -)"
+    ;;
+  ssh)
+    # fase 0: hasta `ssh`; 1: hasta la tarea; 2: opciones de ax tras la
+    # tarea; 3: la orden (con o sin `--` delante), que va entera a `sh -c`.
+    fase=0 cmd='' hay_cmd='' saltar=''
+    for a do
+      if [ "$fase" = 3 ]; then cmd="$cmd $(citar "$a")"; hay_cmd=1; continue; fi
+      if [ -n "$saltar" ]; then saltar=; anadir "$a"; continue; fi
+      case $a in
+        -a|--atespace|--server|--context|-n|--namespace) saltar=1; anadir "$a"; continue ;;
+        --atespace=*|--server=*|--context=*|--namespace=*) anadir "$a"; continue ;;
+      esac
+      if [ "$fase" = 2 ]; then
+        fase=3
+        [ "$a" = -- ] && continue
+        cmd="$cmd $(citar "$a")"; hay_cmd=1; continue
+      fi
+      anadir "$a"
+      case $fase:$a in
+        0:ssh) fase=1 ;;
+        1:-*) ;;
+        1:*) fase=2 ;;
+      esac
+    done
+    [ -n "$hay_cmd" ] || fallo "ax ssh sin orden no abre ninguna shell (google/ax#374); usa: ax-remoto ssh <tarea> -- <orden>"
+    anadir --; anadir sh; anadir -c; anadir "${cmd# }"
+    ;;
+  *)
+    for a do anadir "$a"; done
+    ;;
+esac
+
+# Terminal solo para las órdenes interactivas (watch, ssh) y si tú tienes
+# una: así Ctrl-C y el corte de la conexión llegan al servidor como señales.
+# Sin terminal la sesión es un canal limpio (ssh(1), -T), que es lo que
+# necesitan apply por la entrada estándar y los scripts.
+case $TTY in
+  si) modo=-tt ;;
+  no) modo=-T ;;
+  auto)
+    modo=-T
+    case $orden in
+      watch|ssh) [ -t 0 ] && [ -t 1 ] && modo=-t ;;
+    esac ;;
+  *) fallo "AX_REMOTO_TTY tiene que ser auto, si o no" ;;
+esac
+[ "$entrada" != cerrada ] && [ "$modo" != -T ] && fallo "apply no admite terminal (AX_REMOTO_TTY=si)"
+
+set -- -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "$modo"
+[ "$entrada" = cerrada ] && [ "$modo" = -T ] && set -- "$@" -n
+set -- "$@" -- "$HOST" "$remoto"
+if [ "$entrada" = fichero ]; then
+  exec "$SSH" "$@" < "$fichero"
+fi
+exec "$SSH" "$@"

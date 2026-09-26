@@ -165,9 +165,9 @@ ax_lab:
       mem_available_floor_mib: 512
     # ate-setup --kind --atenet-router envoy --image-repo localhost:5001
     # deploy ate-system, from its pinned image, only when the install
-    # drifts. It runs beside the node, so its limits fit in the 256 MiB and
-    # 850m of limits the active capacity plan leaves free; the operational
-    # headroom is not spent.
+    # drifts. It runs beside the node, so its limits fit in the 224 MiB and
+    # 600m of limits the active capacity plan leaves free since the web
+    # forwarder joined it; the operational headroom is not spent.
     install:
       atenet_router: envoy
       rollout_timeout_seconds: 600
@@ -179,11 +179,11 @@ ax_lab:
       # (deploy.go line 99, csi.go lines 61-104), and six rollouts
       # (deploy.go lines 150-174).
       timeout_seconds: 6480
-      memory_limit_mib: 256
-      memory_reservation_mib: 128
+      memory_limit_mib: 224
+      memory_reservation_mib: 112
       cpu_limit_millicores: 500
       pids_limit: 256
-      min_mem_available_mib: 768
+      min_mem_available_mib: 736
       mem_available_floor_mib: 512
     # What `ate-setup --kind` deploys at the pinned commit: every workload
     # of its three namespaces, sorted by namespace, kind and name, with the
@@ -327,6 +327,75 @@ ax_lab:
     # atenet-router's --route-timeout, so that an agent's long `ax ssh`
     # stream is not cut (cmd/atenet/internal/router/cmd.go, line 73).
     router_route_timeout: 1h
+  # The AX web panel behind https://ax.apptolast.com (docs/AX_WEB.md): the
+  # only published part of the lab, by owner decision of 2026-09-26. ax-server
+  # is still never published. Traefik (playbook edge) reaches the forwarder
+  # ax-web-edge over network edge_network; the forwarder pipes TCP to the
+  # panel's NodePort on the kind bridge, and the panel only accepts Traefik's
+  # client certificate (mTLS). No credential is versioned: the TLS material
+  # and the agent token reach Kubernetes only through the owner-run
+  # scripts/ax-web-bootstrap.sh.
+  web:
+    namespace: ax-web
+    # images/ax-web, built by ko v0.19.1 and reproduced twice with the same
+    # digest by .github/workflows/ax-web.yml, which also fails when it builds
+    # another one. Seeded into the backup layout from that workflow's OCI
+    # layout (manage-ax-lab-substrate.py seed-layout) and restored into the
+    # registry like the AX images; never built on this host.
+    image:
+      name: ax-web
+      tag: "0.1.0"
+      digest: >-
+        sha256:e8128547a95a3adcbb9a488faa9b379fdb9fa132337d7404cad073b2c3d78faa
+    # The panel's mTLS port, published by a NodePort Service on the kind
+    # bridge only (the node's ports are not published on the host), and its
+    # plain probe port, which no Service exposes.
+    port: 8443
+    node_port: 30843
+    health_port: 8081
+    # kind's default IPv4 pod subnet (kind configuration guide, «Pod
+    # Subnet»; the kind-config.yaml.j2 of this role sets none): the panel
+    # admits no connection from a pod, sandboxes included.
+    pod_subnet: 10.244.0.0/16
+    origin: https://ax.apptolast.com
+    # The TLS server name and the only client certificate subject the panel
+    # accepts, as the edge serversTransport presents them.
+    server_name: ax-web
+    client_common_name: edge-traefik
+    # Root-only directory where the bootstrap keeps the panel's certificate,
+    # key and client CA, to restore the Kubernetes Secret after a cluster
+    # recreation without touching Traefik.
+    tls_directory: /etc/dockerswarm/ax/web-tls
+    # What a run may use: public https repositories of these hosts only, up
+    # to max_turns turns and max_timeout_minutes minutes, never across the
+    # Observatorio window (UTC); an active run is cancelled
+    # watchdog_lead_minutes before it.
+    repo_hosts: [github.com]
+    blackout_utc: "22:30-00:40"
+    watchdog_lead_minutes: 5
+    max_turns: 50
+    max_timeout_minutes: 45
+    # The prompt goes to the agent on stdin; "argument" is the fallback if
+    # the lab window shows that `claude -p` ignores it (images/ax-web).
+    prompt_mode: stdin
+    # A plain Docker container on the kind network and on edge_network, run
+    # like the lab containers: restart policy "no" and the limits of
+    # host_containers.ax-lab.ax-web-edge in config/capacity-profiles.yml.
+    forwarder:
+      container: ax-web-edge
+      port: 8443
+      # Created attachable by the edge playbook with exactly this subnet
+      # (never by this role, which only inspects it). The forwarder passes
+      # it as --allow-cidr: no peer outside Traefik's network, such as a
+      # sandbox on the kind bridge, reaches the panel through it.
+      edge_network: apptolast-edge-ax
+      edge_subnet: 10.0.250.0/24
+      resources:
+        memory_limit_mib: 32
+        memory_reservation_mib: 16
+        cpu_limit_millicores: 250
+        pids_limit: 64
+      restart_policy: "no"
 # Owner acceptance that the kind node runs root-equivalent: kind starts it
 # with --privileged and seccomp and AppArmor unconfined (kind v0.33.0
 # pkg/cluster/internal/providers/docker/provision.go, lines 226-228). The

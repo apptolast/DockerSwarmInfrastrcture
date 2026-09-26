@@ -95,9 +95,9 @@ KO_DOCKER_REPO=localhost:5001/ax-web ko build --bare --push=false \
 
 `.github/workflows/ax-web.yml` pasa las pruebas y `govulncheck`, la
 construye dos veces (la segunda con la caché vacía), exige el mismo digest
-y guarda el layout OCI como artefacto. El digest se fijará en
-`config/ax-lab.yml` con el despliegue, y entonces el workflow también
-fallará si el digest construido no coincide con el fijado.
+y guarda el layout OCI como artefacto. El digest está fijado en
+`config/ax-lab.yml` (`web.image.digest`) y el workflow falla si el digest
+construido no coincide con el fijado (ver `docs/AX_WEB.md`, «Imagen»).
 
 ## Pendiente de comprobar en la ventana del laboratorio
 

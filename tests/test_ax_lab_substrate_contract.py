@@ -259,11 +259,11 @@ class SubstrateValidatorTests(unittest.TestCase):
                 "atenet_router": "envoy",
                 "rollout_timeout_seconds": 600,
                 "timeout_seconds": 6480,
-                "memory_limit_mib": 256,
-                "memory_reservation_mib": 128,
+                "memory_limit_mib": 224,
+                "memory_reservation_mib": 112,
                 "cpu_limit_millicores": 500,
                 "pids_limit": 256,
-                "min_mem_available_mib": 768,
+                "min_mem_available_mib": 736,
                 "mem_available_floor_mib": 512,
             },
         )
@@ -404,9 +404,9 @@ class SubstrateValidatorTests(unittest.TestCase):
             ("install/rollout_timeout_seconds", 60, "outside 300-1800"),
             ("install/timeout_seconds", 1800, "cover ate-setup's own waits"),
             ("install/timeout_seconds", 20000, "cover ate-setup's own waits"),
-            ("install/memory_limit_mib", 1024, "256 MiB of limits the capacity plan"),
+            ("install/memory_limit_mib", 1024, "224 MiB of limits the capacity plan"),
             ("install/memory_reservation_mib", 64, "ratio exceeds"),
-            ("install/cpu_limit_millicores", 2000, "850m of limits the capacity plan"),
+            ("install/cpu_limit_millicores", 2000, "600m of limits the capacity plan"),
             ("install/pids_limit", 2048, "PID limit is above the reviewed one"),
             ("install/min_mem_available_mib", 256, "plus the operational headroom"),
             ("install/mem_available_floor_mib", 1, "operational headroom"),
@@ -496,8 +496,9 @@ class SubstrateValidatorTests(unittest.TestCase):
     def test_ate_setup_fits_in_what_the_capacity_plan_leaves_free(self) -> None:
         """F11: never the operational headroom, which stays apart."""
         # 15981 - 3072 - 512 = 12397 MiB and (8000 - 1000) x 2.50 = 17500m of
-        # limits, of which the organizationweb plan commits 12141 and 16650.
-        self.assertEqual(self.module.load_free_limit_budget(), (256, 850))
+        # limits, of which the organizationweb plan commits 12173 and 16900
+        # since the web forwarder joined the ax-lab group.
+        self.assertEqual(self.module.load_free_limit_budget(), (224, 600))
 
         def install(**values: int):
             def change(document: dict[str, Any]) -> None:
@@ -506,19 +507,19 @@ class SubstrateValidatorTests(unittest.TestCase):
             return change
 
         for values, message in (
-            ({"memory_limit_mib": 257, "min_mem_available_mib": 769}, "exceeds the 256 MiB"),
-            ({"cpu_limit_millicores": 851}, "exceeds the 850m"),
+            ({"memory_limit_mib": 225, "min_mem_available_mib": 737}, "exceeds the 224 MiB"),
+            ({"cpu_limit_millicores": 601}, "exceeds the 600m"),
         ):  # fmt: skip
             with self.subTest(values=values):
                 self.rejected(install(**values), message)
-        for values in ({"memory_limit_mib": 256}, {"cpu_limit_millicores": 850}):
+        for values in ({"memory_limit_mib": 224}, {"cpu_limit_millicores": 600}):
             with self.subTest(values=values):
                 accepted = copy.deepcopy(self.document)
                 install(**values)(accepted)
                 self.module.validate_catalog(accepted, self.reserved)
-        # A plan that frees less memory refuses the reviewed 256 MiB.
+        # A plan that frees less memory refuses the reviewed 224 MiB.
         with self.assertRaisesRegex(self.module.AxLabError, "exceeds the 128 MiB"):
-            self.module.validate_catalog(self.document, self.reserved, free=(128, 850))
+            self.module.validate_catalog(self.document, self.reserved, free=(128, 600))
 
     def test_the_install_timeout_outlasts_every_wait_of_ate_setup(self) -> None:
         """F2: 10 waits bounded by --rollout-timeout plus 180 s, and 300 s."""
@@ -667,8 +668,9 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             ("Start and prepare the lab node outside check mode", "node.yml"),
             ("Install Substrate only on drift outside check mode", "substrate.yml"),
             ("Install AX only on drift and repair its workers outside check mode", "ax.yml"),
+            ("Deploy the web panel and its forwarder outside check mode", "web.yml"),
         ]  # fmt: skip
-        self.assertEqual(names[-7:], [name for name, _file in applies])
+        self.assertEqual(names[-8:], [name for name, _file in applies])
         for name, task_file in applies:
             with self.subTest(task=name):
                 self.assertEqual(
@@ -684,6 +686,7 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             ("Read Substrate in the lab cluster and prove its ownership", "substrate_read.yml"),
             ("Read the pinned AX images in the registry and the backup", "ax_images_read.yml"),
             ("Read AX in the lab cluster and prove its ownership", "ax_read.yml"),
+            ("Read the web panel and its forwarder and prove their ownership", "web_read.yml"),
         ]  # fmt: skip
         for name, task_file in checks:
             with self.subTest(task=name):
@@ -1576,12 +1579,12 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "--context", "kind-kind",
                 "--atenet-router", "envoy",
                 "--rollout-timeout-seconds", "600",
-                "--memory-mib", "256",
-                "--memory-reservation-mib", "128",
+                "--memory-mib", "224",
+                "--memory-reservation-mib", "112",
                 "--cpu-millicores", "500",
                 "--pids-limit", "256",
                 "--timeout-seconds", "6480",
-                "--min-mem-available-mib", "768",
+                "--min-mem-available-mib", "736",
                 "--mem-available-floor-mib", "512",
                 *[f"--image={name}={MANUAL_LAB_DIGESTS[name]}" for name in INSTALLED],
             ],
@@ -1817,6 +1820,17 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             with self.subTest(path=path.name):
                 # Never Docker's image store (it re-serialises manifests),
                 # never Secret data, never a compiler outside the manager.
+                # Two reviewed exceptions of the web panel (docs/AX_WEB.md):
+                # the host's Docker pulls the forwarder's image by digest
+                # to run it, and the Secrets are listed by server-side table
+                # rows, which carry metadata only.
+                exceptions = {
+                    "Pull the pinned web panel image when the host lacks it",
+                    "Read the web panel Secrets by metadata only",
+                }
+                if path.name in ("web.yml", "web_read.yml"):
+                    tasks = [task for task in tasks if task["name"] not in exceptions]
+                    text = " ".join(strings(tasks))
                 for forbidden in (
                     '"pull"',
                     '"push"',

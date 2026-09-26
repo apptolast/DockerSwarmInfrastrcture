@@ -1,0 +1,72 @@
+---
+# Both modes, after ax_host.yml: the owner's AX examples and remote clients
+# (docs/AX.md, «Ejemplos»), first written by hand in the manual lab's
+# /opt/ax-lab/ejemplos. The guide and the manifests are rendered with this
+# lab's paths, worker pool and pinned agents image; the clients are copied
+# byte for byte. None of them holds a credential. Check mode only reports.
+- name: Inspect the AX examples directories without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - "{{ ax_lab_examples_directory }}"
+    - "{{ ax_lab_examples_directory }}/cliente"
+  register: ax_lab_examples_paths
+
+- name: Refuse unsafe AX examples directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - not item.stat.exists or item.stat.isdir
+      - not item.stat.exists or item.stat.uid == 0
+      - not item.stat.exists or item.stat.gid == 0
+      - not item.stat.exists or item.stat.mode[-1] | int not in [2, 3, 6, 7]
+      - not item.stat.exists or item.stat.mode[-2] | int not in [2, 3, 6, 7]
+    fail_msg: "{{ item.item }} is not a root-owned directory."
+    quiet: true
+  loop: "{{ ax_lab_examples_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the AX examples directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ ax_lab_examples_directory }}"
+    - "{{ ax_lab_examples_directory }}/cliente"
+
+# Check mode cannot render into a directory it only reported.
+- name: Render the AX guide and example manifests
+  ansible.builtin.template:
+    src: "ejemplos/{{ item }}.j2"
+    dest: "{{ ax_lab_examples_directory }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - LEEME.md
+    - 01-tarea-sencilla.yaml
+    - 02-workspace.yaml
+    - 03-tarea-con-workspace.yaml
+  when: >-
+    not ansible_check_mode
+    or ax_lab_examples_paths.results | map(attribute="stat.exists") | min
+
+- name: Copy the remote AX clients
+  ansible.builtin.copy:
+    src: "ejemplos/cliente/{{ item }}"
+    dest: "{{ ax_lab_examples_directory }}/cliente/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - ax-remoto
+    - ax-remoto.ps1
+  when: >-
+    not ansible_check_mode
+    or ax_lab_examples_paths.results | map(attribute="stat.exists") | min

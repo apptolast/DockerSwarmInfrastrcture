@@ -4,21 +4,25 @@ name: AX web panel
 # Tests the AX web panel (images/ax-web) and builds its image twice with ko,
 # the second time with an empty Go build cache, requiring the same digest:
 # the image is reproducible from this tree, so the production host never
-# has to compile it (docs/AX.md, «Reproducibilidad»). Everything runs in
-# the official Go 1.27.1 image the AX lab's toolbox pins. Nothing is pushed
+# has to compile it (docs/AX.md, «Reproducibilidad»), and requires the
+# digest config/ax-lab.yml pins as web.image.digest. Everything runs in the
+# official Go 1.27.1 image the AX lab's toolbox pins. Nothing is pushed
 # anywhere and no credential is used; the OCI layout of the build is kept
-# as a run artifact for the deployment change to seed from.
+# as a run artifact, which the owner seeds into the lab's backup with
+# manage-ax-lab-substrate.py seed-layout (docs/AX_WEB.md, «Imagen»).
 
 "on":
   pull_request:
     paths:
       - images/ax-web/**
+      - config/ax-lab.yml
       - .github/workflows/ax-web.yml
   push:
     branches:
       - main
     paths:
       - images/ax-web/**
+      - config/ax-lab.yml
       - .github/workflows/ax-web.yml
   workflow_dispatch:
 
@@ -142,6 +146,33 @@ jobs:
           fi
           echo "${first}" >"${build}/layout/DIGEST"
           cp -R "${build}/layout" "${out}/layout"
+
+      # The pin is the one value under web.image.digest (a folded scalar on
+      # the next line); tests/test_ax_web_deploy_contract.py runs this same
+      # program against the real file.
+      - name: Require the digest config/ax-lab.yml pins
+        run: |
+          set -eu
+          pinned="$(
+            awk '
+              /^[^ #]/ { web = 0; image = 0 }
+              /^  [a-z_]+:/ { web = ($0 == "  web:"); image = 0 }
+              web && /^    [a-z_]+:/ { image = ($0 == "    image:") }
+              image && $0 == "      digest: >-" {
+                getline; sub(/^ +/, ""); print
+              }
+            ' ../../config/ax-lab.yml
+          )"
+          built="$(cat "${GITHUB_WORKSPACE}/.build/ax-web/layout/DIGEST")"
+          echo "${pinned}" | grep -Eqx 'sha256:[a-f0-9]{64}'
+          {
+            echo ""
+            echo "Pinned in config/ax-lab.yml: \`${pinned}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          if [ "${built}" != "${pinned}" ]; then
+            echo "the build differs from web.image.digest in config/ax-lab.yml"
+            exit 1
+          fi
 
       - name: Keep the OCI layout of the image
         # v7.0.1

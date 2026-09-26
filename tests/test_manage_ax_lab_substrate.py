@@ -671,7 +671,7 @@ class ArgumentTests(unittest.TestCase):
     def test_mutating_commands_take_the_host_lock(self) -> None:
         self.assertEqual(
             manager.MUTATING_COMMANDS,
-            {"export", "import", "forget", "build", "install"},
+            {"export", "import", "seed-layout", "forget", "build", "install"},
         )
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn(

@@ -1,0 +1,503 @@
+---
+# Read the AX web panel and its forwarder without changing anything
+# (docs/AX_WEB.md): in --check as the host is, and in the apply before and
+# after web.yml's changes. As with AX, the ax-web namespace is never
+# adopted: only a state file for this exact node proves this role created
+# it. The two Secrets the owner creates are read by name, type and key
+# names only; no value is ever printed or registered. The edge network is
+# only inspected: the edge playbook creates it.
+- name: Read the pinned web panel image in the registry and the backup
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        (
+          [
+            role_path + "/../../../scripts/manage-ax-lab-substrate.py",
+            "image-status",
+            "--image-set",
+            "web",
+            "--layout",
+            ax_lab.substrate.backup_directory,
+            "--tag",
+            ax_lab.web.image.tag,
+          ]
+          + (
+            ["--registry", "127.0.0.1:" ~ ax_lab.registry.host_port]
+            if ax_lab_registry is not none
+            and ax_lab_registry.status == "running"
+            else []
+          )
+          + ax_lab_web_image_args
+        )
+        | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_web_image_status_raw
+  changed_when: false
+  check_mode: false
+
+- name: Record where the pinned web panel image is held
+  ansible.builtin.set_fact:
+    ax_lab_web_image_status: >-
+      {{
+        ax_lab_web_image_status_raw.stdout_lines
+        | select("match", "^[{]") | last | from_json
+      }}
+
+- name: Record whether the web panel image moves or is lost
+  ansible.builtin.set_fact:
+    ax_lab_web_in_backup: >-
+      {{ ax_lab_web_image_status.backup[ax_lab.web.image.name] == "complete" }}
+    ax_lab_web_in_registry: >-
+      {{
+        (ax_lab_web_image_status.registry or {})
+        .get(ax_lab.web.image.name, "missing") == "pinned"
+      }}
+
+- name: Inspect the web state file without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_web_state_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_web_state_file
+
+- name: Require a root-only regular web state file when there is one
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ax_lab_web_state_file.stat.exists or (
+          ax_lab_web_state_file.stat.isreg
+          and not ax_lab_web_state_file.stat.islnk
+          and ax_lab_web_state_file.stat.uid == 0
+          and ax_lab_web_state_file.stat.gid == 0
+          and ax_lab_web_state_file.stat.mode == "0600"
+        )
+    fail_msg: >-
+      {{ ax_lab_web_state_path }} is not a root:root 0600 regular file.
+
+- name: Read the web state file
+  ansible.builtin.slurp:
+    src: "{{ ax_lab_web_state_path }}"
+  register: ax_lab_web_state_content
+  when: ax_lab_web_state_file.stat.exists
+
+# The panel is read once AX is: in --check only while AX matches its pin,
+# since the panel's ax-system policy and its backends come with it.
+- name: Record the web state and whether the panel can be read
+  ansible.builtin.set_fact:
+    ax_lab_web_state: >-
+      {{
+        (ax_lab_web_state_content.content | b64decode | from_json)
+        if ax_lab_web_state_file.stat.exists else none
+      }}
+    ax_lab_web_readable: >-
+      {{
+        ax_lab_ax_readable
+        and "ax-system" in ax_lab_ax_namespaces
+        and (not ansible_check_mode or ax_lab_ax_drift == [])
+      }}
+
+- name: Read the web panel namespace
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - namespaces
+      - "{{ ax_lab.web.namespace }}"
+      - --ignore-not-found
+      - --no-headers
+      - --output
+      - custom-columns=NAME:.metadata.name,UID:.metadata.uid
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_web_namespace_read
+  changed_when: false
+  check_mode: false
+  when: ax_lab_web_readable
+
+- name: Record the web panel namespace as read
+  ansible.builtin.set_fact:
+    ax_lab_web_namespace_uid: >-
+      {{
+        "" if ax_lab_web_namespace_read is skipped else
+        dict(
+          ax_lab_web_namespace_read.stdout_lines | select
+          | map("split") | list
+        ).get(ax_lab.web.namespace, "")
+      }}
+    ax_lab_web_expected_state: >-
+      {{
+        none if ax_lab_node is none else
+        ax_lab_web_identity | combine({"node_container_id": ax_lab_node.id})
+      }}
+    ax_lab_web_state_for_node: >-
+      {{
+        ax_lab_web_state is not none
+        and ax_lab_node is not none
+        and ax_lab_web_state.node_container_id | default("") == ax_lab_node.id
+      }}
+
+- name: Refuse a web panel namespace this role did not create
+  ansible.builtin.assert:
+    that:
+      - ax_lab_web_namespace_uid == "" or ax_lab_web_state_for_node
+      - >-
+        ax_lab_web_namespace_uid == ""
+        or not ax_lab_web_state_for_node
+        or ax_lab_web_state.namespace | default("")
+        in ["", ax_lab_web_namespace_uid]
+    fail_msg: >-
+      {{ ax_lab.web.namespace }} exists, but no state file for this node
+      proves this role created it, or another hand recreated it since, and
+      it is never adopted. Delete it in an exclusive window
+      (docs/AX_WEB.md, «Propiedad»).
+  when: ax_lab_web_readable
+
+# Exactly as the apply sends it: exit 0 is no difference, 1 a difference.
+# A missing namespace is drift without a diff.
+- name: Diff the web panel manifest against the cluster server-side
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - diff
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_web_manifest }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_web_diff
+  changed_when: false
+  failed_when: ax_lab_web_diff.rc not in [0, 1]
+  check_mode: false
+  when:
+    - ax_lab_web_readable
+    - ax_lab_web_namespace_uid != ""
+
+# kubectl's default output is the server-side table (NAME, TYPE, DATA,
+# AGE): without --output or --sort-by the API server returns each row's
+# object as metadata only (meta.k8s.io Table, includeObject=Metadata), so no
+# Secret value ever reaches this host's kubectl, let alone the log. DATA is
+# the number of keys.
+- name: Read the web panel Secrets by metadata only
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - secrets
+      - ax-web-tls
+      - ax-web-agent
+      - --namespace
+      - "{{ ax_lab.web.namespace }}"
+      - --ignore-not-found
+      - --no-headers
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_web_secrets_read
+  changed_when: false
+  check_mode: false
+  when:
+    - ax_lab_web_readable
+    - ax_lab_web_namespace_uid != ""
+
+- name: Record the web panel drift and the Secrets it still lacks
+  ansible.builtin.set_fact:
+    ax_lab_web_drift: >-
+      {{
+        [] if not ax_lab_web_readable else
+        (
+          ["state"]
+          if not ax_lab_web_state_for_node
+          or ax_lab_web_state.phase | default("") != "installed"
+          or ax_lab_web_state
+          | dict2items
+          | rejectattr("key", "in", ["phase", "namespace"])
+          | items2dict != ax_lab_web_expected_state
+          else []
+        )
+        + (
+          ["ax-web.yaml"]
+          if ax_lab_web_diff is skipped or ax_lab_web_diff.rc == 1
+          else []
+        )
+      }}
+    # Name, type and number of keys, as scripts/ax-web-bootstrap.sh k8s
+    # creates them.
+    ax_lab_web_secrets_missing: >-
+      {{
+        ["ax-web-tls", "ax-web-agent"]
+        if ax_lab_web_secrets_read is skipped else
+        {
+          "ax-web-tls": ["ax-web-tls", "Opaque", "3"],
+          "ax-web-agent": ["ax-web-agent", "Opaque", "1"],
+        }
+        | dict2items
+        | rejectattr(
+          "value", "in",
+          ax_lab_web_secrets_read.stdout_lines | select
+          | map("split") | map("batch", 3) | map("first") | list
+        )
+        | map(attribute="key") | list
+      }}
+
+# The forwarder is a plain container this role creates with its labels; one
+# with that name and without them is never touched.
+- name: Read the web forwarder container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - >-
+        {% raw %}{"id":{{json .ID}},"name":{{json .Name}},
+        "status":{{json .State.Status}},"image":{{json .Config.Image}},
+        "labels":{{json .Config.Labels}},"user":{{json .Config.User}},
+        "entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},
+        "read_only":{{json .HostConfig.ReadonlyRootfs}},
+        "privileged":{{json .HostConfig.Privileged}},
+        "cap_add":{{json .HostConfig.CapAdd}},
+        "cap_drop":{{json .HostConfig.CapDrop}},
+        "security_opt":{{json .HostConfig.SecurityOpt}},
+        "memory":{{json .HostConfig.Memory}},
+        "memory_swap":{{json .HostConfig.MemorySwap}},
+        "memory_reservation":{{json .HostConfig.MemoryReservation}},
+        "nano_cpus":{{json .HostConfig.NanoCPUs}},
+        "pids_limit":{{json .HostConfig.PidsLimit}},
+        "restart_policy":{{json .HostConfig.RestartPolicy}},
+        "network_mode":{{json .HostConfig.NetworkMode}},
+        "pid_mode":{{json .HostConfig.PidMode}},
+        "ipc_mode":{{json .HostConfig.IpcMode}},
+        "uts_mode":{{json .HostConfig.UTSMode}},
+        "userns_mode":{{json .HostConfig.UsernsMode}},
+        "cgroupns_mode":{{json .HostConfig.CgroupnsMode}},
+        "devices":{{json .HostConfig.Devices}},
+        "group_add":{{json .HostConfig.GroupAdd}},
+        "tmpfs":{{json .HostConfig.Tmpfs}},
+        "port_bindings":{{json .HostConfig.PortBindings}},
+        "mounts":{{json .Mounts}},
+        "networks":{{json .NetworkSettings.Networks}}}{% endraw %}
+      - "{{ ax_lab.web.forwarder.container }}"
+  register: ax_lab_web_edge_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require the web forwarder to be readable or absent
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_web_edge_read.rc == 0 or (
+          ax_lab_web_edge_read.stdout | length == 0
+          and ax_lab_web_edge_read.stderr | trim is match(
+            "^(.*: )?No such container: "
+            ~ (ax_lab.web.forwarder.container | regex_escape) ~ "$"
+          )
+        )
+      - >-
+        ax_lab_web_edge_read.rc != 0
+        or (ax_lab_web_edge_read.stdout | from_json).name
+        == "/" ~ ax_lab.web.forwarder.container
+    fail_msg: >-
+      Cannot read the web forwarder {{ ax_lab.web.forwarder.container }}:
+      {{ ax_lab_web_edge_read.stderr | trim }}
+
+# What `docker container inspect` shows for the forwarder web.yml runs.
+# The namespace modes are what this host's Docker (29.6.2, cgroup v2, no
+# default-ipc-mode or userns-remap in daemon.json) records for a `docker
+# run` without --pid, --ipc, --uts, --userns or --cgroupns, as read from
+# kind-registry, which cluster.yml creates that way.
+- name: Record the web forwarder as read and as it must run
+  ansible.builtin.set_fact:
+    ax_lab_web_edge: >-
+      {{
+        (ax_lab_web_edge_read.stdout | from_json)
+        if ax_lab_web_edge_read.rc == 0 else none
+      }}
+    ax_lab_web_edge_labels:
+      com.apptolast.managed-by: ansible
+      com.apptolast.ax-lab: web-edge
+    ax_lab_web_edge_expected:
+      image: "{{ ax_lab_web_forwarder_image }}"
+      user: "65532:65532"
+      entrypoint: ["/ko-app/ax-web"]
+      cmd: "{{ ax_lab_web_forwarder_command }}"
+      read_only: true
+      privileged: false
+      cap_add: null
+      cap_drop: [ALL]
+      security_opt: [no-new-privileges]
+      memory: "{{ ax_lab.web.forwarder.resources.memory_limit_mib * 1048576 }}"
+      memory_swap: >-
+        {{ ax_lab.web.forwarder.resources.memory_limit_mib * 1048576 }}
+      memory_reservation: >-
+        {{ ax_lab.web.forwarder.resources.memory_reservation_mib * 1048576 }}
+      nano_cpus: >-
+        {{ ax_lab.web.forwarder.resources.cpu_limit_millicores * 1000000 }}
+      pids_limit: "{{ ax_lab.web.forwarder.resources.pids_limit }}"
+      restart_policy:
+        Name: "{{ ax_lab.web.forwarder.restart_policy }}"
+        MaximumRetryCount: 0
+      network_mode: "{{ ax_lab.cluster.network }}"
+      pid_mode: ""
+      ipc_mode: private
+      uts_mode: ""
+      userns_mode: ""
+      cgroupns_mode: private
+      mounts: []
+
+- name: Refuse a web forwarder this role did not create
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_web_edge is none
+        or ax_lab_web_edge.labels | default({}, true)
+        | dict2items
+        | selectattr("key", "in", ax_lab_web_edge_labels)
+        | items2dict == ax_lab_web_edge_labels
+    fail_msg: >-
+      A container named {{ ax_lab.web.forwarder.container }} exists without
+      this role's labels, and it is never adopted. Remove it under the lock
+      (docs/AX_WEB.md, «Propiedad»).
+
+# Everything the role sets, the networks it joins, nothing published and
+# no device, extra group or tmpfs (Docker records none as null or []).
+- name: Record whether the web forwarder differs from how it must run
+  ansible.builtin.set_fact:
+    ax_lab_web_edge_drift: >-
+      {{
+        ax_lab_web_edge is not none
+        and (
+          dict(
+            ax_lab_web_edge_expected
+            | dict2items | map(attribute="key")
+            | zip(
+              ax_lab_web_edge_expected | dict2items | map(attribute="key")
+              | map("extract", ax_lab_web_edge)
+            )
+          ) != ax_lab_web_edge_expected
+          or ax_lab_web_edge.port_bindings | default({}, true) != {}
+          or ax_lab_web_edge.devices | default([], true) != []
+          or ax_lab_web_edge.group_add | default([], true) != []
+          or ax_lab_web_edge.tmpfs | default({}, true) != {}
+          or ax_lab_web_edge.networks | default({}, true) | list | sort
+          != [ax_lab.web.forwarder.edge_network, ax_lab.cluster.network] | sort
+        )
+      }}
+
+- name: Inspect the edge network of the web forwarder
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - --format
+      - >-
+        {% raw %}{"name":{{json .Name}},"driver":{{json .Driver}},
+        "scope":{{json .Scope}},"attachable":{{json .Attachable}},
+        "ipam":{{json .IPAM.Config}}}{% endraw %}
+      - "{{ ax_lab.web.forwarder.edge_network }}"
+  register: ax_lab_web_network_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Created by the edge playbook, attachable, with the reviewed subnet the
+# forwarder admits: without it, Traefik has no way to the panel.
+- name: Record whether the edge network is the reviewed one
+  ansible.builtin.set_fact:
+    ax_lab_web_network_ready: >-
+      {{
+        ax_lab_web_network_read.rc == 0
+        and (ax_lab_web_network_read.stdout | from_json).name
+        == ax_lab.web.forwarder.edge_network
+        and (ax_lab_web_network_read.stdout | from_json).driver == "overlay"
+        and (ax_lab_web_network_read.stdout | from_json).scope == "swarm"
+        and (ax_lab_web_network_read.stdout | from_json).attachable
+        and (ax_lab_web_network_read.stdout | from_json).ipam
+        | map(attribute="Subnet") | list
+        == [ax_lab.web.forwarder.edge_subnet]
+      }}
+
+- name: Describe what an apply would change in the web panel
+  ansible.builtin.set_fact:
+    ax_lab_web_plan: >-
+      {{
+        (
+          []
+          if ax_lab_web_in_backup or ax_lab_web_in_registry else
+          [
+            "the apply stops: seed " ~ ax_lab.web.image.name ~ "@"
+            ~ ax_lab.web.image.digest ~ " into the backup with"
+            ~ " manage-ax-lab-substrate.py seed-layout (docs/AX_WEB.md)"
+          ]
+        )
+        + (
+          ["restore into the registry: " ~ ax_lab.web.image.name]
+          if ax_lab_web_in_backup and not ax_lab_web_in_registry else []
+        )
+        + (
+          ["back up from the registry: " ~ ax_lab.web.image.name]
+          if ax_lab_web_in_registry and not ax_lab_web_in_backup else []
+        )
+        + (
+          ["the web panel is read once AX matches its pinned install"]
+          if not ax_lab_web_readable else
+          (
+            [
+              "apply the web panel server-side: "
+              ~ ax_lab_web_drift | join(", ")
+            ]
+            if ax_lab_web_drift else
+            ["the web panel matches its pinned install"]
+          )
+          + (
+            [
+              "the apply stops until the owner runs"
+              ~ " `sudo -- scripts/ax-web-bootstrap.sh k8s` for: "
+              ~ ax_lab_web_secrets_missing | join(", ")
+            ]
+            if ax_lab_web_secrets_missing else []
+          )
+        )
+        + (
+          []
+          if ax_lab_web_network_ready else
+          [
+            "the apply stops: network " ~ ax_lab.web.forwarder.edge_network
+            ~ " is not the attachable overlay with subnet "
+            ~ ax_lab.web.forwarder.edge_subnet
+            ~ " the edge playbook creates"
+          ]
+        )
+        + (
+          ["create " ~ ax_lab.web.forwarder.container]
+          if ax_lab_web_edge is none else
+          ["recreate " ~ ax_lab.web.forwarder.container ~ ": it drifted"]
+          if ax_lab_web_edge_drift else
+          ["start " ~ ax_lab.web.forwarder.container]
+          if ax_lab_web_edge.status != "running" else
+          [ax_lab.web.forwarder.container ~ " runs as reviewed"]
+        )
+      }}

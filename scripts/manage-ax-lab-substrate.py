@@ -10,9 +10,11 @@ never with `docker pull` and `docker push`, which store and re-serialise
 manifests and so change their digests. Every manifest and every blob is
 hashed on the way and must equal its descriptor.
 
-Two image sets share the layout and the registry: Substrate's, the default,
-and AX's (--image-set ax), which this host never builds: they are only ever
-seeded from the manual lab, backed up and restored.
+Three image sets share the layout and the registry: Substrate's, the
+default, AX's (--image-set ax) and the AX web panel's (--image-set web). This
+host never builds the last two: AX's are only ever seeded from the manual
+lab, the panel's from the OCI layout its CI workflow uploads, and both are
+backed up and restored.
 
 Subcommands:
 
@@ -25,6 +27,10 @@ cluster-status  Read-only: the node's Substrate version label, the identity
 export          Copy pinned images from a registry into the layout: the seed
                 from the manual lab and the backup of the lab's registry.
 import          Copy them from the layout into the registry: the restore.
+seed-layout     Copy one pinned image from an external OCI image layout, such
+                as the ax-web workflow's artifact, into the layout: the
+                manifest must hash to the pin and every blob to its
+                descriptor.
 forget          Drop the layout's entry for <name>:<version> of an old pin, by
                 its exact digest, so that a re-pin under the same version
                 can be seeded, built or copied again.
@@ -74,10 +80,15 @@ INSTALLER = "ate-setup"
 AX_MODULE_PATH = "github.com/google/ax"
 AX_IMAGE_NAMES = ("ax-controller", "ax-server", "ax-task-runner", "ax-agents")
 AX_KO_IMAGES = ("ax-controller", "ax-server")
+# The AX web panel (images/ax-web): built by ko in CI with --bare, so its
+# name is the repository's own, and seeded from that build's OCI layout.
+WEB_MODULE_PATH = "apptolast.com/ax-web"
+WEB_IMAGE_NAMES = ("ax-web",)
 # Per image set: its Go module, its images and those ko named by md5.
 IMAGE_SETS = {
     "substrate": (MODULE_PATH, IMAGE_NAMES, IMAGE_NAMES),
     "ax": (AX_MODULE_PATH, AX_IMAGE_NAMES, AX_KO_IMAGES),
+    "web": (WEB_MODULE_PATH, WEB_IMAGE_NAMES, ()),
 }
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
@@ -1027,6 +1038,45 @@ def image_status(
         }
 
 
+def seed_layout(
+    source: Layout, layout: Layout, tag: str, pins: dict[str, str]
+) -> dict[str, str]:
+    """External layout to backup layout, one pinned manifest at a time.
+
+    The source's index.json must list the pinned digest with the manifest's
+    own media type; the manifest bytes must hash to the pin, and every blob,
+    streamed from the source into the backup, to its descriptor. Nothing
+    else of the source is copied, and it is never written.
+    """
+    source.open()
+    layout.open(create=True)
+    results = {}
+    for name, digest in sorted(pins.items()):
+        if layout.status(name, tag, digest) == "complete":
+            results[name] = "present"
+            continue
+        listed = [
+            descriptor(entry, f"{source.root}/index.json")
+            for entry in source.index()
+            if entry.get("digest") == digest
+        ]
+        if not listed:
+            raise SubstrateError(f"{source.root} does not list {digest}")
+        raw, media_type, blobs = source.image(digest)
+        for entry in listed:
+            if entry["mediaType"] != media_type or entry["size"] != len(raw):
+                raise SubstrateError(
+                    f"{source.root}/index.json describes {digest} as another type"
+                )
+        copy_to_layout(
+            raw, media_type, blobs, source.iter_blob, layout, f"{name}:{tag}", digest
+        )
+        if layout.status(name, tag, digest) != "complete":
+            raise SubstrateError(f"{name} is not complete in the layout after seeding")
+        results[name] = "seeded"
+    return results
+
+
 def forget_images(layout: Layout, tag: str, stale: dict[str, str]) -> dict[str, str]:
     """Drop <name>:<tag> from the layout, only where it names the given digest.
 
@@ -1916,6 +1966,13 @@ def parser() -> argparse.ArgumentParser:
                 "--source-naming", choices=("base", "ko-md5"), default="base"
             )
 
+    seed = commands.add_parser("seed-layout")
+    seed.add_argument("--image-set", choices=sorted(IMAGE_SETS), default="web")
+    seed.add_argument("--source", type=absolute, required=True)
+    seed.add_argument("--layout", type=absolute, required=True)
+    seed.add_argument("--tag", required=True)
+    seed.add_argument("--image", action="append", default=[])
+
     forget = commands.add_parser("forget")
     forget.add_argument("--image-set", choices=sorted(IMAGE_SETS), default="substrate")
     forget.add_argument("--layout", type=absolute, required=True)
@@ -2011,6 +2068,16 @@ def dispatch(
                     arguments.image_set,
                 )
             return import_images(registry, layout, tag, pins)
+    if command == "seed-layout":
+        if arguments.source == arguments.layout:
+            raise SubstrateError("--source must be another layout than --layout")
+        pins = parse_pins(arguments.image, names=IMAGE_SETS[arguments.image_set][1])
+        tag = require_tag(arguments.tag)
+        with (
+            Layout(arguments.source, strict=False) as source,
+            Layout(arguments.layout) as layout,
+        ):
+            return seed_layout(source, layout, tag, pins)
     if command == "forget":
         with Layout(arguments.layout) as layout:
             return forget_images(
@@ -2081,7 +2148,7 @@ def dispatch(
     raise SubstrateError(f"unknown command {command}")
 
 
-MUTATING_COMMANDS = {"export", "import", "forget", "build", "install"}
+MUTATING_COMMANDS = {"export", "import", "seed-layout", "forget", "build", "install"}
 # Commands that run a bounded container: a termination signal becomes an
 # error, so the runner kills its container before this process exits.
 CONTAINER_COMMANDS = {"build", "install"}

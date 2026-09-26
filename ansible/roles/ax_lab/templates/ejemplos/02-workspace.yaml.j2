@@ -1,0 +1,25 @@
+# Managed by Ansible (role ax_lab); see docs/AX.md, «Ejemplos».
+#
+# Un Workspace con un repositorio git público (el mismo que usa
+# examples/task.yaml de google/ax, Apache-2.0, Copyright 2026 Google LLC).
+# Sin `mcp` ni `skills`: los de upstream apuntan a registros y servidores de
+# Google que aquí no existen.
+#
+# Un Workspace solo es una definición: no arranca nada hasta que una tarea
+# lo monta (03-tarea-con-workspace.yaml). Pon en `repo` y `branch` solo
+# valores tuyos o de confianza: AX no los valida (google/ax#363).
+#
+#   sudo ax apply -f {{ ax_lab_examples_directory }}/02-workspace.yaml
+#   sudo ax get workspaces
+#   sudo ax describe workspace ejemplo-workspace
+#   sudo ax delete workspace ejemplo-workspace
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: ejemplo-workspace
+  atespace: default
+spec:
+  git:
+    - name: origin
+      repo: "https://github.com/chalk/chalk.git"
+      branch: "main"
