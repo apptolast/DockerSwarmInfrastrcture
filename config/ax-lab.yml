@@ -411,7 +411,7 @@ ax_lab_privileged_node_accepted: true
 # one at a time and only while the lab node is not running, when neither the
 # backup nor the registry holds them (docs/AX.md, «Compilación de reserva»).
 # Normal applies build nothing: this list stays empty outside a reviewed lab
-# window, and every build must reproduce its pinned digest exactly. For the
-# first window it lists ate-setup, the one image the manual lab never built;
-# the change that records that window empties it again.
-ax_lab_substrate_fallback_builds: [ate-setup]
+# window, and every build must reproduce its pinned digest exactly. The first
+# window (2026-09-26) listed ate-setup, the one image the manual lab never
+# built; it reproduced its pinned digest and the backup now holds it.
+ax_lab_substrate_fallback_builds: []

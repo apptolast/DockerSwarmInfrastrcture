@@ -502,6 +502,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   que un transporte que Traefik descarta (`Could not configure HTTP
   Transport`), una clave desconocida o un middleware que no se construye ya
   no se descubren en el apply de producción.
+- La compuerta STOP 10 de `CLAUDE.md` ya no prohíbe aplicar `edge`: la
+  ventana de aplicación del 2026-09-26 (#74) se verificó y un apply repetido
+  informó `changed=0`. Los drop-ins manuales del firewall y los stacks
+  externos la mantienen abierta. `docs/DEPLOYMENT_STATUS.md` registra las
+  ventanas del laboratorio AX (#70 y #73), del edge y de AX (#76), y dos
+  incidentes de carga del host. El primer apply del edge falló en la puerta
+  de salud con la tarea nueva ya sana (lo corrige #77) y no se revirtió
+  tras comprobar cada ruta pública.
+
+- `ax_lab_substrate_fallback_builds` vuelve a `[]` en `config/ax-lab.yml`:
+  la ventana del laboratorio ya compiló `ate-setup` con su digest fijado y
+  la copia de seguridad la guarda, así que ningún apply compila nada fuera
+  de una ventana revisada.
+
 - `docs/DEPLOYMENT_STATUS.md` registra el apply de `host-baseline` desde
   `0028bca` (#71): `changed=2` de metadatos y una repetición con
   `changed=0`, sin reiniciar el bouncer de CrowdSec.

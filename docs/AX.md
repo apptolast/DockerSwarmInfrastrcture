@@ -60,8 +60,8 @@ Sigue siendo manual, fuera del estado reconstruible:
   agentes no se pueden reconstruir byte a byte (ver «Lo que no se puede
   codificar fielmente»);
 - el laboratorio manual entero (`/opt/ax-lab`, su clúster y su registro)
-  hasta que se retire con el procedimiento de «Retirar el laboratorio
-  manual»;
+  hasta su retirada, el 2026-09-26, con el procedimiento de «Retirar el
+  laboratorio manual»;
 - los ficheros de credenciales de `/etc/dockerswarm/ax`, que por diseño
   siempre los provisiona el propietario (ver «Credenciales»).
 
@@ -73,19 +73,21 @@ Cambios previstos, en este orden:
 2. El ciclo de vida del clúster y del registro, su declaración de capacidad
    con `capacity_preflight` en el playbook y el procedimiento para retirar
    el laboratorio manual. Solo se fusiona en la ventana del laboratorio (ver
-   «Por qué este cambio solo se fusiona en la ventana»).
+   «Por qué este cambio solo se fusiona en la ventana»). Fusionado (#70) y
+   aplicado el 2026-09-26, ver `DEPLOYMENT_STATUS.md`.
 3. Las imágenes fijadas de Substrate, su copia de seguridad y su
    restauración, la compilación de reserva, el job de reproducibilidad y la
    instalación con `ate-setup`, que solo se ejecuta cuando detecta deriva.
    Separa el arranque de un nodo parado en `node.yml`, que corre cuando el
    registro ya sirve todas las imágenes. Se fusiona en la misma ventana que
-   el cambio 2.
+   el cambio 2. Fusionado (#73) y aplicado con él el 2026-09-26.
 4. Este cambio: AX sobre Substrate (ver «AX»). Sus imágenes, sembradas y
    fijadas por digest, el parche versionado con su sha256, el plano de
    control sin RBAC ni proxy de OpenAI, el WorkerPool, el router, la
    reparación de los workers, la CLI y las herramientas del operador. Se
    aplica en su propia ventana, después de la de los cambios 2 y 3, con una
-   prueba de humo (ver «Ventana del cambio 4»).
+   prueba de humo (ver «Ventana del cambio 4»). Fusionado (#76) y aplicado
+   el 2026-09-26, ver `DEPLOYMENT_STATUS.md`.
 5. La prueba de reinicio del nodo, si no se hizo en esa ventana, el paso del
    laboratorio en `DEPLOYMENT_STATUS.md` a «Aplicado y verificado» y la
    versión final de este documento.
@@ -767,7 +769,9 @@ a extremo en kind es del cambio 5. Su primer run con compilación (run
 36187353468, 2026-09-25) reprodujo exactamente los seis digests del
 laboratorio manual e imprimió el de `ate-setup`, que el propio cambio 3 fija
 en `config/ax-lab.yml` junto con `ax_lab_substrate_fallback_builds:
-[ate-setup]`. Con él, el job tiene que salir en verde.
+[ate-setup]`. Con él, el job tiene que salir en verde. La ventana del
+2026-09-26 compiló `ate-setup` en el host con ese mismo digest, y la lista
+volvió a quedar vacía.
 
 Si un digest del laboratorio manual no se reproduce, el job falla y el
 propietario decide antes de la ventana: conservar el del laboratorio

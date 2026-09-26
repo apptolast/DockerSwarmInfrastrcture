@@ -39,8 +39,10 @@ activa y sin backend, tres WARN en 50 s. La evidencia está en el pull request
 apptolast/DockerSwarmInfrastrcture#59.
 Aparcar o desaparcar OpenClaw exige aplicar también el playbook `edge`:
 después de `workloads` al aparcar y antes al desaparcar (ver
-[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»). Hoy `edge` no se
-aplica por la compuerta STOP 10 de `CLAUDE.md`.
+[OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio»). El apply de `edge`
+del 2026-09-26 (ver «Ventana de aplicación») retiró la sonda de OpenClaw, y
+desde entonces la compuerta STOP 10 de `CLAUDE.md` ya no impide aplicar
+`edge`.
 
 Esto es estado declarado, no evidencia de despliegue. El Docker Secret
 `cloudflare_dns_api_token_v1` sigue existiendo (rotación pendiente de revocar

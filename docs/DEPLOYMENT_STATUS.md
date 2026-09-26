@@ -9,9 +9,8 @@ host antes del primer despliegue real de este árbol.
 Por decisión del propietario (2026-09-25), `config/platform.yml` declara
 Minecraft y OpenClaw aparcados (`platform_parked_workloads`) para liberar RAM
 y CPU del host. Para aparcar se aplica `workloads`, luego `edge` y luego
-`observability` si está desplegado; mientras `edge` no pueda aplicarse (ver
-«Deriva fuera del repositorio») se aplica solo `workloads`. Sus datos siguen
-en `/srv/dockerswarm/services`. Procedimiento en
+`observability` si está desplegado. Sus datos siguen en
+`/srv/dockerswarm/services`. Procedimiento en
 [OPERATIONS.md](OPERATIONS.md), «Aparcar un servicio».
 
 Aplicado el 2026-09-25 con `--playbook workloads --local` desde `main` en
@@ -28,7 +27,9 @@ Aplicado el 2026-09-25 con `--playbook workloads --local` desde `main` en
   responde igual que antes del apply.
 - Memoria disponible: 3 002 MiB antes del apply y 6 745 MiB después, sin
   swap; la presión de memoria (PSI) bajó a casi cero.
-- `edge` no se aplicó (compuerta STOP 10).
+- `edge` no se aplicó (compuerta STOP 10). Lo aplicó la ventana del
+  2026-09-26 (ver «Edge: ventana de las rutas de Satisfactory
+  (2026-09-26)»), que retiró la sonda de OpenClaw.
 
 Archivos en frío tomados en `0/0` bajo el lock host-global
 (`parked-cold-archive`), `0600 root:root`:
@@ -134,26 +135,24 @@ aquí:
   `sudo -- iptables -S DOCKERSWARM-INGRESS` debe volver a mostrar sus
   reglas. Los roles de este repositorio no borran esos drop-ins, pero un
   servidor reconstruido desde aquí no los tendría.
-- Traefik (`edge_traefik`) se modificó a mano el 2026-09-22. Usa la Docker
-  Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añade
+- Traefik (`edge_traefik`) se modificó a mano el 2026-09-22 con la Docker
+  Config dinámica `edge-traefik-dynamic-companions-a0952eace071`, que añadía
   las rutas de `satisfactory.apptolast.com` (web, websocket y
   `/companions`) y `logs-satisfactory.apptolast.com`, esta última con un
   middleware `basicAuth` cuyo hash no debe publicarse en este repositorio, y
-  está conectado a la red `apptolast-edge-satisfactory`. El secret
-  `cloudflare_dns_api_token_v3` que usa sí coincide con este repositorio.
-  Esas rutas, su backend y la red ya están codificados en
-  `stacks/edge/dynamic.yml.j2` tal como corren, y el `basicAuth` lee sus
-  usuarios del Docker Secret `edge-basicauth-satisfactory-logs-v1`, que aún
-  no existe (ver [EDGE.md](EDGE.md), «Rutas de Satisfactory»). Hasta que la
-  ventana de aplicación descrita allí cree el secret, aplique `edge` y lo
-  verifique, el Traefik vivo sigue en la Config hecha a mano y `edge` solo se
-  aplica siguiendo ese procedimiento. Desde que se fusione la ruta de AX
-  (EDGE.md, «Ruta de AX»), con el despliegue del panel o después, `edge` y
-  `site` solo se aplican siguiendo «Ventana de aplicación de la ruta», con
-  los tres secrets de esa ruta ya creados. Mientras tanto, con OpenClaw
-  aparcado, la sonda de salud del Traefik vivo lo marca caído (su ruta
-  responde `503`) y registra un WARN `Health check failed.` cada 15 s. El
-  backend sin servidores de este repositorio lo elimina con ese apply.
+  la red `apptolast-edge-satisfactory`. Desde el 2026-09-26 ya no es deriva:
+  esas rutas, su backend y la red están codificados en
+  `stacks/edge/dynamic.yml.j2`, el `basicAuth` lee sus usuarios del Docker
+  Secret `edge-basicauth-satisfactory-logs-v1`, creado a mano desde el hash
+  vivo (ver [EDGE.md](EDGE.md), «Rutas de Satisfactory»), y el servicio
+  corre la Config renderizada (ver «Edge: ventana de las rutas de
+  Satisfactory (2026-09-26)»). Siguen en el host, sin uso y con el hash en
+  línea, las dos Configs hechas a mano (`…companions-a0952eace071` y
+  `…satisfactory-2af1d9e1a890`), hasta que el propietario decida retirarlas
+  (ver [EDGE.md](EDGE.md), «Rollback»). La ruta de AX (EDGE.md, «Ruta de
+  AX») se aplicó en su ventana del mismo día (ver «Panel web de AX: ventana 2
+  (2026-09-26)»); desde entonces `edge` y `site` solo se aplican siguiendo
+  «Ventana de aplicación de la ruta», con sus tres secrets presentes.
 - El registro DNS `ax.apptolast.com` (A a `159.195.156.57`, DNS-only) lo creó
   el propietario a mano en Cloudflare para el panel web de AX, igual que los
   de OrganizationWeb y RacingGame. Resolvía a esa IP el 2026-09-26. No está
@@ -194,38 +193,34 @@ el mismo inodo que monta el contenedor y se aplicó en vivo con
 `redis.conf.pre-volatile-lru-20260925`. Ese cambio tiene que llegar a su
 repositorio de origen.
 
-La entrada de Traefik es la compuerta STOP 10 de `CLAUDE.md`. Mientras
-siga abierta, la memoria de Traefik de `stacks/edge/stack.yml.j2` se aplicó
-en vivo el 2026-09-25 con dos `docker service update` sobre `edge_traefik`:
+La entrada de Traefik era la parte de `edge` de la compuerta STOP 10 de
+`CLAUDE.md`. Esa parte se levantó el 2026-09-26, cuando la ventana de
+aplicación se verificó y un apply repetido informó `changed=0`; el resto de
+la compuerta (los drop-ins manuales del firewall y los stacks externos)
+sigue abierta. Mientras esa parte siguió abierta, la memoria de Traefik de
+`stacks/edge/stack.yml.j2` se aplicó en vivo el 2026-09-25 con dos `docker
+service update` sobre `edge_traefik`:
 `--limit-memory 256M` a las 09:43 UTC y `--reserve-memory 128M` a las
 10:03 UTC. Cada uno cambió un único campo del spec (`Limits.MemoryBytes` de
 134217728 a 268435456 y `Reservations.MemoryBytes` de 67108864 a
 134217728) y reemplazó la única tarea del edge, con un corte breve de 80/443
-durante el relevo. La reserva solo cuenta para la planificación de Swarm. El
-servicio vivo sigue difiriendo del repositorio solo en la deriva descrita
-arriba.
+durante el relevo. La reserva solo cuenta para la planificación de Swarm.
+Desde el apply de `edge` del 2026-09-26 el servicio vivo es el del
+repositorio.
 
 ## Estado temporal fuera del repositorio
 
 - Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent
-  Substrate) en `/opt/ax-lab`: nodo `kind-control-plane` (privilegiado, como
-  exige kind) limitado con `docker update` a 3 584 MiB y registro local
-  `kind-registry`, fuera de Swarm. El contrato de capacidad presupuesta un
-  nodo y un registro con esos nombres (grupo `ax-lab`, ver
-  [CAPACITY.md](CAPACITY.md)), pero con otros límites: el nodo manual no
-  tiene límite de CPU ni de PIDs ni reserva de memoria, y el registro no
-  tiene ninguno. Mientras sigan en el host, el preflight de capacidad de
-  cualquier playbook salvo `ax-lab` se detiene, así que se retiran en la
-  misma ventana en la que se fusiona y aplica el ciclo de vida del clúster
-  (ver [AX.md](AX.md), «Por qué este cambio solo se fusiona en la
-  ventana»). El nodo se paró el 2026-09-25 a las 07:36 UTC para
-  retirar el swap antes de aparcar, y volvió a arrancarse a las 10:07 UTC,
-  con los 28 pods listos. Es un ensayo manual que se codifica por partes
-  (ver [AX.md](AX.md), «Qué codifica este repositorio y qué sigue siendo
-  manual»); hasta entonces no forma parte del estado reconstruible. Sale de
-  esta lista cuando el último de esos cambios se haya aplicado y verificado
-  o, si se descarta, cuando se borren el clúster, el registro y
-  `/opt/ax-lab`.
+  Substrate). El ensayo manual de `/opt/ax-lab` se retiró el 2026-09-26, y
+  el clúster, el registro, Substrate y AX los crea y gestiona ya el playbook
+  `ax-lab`, con los límites del contrato de capacidad (ver «Aplicado y
+  verificado»). Siguen fuera del estado reconstruible la semilla de las
+  imágenes de AX y de su CLI, que solo está en el host y fuera del backup
+  (las del runner y de agentes no se pueden reconstruir byte a byte), y las
+  credenciales de `/etc/dockerswarm/ax` (ver [AX.md](AX.md), «Qué codifica
+  este repositorio y qué sigue siendo manual»). Sale de esta lista con el
+  cambio 5 de ese documento: la prueba de reinicio del nodo y su versión
+  final.
 - El swap temporal `/swap-ax-build` (4 GiB, fuera de `fstab`) que se creó
   para compilar el laboratorio se desactivó y se borró el 2026-09-25, antes
   de cualquier apply. El host vuelve a cumplir `required_swap_mib: 0`.
@@ -342,6 +337,206 @@ lock:
 - `-A INPUT -j CROWDSEC_CHAIN` sigue presente en IPv4 y en IPv6, y
   `DOCKER-USER`, `DOCKERSWARM-INGRESS` y `SFTP-SWARM` son idénticas byte a
   byte a las de antes del apply. Ninguna operación dejó marker.
+
+### Laboratorio AX: ventana de los cambios 2 y 3 (2026-09-26)
+
+`--playbook ax-lab --local` desde `main` en `bf9f8b7` (#70, fusionado como
+`2b1ead5`, y #73), en ventana exclusiva y siguiendo «Ventana del
+laboratorio» de [AX.md](AX.md). Horas en UTC:
+
+- Evidencia del laboratorio manual, sin ningún secreto, en
+  `/var/backups/dockerswarm/ax-lab-retirement/20260926T003215Z`. Además de
+  lo que pide «Retirar el laboratorio manual», guarda una copia de
+  `/opt/ax-lab/ejemplos`.
+- Semilla (00:38) en `/var/backups/dockerswarm/ax-lab/images` y
+  `/var/backups/dockerswarm/ax-lab/binaries`: `image-status` da `complete`
+  para las seis imágenes de Substrate y las cuatro de AX, y el sha256 de la
+  CLI es el de `ax.cli_sha256`. Como el cambio 4 (#76) aún no estaba
+  fusionado, la semilla de AX usó su gestor desde un clon limpio del commit
+  que estaba entonces en revisión. Los arreglos posteriores del cambio 4 no
+  tocaron el gestor, así que la semilla es la misma. Las copias en el host
+  de `ax-agents` y `ax-task-runner` del laboratorio manual se conservaron
+  como reserva hasta verificar AX y se borraron a las 01:58.
+- Retirada del laboratorio manual (00:38-00:39): `kind delete cluster`,
+  `docker rm --force --volumes kind-registry` y `docker network rm kind`, y
+  después `/opt/ax-lab`, `/usr/local/sbin/ax`, `/usr/local/sbin/ax-tarea`, la
+  imagen `ax-toolbox:spike` y el volumen `ax-lab-gomod`.
+- `--check` desde `bf9f8b7`: exactamente el plan documentado.
+- `--confirm-production` (00:57:07-01:05:53): `ok=180 changed=21 failed=0`.
+  La compilación de reserva construyó `ate-setup` en el host, en un
+  contenedor de `images.toolbox`, y reprodujo el digest fijado en
+  `config/ax-lab.yml`. Después creó el clúster y el registro, restauró las
+  seis imágenes sembradas e instaló Substrate.
+- Repetido: `ok=174 changed=0`, sin avisos.
+- `image-status` de las siete imágenes de Substrate: `pinned` en el
+  registro y `complete` en la copia.
+- `memory.events` del nodo con `oom 0` y `oom_kill 0`, y `memory.peak` de
+  2 588 610 560 bytes (2 469 MiB).
+- Límites, los de `config/capacity-profiles.yml`: el nodo con 3 584 MiB de
+  memoria y 1 792 MiB de reserva, 2 000m de CPU, 4 096 PIDs y reinicio `no`;
+  el registro con 256 MiB de memoria y 128 MiB de reserva, 500m de CPU,
+  256 PIDs y reinicio `no`.
+
+### Edge: ventana de las rutas de Satisfactory (2026-09-26)
+
+`--playbook edge --local` desde `main` en `e62fd93` (#74), siguiendo
+«Ventana de aplicación» de [EDGE.md](EDGE.md). Horas en UTC:
+
+- El secret `edge-basicauth-satisfactory-logs-v1` se creó a las 01:08 bajo
+  el lock, desde la línea viva y sin imprimirla, con las etiquetas
+  `com.apptolast.managed-by=manual-bootstrap` y
+  `com.apptolast.purpose=traefik-basicauth`.
+- Paso 1: `Version.Index` 147489 con la Config hecha a mano. `--check`
+  limpio.
+- `--confirm-production` (01:09:23-01:14:14) falló en la puerta de salud
+  posterior al deploy. Con `detach: true` y `stop-first`, la puerta comprobó
+  el contenedor de la tarea anterior (`62xcouqaff2i`) mientras Swarm la
+  reemplazaba; la nueva, `qskoubtchffr`, estaba sana y sirviendo. Lo
+  corrige #77 (`4a02d06`), que espera a que termine el relevo antes de la
+  puerta.
+- No se hizo el rollback de «Rollback»: el fallo era de la puerta, no del
+  servicio. Antes de decidirlo se comprobó que:
+  - las 17 rutas públicas respondían igual antes y después, todas con
+    `verify=0`: `200` en `edge` (`/ping`), `kropia`, `minecraft-stats`,
+    `monitor`, `n8n`, `organizacion`, `pablohurtadohg`, `racinggame` y
+    `satisfactory`; `302` en `passbolt` y `307` en `albertohidalgo`; `401`
+    en `logs-satisfactory` y en `/companions` y `/companions/` de
+    `satisfactory`; `404` en `generadorcodigosqr` y en `/app/` de
+    `satisfactory`, y `503` en `openclaw`, aparcado;
+  - el servicio usaba la Config `edge-traefik-dynamic-8287b871c1ab8a3b`,
+    los secrets `cloudflare_dns_api_token_v3` y
+    `edge-basicauth-satisfactory-logs-v1` y 13 redes, con la actualización
+    `completed`;
+  - los logs de la tarea nueva tenían 0 líneas con `no users found` o
+    `workloads_openclaw`: la sonda de OpenClaw ya no existe;
+  - el fichero de usuarios dentro de la tarea era idéntico byte a byte a la
+    entrada viva en línea, comparando sus sha256 sin imprimir ninguno;
+  - `logs-satisfactory` respondía con
+    `WWW-Authenticate: Basic realm="Satisfactory logs"`.
+
+  Esa comparación byte a byte sustituyó al paso 7, la entrada del
+  propietario: la línea es la misma, así que la contraseña también. El
+  propietario puede confirmarlo con un único inicio de sesión.
+- El marker que retuvo el apply fallido se recuperó con
+  `scripts/ansible-operation-lock.py recover`, primero en dry-run y después
+  con `--apply`.
+- Repetido: `ok=110 changed=2`, solo por `deployment_metadata`, que el apply
+  fallido no llegó a registrar. Repetido otra vez: `ok=110 changed=0`, con
+  la misma tarea `qskoubtchffr`.
+
+### AX: ventana del cambio 4 (2026-09-26)
+
+`--playbook ax-lab --local` desde `main` en `b0853c3` (#76), siguiendo
+«Ventana del cambio 4» de [AX.md](AX.md). Horas en UTC:
+
+- `--check`: restaurar en el registro las cuatro imágenes de AX, aplicar del
+  lado del servidor `state`, `ax-system.yaml` y `ax-workers.yaml`, y el
+  `--route-timeout=1h` del router.
+- `--confirm-production` (01:54:02-01:56:01): `ok=258 changed=11 failed=0`;
+  repetido: `ok=251 changed=0`, sin avisos.
+- `ax-controller`, `ax-redis` y `ax-server` en `ax-system`, y el worker de
+  `ax-workers`, en `Running` con `1/1`.
+- `sudo ax get tasks -a default` responde y no deja ningún
+  `kubectl port-forward`.
+- Prueba de humo (01:57:54): `sudo TURNOS=4 RAMA=master ax-tarea
+  https://github.com/octocat/Hello-World "<instrucción de solo lectura>"
+  claude` salió con código 0 y la respuesta del agente. Después se borraron
+  la Task y su workspace, y no quedó ningún túnel.
+- Nodo tras la prueba (02:15): `memory.peak` 3 631 050 752 bytes (el 96,6 %
+  de los 3 584 MiB del límite), `memory.events.local` con `oom 0` y
+  `oom_kill 0`, y `cpu.stat` con `nr_throttled` 923 y `throttled_usec`
+  114 169 253. Los reinicios de `kube-system` (3) y `ate-system` (5) son de
+  01:44-01:47, del incidente de memoria de abajo, no de este apply.
+- Aislamiento de red (02:18-02:20), con una Task `CONSERVAR=1` y
+  `sudo ax ssh`, comprobado a nivel de aplicación porque gVisor acepta en
+  local una conexión TCP aunque su destino no responda:
+  - `ax-server` `/healthz`: sin respuesta (curl código 28);
+  - `ax-redis`: un `PING` no obtiene respuesta;
+  - control positivo: `getent hosts github.com` resuelve y
+    `https://github.com` responde `200`.
+
+  También responden desde el sandbox: `kind-registry:5000/v2/` (`200`),
+  `https://10.96.0.1/version` (`200`, anónimo) y `rustfs.ate-system.svc:9000`
+  (`403`, pide credenciales). Después se borraron la Task y su workspace.
+
+### Panel web de AX: ventana 2 (2026-09-26)
+
+Ruta de Traefik (#79) y despliegue del panel (#78), desde `main` en
+`499feba`, siguiendo [AX_WEB.md](AX_WEB.md), «Ventana 2, parte del
+laboratorio», y [EDGE.md](EDGE.md), «Ruta de AX». Horas en UTC:
+
+- Imagen `ax-web` sembrada con `seed-layout` desde el layout OCI de la CI
+  (digest fijado, cada blob verificado).
+- `ax-web-bootstrap.sh init` (02:21): Docker Secrets
+  `edge-ax-upstream-client-v1` y `edge-ax-upstream-ca-v1` y el material del
+  panel en `/etc/dockerswarm/ax/web-tls` (`0700`/`0600`). Los tres
+  certificados caducan el 2029-09-25 02:21:01 GMT.
+- `edge-basicauth-ax-v1` (02:24): una línea `admin:` más el hash bcrypt de
+  coste 10, creada por tubería hacia `docker secret create`; solo se vieron
+  el prefijo `$2` y la longitud 60.
+- Paso 1: `Version.Index` 147765 con las Configs de la ventana de E1 (sube
+  2 por los dos applies repetidos de esa ventana).
+- `edge --check` limpio; apply (02:55:05-02:57:03) `ok=114 changed=9
+  failed=0`, sin avisos. La puerta de salud esperó al relevo (#77).
+  - Las 17 rutas anteriores responden igual que antes.
+  - `https://ax.apptolast.com` responde `401` con `realm="AX"` y el
+    certificado de Let's Encrypt verificado.
+  - Red `apptolast-edge-ax`: overlay cifrada y `attachable` con
+    `10.0.250.0/24`.
+  - Repetido: `changed=1` (solo el registro de invocación, porque entre
+    medias corrió `ax-lab`) y después `ok=112 changed=0`, con la misma
+    tarea `qqe6aa3litgu`.
+- `ax-lab --check` con el plan documentado. El primer apply creó el espacio
+  de nombres, aplicó el manifiesto y se detuvo pidiendo
+  `ax-web-bootstrap.sh k8s`, como está previsto. El marker se recuperó con
+  `ansible-operation-lock.py recover`, `k8s` creó los Secrets `ax-web-tls` y
+  `ax-web-agent`, y el segundo apply (hasta 03:02:19) dio `ok=338 changed=7
+  failed=0`: reenviador `ax-web-edge` en `kind` y `apptolast-edge-ax`, y
+  `web.json` instalado. Repetido: `ok=331 changed=0`, sin avisos.
+- Verificación contra la IP pública:
+  - sin credenciales, `/` responde `401` y `/healthz` `200` (Traefik, mTLS,
+    reenviador y panel de extremo a extremo);
+  - con el usuario del propietario, `/` `200` y `/api/status` con el gestor
+    listo;
+  - ejecución real desde la API del panel (03:02): la Task
+    `web-20260926-030232` corrió Claude sobre `octocat/Hello-World`, la
+    salida llegó por SSE, terminó con éxito en 3 turnos (0,0358 USD) y la
+    Task y su workspace se borraron solos.
+- Decisiones del propietario, delegadas («Si a todo, autorizo todo, seguiré
+  todas tus recomendaciones») y tomadas según la recomendación:
+  - se acepta `GET /healthz` sin login (router `ax-health`);
+  - el panel se publica ya con los límites de Traefik, y el bloqueo de IPs
+    tras fallos de login (PR-S) llega después.
+
+### Incidentes de carga (2026-09-26)
+
+La carga de la orquestación de estas ventanas causó dos incidentes. Horas en
+UTC:
+
+- 00:24-00:35: las baterías de pruebas de varios agentes en paralelo
+  llevaron la carga del host a unos 97 con 8 CPU. Traefik falló su
+  healthcheck y se reinició dos veces. A las 00:34:03 venció el heartbeat
+  del agente de Swarm (`DeadlineExceeded`): la sesión se volvió a registrar
+  y Swarm reinició todas sus tareas, con 1-2 min de corte en todos los
+  sitios. Todos los servicios volvieron a converger salvo
+  `autoupdater_shepherd`, que esperó su retardo de reinicio de 1 h.
+  Mitigación: los procesos de la orquestación corren con `nice 19` e
+  `ionice` idle, hay menos flujos concurrentes y ningún agente ejecuta la
+  batería completa.
+- 01:45:44: presión de memoria (journald, «Under memory pressure»). `/tmp`
+  es un tmpfs de 7,9 G y el espacio temporal de la orquestación ocupaba
+  4,1 GB, además del nodo kind nuevo. La caché de páginas de la tarea de
+  Traefik entró en thrashing: leyó 43,7 GB de disco. Swarm la reemplazó a
+  las 01:47:31 por `1jp7fbzy6kqw`, sana. El espacio temporal pasó a disco y
+  `MemAvailable` volvió a unos 5,3 GB. A esa hora la carga llegó a unos 168
+  por las pruebas de uno de los flujos en paralelo.
+
+A las 02:00, de solo lectura (`docker service ls` y
+`docker service ps edge_traefik`), todo está convergido: cada servicio en
+`1/1`, `autoupdater_shepherd` incluido, salvo Minecraft y OpenClaw, aparcados
+en `0/0`. `edge_traefik` corre la tarea `1jp7fbzy6kqw`, sana y con la Config
+`edge-traefik-dynamic-8287b871c1ab8a3b`, y `logs-satisfactory` sigue
+respondiendo `401` con su realm.
 
 ## Runtime regenerado
 

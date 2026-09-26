@@ -267,10 +267,9 @@ class SubstrateValidatorTests(unittest.TestCase):
                 "mem_available_floor_mib": 512,
             },
         )
-        # Only the image the manual lab never built, for the first window.
-        self.assertEqual(
-            self.document["ax_lab_substrate_fallback_builds"], ["ate-setup"]
-        )
+        # Empty outside a lab window: the first one built ate-setup, the one
+        # image the manual lab never built, and the backup now holds it.
+        self.assertEqual(self.document["ax_lab_substrate_fallback_builds"], [])
 
     def test_workloads_are_what_ate_setup_deploys_on_kind(self) -> None:
         workloads = self.document["ax_lab"]["substrate"]["workloads"]
