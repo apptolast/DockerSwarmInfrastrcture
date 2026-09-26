@@ -134,6 +134,45 @@ host_security_crowdsec_hub_dependency_lock:
     name: crowdsecurity/google-special-crawlers-whitelist
     version: "0.1"
     sha256: c8d3fdf1c02a60ff58b9a49592f09f67ac50321af98d620c529e3dc35773d6e4
+# Hub items installed by name because no reviewed collection brings them.
+# `crowdsecurity/traefik-logs` parses the JSON access log of `edge_traefik`.
+# The `crowdsecurity/traefik` collection is deliberately not installed: it
+# would also enable `base-http-scenarios` and `http-cve` on every site. The
+# version and digest are the ones the host's Hub index and the Hub repository
+# publish for this parser (checked 2026-09-26).
+host_security_crowdsec_standalone_hub_lock:
+  - type: parsers
+    name: crowdsecurity/traefik-logs
+    version: "1.5"
+    sha256: 706321c134508c2bc2f8f79b1403ef4c4d3716be5e0b8436ff5a3bd2f41b505e
+
+# Short bans for repeated HTTP 401 on the Traefik routers protected by
+# basicAuth. CrowdSec tails Traefik's JSON access log, which the edge_traefik
+# task writes to this host file through a bind mount (docs/EDGE.md, «Log de
+# acceso en fichero»). It is a file source, like auth.log, and never the
+# Docker API: in CrowdSec 1.7.8 a Docker source that cannot reach the daemon
+# for about 15 minutes stops every acquisition, SSH included, until someone
+# restarts CrowdSec. The local leaky scenario overflows on the 11th 401 from
+# one IP while one event leaks per minute, and its own profile, evaluated
+# before the packaged 4 h profile, bans for 30 minutes. See
+# ansible/roles/host_security/README.md.
+host_security_crowdsec_traefik_access_log: /var/log/dockerswarm/edge/access.log
+host_security_crowdsec_basicauth_scenario: apptolast/traefik-basicauth-bf
+host_security_crowdsec_basicauth_routers:
+  - ax@file
+  - satisfactory-logs@file
+host_security_crowdsec_basicauth_capacity: 10
+host_security_crowdsec_basicauth_leakspeed: 1m
+host_security_crowdsec_basicauth_blackhole: 5m
+host_security_crowdsec_basicauth_ban_duration: 30m
+
+# IPs CrowdSec never bans. They live only in a root-only host file, never in
+# this public repository. The role converges the allowlist below to exactly
+# that file's entries; see docs/OPERATIONS.md, «CrowdSec y los 401 de
+# Traefik». The name adopts the allowlist created by hand on 2026-09-20.
+host_security_crowdsec_allowlist_name: apptolast-trusted
+host_security_crowdsec_allowlist_description: Operator trusted IPs - never ban
+host_security_crowdsec_allowlist_source: /etc/dockerswarm/crowdsec/trusted-ips
 
 # The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
 host_security_ubuntu_snapshot: 20260924T000000Z

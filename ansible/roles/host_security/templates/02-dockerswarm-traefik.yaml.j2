@@ -1,0 +1,12 @@
+# Managed by Ansible. Traefik's JSON access log, which the edge_traefik task
+# writes to a host bind mount (docs/EDGE.md, «Log de acceso en fichero»). A
+# file source like auth.log, never the Docker API: in CrowdSec 1.7.8 a Docker
+# source that loses the daemon for about 15 minutes stops every acquisition,
+# SSH included. force_inotify watches the directory, so the file is picked up
+# when the edge role first creates it.
+filenames:
+  - {{ host_security_crowdsec_traefik_access_log }}
+force_inotify: true
+labels:
+  type: traefik
+source: file

@@ -265,6 +265,72 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   `tests/test_ax_web_contract.py` fija las órdenes, la ruta de la credencial,
   las cabeceras y las entradas de la construcción, y el guardián de rutas
   sensibles cubre `images/ax-web/`.
+- `host_security` banea las IP que acumulan respuestas `401` en los routers
+  de Traefik protegidos con `basicAuth` (`ax@file` y
+  `satisfactory-logs@file`). Hasta ahora CrowdSec solo leía syslog y
+  `auth.log`, así que nadie frenaba a quien probaba contraseñas más allá de
+  los límites de Traefik. Añade:
+  - la fuente de adquisición `02-dockerswarm-traefik.yaml`, de tipo `file`,
+    sobre `/var/log/dockerswarm/edge/access.log`, con `force_inotify` y los
+    dos directorios creados antes de cargarla (`root:root 0755`). Nunca la
+    fuente `docker`: en CrowdSec 1.7.8 una fuente que devuelve un error para
+    todas las demás (`pkg/acquisition/acquisition.go:652-656`) y la de Docker
+    lo hace tras unos 15 minutos sin daemon
+    (`pkg/acquisition/modules/docker/run.go:410` y `:462-469`), así que la
+    detección de SSH habría dependido de Docker. El rol ya no usa Docker en
+    nada;
+  - el parser `crowdsecurity/traefik-logs` 1.5, fijado por versión y digest
+    en `host_security_crowdsec_standalone_hub_lock` e instalado por nombre,
+    sin la colección `crowdsecurity/traefik`, que activaría decenas de
+    escenarios HTTP en todos los sitios;
+  - el escenario local `apptolast/traefik-basicauth-bf`: cubo por IP de
+    capacidad 10 que pierde un evento por minuto, así que el undécimo `401`
+    en ráfaga lo desborda; ningún escenario del Hub cuenta un `401` de
+    `basicAuth`;
+  - `/etc/crowdsec/profiles.yaml.local`, que CrowdSec lee antes del
+    `profiles.yaml` del paquete: banea 30 minutos solo a ese escenario, en
+    vez de 4 h, porque el baneo corta también SSH;
+  - la allowlist `apptolast-trusted`, que converge exactamente al fichero
+    del host `/etc/dockerswarm/crowdsec/trusted-ips` (`root:root 0600`, fuera
+    de Git). `scripts/validate-crowdsec-allowlist.py` lo lee sin seguir
+    enlaces y solo admite IP o redes públicas no más anchas que `/24` o
+    `/48`; su nombre lo deja bajo el guardián de rutas sensibles
+    (`^scripts/validate`), como `validate-authorized-keys.py`. Sus
+    comprobaciones, en `tasks/crowdsec_allowlist_gates.yml`, corren antes del
+    primer cambio de CrowdSec (si la LAPI responde en 30 s) y otra vez,
+    estrictas, antes de escribir: un fichero ausente con la allowlist llena,
+    otra allowlist o un fichero inseguro detienen el apply sin reiniciar
+    CrowdSec. Las dos lecturas de la LAPI corren bajo `timeout`, porque el
+    cliente HTTP de `cscli` no tiene ninguno y una LAPI colgada retendría el
+    apply y el lock global para siempre.
+
+  El inventario exacto del Hub incluye el parser y el escenario local, y un
+  `--check` solo tolera que falten esos dos. `crowdsec -t` prueba la
+  configuración antes de que el handler reinicie CrowdSec.
+  `scripts/validate-host-security.py` acota el contrato (baneo de 15 a 30
+  minutos, capacidad de 5 a 20, routers `@file`, un fichero bajo
+  `/var/log/dockerswarm` y ninguna clave de Docker) y
+  `tests/test_crowdsec_traefik_contract.py` lo cubre. Sin aplicar; ver
+  [`ansible/roles/host_security/README.md`](ansible/roles/host_security/README.md),
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md) y
+  [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md).
+- El rol `edge` escribe el log de acceso de Traefik en el host, en
+  `/var/log/dockerswarm/edge/access.log` (`accessLog.filePath` y un segundo
+  bind en `/var/log/traefik`), para que CrowdSec lo lea como fichero. Crea
+  el fichero `65532:65532 0600` en un directorio `root:root 0755`, sin
+  repararlo nunca; lo rota con logrotate `copytruncate` (Traefik escribe con
+  `O_APPEND`, sin señal a la tarea) desde
+  `dockerswarm-edge-access-log-rotate.timer` cada 15 minutos (`maxsize 100M`,
+  14 ficheros); y, tras las sondas `401` sin credenciales, exige con
+  `scripts/traefik-access-log-probes.py` que el fichero las tenga con el
+  router que cuenta CrowdSec, porque Traefik sin fichero solo avisa con un
+  WARN. `scripts/validate-contract.py` fija la ruta, el formato, los dos
+  montajes y que CrowdSec lea el mismo fichero;
+  `scripts/validate-traefik-config.sh` arranca Traefik con un `tmpfs` en esa
+  ruta; `scripts/validate-edge.sh` comprueba los montajes, el fichero y el
+  temporizador vivos. Lo cubre `tests/test_edge_access_log_contract.py`. Se
+  aplica en su propia ventana de `edge`
+  ([`docs/EDGE.md`](docs/EDGE.md), «Log de acceso en fichero»).
 - Playbook `ax-lab` con los prerrequisitos del host del laboratorio AX, el
   primer paso para codificarlo (ver [`docs/AX.md`](docs/AX.md)). El contrato
   `config/ax-lab.yml`, validado sin red por `scripts/validate-ax-lab.py`,
@@ -489,6 +555,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- La compuerta STOP 10 de `CLAUDE.md` ya no hace pasar todo apply de `edge`
+  o `site` por «Ventana de aplicación de la ruta», cuyos pasos solo sirven
+  para publicar la ruta de AX: registrada esa ventana, cada apply sigue la
+  ventana de `docs/EDGE.md` para su cambio (la del log de acceso de Traefik
+  es «Ventana del log de acceso»), con las mismas reglas comunes. La
+  compuerta sigue abierta.
 - `ate-setup` corre acotado a 224 MiB (112 MiB reservados) en vez de 256 MiB:
   el reenviador del panel web entra en el grupo `ax-lab` del plan activo,
   que queda en 3 110m/5 682 MiB reservados y 16 900m/12 173 MiB de límite,
@@ -780,6 +852,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   prueba deriva del render los routers detrás de un `basicAuth` y exige que
   sean exactamente los que sondea el deploy.
 
+- La allowlist `apptolast-trusted` de CrowdSec, creada a mano el 2026-09-20,
+  queda codificada: `host_security` la gestiona desde un fichero solo del
+  host y rechaza cualquier otra allowlist, porque cada IP de una allowlist
+  escapa de todos los baneos, SSH incluido. Ninguna dirección entra en este
+  repositorio público ni en la salida de Ansible: las tareas que las ven
+  llevan `no_log` y los mensajes de error del lector nunca las repiten.
 - Un apply de `host-baseline` sobre un host convergido, y en su parte de
   `host_security` también de `platform` y `site`, ya no deja el host sin
   filtrado de CrowdSec. La prueba `crowdsec-firewall-bouncer -t` no es un

@@ -23,6 +23,12 @@ edge_traefik_upstream_mtls_secrets: {}
 edge_network_subnets: {}
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json
+edge_traefik_access_log_dir: /var/log/dockerswarm/edge
+edge_traefik_access_log_rotation_unit: dockerswarm-edge-access-log-rotate
+edge_traefik_access_log_rotation_config: >-
+  {{ edge_install_root }}/edge/config/traefik-access.logrotate
+edge_traefik_access_log_rotation_state: >-
+  /var/lib/logrotate/dockerswarm-edge-access.status
 edge_deployment_profile: >-
   {{ deployment_metadata_profile | default("production") }}
 edge_letsencrypt_staging_ca_bundle: >-

@@ -1,0 +1,18 @@
+# Managed by Ansible (edge role). Traefik's access log, which CrowdSec tails.
+# Traefik opens it with O_APPEND and never reopens it on its own, so
+# copytruncate rotates it without a signal to the Swarm task, and CrowdSec's
+# tail reopens a truncated file from its start. The dedicated timer
+# {{ edge_traefik_access_log_rotation_unit }}.timer runs this every 15
+# minutes with its own state file: maxsize bounds the file under a flood,
+# daily rotates it otherwise.
+{{ edge_traefik_access_log_dir }}/access.log {
+    daily
+    maxsize 100M
+    rotate 14
+    missingok
+    notifempty
+    copytruncate
+    compress
+    delaycompress
+    nomail
+}

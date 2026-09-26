@@ -71,3 +71,8 @@ edge_traefik_upstream_mtls_secrets:
   ax_upstream_client: edge-ax-upstream-client-v1
 edge_traefik_acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
 edge_traefik_acme_storage_filename: acme.json
+# Traefik writes its JSON access log to access.log in this host directory,
+# bind-mounted at /var/log/traefik, so CrowdSec tails it as a plain file and
+# never through the Docker API (docs/EDGE.md, «Log de acceso en fichero»).
+# config/host-security.yml names the same file.
+edge_traefik_access_log_dir: /var/log/dockerswarm/edge

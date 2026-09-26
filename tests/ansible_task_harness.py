@@ -55,8 +55,13 @@ def run_task_definition(
 def run_task_definitions(
     tasks: list[dict[str, Any]],
     variables: dict[str, Any],
+    check_mode: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run already loaded tasks in one play, still refusing side effects."""
+    """Run already loaded tasks in one play, still refusing side effects.
+
+    check_mode runs the play with --check, so ansible_check_mode is true
+    exactly as in a production --check run.
+    """
     for task in tasks:
         if len(SIDE_EFFECT_FREE_MODULES.intersection(task)) != 1:
             raise AssertionError(f"{task.get('name')!r} is not a side-effect-free task")
@@ -80,7 +85,13 @@ def run_task_definitions(
             encoding="utf-8",
         )
         return subprocess.run(
-            [str(ANSIBLE_PLAYBOOK), "-i", "localhost,", str(playbook)],
+            [
+                str(ANSIBLE_PLAYBOOK),
+                "-i",
+                "localhost,",
+                *(["--check"] if check_mode else []),
+                str(playbook),
+            ],
             cwd=REPOSITORY_ROOT / "ansible",
             text=True,
             capture_output=True,

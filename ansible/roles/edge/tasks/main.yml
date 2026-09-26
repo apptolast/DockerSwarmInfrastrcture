@@ -107,6 +107,12 @@
       - >-
         edge_letsencrypt_staging_ca_bundle_sha256
         is match("^[a-f0-9]{64}$")
+      # The access log CrowdSec tails; config/host-security.yml names
+      # <dir>/access.log and scripts/validate-contract.py ties both.
+      - edge_traefik_access_log_dir == "/var/log/dockerswarm/edge"
+      - >-
+        edge_traefik_access_log_rotation_unit
+        == "dockerswarm-edge-access-log-rotate"
     fail_msg: "Traefik image, hostname, email, secret or network is invalid."
 
 - name: Require a reviewed parked workload list

@@ -32,6 +32,12 @@ services:
       - type: bind
         source: "{{ edge_state_root }}/traefik"
         target: /data
+      # The access log CrowdSec tails (docs/EDGE.md, "Log de acceso en
+      # fichero"): a root-owned directory holding one file the runtime user
+      # may only append to.
+      - type: bind
+        source: "{{ edge_traefik_access_log_dir }}"
+        target: /var/log/traefik
     secrets:
       - source: cloudflare_dns_api_token
         target: cloudflare_dns_api_token

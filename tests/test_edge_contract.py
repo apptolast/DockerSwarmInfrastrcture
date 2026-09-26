@@ -241,7 +241,15 @@ def basicauth_probe_targets(http: dict[str, Any]) -> list[dict[str, str]]:
         if match is None or len(realms) != 1:
             targets.append({"router": name, "unprobeable": router["rule"]})
         else:
-            targets.append({"hostname": match.group(1), "realm": realms[0]})
+            # The router name as Traefik logs it, which the CrowdSec scenario
+            # counts and the access log proof requires.
+            targets.append(
+                {
+                    "hostname": match.group(1),
+                    "realm": realms[0],
+                    "router": f"{name}@file",
+                }
+            )
     return sorted(targets, key=json.dumps)
 
 
@@ -268,11 +276,21 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
         ),
     ]
 
+    MOUNTS = [
+        {"Type": "bind", "Source": "/srv/edge/traefik", "Target": "/data"},
+        {
+            "Type": "bind",
+            "Source": "/var/log/dockerswarm/edge",
+            "Target": "/var/log/traefik",
+        },
+    ]
+
     def inspect(
         self,
         image: str,
         label: str = "",
         secrets: list[dict[str, Any]] | None = None,
+        mounts: list[dict[str, Any]] | None = None,
     ) -> str:
         return json.dumps(
             [
@@ -291,13 +309,7 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
                                 "Secrets": (
                                     self.SECRETS if secrets is None else secrets
                                 ),
-                                "Mounts": [
-                                    {
-                                        "Type": "bind",
-                                        "Source": "/srv/edge/traefik",
-                                        "Target": "/data",
-                                    }
-                                ],
+                                "Mounts": (self.MOUNTS if mounts is None else mounts),
                             },
                             "Networks": [{"Target": "a"}, {"Target": "b"}],
                         },
@@ -313,11 +325,12 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
         live: str,
         before: str = "",
         secrets: list[dict[str, Any]] | None = None,
+        mounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return {
             "image_channels_map": {"edge": {"traefik": entry}},
             "edge_deployed_traefik_service": {
-                "stdout": self.inspect(live, secrets=secrets)
+                "stdout": self.inspect(live, secrets=secrets, mounts=mounts)
             },
             "edge_traefik_image_before_deploy": before,
             "image_preflight_channel_resolutions": {
@@ -330,6 +343,7 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
             "edge_traefik_upstream_mtls_secrets": UPSTREAM_MTLS_SECRETS,
             "edge_required_networks": ["a", "b"],
             "edge_state_root": "/srv/edge",
+            "edge_traefik_access_log_dir": "/var/log/dockerswarm/edge",
         }
 
     def test_identity_gate_requires_every_reviewed_secret_read_only(self) -> None:
@@ -369,6 +383,41 @@ class TraefikLiveIdentityGateTests(AnsibleTaskAssertions, unittest.TestCase):
                     self.identity(self.hold, self.hold["spec_exact"], secrets=secrets),
                     self.IDENTITY_MESSAGE,
                 )
+
+    def test_identity_gate_requires_the_state_and_access_log_binds(self) -> None:
+        state, access_log = self.MOUNTS
+        for label, mounts in {
+            "the hand-made single bind": [state],
+            "no access log bind": [state, dict(state, Target="/logs")],
+            "read-only access log": [state, dict(access_log, ReadOnly=True)],
+            "access log from elsewhere": [
+                state,
+                dict(access_log, Source="/var/lib/docker/containers"),
+            ],
+            "access log as a volume": [state, dict(access_log, Type="volume")],
+            "a third mount": [
+                state,
+                access_log,
+                {"Type": "bind", "Source": "/", "Target": "/host"},
+            ],
+        }.items():
+            with self.subTest(label):
+                self.assert_task_rejects(
+                    self.DEPLOY,
+                    self.IDENTITY,
+                    self.identity(self.hold, self.hold["spec_exact"], mounts=mounts),
+                    self.IDENTITY_MESSAGE,
+                )
+        # Order does not matter, and ReadOnly: false is what Docker reports.
+        self.assert_task_accepts(
+            self.DEPLOY,
+            self.IDENTITY,
+            self.identity(
+                self.hold,
+                self.hold["spec_exact"],
+                mounts=[dict(access_log, ReadOnly=False), state],
+            ),
+        )
 
     def test_identity_gate_accepts_the_reviewed_hold_and_verified_heads(self) -> None:
         self.assert_task_accepts(
@@ -522,7 +571,26 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
                 "https://acme-v02.api.letsencrypt.org/directory"
             ),
             "edge_letsencrypt_staging_ca_bundle_sha256": "a" * 64,
+            "edge_traefik_access_log_dir": "/var/log/dockerswarm/edge",
+            "edge_traefik_access_log_rotation_unit": (
+                "dockerswarm-edge-access-log-rotate"
+            ),
         }
+
+    def test_the_access_log_directory_and_its_rotation_are_pinned(self) -> None:
+        # CrowdSec tails <dir>/access.log (config/host-security.yml).
+        for key, value in (
+            ("edge_traefik_access_log_dir", "/srv/dockerswarm/traefik"),
+            ("edge_traefik_access_log_dir", "/var/lib/docker/containers"),
+            ("edge_traefik_access_log_rotation_unit", "logrotate"),
+        ):
+            with self.subTest(key=key, value=value):
+                self.assert_task_rejects(
+                    self.MAIN,
+                    self.TASK,
+                    {**self.inputs(self.pin), key: value},
+                    self.MESSAGE,
+                )
 
     def test_the_pin_and_the_v3_channel_are_accepted(self) -> None:
         for reference in (self.pin, "docker.io/library/traefik:v3", "traefik:v3"):
@@ -983,8 +1051,9 @@ class EdgeBasicAuthChallengeProbeTests(unittest.TestCase):
                 {
                     "hostname": "logs-satisfactory.apptolast.com",
                     "realm": "Satisfactory logs",
+                    "router": "satisfactory-logs@file",
                 },
-                {"hostname": "ax.apptolast.com", "realm": "AX"},
+                {"hostname": "ax.apptolast.com", "realm": "AX", "router": "ax@file"},
             ],
         )
         argv = self.task["ansible.builtin.command"]["argv"]
@@ -1665,6 +1734,75 @@ class EdgeStaticContractTests(unittest.TestCase):
             detach, "the rendered edge networks differ from the isolation contract"
         )
 
+    def test_the_access_log_must_be_a_json_file_on_the_bind(self) -> None:
+        for label, change in {
+            "back to stdout": lambda log: log.pop("filePath"),
+            "another path": lambda log: log.update(filePath="/data/access.log"),
+            "common format": lambda log: log.update(format="common"),
+        }.items():
+            with self.subTest(label):
+
+                def mutate(root: Path, change=change) -> None:
+                    self.edit_yaml(
+                        root / ".build/edge/static.yml",
+                        lambda static: change(static["accessLog"]),
+                    )
+
+                self.assert_contract_rejects(
+                    mutate, "the access log must be JSON in /var/log/traefik/access.log"
+                )
+
+    def test_traefik_mounts_exactly_its_state_and_its_access_log(self) -> None:
+        def service(root: Path, change: Callable[[list[Any]], None]) -> None:
+            self.edit_yaml(
+                root / ".build/edge/stack.yml",
+                lambda stack: change(stack["services"]["traefik"]["volumes"]),
+            )
+
+        for label, change in {
+            "no access log bind": lambda volumes: volumes.pop(1),
+            "read-only access log": lambda volumes: volumes[1].update(read_only=True),
+            "access log elsewhere": lambda volumes: volumes[1].update(
+                source="/var/lib/docker/containers"
+            ),
+            "a third bind": lambda volumes: volumes.append(
+                {"type": "bind", "source": "/", "target": "/host"}
+            ),
+        }.items():
+            with self.subTest(label):
+                self.assert_contract_rejects(
+                    lambda root, change=change: service(root, change),
+                    "Traefik does not mount exactly the reviewed state and access log",
+                )
+
+    def test_crowdsec_must_read_the_file_traefik_writes(self) -> None:
+        def move(root: Path) -> None:
+            self.edit_yaml(
+                root / "config/host-security.yml",
+                lambda contract: contract.update(
+                    host_security_crowdsec_traefik_access_log=(
+                        "/var/log/dockerswarm/other/access.log"
+                    )
+                ),
+            )
+
+        self.assert_contract_rejects(
+            move, "CrowdSec does not read the access log that Traefik writes"
+        )
+
+        def move_directory(root: Path) -> None:
+            self.edit_yaml(
+                root / "ansible/group_vars/all.yml",
+                lambda group_vars: group_vars.update(
+                    edge_traefik_access_log_dir="/var/log/traefik"
+                ),
+            )
+
+        self.assert_contract_rejects(
+            move_directory,
+            "the Traefik access log directory differs from the reviewed contract",
+        )
+
     def test_the_access_log_must_drop_the_user_name(self) -> None:
         def keep(root: Path) -> None:
             self.edit_yaml(
@@ -1823,6 +1961,14 @@ class EdgeTraefikRenderBootPreparationTests(unittest.TestCase):
         self.assertIn('--volume "${validation_dir}/secrets:/run/secrets:ro"', script)
         # The rendered static configuration still boots unchanged too.
         self.assertIn('"${PROJECT_DIR}/.build/edge/static.yml"', script)
+        # Like the service, the boot gets a writable access log directory:
+        # Traefik only WARNs and runs without an access log when it cannot
+        # open the file, and the validation fails on that WARN.
+        self.assertIn(
+            "--tmpfs /var/log/traefik:rw,noexec,nosuid,nodev,size=16m,"
+            "uid=65532,gid=65532,mode=0700",
+            script,
+        )
         self.assertEqual(script.count("\nboot_traefik \\\n"), 2)
 
 

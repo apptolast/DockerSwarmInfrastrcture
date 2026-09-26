@@ -109,6 +109,11 @@ log:
   format: json
 
 accessLog:
+  # En el host, por el bind mount de /var/log/traefik, para que CrowdSec lo
+  # lea como un fichero y nunca por la API de Docker (docs/EDGE.md, "Log de
+  # acceso en fichero"). Traefik lo abre con O_APPEND y no lo reabre solo:
+  # el rol edge lo rota con logrotate copytruncate, sin senal.
+  filePath: /var/log/traefik/access.log
   format: json
   bufferingSize: 100
   fields:

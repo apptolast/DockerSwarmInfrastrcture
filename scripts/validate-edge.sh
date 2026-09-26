@@ -181,9 +181,9 @@ jq --exit-status \
     ) and
     (
       .[0].Spec.TaskTemplate.ContainerSpec.Mounts |
-      length == 1 and
-      .[0].Type == "bind" and
-      .[0].Target == "/data"
+      length == 2 and
+      all(.Type == "bind") and
+      (map(.Target) | sort) == ["/data", "/var/log/traefik"]
     ) and
     (
       .[0].Endpoint.Spec.Ports |
@@ -204,6 +204,27 @@ jq --exit-status \
     )
   ' <<<"${service_json}" >/dev/null ||
   fail "edge_traefik differs from the reviewed service contract"
+
+# The access log CrowdSec tails (docs/EDGE.md, «Log de acceso en fichero»):
+# one file only Traefik's runtime user may write, in a root-owned directory,
+# rotated by its own timer.
+access_log_dir="$(
+  "${PYTHON_BIN}" -c '
+import pathlib
+import sys
+import yaml
+root = pathlib.Path(sys.argv[1])
+group_vars = yaml.safe_load((root / "ansible/group_vars/all.yml").read_text())
+print(group_vars["edge_traefik_access_log_dir"])
+' "${PROJECT_DIR}"
+)"
+[[ "$(stat --format '%U:%G %a' "${access_log_dir}")" == "root:root 755" ]] ||
+  fail "the Traefik access log directory is not root:root 0755"
+[[ "$(stat --format '%u:%g %a %h %F' "${access_log_dir}/access.log")" =~ \
+  ^65532:65532\ 600\ 1\ regular(\ empty)?\ file$ ]] ||
+  fail "the Traefik access log is not the reviewed 0600 regular file"
+systemctl is-active --quiet dockerswarm-edge-access-log-rotate.timer ||
+  fail "the Traefik access log rotation timer is not active"
 
 mapfile -t task_containers < <(
   docker ps \

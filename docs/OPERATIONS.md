@@ -256,8 +256,9 @@ antes de repetir el apply; después, la vuelta atrás es un PR revisado y otro
 apply. Si el apply falló, su marker sigue presente y bloquea el lock: el
 rollback va sin lock y el marker se recupera antes de cualquier otro paso. El
 procedimiento del primer apply tras codificar Satisfactory está en
-[EDGE.md](EDGE.md) («Ventana de aplicación»), y el de la ruta de AX, en
-«Ventana de aplicación de la ruta».
+[EDGE.md](EDGE.md) («Ventana de aplicación»), el de la ruta de AX, en
+«Ventana de aplicación de la ruta», y el del log de acceso de Traefik, en
+«Ventana del log de acceso».
 
 ## Aparcar un servicio
 
@@ -373,6 +374,137 @@ restaurar, con el servicio aún aparcado, se extrae en un directorio vacío de
 staging, se compara con el dataset y solo después se sustituye el dataset
 completo, sin extraer nunca sobre datos vivos.
 
+## CrowdSec y los 401 de Traefik
+
+Traefik escribe su log de acceso en `/var/log/dockerswarm/edge/access.log`
+y CrowdSec lo lee como fichero, igual que `auth.log`, nunca por la API de
+Docker ([EDGE.md](EDGE.md), «Log de acceso en fichero»). Con el parser fijado
+`crowdsecurity/traefik-logs`, el escenario local
+`apptolast/traefik-basicauth-bf` cuenta por IP de origen las respuestas
+`401` de los routers `ax@file` y `satisfactory-logs@file`: el undécimo `401`
+en ráfaga (se vacía uno por minuto) banea esa IP 30 minutos, no las 4 h del
+perfil por defecto. El baneo corta también SSH, porque se aplica en `INPUT`
+y `DOCKER-USER`. El diseño y sus fuentes están en
+[`host_security/README.md`](../ansible/roles/host_security/README.md).
+
+Una caída de Docker ya no afecta a CrowdSec: ni a su arranque ni a la
+lectura de `auth.log`, y no pide ningún paso después.
+
+### Direcciones que nunca se banean
+
+Viven solo en el host, en `/etc/dockerswarm/crowdsec/trusted-ips`
+(`root:root 0600`, directorio `0700`), nunca en este repositorio público. Una
+IP o red pública por línea, no más ancha que `/24` en IPv4 ni `/48` en IPv6;
+las líneas vacías y las que empiezan por `#` se ignoran. Todo apply que
+ejecuta `host_security` (`host-baseline`, `platform`, `site`) deja la
+allowlist `apptolast-trusted` de CrowdSec exactamente igual que el fichero:
+
+- si el fichero no existe y la allowlist tiene entradas, el apply se detiene
+  antes de cambiar nada de CrowdSec (la comprobación previa corre antes del
+  primer cambio del Hub, de las fuentes o del perfil);
+- un fichero vacío o solo con comentarios vacía la allowlist;
+- una entrada añadida a mano con `cscli allowlists add` se retira en el
+  siguiente apply, y cualquier otra allowlist detiene el apply.
+
+Crear el fichero la primera vez, en un terminal SSH propio:
+
+```bash
+sudo -- install -d -o root -g root -m 0700 /etc/dockerswarm/crowdsec
+sudo -- install -o root -g root -m 0600 /dev/null \
+  /etc/dockerswarm/crowdsec/trusted-ips
+sudoedit /etc/dockerswarm/crowdsec/trusted-ips
+```
+
+`install ... /dev/null` vacía un fichero existente: solo para crearlo.
+`sudoedit` conserva el dueño y el modo. Para adoptar la allowlist que se creó
+a mano el 2026-09-20 sin mostrar sus direcciones en pantalla, en vez de
+`sudoedit`, con el fichero ya creado. `sudo -v` pide la contraseña una sola
+vez, antes de una tubería con dos `sudo`, y `pipefail` hace visible un fallo
+de `cscli` o de `jq`, que si no dejaría el fichero vacío sin ningún error:
+
+```bash
+sudo -v
+if (
+  set -o pipefail
+  sudo -- cscli allowlists inspect apptolast-trusted -o json --error |
+    jq -r '(.items // [])[].value' |
+    sudo -- tee -a /etc/dockerswarm/crowdsec/trusted-ips >/dev/null
+); then echo 'Copia hecha.'; else echo 'FALLO: repetir la copia.' >&2; fi
+sudo -- grep --count --invert-match --extended-regexp '^[[:space:]]*(#|$)' \
+  /etc/dockerswarm/crowdsec/trusted-ips
+sudo -- cscli allowlists list
+```
+
+El `grep` cuenta las entradas del fichero y `cscli allowlists list` muestra
+las de `apptolast-trusted` en su columna `Size`, sin ninguna dirección. Las
+dos cifras deben coincidir antes de cualquier apply que ejecute
+`host_security`: ese apply deja la allowlist igual que el fichero, y un
+fichero vacío la vacía. Los cambios del fichero llegan a CrowdSec con el
+siguiente apply de `host-baseline`.
+
+### Si el propietario queda baneado
+
+Desde otra IP o desde la consola de Netcup:
+
+```bash
+sudo -- cscli decisions list --scenario apptolast/traefik-basicauth-bf
+sudo -- cscli decisions delete --ip IP_BANEADA
+```
+
+El baneo caduca solo a los 30 minutos. Añadir después la IP al fichero y
+aplicar `host-baseline`; ese apply borra además cualquier decisión activa
+sobre las IP que añade.
+
+### Comprobar después de un apply o de un reinicio
+
+```bash
+sudo -- cscli metrics show acquisition parsers scenarios
+sudo -- cscli allowlists check IP_DEL_PROPIETARIO
+```
+
+La tabla de adquisición debe mostrar `file:/var/log/dockerswarm/edge/access.log`
+con líneas leídas (desde la ventana de `edge` que activa el fichero), junto
+a `auth.log` y syslog, y la de parsers `crowdsecurity/traefik-logs` con
+líneas parseadas.
+
+Prueba sin tráfico y sin crear ninguna decisión: `cscli explain` pasa unas
+líneas por los parsers y escenarios del host sin enviar alertas a la LAPI.
+`192.0.2.10` es una dirección de documentación (RFC 5737):
+
+```bash
+tmp="$(mktemp -d)"
+line='{"ClientAddr":"192.0.2.10:40000","ClientHost":"192.0.2.10",'
+line+='"DownstreamStatus":401,"Duration":1000000,'
+line+='"RequestHost":"logs-satisfactory.apptolast.com",'
+line+='"RequestMethod":"GET","RequestPath":"/","RequestProtocol":"HTTP/2.0",'
+line+='"RouterName":"satisfactory-logs@file","time":"2026-09-26T10:00:00Z"}'
+for _ in $(seq 1 11); do printf '%s\n' "${line}"; done >"${tmp}/traefik.log"
+sudo -- cscli explain --file "${tmp}/traefik.log" --type traefik
+rm -r -- "${tmp}"
+```
+
+Cada línea debe acabar en `parser success` y en
+`🟢 apptolast/traefik-basicauth-bf`; `cscli decisions list` no cambia.
+
+Prueba de extremo a extremo, opcional, desde un origen desechable: una
+máquina virtual con su propia IPv4 pública, que no esté en la allowlist y
+desde la que nadie necesite SSH durante 30 minutos. Nunca una red móvil: su
+IPv4 suele ser compartida (CGNAT) y el baneo cortaría a todos los que salen
+por ella, quizá también al propietario. La alerta y esa IP se comparten con
+la API central de CrowdSec (`share_custom: true` en
+`/etc/crowdsec/console.yaml`).
+
+1. Desde el origen desechable, once peticiones sin credenciales:
+   `for i in $(seq 1 11); do curl -s -o /dev/null -w '%{http_code}\n'
+   https://logs-satisfactory.apptolast.com/; done`. Once `401`.
+2. En el host, `sudo -- cscli decisions list --scenario
+   apptolast/traefik-basicauth-bf` muestra esa IP con unos 30 minutos.
+3. Desde el origen, `curl --max-time 5 https://logs-satisfactory.apptolast.com/`
+   agota el tiempo: el paquete se descarta.
+4. En el host, `sudo -- cscli decisions delete --ip IP_DEL_ORIGEN` en cuanto
+   el paso 3 se confirma, sin esperar los 30 minutos. El paso 3 vuelve a dar
+   `401`.
+
 ## Reinicios
 
 Antes:
@@ -413,6 +545,11 @@ se consultan mediante `sudo -- docker logs`.
 `docker service logs` requiere `json-file` o `journald`; cada servicio que lo
 necesita declara su driver y rotación. Iptables rota mediante rsyslog y el
 helper soportado de Ubuntu 26.04.
+
+El log de acceso de Traefik no está en los logs del servicio: Traefik lo
+escribe en `/var/log/dockerswarm/edge/access.log`, que lee CrowdSec, y lo
+rota `dockerswarm-edge-access-log-rotate.timer` cada 15 minutos
+([EDGE.md](EDGE.md), «Log de acceso en fichero»).
 
 ## Backup y autolock
 

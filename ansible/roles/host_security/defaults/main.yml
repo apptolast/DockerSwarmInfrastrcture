@@ -19,6 +19,12 @@ host_security_crowdsec_bouncer_config: >-
 host_security_managed_acquisition_files:
   - 00-dockerswarm-linux.yaml
   - 01-dockerswarm-sshd.yaml
+  - 02-dockerswarm-traefik.yaml
+host_security_crowdsec_basicauth_scenario_path: >-
+  /etc/crowdsec/scenarios/dockerswarm-traefik-basicauth-bf.yaml
+host_security_crowdsec_profiles_override: /etc/crowdsec/profiles.yaml.local
+# crowdsec_allowlist_gates.yml: the preflight include sets it false.
+host_security_crowdsec_allowlist_gate_strict: true
 host_security_fail2ban_jail: >-
   /etc/fail2ban/jail.d/99-dockerswarm-sshd.local
 host_security_rsyslog_iptables_config: >-

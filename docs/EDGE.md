@@ -608,9 +608,12 @@ antes.** Desde que se fusiona, todo apply de `edge` o de `site`, que incluye
 el rol `edge`, exige los tres secrets de «Secrets de la ruta» y se detiene
 antes de mutar nada, también en `--check`, si falta uno. Por eso `edge` y
 `site` solo se aplican siguiendo «Ventana de aplicación de la ruta», después
-de `ax-web-bootstrap.sh init`. Dentro de esa ventana, entre el apply de
-`edge` y el despliegue del panel, la ruta pide la contraseña y después
-responde `502`.
+de `ax-web-bootstrap.sh init`. Registrada esa ventana, cada apply posterior
+de `edge` o `site` sigue la ventana que este documento da para el cambio que
+aplica (la de «Log de acceso en fichero» es «Ventana del log de acceso»), con
+las reglas comunes de la compuerta STOP 10 de `CLAUDE.md`. Dentro de la
+ventana de la ruta, entre el apply de `edge` y el despliegue del panel, la
+ruta pide la contraseña y después responde `502`.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -1111,6 +1114,166 @@ se diagnostica desde su despliegue (reenviador, NodePort, certificados): no
 afecta a otras rutas ni pide rollback del edge. El rollback no borra la
 red `apptolast-edge-ax`: queda vacía, y el siguiente apply la reutiliza.
 Después del paso 7, la vuelta atrás es un PR revisado y otro apply de `edge`.
+
+## Log de acceso en fichero
+
+Traefik escribe su log de acceso JSON en un fichero del host y CrowdSec lo
+lee como lee `auth.log`: con su fuente `file`, nunca por la API de Docker.
+Es la base de los baneos por `401` repetidos en los `basicAuth` (ver
+[`host_security/README.md`](../ansible/roles/host_security/README.md)). El
+log de aplicación de Traefik sigue en stdout.
+
+Por qué no la API de Docker: en CrowdSec 1.7.8 todas las fuentes comparten
+una sola adquisición y la primera que devuelve un error para las demás
+(`pkg/acquisition/acquisition.go:652-656`). La fuente `docker` reintenta su
+suscripción a los eventos de Docker con un límite total de 15 minutos que no
+se puede cambiar (`pkg/acquisition/modules/docker/run.go:28-40` y `:410`,
+`cenkalti/backoff` v5.0.3 `retry.go:10`). Tras una caída de Docker de ese
+orden devuelve el error (`run.go:462-469`) y CrowdSec deja de leer también
+`auth.log` y syslog hasta que alguien lo reinicia: la detección de fuerza
+bruta de SSH dependería de Docker. La fuente `file` no tiene ese modo de
+fallo; el detalle, con sus líneas, está en el README del rol.
+
+<!-- markdownlint-disable MD013 -->
+
+| Objeto | Valor |
+| --- | --- |
+| Configuración estática | `accessLog.filePath: /var/log/traefik/access.log`, `format: json`, sin `ClientUsername` (ver «Log de acceso») |
+| Montaje | bind de `/var/log/dockerswarm/edge` (`edge_traefik_access_log_dir`) en `/var/log/traefik`, escribible; el otro y único montaje sigue siendo el de `/data` |
+| Directorios del host | `/var/log/dockerswarm` y `/var/log/dockerswarm/edge`, `root:root 0755`; los crean `edge` y `host_security` con la misma identidad y rechazan un enlace |
+| Fichero | `/var/log/dockerswarm/edge/access.log`, `65532:65532 0600`, un solo enlace; lo crea el rol `edge` antes del despliegue y nunca lo repara |
+| Rotación | `/opt/dockerswarm/edge/config/traefik-access.logrotate`: `daily`, `maxsize 100M`, `rotate 14`, `copytruncate`, `compress`, `delaycompress` |
+| Temporizador | `dockerswarm-edge-access-log-rotate.timer`, cada 15 minutos, con su propio estado en `/var/lib/logrotate/dockerswarm-edge-access.status` |
+| Lector | CrowdSec, `/etc/crowdsec/acquis.d/02-dockerswarm-traefik.yaml` (`config/host-security.yml`, `host_security_crowdsec_traefik_access_log`) |
+
+<!-- markdownlint-enable MD013 -->
+
+Decisiones:
+
+- **Solo un fichero escribible.** El usuario de Traefik puede escribir en
+  `access.log` y en nada más de ese directorio: no puede crear, renombrar ni
+  enlazar una entrada junto a él. logrotate y CrowdSec, que corren como
+  root, nunca siguen un enlace que haya dejado la tarea. Traefik abre el
+  fichero con `O_RDWR|O_CREATE|O_APPEND`
+  (`pkg/middlewares/accesslog/logger.go:460-470` en v3.7.13), así que le
+  basta el `0600` de su dueño.
+- **Rotación sin señal.** Traefik reabre sus logs con `USR1`
+  (`pkg/server/server_signals.go:13-31`), pero mandarla a una tarea de Swarm
+  exige la API de Docker. Como escribe con `O_APPEND`, `copytruncate` lo
+  rota sin señal: la siguiente escritura cae al principio del fichero
+  truncado, y CrowdSec reabre un fichero truncado desde el principio
+  (`nxadm/tail` v1.4.11, `tail.go:403-410`). `copytruncate` puede perder las
+  líneas que lleguen entre la copia y el truncado (página de manual de
+  logrotate); son unas pocas por rotación y no cambian un baneo.
+- **Temporizador propio.** El stdout al que sustituye lo acotaba el driver
+  `local` a 5 × 20 MB. El `logrotate.timer` de la distribución es diario y no
+  acota una inundación, así que un temporizador dedicado pasa la política
+  cada 15 minutos. El techo es unos 100 MB vivos, otros 100 MB en `.1` y
+  trece `.gz`, más lo que llegue en 15 minutos.
+- **Prueba en el despliegue.** Si Traefik no puede abrir el fichero, arranca
+  sin log de acceso y solo deja un WARN (`cmd/traefik/traefik.go:594-606`):
+  CrowdSec no vería a nadie. Por eso `scripts/validate-traefik-config.sh`
+  arranca Traefik con un `tmpfs` en `/var/log/traefik` y falla con ese WARN,
+  y el apply de `edge`, tras las sondas `401` sin credenciales, exige con
+  `scripts/traefik-access-log-probes.py` que el fichero tenga esos `401` con
+  el `RequestHost` y el `RouterName` que cuenta el escenario. El script solo
+  imprime cuentas, nunca una línea del log.
+
+Consecuencias:
+
+- `docker service logs edge_traefik` ya no muestra el log de acceso, solo el
+  de aplicación, y el diagnóstico del rol `edge` tras un fallo deja de
+  imprimir IPs de clientes. El log de acceso se lee con
+  `sudo -- tail /var/log/dockerswarm/edge/access.log`.
+- Alloy, en el stack de observabilidad (hoy sin desplegar), solo recoge el
+  stdout de los contenedores: el log de acceso no llegaría a Loki. Añadirlo
+  sería un `loki.source.file` sobre este fichero, en un cambio aparte.
+- Las sondas que se lanzan desde el propio host (`edge_probe`, las del rol)
+  llegan a Traefik desde `docker_gwbridge` (`172.18.0.1`), una dirección
+  privada que el parser `crowdsecurity/whitelists` ya descarta: nunca banean.
+
+`scripts/validate-contract.py` fija la ruta, el formato y los dos montajes,
+y exige que `config/host-security.yml` lea el mismo fichero que Traefik
+escribe; el rol comprueba los dos montajes en el servicio desplegado y
+`scripts/validate-edge.sh` en el vivo, con la identidad del fichero y el
+temporizador. Lo prueban `tests/test_edge_access_log_contract.py` y
+`tests/test_edge_contract.py`.
+
+### Ventana del log de acceso
+
+Es la ventana de `edge` de este cambio. La compuerta STOP 10 de `CLAUDE.md`
+exige que, registrada «Ventana de aplicación de la ruta», cada apply de
+`edge` o `site` siga la ventana de su cambio con las reglas de aquella: unos
+13 s sin conexiones nuevas en 80/443 para todos los hostnames, cortes en los
+WebSocket y SSE abiertos, una sola persona, fuera de 22:30–00:40 UTC, desde
+el clon operativo limpio en detached HEAD sobre el commit fusionado, tras
+`git fetch --all --prune`.
+
+Precondiciones. Si falta una, esta ventana no empieza:
+
+- La última ventana de `edge` está registrada en
+  `docs/DEPLOYMENT_STATUS.md` con su `Version.Index` y sus dos Configs tras
+  el apply repetido. Hoy es la de la ruta de AX, cuyo registro llega con el
+  PR #80 («Panel web de AX: ventana 2»). Si ese registro no trae el índice y
+  las Configs finales, se completa antes, en un cambio de evidencia, con la
+  comparación del paso 1 de «Ventana de aplicación de la ruta»: renderizar
+  el commit de esa ventana y compararlo con la Config dinámica viva.
+- Recomendado, no obligatorio: `host-baseline` con este cambio ya aplicado
+  (ver «CrowdSec para los 401 de Traefik» en `docs/DEPLOYMENT_STATUS.md`).
+  Así CrowdSec lee el fichero en cuanto Traefik escribe la primera línea. El
+  orden no importa: los dos roles crean los directorios y CrowdSec vigila el
+  suyo desde que arranca.
+
+Pasos:
+
+1. Igual que el paso 1 de «Ventana de aplicación de la ruta»: el
+   `Version.Index` y las dos Configs deben ser los registrados, y cada
+   secret de la ruta debe mostrar su nombre y sus dos etiquetas.
+2. `edge_probe > /tmp/edge-before-log.txt`.
+3. `./scripts/deploy-ansible.sh --playbook edge --check --ask-become-pass`
+   y, si está limpio, el apply con `--confirm-production`. Cambios
+   esperados: los directorios (si `host-baseline` aún no los creó), el
+   fichero `access.log`, la política de rotación, las dos unidades y el
+   temporizador, la Config estática nueva y el servicio (montaje nuevo y esa
+   Config), que relanza la tarea. El apply termina probando que las sondas
+   `401` de los dos logins están en el fichero.
+4. `edge_probe > /tmp/edge-after-log.txt` y
+   `diff /tmp/edge-before-log.txt /tmp/edge-after-log.txt`: sin
+   diferencias. Cualquier diferencia es motivo de rollback.
+5. Comprobar el servicio, el fichero y su lector:
+
+   ```bash
+   sudo -- docker service inspect edge_traefik \
+     --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'
+   sudo -- stat --format '%n %u:%g %a %h' /var/log/dockerswarm/edge \
+     /var/log/dockerswarm/edge/access.log
+   systemctl list-timers dockerswarm-edge-access-log-rotate.timer
+   sudo -- cscli metrics show acquisition
+   task="$(sudo -- docker service ps edge_traefik \
+     --filter desired-state=running --quiet --no-trunc)"
+   sudo -- docker service logs --since 10m "${task}" 2>&1 |
+     grep --count -e 'Unable to create access logger' -e '"level":"error"' \
+       -e 'no users found' -e 'Could not configure HTTP Transport'
+   ```
+
+   Dos montajes `bind` (`/data` y `/var/log/traefik`), el directorio
+   `0:0 755` y el fichero `65532:65532 600 1`, el temporizador con su
+   próxima ejecución, `file:/var/log/dockerswarm/edge/access.log` con líneas
+   leídas en la tabla de CrowdSec (si `host-baseline` ya se aplicó) y la
+   cuenta a `0`.
+6. Solo si los pasos 4 y 5 salieron bien, repetir el apply: `changed=0` y el
+   mismo ID de tarea.
+7. Registrar la evidencia en `docs/DEPLOYMENT_STATUS.md`, con el
+   `Version.Index` y las dos Configs tras el apply repetido.
+
+#### Rollback del log de acceso
+
+Igual que «Rollback de la ruta», con el spec del paso 1 como destino.
+`docker service rollback edge_traefik` devuelve el log de acceso a stdout y
+el fichero deja de crecer; CrowdSec no ve líneas nuevas, sin error ni efecto
+en SSH. Los directorios, el fichero y el temporizador pueden quedarse: el
+siguiente apply los reutiliza. Después del paso 6, la vuelta atrás es un PR
+revisado y otro apply de `edge`.
 
 ## Rotación del token ACME
 

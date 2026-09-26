@@ -523,6 +523,16 @@ route (#79) and the panel (#78) were applied in that window on 2026-09-26,
 with the owner's delegated acceptance of going live before the lockout
 (`docs/DEPLOYMENT_STATUS.md`, «Panel web de AX: ventana 2»).
 
+Once that route window is recorded in `docs/DEPLOYMENT_STATUS.md`, each
+later `edge` or `site` apply follows the window that `docs/EDGE.md`
+documents for the change it applies; for the Traefik access log file that
+CrowdSec reads, «Ventana del log de acceso». Every such window keeps the
+rules of the route window: the live `Version.Index` and both Configs must be
+the ones the last window recorded, `edge_probe` is recorded before and
+compared after, one person, outside 22:30–00:40 UTC, and a repeat apply
+that reports `changed=0` before the new `Version.Index` and Configs are
+recorded.
+
 Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
 `95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
 rules whenever that unit runs. A `--playbook platform` apply runs the base

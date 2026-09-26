@@ -1,0 +1,14 @@
+# Managed by Ansible (edge role). docs/EDGE.md, «Log de acceso en fichero».
+[Unit]
+Description=Rotate the Traefik access log that CrowdSec reads
+ConditionPathExists={{ edge_traefik_access_log_rotation_config }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state {{ edge_traefik_access_log_rotation_state }} {{ edge_traefik_access_log_rotation_config }}
+Nice=19
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
