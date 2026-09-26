@@ -1459,12 +1459,16 @@ def validate_ax_pod(
     images: list[str],
     context: str,
     audiences: tuple[str, ...] = (),
+    secrets: tuple[str, ...] = (),
 ) -> None:
     """Never a host namespace, a host path, a host port or an API token.
 
     `audiences` are the projected service account tokens the pod may hold,
     one each: only ax-controller's, for Substrate, never one the Kubernetes
-    API accepts.
+    API accepts. `secrets` are the Secrets the pod may mount as plain
+    `secret` volumes, exactly those and in that order: only the web panel's
+    own TLS and agent Secrets (docs/AX_WEB.md, «Arranque»); never a
+    projected one.
     """
     if spec.get("automountServiceAccountToken") is not False:
         raise AxLabError(f"{context} must not mount a Kubernetes API token")
@@ -1472,16 +1476,23 @@ def validate_ax_pod(
         if spec.get(field):
             raise AxLabError(f"{context} must not use {field}")
     tokens = []
+    mounted_secrets = []
     for volume in spec.get("volumes") or []:
         if "hostPath" in volume:
             raise AxLabError(f"{context} must not mount a hostPath")
         if "secret" in volume:
-            raise AxLabError(f"{context} must not mount a Secret")
+            mounted_secrets.append((volume["secret"] or {}).get("secretName"))
         for source in (volume.get("projected") or {}).get("sources") or []:
             if "secret" in source:
                 raise AxLabError(f"{context} must not mount a Secret")
             if "serviceAccountToken" in source:
                 tokens.append((source["serviceAccountToken"] or {}).get("audience"))
+    if tuple(mounted_secrets) != secrets:
+        raise AxLabError(
+            f"{context} must not mount a Secret"
+            if not secrets
+            else f"{context} must mount exactly the Secrets {list(secrets)}"
+        )
     if tuple(tokens) != audiences:
         raise AxLabError(
             f"{context} must project no service account token but " f"{list(audiences)}"
@@ -1812,7 +1823,9 @@ def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
     if spec.get("replicas") != 1 or spec.get("strategy") != {"type": "Recreate"}:
         raise AxLabError("the ax-web Deployment must run one pod, replaced")
     pod = pod_spec(deployment, "ax-web")
-    validate_ax_pod(pod, [web_image(lab)], "ax-web")
+    validate_ax_pod(
+        pod, [web_image(lab)], "ax-web", secrets=("ax-web-tls", "ax-web-agent")
+    )
     if pod.get("serviceAccountName") != "ax-web":
         raise AxLabError("ax-web must run as its own service account")
     if pod.get("terminationGracePeriodSeconds") != 120:

@@ -554,6 +554,25 @@ class WebValidatorTests(unittest.TestCase):
                 "Kubernetes API token",
             ),
             (
+                "another Secret volume",
+                lambda o: pod(o)["volumes"].append(
+                    {"name": "s", "secret": {"secretName": "ax-server-token"}}
+                ),
+                "exactly the Secrets",
+            ),
+            (
+                "a projected Secret",
+                lambda o: pod(o)["volumes"].append(
+                    {
+                        "name": "p",
+                        "projected": {
+                            "sources": [{"secret": {"name": "ax-web-agent"}}]
+                        },
+                    }
+                ),
+                "must not mount a Secret",
+            ),
+            (
                 "image by tag",
                 lambda o: container(o).update(image="localhost:5001/ax-web:0.1.0"),
                 "pinned images",
