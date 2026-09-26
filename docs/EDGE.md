@@ -1219,7 +1219,8 @@ Precondiciones. Si falta una, esta ventana no empieza:
   comparación del paso 1 de «Ventana de aplicación de la ruta»: renderizar
   el commit de esa ventana y compararlo con la Config dinámica viva.
 - Recomendado, no obligatorio: `host-baseline` con este cambio ya aplicado
-  (ver «CrowdSec para los 401 de Traefik» en `docs/DEPLOYMENT_STATUS.md`).
+  (ver «CrowdSec y log de acceso de Traefik (2026-09-26)» en
+  `docs/DEPLOYMENT_STATUS.md`).
   Así CrowdSec lee el fichero en cuanto Traefik escribe la primera línea. El
   orden no importa: los dos roles crean los directorios y CrowdSec vigila el
   suyo desde que arranca.
