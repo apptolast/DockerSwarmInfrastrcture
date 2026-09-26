@@ -107,20 +107,26 @@ jobs:
           KO_DOCKER_REPO: localhost:5001/ax-web
         run: |
           set -eu
-          # Under the workspace (.build is ignored by Git): a container
-          # job's runner.temp names a host path.
+          # ko names the result "<layout path>@<digest>" and parses it as
+          # an image reference (pkg/publish/layout.go, line 91 in v0.19.1),
+          # so the layout path must be lowercase, which the workspace path
+          # is not. The layouts are built under /tmp inside the job
+          # container, and the one kept is copied under the workspace
+          # (.build is ignored by Git): a container job's runner.temp names
+          # a host path.
+          build="/tmp/ax-web"
           out="${GITHUB_WORKSPACE}/.build/ax-web"
-          rm -rf "${out}"
-          mkdir -p "${out}"
+          rm -rf "${build}" "${out}"
+          mkdir -p "${build}" "${out}"
           first="$(
             ko build --bare --push=false --sbom=none --image-user=65532 \
-              --oci-layout-path="${out}/layout" . | tail -n 1
+              --oci-layout-path="${build}/layout" . | tail -n 1
           )"
           GOCACHE="$(mktemp -d)" ko build --bare --push=false --sbom=none \
-            --image-user=65532 --oci-layout-path="${out}/rebuild" . |
-            tail -n 1 >"${out}/second"
+            --image-user=65532 --oci-layout-path="${build}/rebuild" . |
+            tail -n 1 >"${build}/second"
           first="${first##*@}"
-          second="$(sed 's/.*@//' "${out}/second")"
+          second="$(sed 's/.*@//' "${build}/second")"
           echo "${first}" | grep -Eq '^sha256:[a-f0-9]{64}$'
           {
             echo "## AX web panel image"
@@ -134,7 +140,8 @@ jobs:
             echo "the rebuild produced another digest"
             exit 1
           fi
-          echo "${first}" >"${out}/layout/DIGEST"
+          echo "${first}" >"${build}/layout/DIGEST"
+          cp -R "${build}/layout" "${out}/layout"
 
       - name: Keep the OCI layout of the image
         # v7.0.1
