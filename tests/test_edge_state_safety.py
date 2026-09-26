@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -120,3 +121,56 @@ class EdgeStateSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EdgeUpdateWaitTests(unittest.TestCase):
+    """The runtime gate must not pick the task that stop-first is replacing."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        tasks = yaml.safe_load(EDGE_DEPLOY.read_text(encoding="utf-8"))
+        cls.names = [task["name"] for task in tasks]
+        cls.by_name = {task["name"]: task for task in tasks}
+        read = cls.by_name["Read the Traefik update state"]
+        cls.read = read
+        import jinja2
+
+        env = jinja2.Environment()
+        env.filters["from_json"] = json.loads
+
+        def default(value, fallback, boolean=False):
+            return fallback if (not value if boolean else value is None) else value
+
+        env.filters["default"] = default
+        cls.until = env.compile_expression(read["until"].strip())
+
+    def proceeds(self, stdout: str) -> bool:
+        return bool(self.until(edge_traefik_update_state={"stdout": stdout}))
+
+    def test_the_gate_waits_while_swarm_replaces_the_task(self) -> None:
+        self.assertFalse(self.proceeds('{"State": "updating"}'))
+        self.assertFalse(self.proceeds('{"State": "rollback_started"}'))
+
+    def test_the_gate_proceeds_when_nothing_is_being_replaced(self) -> None:
+        # An unchanged spec leaves UpdateStatus null (controlapi resets it).
+        self.assertTrue(self.proceeds("null"))
+        self.assertTrue(self.proceeds('{"State": "completed"}'))
+        # Rolled back or paused: stop waiting so the next task rejects it.
+        for state in ("rollback_completed", "rollback_paused", "paused"):
+            with self.subTest(state=state):
+                self.assertTrue(self.proceeds(json.dumps({"State": state})))
+
+    def test_the_wait_outlasts_stop_first_start_and_monitor(self) -> None:
+        # graceTimeOut 10 s, health start period 15 s, monitor 90 s.
+        self.assertGreaterEqual(
+            self.read["retries"] * self.read["delay"], 10 + 15 + 90 + 60
+        )
+
+    def test_the_wait_precedes_the_rollback_rejection_and_the_gate(self) -> None:
+        wait = self.names.index("Read the Traefik update state")
+        reject = self.names.index("Reject a Traefik update that rolled back or paused")
+        gate = self.names.index(
+            "Prove Traefik runtime health before declaring edge deployed"
+        )
+        self.assertLess(wait, reject)
+        self.assertLess(reject, gate)

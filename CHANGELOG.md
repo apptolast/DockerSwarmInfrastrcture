@@ -806,6 +806,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El rol `edge` espera a que Swarm termine el relevo de Traefik (estado de
+  actualización distinto de `updating` y `rollback_started`, hasta 4 minutos)
+  antes de su puerta de salud. Con `detach: true` y `stop-first`, la tarea
+  anterior seguía siendo la única en marcha y la puerta comprobaba ese
+  contenedor, que se apagaba: el 2026-09-26 el primer apply del edge
+  codificado falló así con la tarea nueva sana y sirviendo. Sin cambios en el
+  spec el estado queda nulo y no hay espera. `tests/test_edge_state_safety.py`
+  evalúa la condición para cada estado.
 - El rol `edge` crea las redes adoptadas (`edge_adopted_attachable_networks`)
   ya `attachable` cuando faltan; antes las creaba no-`attachable` y, en un host
   reconstruido, los contenedores Compose del Observatorio y de Satisfactory
