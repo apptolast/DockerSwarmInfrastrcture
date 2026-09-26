@@ -12,10 +12,14 @@ ratio of config/capacity.yml, restart policy "no", and the same limits as
 their host_containers.ax-lab entry in config/capacity-profiles.yml, and Agent
 Substrate: its version, its images by digest, the backup directory, the
 bounded fallback build and the ate-setup install with their limits, and the
-workloads ate-setup deploys. It rejects secret-like keys and values anywhere
-in the file, then renders the role's sysctl file and kind configuration and
-checks both against the contract. It reads nothing outside this repository,
-so CI runs it without a production host.
+workloads ate-setup deploys, and AX: the vendored #375 patch and ko manifests
+by sha256, its four images by digest, the CLI backup, the WorkerPool within
+the node's CPU and memory, and the router timeout. It rejects secret-like keys
+and values anywhere in the file, then renders the role's sysctl file, kind
+configuration and AX manifests and checks them against the contract: AX is
+never published, never granted RBAC and never mounts a Kubernetes API token.
+It reads nothing outside this repository, so CI runs it without a production
+host.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ CONFIG = ROOT / "config/ax-lab.yml"
 SYSCTL_TEMPLATE_DIRECTORY = ROOT / "ansible/roles/ax_lab/templates"
 SYSCTL_TEMPLATE = "99-z-dockerswarm-ax-lab.conf.j2"
 KIND_CONFIG_TEMPLATE = "kind-config.yaml.j2"
+# The AX manifests the role applies server-side, in this order.
+AX_MANIFEST_TEMPLATES = ("ax-system.yaml", "ax-workers.yaml")
 CAPACITY_CONTRACT = ROOT / "config/capacity.yml"
 CAPACITY_PROFILES = ROOT / "config/capacity-profiles.yml"
 # The host_containers group of config/capacity-profiles.yml that budgets the
@@ -56,7 +62,7 @@ TOP_LEVEL_KEYS = {
     "ax_lab_privileged_node_accepted",
     "ax_lab_substrate_fallback_builds",
 }
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LAB_KEYS = {
     "schema_version",
     "install_root",
@@ -68,6 +74,7 @@ LAB_KEYS = {
     "cluster",
     "registry",
     "substrate",
+    "ax",
 }
 CLUSTER_KEYS = {
     "name",
@@ -177,7 +184,6 @@ IMAGE_REPOSITORIES = {
     "kind_node": "docker.io/kindest/node",
     "registry": "docker.io/library/registry",
     "redis": "docker.io/library/redis",
-    "openai_proxy": "docker.io/nginxinc/nginx-unprivileged",
     "toolbox": "docker.io/library/golang",
 }
 # The Go release the manual lab built every pinned image with; Substrate's
@@ -258,6 +264,93 @@ DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
 UPSTREAM_IMAGE_RE = re.compile(
     r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*"
     r":[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}@sha256:[a-f0-9]{64}"
+)
+
+AX_KEYS = {
+    "tag",
+    "images",
+    "task_runner_binary_sha256",
+    "ko_base_image",
+    "cli_sha256",
+    "cli_backup",
+    "snapshots_bucket",
+    "redis",
+    "worker_pool",
+    "node_platform_reserve_mib",
+    "router_route_timeout",
+}
+# ko builds the first two from ./cmd/<name> (.ko.yaml at sources.ax); the
+# manual lab built the runner and the agents images with buildx.
+AX_KO_IMAGES = ("ax-controller", "ax-server")
+AX_IMAGES = (*AX_KO_IMAGES, "ax-task-runner", "ax-agents")
+AX_PATCH = "images/ax/google-ax-375.patch"
+# The exact manifests the manual lab pushed for the ko images: their bytes
+# hash to the pins, and the reproducibility workflow compares a rebuild's
+# config and layers with them.
+AX_KO_MANIFESTS = "images/ax/manifests"
+AX_TAG_RE = re.compile(r"[a-z0-9][a-z0-9._-]{6,127}")
+KO_BASE_IMAGE_RE = re.compile(r"cgr\.dev/chainguard/static@sha256:[a-f0-9]{64}")
+AX_CLI_BACKUP = "/var/backups/dockerswarm/ax-lab/binaries/ax"
+# Substrate's kind rustfs bucket (manifests/ate-install/kind/rustfs.yaml,
+# lines 121-126), where the manual lab pointed AX_SNAPSHOTS_BUCKET.
+AX_SNAPSHOTS_BUCKET = "gs://ate-snapshots/ax/"
+AX_REDIS_KEYS = {"volume_mib", "save_seconds"}
+AX_REDIS_VOLUME_RANGE = range(256, 4097)
+AX_REDIS_SAVE_RANGE = range(10, 3601)
+WORKER_POOL_KEYS = {
+    "namespace",
+    "name",
+    "replicas",
+    "memory_mib",
+    "cpu_request_millicores",
+    "cpu_limit_millicores",
+}
+AX_SYSTEM_NAMESPACE = "ax-system"
+AX_WORKERS_NAMESPACE = "ax-workers"
+# What the workers' CPU limits, all of them together, leave to etcd, the API
+# server and Substrate: PR review item 4, since the node itself is capped at
+# cluster.resources.
+NODE_CPU_KEPT_MILLICORES = 500
+# The memory of the node's limit that the workers' limits never take: the
+# platform measured 1 296 MiB of anonymous and kernel memory on 2026-09-25,
+# plus its hot page cache (docs/AX.md, «WorkerPool y capacidad dentro del
+# nodo»).
+NODE_PLATFORM_RESERVE_MIB = 1792
+ROUTE_TIMEOUT_RE = re.compile(r"([1-9][0-9]*)(m|h)")
+ROUTE_TIMEOUT_MAX_MINUTES = 120
+# Every object the AX manifests may hold, in their order. Nothing else is
+# ever applied: no Secret, no RBAC, no Ingress, no other namespace.
+AX_INVENTORY = {
+    "ax-system.yaml": [
+        ("Namespace", None, AX_SYSTEM_NAMESPACE),
+        ("ServiceAccount", AX_SYSTEM_NAMESPACE, "ax-controller"),
+        ("PersistentVolumeClaim", AX_SYSTEM_NAMESPACE, "ax-redis-data"),
+        ("Deployment", AX_SYSTEM_NAMESPACE, "ax-redis"),
+        ("Service", AX_SYSTEM_NAMESPACE, "ax-redis"),
+        ("Deployment", AX_SYSTEM_NAMESPACE, "ax-server"),
+        ("Service", AX_SYSTEM_NAMESPACE, "ax-server"),
+        ("Deployment", AX_SYSTEM_NAMESPACE, "ax-controller"),
+        ("NetworkPolicy", AX_SYSTEM_NAMESPACE, "ax-redis"),
+        ("NetworkPolicy", AX_SYSTEM_NAMESPACE, "ax-server"),
+    ],
+    "ax-workers.yaml": [
+        ("Namespace", None, AX_WORKERS_NAMESPACE),
+        ("WorkerPool", AX_WORKERS_NAMESPACE, "ax"),
+    ],
+}
+MANAGED_LABEL = {"com.apptolast.managed-by": "ansible"}
+POD_HOST_FIELDS = ("hostNetwork", "hostPID", "hostIPC")
+# Where the kubelet mounts a Kubernetes API token when a pod automounts one
+# (/var/run is /run in the images).
+SERVICE_ACCOUNT_MOUNTS = (
+    "/var/run/secrets/kubernetes.io",
+    "/run/secrets/kubernetes.io",
+)
+SERVICE_PUBLISHING_FIELDS = (
+    "externalIPs",
+    "externalName",
+    "loadBalancerIP",
+    "loadBalancerSourceRanges",
 )
 
 # Names and shapes of credentials. This public file holds paths and public
@@ -430,16 +523,31 @@ def validate_sysctl(settings: Any, reserved: dict[str, str]) -> None:
         raise AxLabError("sysctl differs from the inotify limits kind recommends")
 
 
+def file_sha256(relative_path: str) -> str:
+    try:
+        return hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+    except OSError as error:
+        raise AxLabError(f"cannot read {relative_path}: {error}") from error
+
+
 def validate_sources(sources: Any) -> None:
     exact_keys(sources, set(SOURCE_REPOSITORIES), "sources")
     for name, repository in SOURCE_REPOSITORIES.items():
-        source = exact_keys(sources[name], {"repository", "commit"}, name)
+        keys = {"repository", "commit", "patch"} if name == "ax" else None
+        source = exact_keys(sources[name], keys or {"repository", "commit"}, name)
         if source["repository"] != repository:
             raise AxLabError(f"source {name} must use its upstream repository")
         if not isinstance(source["commit"], str) or not COMMIT_RE.fullmatch(
             source["commit"]
         ):
             raise AxLabError(f"source {name} commit must be a full 40-hex SHA")
+    patch = exact_keys(sources["ax"]["patch"], {"path", "sha256"}, "ax patch")
+    if patch["path"] != AX_PATCH:
+        raise AxLabError(f"the AX patch must be the vendored {AX_PATCH}")
+    if not isinstance(patch["sha256"], str) or not SHA256_RE.fullmatch(patch["sha256"]):
+        raise AxLabError("the AX patch sha256 must be 64 lowercase hex")
+    if file_sha256(patch["path"]) != patch["sha256"]:
+        raise AxLabError(f"{AX_PATCH} does not hash to its reviewed sha256")
 
 
 def validate_binary_url(name: str, url: Any, version: str) -> None:
@@ -885,6 +993,92 @@ def validate_fallback_builds(value: Any, substrate: dict[str, Any]) -> None:
             raise AxLabError(f"fallback build {name} has no pinned digest to reproduce")
 
 
+def validate_worker_pool(pool: Any, cluster: dict[str, Any], reserve: Any) -> None:
+    """The workers fit in the node and leave it the CPU and memory it needs."""
+    exact_keys(pool, WORKER_POOL_KEYS, "ax worker_pool")
+    if pool["namespace"] != AX_WORKERS_NAMESPACE:
+        raise AxLabError(f"ax worker_pool namespace must be {AX_WORKERS_NAMESPACE}")
+    if not isinstance(pool["name"], str) or not DNS_LABEL_RE.fullmatch(pool["name"]):
+        raise AxLabError("ax worker_pool name must be a DNS label")
+    for key in sorted(WORKER_POOL_KEYS - {"namespace", "name"}):
+        exact_int(pool[key], f"ax worker_pool {key}")
+    if exact_int(reserve, "ax node_platform_reserve_mib") < NODE_PLATFORM_RESERVE_MIB:
+        raise AxLabError(
+            f"ax node_platform_reserve_mib must keep at least "
+            f"{NODE_PLATFORM_RESERVE_MIB} MiB of the node for the platform"
+        )
+    node = cluster["resources"]
+    if pool["replicas"] * pool["memory_mib"] > node["memory_limit_mib"] - reserve:
+        raise AxLabError(
+            "ax worker_pool memory exceeds the node's limit minus "
+            "node_platform_reserve_mib"
+        )
+    if pool["cpu_request_millicores"] > pool["cpu_limit_millicores"]:
+        raise AxLabError("ax worker_pool requests more CPU than its limit")
+    kept = node["cpu_limit_millicores"] - NODE_CPU_KEPT_MILLICORES
+    if pool["replicas"] * pool["cpu_limit_millicores"] > kept:
+        raise AxLabError(
+            f"ax worker_pool CPU limits must leave {NODE_CPU_KEPT_MILLICORES}m of "
+            f"the node's CPU: replicas x cpu_limit_millicores at most {kept}m"
+        )
+
+
+def validate_ax(ax: Any, lab: dict[str, Any]) -> dict[str, Any]:
+    exact_keys(ax, AX_KEYS, "ax")
+    tag = ax["tag"]
+    commit = lab["sources"]["ax"]["commit"]
+    if (
+        not isinstance(tag, str)
+        or not AX_TAG_RE.fullmatch(tag)
+        or "latest" in tag
+        or not tag.startswith(commit[:7] + "-")
+    ):
+        raise AxLabError(
+            "ax tag must be an image tag naming the pinned AX commit's first 7 "
+            "characters"
+        )
+    images = exact_keys(ax["images"], set(AX_IMAGES), "ax images")
+    for name in AX_IMAGES:
+        digest = images[name]
+        if not isinstance(digest, str) or not SUBSTRATE_DIGEST_RE.fullmatch(digest):
+            raise AxLabError(f"ax image {name} must be pinned as sha256:<64 hex>")
+    for name in AX_KO_IMAGES:
+        vendored = f"{AX_KO_MANIFESTS}/{name}.json"
+        if "sha256:" + file_sha256(vendored) != images[name]:
+            raise AxLabError(f"{vendored} does not hash to the {name} pin")
+    for key in ("task_runner_binary_sha256", "cli_sha256"):
+        if not isinstance(ax[key], str) or not SHA256_RE.fullmatch(ax[key]):
+            raise AxLabError(f"ax {key} must be 64 lowercase hex")
+    if not isinstance(ax["ko_base_image"], str) or not KO_BASE_IMAGE_RE.fullmatch(
+        ax["ko_base_image"]
+    ):
+        raise AxLabError("ax ko_base_image must be cgr.dev/chainguard/static by digest")
+    if ax["cli_backup"] != AX_CLI_BACKUP:
+        raise AxLabError(f"ax cli_backup must be {AX_CLI_BACKUP}")
+    if ax["snapshots_bucket"] != AX_SNAPSHOTS_BUCKET:
+        raise AxLabError(f"ax snapshots_bucket must be {AX_SNAPSHOTS_BUCKET}")
+    redis = exact_keys(ax["redis"], AX_REDIS_KEYS, "ax redis")
+    if type(redis["volume_mib"]) is not int or (
+        redis["volume_mib"] not in AX_REDIS_VOLUME_RANGE
+    ):
+        raise AxLabError("ax redis volume_mib is outside 256-4096")
+    if type(redis["save_seconds"]) is not int or (
+        redis["save_seconds"] not in AX_REDIS_SAVE_RANGE
+    ):
+        raise AxLabError("ax redis save_seconds is outside 10-3600")
+    validate_worker_pool(
+        ax["worker_pool"], lab["cluster"], ax["node_platform_reserve_mib"]
+    )
+    timeout = ax["router_route_timeout"]
+    match = ROUTE_TIMEOUT_RE.fullmatch(timeout) if isinstance(timeout, str) else None
+    minutes = None if match is None else int(match[1]) * (60 if match[2] == "h" else 1)
+    if minutes is None or minutes > ROUTE_TIMEOUT_MAX_MINUTES:
+        raise AxLabError(
+            "ax router_route_timeout must be whole minutes or hours, at most 2h"
+        )
+    return ax
+
+
 def validate_catalog(
     document: Any,
     reserved: dict[str, str] | None = None,
@@ -927,6 +1121,7 @@ def validate_catalog(
         load_free_limit_budget() if free is None else free,
     )
     validate_fallback_builds(document["ax_lab_substrate_fallback_builds"], substrate)
+    validate_ax(lab["ax"], lab)
     return lab
 
 
@@ -941,6 +1136,25 @@ def substrate_plan(lab: dict[str, Any]) -> dict[str, Any]:
         "registry_image": lab["images"]["registry"],
         "build": substrate["build"],
         "images": substrate["images"],
+    }
+
+
+def ax_plan(lab: dict[str, Any]) -> dict[str, Any]:
+    """What the reproducibility workflow rebuilds and compares for AX, as JSON."""
+    ax = lab["ax"]
+    return {
+        "commit": lab["sources"]["ax"]["commit"],
+        "repository": lab["sources"]["ax"]["repository"],
+        "patch": lab["sources"]["ax"]["patch"],
+        "substrate_commit": lab["sources"]["substrate"]["commit"],
+        "toolbox_image": lab["images"]["toolbox"],
+        "ko_base_image": ax["ko_base_image"],
+        "ko_images": {name: ax["images"][name] for name in AX_KO_IMAGES},
+        "ko_manifests": {
+            name: f"{AX_KO_MANIFESTS}/{name}.json" for name in AX_KO_IMAGES
+        },
+        "cli_sha256": ax["cli_sha256"],
+        "task_runner_binary_sha256": ax["task_runner_binary_sha256"],
     }
 
 
@@ -1030,6 +1244,257 @@ def kind_config_sha256(rendered: str) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
+def render_ax_manifests(lab: dict[str, Any]) -> dict[str, str]:
+    """Render the AX manifests as Ansible's template lookup would."""
+    environment = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(SYSCTL_TEMPLATE_DIRECTORY / "ax"),
+        undefined=jinja2.StrictUndefined,
+        trim_blocks=True,
+        keep_trailing_newline=True,
+    )
+    return {
+        name: environment.get_template(name + ".j2").render(ax_lab=lab)
+        for name in AX_MANIFEST_TEMPLATES
+    }
+
+
+def registry_image(lab: dict[str, Any], name: str) -> str:
+    """The reference the cluster pulls an AX image by: tag and pinned digest."""
+    return f"localhost:5001/{name}:{lab['ax']['tag']}@{lab['ax']['images'][name]}"
+
+
+def pod_spec(document: dict[str, Any], context: str) -> dict[str, Any]:
+    try:
+        spec = document["spec"]["template"]["spec"]
+    except (KeyError, TypeError) as error:
+        raise AxLabError(f"{context} has no pod template") from error
+    if not isinstance(spec, dict):
+        raise AxLabError(f"{context} has no pod template")
+    return spec
+
+
+def validate_ax_pod(
+    spec: dict[str, Any],
+    images: list[str],
+    context: str,
+    audiences: tuple[str, ...] = (),
+) -> None:
+    """Never a host namespace, a host path, a host port or an API token.
+
+    `audiences` are the projected service account tokens the pod may hold,
+    one each: only ax-controller's, for Substrate, never one the Kubernetes
+    API accepts.
+    """
+    if spec.get("automountServiceAccountToken") is not False:
+        raise AxLabError(f"{context} must not mount a Kubernetes API token")
+    for field in POD_HOST_FIELDS:
+        if spec.get(field):
+            raise AxLabError(f"{context} must not use {field}")
+    tokens = []
+    for volume in spec.get("volumes") or []:
+        if "hostPath" in volume:
+            raise AxLabError(f"{context} must not mount a hostPath")
+        if "secret" in volume:
+            raise AxLabError(f"{context} must not mount a Secret")
+        for source in (volume.get("projected") or {}).get("sources") or []:
+            if "secret" in source:
+                raise AxLabError(f"{context} must not mount a Secret")
+            if "serviceAccountToken" in source:
+                tokens.append((source["serviceAccountToken"] or {}).get("audience"))
+    if tuple(tokens) != audiences:
+        raise AxLabError(
+            f"{context} must project no service account token but " f"{list(audiences)}"
+        )
+    containers = spec.get("containers") or []
+    if spec.get("initContainers") or [c.get("image") for c in containers] != images:
+        raise AxLabError(f"{context} must run exactly its pinned images")
+    for container in containers:
+        security = container.get("securityContext") or {}
+        if security.get("privileged") or security.get("allowPrivilegeEscalation"):
+            raise AxLabError(f"{context} must not run privileged")
+        for port in container.get("ports") or []:
+            if "hostPort" in port or "hostIP" in port:
+                raise AxLabError(f"{context} must not publish a host port")
+        for mount in container.get("volumeMounts") or []:
+            path = "/" + str(mount.get("mountPath", "")).strip("/")
+            if any(
+                path == prefix or path.startswith(prefix + "/")
+                for prefix in SERVICE_ACCOUNT_MOUNTS
+            ):
+                raise AxLabError(
+                    f"{context} must not mount anything at {SERVICE_ACCOUNT_MOUNTS[0]}"
+                )
+
+
+def validate_ax_manifests(rendered: dict[str, str], lab: dict[str, Any]) -> None:
+    """The AX objects: exactly the reviewed ones, never published, pinned."""
+    ax = lab["ax"]
+    if list(rendered) != list(AX_MANIFEST_TEMPLATES):
+        raise AxLabError("the AX manifests differ from the reviewed files")
+    objects: dict[tuple[str, str | None, str], dict[str, Any]] = {}
+    for name, text in rendered.items():
+        if "ko://" in text:
+            raise AxLabError(f"{name} still names a ko:// image")
+        try:
+            documents = [
+                document
+                for document in yaml.load_all(text, Loader=UniqueKeyLoader)
+                if document is not None
+            ]
+        except yaml.YAMLError as error:
+            raise AxLabError(f"{name} is not YAML: {error}") from error
+        keys = []
+        for document in documents:
+            if not isinstance(document, dict) or not isinstance(
+                document.get("metadata"), dict
+            ):
+                raise AxLabError(f"{name} holds an object without metadata")
+            metadata = document["metadata"]
+            key = (
+                document.get("kind"),
+                metadata.get("namespace"),
+                metadata.get("name"),
+            )
+            keys.append(key)
+            objects[key] = document
+        if keys != AX_INVENTORY[name]:
+            raise AxLabError(f"{name} holds other objects than the reviewed ones")
+    for namespace in (AX_SYSTEM_NAMESPACE, AX_WORKERS_NAMESPACE):
+        labels = objects[("Namespace", None, namespace)]["metadata"].get("labels")
+        if labels != MANAGED_LABEL:
+            raise AxLabError(f"namespace {namespace} must carry only {MANAGED_LABEL}")
+    for key, document in objects.items():
+        if key[0] != "Service":
+            continue
+        spec = document.get("spec") or {}
+        # Explicit, so that the ax-lab field manager owns it: server-side
+        # apply leaves alone a field it does not own, so the drift diff
+        # would never see another hand publish the Service.
+        if spec.get("type") != "ClusterIP" or any(
+            field in spec for field in SERVICE_PUBLISHING_FIELDS
+        ):
+            raise AxLabError(
+                f"Service {key[2]} must be ClusterIP only, with its type set"
+            )
+        if any("nodePort" in port for port in spec.get("ports") or []):
+            raise AxLabError(f"Service {key[2]} must not open a node port")
+    system = AX_SYSTEM_NAMESPACE
+    redis = objects[("Deployment", system, "ax-redis")]
+    server = objects[("Deployment", system, "ax-server")]
+    controller = objects[("Deployment", system, "ax-controller")]
+    validate_ax_pod(pod_spec(redis, "ax-redis"), [lab["images"]["redis"]], "ax-redis")
+    validate_ax_pod(
+        pod_spec(server, "ax-server"), [registry_image(lab, "ax-server")], "ax-server"
+    )
+    controller_pod = pod_spec(controller, "ax-controller")
+    # Substrate authentication: a projected token for Substrate's audience,
+    # never the Kubernetes API one (deploy/ax-controller.yaml, lines 100-107).
+    validate_ax_pod(
+        controller_pod,
+        [registry_image(lab, "ax-controller")],
+        "ax-controller",
+        ("api.ate-system.svc",),
+    )
+    env = {
+        item.get("name"): item.get("value")
+        for item in controller_pod["containers"][0].get("env") or []
+    }
+    if env.get("AX_SNAPSHOTS_BUCKET") != ax["snapshots_bucket"]:
+        raise AxLabError("ax-controller must name the reviewed snapshots bucket")
+    if controller_pod.get("serviceAccountName") != "ax-controller":
+        raise AxLabError("ax-controller must run as its own service account")
+    redis_pod = pod_spec(redis, "ax-redis")
+    if redis_pod["containers"][0].get("args") != [
+        "--save",
+        f"{ax['redis']['save_seconds']} 1",
+        "--appendonly",
+        "no",
+    ]:
+        raise AxLabError("ax-redis must keep RDB snapshots only")
+    if (redis.get("spec") or {}).get("strategy") != {"type": "Recreate"}:
+        raise AxLabError("ax-redis must be replaced, never rolled beside itself")
+    claim = objects[("PersistentVolumeClaim", system, "ax-redis-data")]
+    try:
+        storage = claim["spec"]["resources"]["requests"]["storage"]
+    except (KeyError, TypeError) as error:
+        raise AxLabError("ax-redis-data must request its volume") from error
+    if storage != f"{ax['redis']['volume_mib']}Mi":
+        raise AxLabError("ax-redis-data must request redis volume_mib")
+    validate_ax_network_policies(objects)
+    validate_worker_pool_object(
+        objects[("WorkerPool", AX_WORKERS_NAMESPACE, "ax")], lab
+    )
+
+
+def validate_ax_network_policies(objects: dict[Any, dict[str, Any]]) -> None:
+    """Sandboxes reach neither ax-server nor ax-redis (google/ax#376)."""
+    expected = {
+        "ax-server": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "ax-server"}},
+            "policyTypes": ["Ingress"],
+        },
+        "ax-redis": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "ax-redis"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "podSelector": {
+                                "matchExpressions": [
+                                    {
+                                        "key": "app.kubernetes.io/name",
+                                        "operator": "In",
+                                        "values": ["ax-controller", "ax-server"],
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 6379}],
+                }
+            ],
+        },
+    }
+    for name, spec in expected.items():
+        if objects[("NetworkPolicy", AX_SYSTEM_NAMESPACE, name)].get("spec") != spec:
+            raise AxLabError(f"NetworkPolicy {name} differs from the reviewed one")
+
+
+def validate_worker_pool_object(document: dict[str, Any], lab: dict[str, Any]) -> None:
+    pool = lab["ax"]["worker_pool"]
+    version = lab["substrate"]["version"]
+    worker_image = (
+        f"localhost:5001/ateom-gvisor:{version}"
+        f"@{lab['substrate']['images']['ateom-gvisor']}"
+    )
+    memory = f"{pool['memory_mib']}Mi"
+    expected = {
+        "replicas": pool["replicas"],
+        "sandboxClass": "gvisor",
+        "workerImage": worker_image,
+        "template": {
+            "nodeSelector": {"ate.dev/substrate-version": version},
+            "resources": {
+                "requests": {
+                    "cpu": f"{pool['cpu_request_millicores']}m",
+                    "memory": memory,
+                },
+                "limits": {"cpu": f"{pool['cpu_limit_millicores']}m", "memory": memory},
+            },
+        },
+    }
+    if document.get("spec") != expected:
+        raise AxLabError("the WorkerPool differs from ax.worker_pool")
+
+
+def ax_manifests_sha256(rendered: dict[str, str]) -> dict[str, str]:
+    return {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+        for name, text in rendered.items()
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="write the rendered sysctl file")
@@ -1046,6 +1511,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the Substrate build plan as JSON",
     )
+    parser.add_argument(
+        "--ax-plan",
+        action="store_true",
+        help="print only the AX reproducibility plan as JSON",
+    )
+    parser.add_argument(
+        "--ax-manifests-sha256",
+        action="store_true",
+        help="print only the sha256 of each rendered AX manifest, as JSON",
+    )
     args = parser.parse_args(argv)
     try:
         lab = validate_catalog(load_yaml(CONFIG))
@@ -1053,6 +1528,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_sysctl_render(rendered, lab)
         kind_config = render_kind_config(lab)
         validate_kind_config_render(kind_config, lab)
+        ax_manifests = render_ax_manifests(lab)
+        validate_ax_manifests(ax_manifests, lab)
         for path, text in (
             (args.output, rendered),
             (args.kind_config_output, kind_config),
@@ -1069,7 +1546,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.substrate_plan:
         print(json.dumps(substrate_plan(lab), sort_keys=True))
         return 0
-    print("AX lab contract, pins, sysctl and kind configuration renders passed.")
+    if args.ax_plan:
+        print(json.dumps(ax_plan(lab), sort_keys=True))
+        return 0
+    if args.ax_manifests_sha256:
+        print(json.dumps(ax_manifests_sha256(ax_manifests), sort_keys=True))
+        return 0
+    print(
+        "AX lab contract, pins, sysctl, kind configuration and AX manifest "
+        "renders passed."
+    )
     return 0
 
 

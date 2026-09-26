@@ -37,17 +37,26 @@ Codificado ya, por el playbook `ax-lab`:
   su restauración en el registro, una compilación de reserva acotada que
   solo corre si el propietario la autoriza, y su instalación con `ate-setup`
   de upstream, que solo se ejecuta cuando detecta deriva;
+- AX sobre Substrate (ver «AX»): sus cuatro imágenes, sembradas byte a byte
+  desde el laboratorio manual y fijadas por digest, con su copia y su
+  restauración junto a las de Substrate; el parche google/ax#375 versionado
+  con su sha256; el plano de control, sin RBAC ni proxy de OpenAI, aplicado
+  del lado del servidor solo cuando detecta deriva; el WorkerPool; el
+  `--route-timeout` del router; la reparación de los workers tras un
+  reinicio del nodo; la CLI `ax` y las dos herramientas del operador,
+  `ax` y `ax-tarea`;
 - un job de CI que recompila desde el código fijado cada imagen de
-  Substrate y exige que su digest coincida con el fijado (ver
-  «Reproducibilidad»);
-- el contrato `config/ax-lab.yml`, que además fija ya el commit de AX y las
-  imágenes upstream por digest para los cambios siguientes, y la aceptación
-  del nodo privilegiado.
+  Substrate y exige que su digest coincida con el fijado, y otro que
+  recompila de AX la CLI, el binario del runner y las dos imágenes ko (ver
+  «Reproducibilidad» y «Reproducibilidad de AX»);
+- el contrato `config/ax-lab.yml`, con la aceptación del nodo privilegiado.
 
 Sigue siendo manual, fuera del estado reconstruible:
 
-- el plano de control de AX, sus imágenes compiladas en el host y el parche
-  local;
+- la semilla, una sola vez, de las imágenes de AX y de su CLI desde el
+  laboratorio manual (ver «Semilla de AX»): las imágenes del runner y de
+  agentes no se pueden reconstruir byte a byte (ver «Lo que no se puede
+  codificar fielmente»);
 - el laboratorio manual entero (`/opt/ax-lab`, su clúster y su registro)
   hasta que se retire con el procedimiento de «Retirar el laboratorio
   manual»;
@@ -63,40 +72,40 @@ Cambios previstos, en este orden:
    con `capacity_preflight` en el playbook y el procedimiento para retirar
    el laboratorio manual. Solo se fusiona en la ventana del laboratorio (ver
    «Por qué este cambio solo se fusiona en la ventana»).
-3. Este cambio: las imágenes fijadas de Substrate, su copia de seguridad y
-   su restauración, la compilación de reserva, el job de reproducibilidad y
-   la instalación con `ate-setup`, que solo se ejecuta cuando detecta
-   deriva. Separa el arranque de un nodo parado en `node.yml`, que corre
-   cuando el registro ya sirve todas las imágenes. Se fusiona en la misma
-   ventana que el cambio 2.
-4. El plano de control de AX, el parche versionado con su sha256, las
-   imágenes del runner y de agentes, el WorkerPool y el proxy de OpenAI con
-   su secreto.
-5. La prueba de humo, la prueba de reinicio y la versión final de este
-   documento.
+3. Las imágenes fijadas de Substrate, su copia de seguridad y su
+   restauración, la compilación de reserva, el job de reproducibilidad y la
+   instalación con `ate-setup`, que solo se ejecuta cuando detecta deriva.
+   Separa el arranque de un nodo parado en `node.yml`, que corre cuando el
+   registro ya sirve todas las imágenes. Se fusiona en la misma ventana que
+   el cambio 2.
+4. Este cambio: AX sobre Substrate (ver «AX»). Sus imágenes, sembradas y
+   fijadas por digest, el parche versionado con su sha256, el plano de
+   control sin RBAC ni proxy de OpenAI, el WorkerPool, el router, la
+   reparación de los workers, la CLI y las herramientas del operador. Se
+   aplica en su propia ventana, después de la de los cambios 2 y 3, con una
+   prueba de humo (ver «Ventana del cambio 4»).
+5. La prueba de reinicio del nodo, si no se hizo en esa ventana, el paso del
+   laboratorio en `DEPLOYMENT_STATUS.md` a «Aplicado y verificado» y la
+   versión final de este documento.
 
-El cambio 3 ya pone una puerta sobre el registro: sube las imágenes con su
+El cambio 3 pone una puerta sobre el registro: sube las imágenes con su
 límite de 256 MiB aplicado y exige después `oom_kill 0` en el
-`memory.events` de `kind-registry` (ver «Límites y política de reinicio»);
-los cambios 4 y 5 la heredan. El cambio 4 también exige referenciar por
-digest toda imagen que el clúster descargue del registro (ver
-«Exposición»).
+`memory.events` de `kind-registry` (ver «Límites y política de reinicio»).
+El cambio 4 la repite tras subir las de AX y referencia por digest toda
+imagen que el clúster descarga del registro (ver «Exposición»).
 
-Suspender las Tasks de AX solo tiene hoy una orden documentada: el paso 1
-de «Retirar el laboratorio manual», con la CLI `/opt/ax-lab/bin/ax` y
-`HOME=/opt/ax-lab/home`, que el paso 6 de ese mismo procedimiento borra.
-Entre la retirada y el cambio 4 no hay plano de control de AX ni Tasks que
-suspender. El cambio 4 instala la CLI `ax` codificada, con su `HOME`, y
-actualiza las cuatro instrucciones que piden suspenderlas y hoy solo
-cuentan con esa CLI: antes de un reinicio planificado («Límites y política
-de reinicio» y [OPERATIONS.md](OPERATIONS.md), «Reinicios»), en «Recrear
-el clúster» y en el paso 1 de «Si se descarta el laboratorio».
+Las Tasks de AX se listan y se borran con la CLI codificada:
+`sudo ax get tasks -a default` y `sudo ax delete task <nombre> -a default`
+(ver «Herramientas del operador»). `ax-tarea` ya borra las suyas al
+terminar, así que antes de un reinicio planificado solo quedan las creadas
+con `CONSERVAR=1` o a mano; se borran, porque suspender una no la conserva
+entera a través de un reinicio (ver «Redis»).
 
 En una ventana exclusiva (ver «Ventana del laboratorio»): sembrar la copia
-de seguridad desde el laboratorio manual antes de retirarlo, retirarlo,
-fusionar los cambios 2 y 3 y aplicar con `--check` y después de verdad; el
-cambio 4 los sigue, y con él la prueba de humo y el paso del laboratorio en
-`DEPLOYMENT_STATUS.md` a «Aplicado y verificado».
+de seguridad de Substrate y de AX desde el laboratorio manual antes de
+retirarlo, retirarlo, fusionar los cambios 2 y 3 y aplicar con `--check` y
+después de verdad. El cambio 4 se aplica en otra ventana posterior, con su
+prueba de humo; el cambio 5 recoge el resultado en `DEPLOYMENT_STATUS.md`.
 
 ## Por qué kind y no un servicio Swarm
 
@@ -115,14 +124,17 @@ planificación del Swarm y sin tocar sus redes overlay.
 
 | Fichero | Qué fija |
 | --- | --- |
-| `config/ax-lab.yml` | Raíz de instalación, ruta de credenciales, sysctl, commits, binarios, imágenes, clúster, registro y aceptación del nodo privilegiado |
+| `config/ax-lab.yml` | Raíz de instalación, ruta de credenciales, sysctl, commits, parche, binarios, imágenes, clúster, registro, Substrate, AX y aceptación del nodo privilegiado |
 | `config/capacity-profiles.yml` | Grupo `ax-lab` de `host_containers`, solo en el plan activo `organizationweb` |
-| `scripts/validate-ax-lab.py` | Valida el contrato sin red, lo cruza con la capacidad y renderiza el sysctl y la configuración de kind; con `--substrate-plan` imprime el plan de compilación de Substrate |
-| `scripts/manage-ax-lab-substrate.py` | Lee, copia, respalda, restaura y, como reserva, compila las imágenes de Substrate, retira de la copia la entrada de un digest anterior, y ejecuta `ate-setup` acotado |
-| `.github/workflows/ax-lab-reproducibility.yml` | Recompila las imágenes de Substrate desde el commit fijado y exige sus digests |
+| `scripts/validate-ax-lab.py` | Valida el contrato sin red, lo cruza con la capacidad y renderiza el sysctl, la configuración de kind y los manifiestos de AX; con `--substrate-plan` y `--ax-plan` imprime los planes de los jobs de reproducibilidad, y con `--ax-manifests-sha256` el sha256 de cada manifiesto de AX |
+| `scripts/manage-ax-lab-substrate.py` | Lee, copia, respalda y restaura las imágenes de Substrate y, con `--image-set ax`, las de AX; como reserva compila las de Substrate, retira de la copia la entrada de un digest anterior y ejecuta `ate-setup` acotado |
+| `.github/workflows/ax-lab-reproducibility.yml` | Recompila las imágenes de Substrate desde el commit fijado y exige sus digests; de AX, recompila la CLI, el binario del runner y las imágenes ko y exige lo que se puede probar |
 | `ansible/playbooks/ax-lab.yml` | Lock host-global, `capacity_preflight`, rol `ax_lab` y metadatos de despliegue |
-| `ansible/roles/ax_lab/` | Prerrequisitos del host, prueba de propiedad, ciclo de vida del clúster y del registro, imágenes e instalación de Substrate |
+| `ansible/roles/ax_lab/` | Prerrequisitos del host, prueba de propiedad, ciclo de vida del clúster y del registro, imágenes e instalación de Substrate y de AX |
 | `ansible/roles/ax_lab/templates/kind-config.yaml.j2` | Configuración de kind |
+| `ansible/roles/ax_lab/templates/ax/` | Manifiestos de AX y las herramientas del operador `ax` y `ax-tarea` |
+| `images/ax/` | El parche google/ax#375 byte a byte y los manifiestos fijados de las dos imágenes ko |
+| `images/ax-task-runner/`, `images/ax-agents/` | Las entradas con las que el laboratorio manual compiló las imágenes del runner y de agentes, como registro de su procedencia |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -182,6 +194,28 @@ El validador rechaza:
   sin tag y digest;
 - en `ax_lab_substrate_fallback_builds`, una imagen desconocida, repetida o
   sin digest que reproducir;
+- para AX: un parche que no sea `images/ax/google-ax-375.patch` o cuyos
+  bytes no den su sha256; otras imágenes que las cuatro revisadas o sin
+  `sha256:<64 hex>`; un manifiesto ko versionado cuyos bytes no den el
+  digest fijado; un tag que no empiece por los 7 primeros caracteres del
+  commit de AX o que diga `latest`; otra copia de la CLI que
+  `/var/backups/dockerswarm/ax-lab/binaries/ax`; otro bucket de snapshots
+  que `gs://ate-snapshots/ax/`; un volumen de Redis fuera de 256 a
+  4 096 MiB o un intervalo de guardado fuera de 10 a 3 600 s; un WorkerPool
+  en otro espacio de nombres, con más CPU pedida que su límite, con un
+  límite de CPU que no deje 500m del nodo o con más memoria que el límite
+  del nodo menos `node_platform_reserve_mib` (que no baja de 1 792 MiB); y
+  un `--route-timeout` que no sea de minutos u horas enteros o que pase de
+  2 h;
+- en los manifiestos de AX renderizados, cualquier objeto distinto del
+  inventario revisado (en particular un Secret, un Role, un ClusterRole o
+  un Ingress), un Service que no sea ClusterIP o abra un puerto del nodo,
+  un pod que monte un token de la API de Kubernetes, use un espacio de
+  nombres del host, un `hostPath` o un `hostPort`, o ejecute otra imagen que
+  la fijada, una imagen `ko://`, un Redis sin RDB en su volumen, un
+  controlador sin su bucket o con otro token proyectado que el de
+  Substrate, NetworkPolicies distintas de las revisadas y un WorkerPool
+  distinto de `ax.worker_pool`;
 - cualquier clave o valor con forma de credencial, en cualquier parte del
   fichero.
 
@@ -442,8 +476,8 @@ memoria anónima era de 12,6 MiB, y su uso sin esa caché estuvo entre 17 y
 killer (`memory.max` en la [documentación de cgroup
 v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)), así que 256 MiB
 dejan más de 200 MiB de caché a un proceso que usa menos de 30. Los cambios
-4 y 5 lo comprobarán: subirán las imágenes con el límite ya aplicado y
-exigirán después `oom_kill 0` en
+3 y 4 lo comprueban: suben las imágenes con el límite ya aplicado y exigen
+después `oom_kill 0` en
 `/sys/fs/cgroup/system.slice/docker-<ID>.scope/memory.events`, con el ID que
 da `docker container inspect --format '{{.ID}}' kind-registry`.
 
@@ -459,11 +493,12 @@ hasta que, si se quiere de vuelta, se aplica `ax-lab`: el playbook pasa
 sirve cada imagen fijada de Substrate (ver «Imágenes fijadas»), arranca el
 nodo, comprueba que corre con exactamente sus límites, espera a que
 `/readyz` de la API responda `ok` y a que el nodo esté `Ready`, vuelve a
-aplicar `proxy_arp` y `proxy_ndp` y espera a que Substrate esté listo. El
-nodo se arranca en `node.yml`, después del registro y de sus imágenes, así
-que un nodo parado no detiene nada de lo anterior. Antes de un reinicio
-planificado del host o de Docker se suspenden las Tasks de AX, como en el
-paso 1 de «Retirar el laboratorio manual». Si `ax-lab` se niega a
+aplicar `proxy_arp` y `proxy_ndp`, espera a que Substrate esté listo y
+recrea los workers de AX anteriores al arranque (ver «Workers tras un
+reinicio»). El nodo se arranca en `node.yml`, después del registro y de sus
+imágenes, así que un nodo parado no detiene nada de lo anterior. Antes de un
+reinicio planificado del host o de Docker se borran las Tasks de AX que
+queden (ver «Redis»). Si `ax-lab` se niega a
 arrancarlo porque la prueba de propiedad ya no coincide, el laboratorio
 sigue parado, sin detener nada más, hasta que se recrea (ver «Recrear el
 clúster»).
@@ -527,7 +562,7 @@ cada imagen, que ko construye de `./cmd/<nombre>` para una sola plataforma
 | `atelet` | `sha256:8e88c4e0…0f7b` | DaemonSet `atelet-67253354` |
 | `atenet` | `sha256:929ca468…fcd9` | `atenet-router` y `atenet-egress` |
 | `podcertcontroller` | `sha256:2baed2f1…8f99` | `podcertificate-controller` |
-| `ateom-gvisor` | `sha256:fdd1d0ad…92e7` | Imagen de los workers del WorkerPool (cambio 4) |
+| `ateom-gvisor` | `sha256:fdd1d0ad…92e7` | Imagen de los workers del WorkerPool (ver «WorkerPool y capacidad dentro del nodo») |
 | `ate-setup` | `sha256:43c9e2db…1098` | El instalador (ver «Reproducibilidad») |
 
 <!-- markdownlint-enable MD013 -->
@@ -665,8 +700,8 @@ Solo compila una imagen que cumpla todo esto:
 - el nodo no está en marcha: la compilación corre antes de que
   `cluster.yml` cree o arranque el nodo, y usa su presupuesto (registro
   256 MiB más compilación 3 072 MiB, dentro de los 3 840 MiB del grupo
-  `ax-lab`). Si el nodo corre, el apply se detiene: se suspenden las Tasks
-  de AX y se para el nodo con el lock host-global,
+  `ax-lab`). Si el nodo corre, el apply se detiene: se borran las Tasks de
+  AX que queden (ver «Redis») y se para el nodo con el lock host-global,
   `sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run
   --operation ax-lab-stop -- /usr/bin/docker stop --time 60
   kind-control-plane`, y se aplica de nuevo. `--check` ya lo anuncia así en
@@ -908,9 +943,8 @@ digests, la versión y el inventario, y exige recrear el clúster (ver
   sigue acotándolo.
 - La compilación escribe en un layout OCI en lugar de subir la imagen, sin
   SBOM, y el registro guarda los nombres de `--base-import-paths`.
-- La reparación de las IP de los workers tras reiniciar el nodo es del
-  cambio 4, con la regla de recrear cada pod de worker anterior al arranque
-  del nodo.
+- La reparación de las IP de los workers tras reiniciar el nodo está en
+  «Workers tras un reinicio».
 
 ### Salida a Internet
 
@@ -939,6 +973,499 @@ y una imagen que compilar, no promete la compilación: informa de que el
 apply se detendrá y de cómo parar el nodo (ver «Compilación de reserva»).
 Un contenedor transitorio que quede de otra ejecución lo detiene igual que
 al apply (ver «Contenedores transitorios»).
+
+## AX
+
+AX se instala en el commit fijado en `sources.ax` (`f009cc8…`) con el parche
+de google/ax#375 (ver «Parche local»), sobre el Substrate de la sección
+anterior. Las mismas tres reglas que para Substrate, más una:
+
+- un apply normal del host nunca compila AX: sus imágenes y su CLI llegan
+  sembradas, una sola vez, desde el laboratorio manual (ver «Semilla de
+  AX»), y el rol solo las copia, las restaura y las verifica por digest;
+- no hay compilación de reserva de AX: una imagen que falte en la copia y
+  en el registro detiene el apply;
+- el plano de control y el WorkerPool se aplican del lado del servidor y
+  solo cuando `kubectl diff --server-side` o el fichero de estado detectan
+  deriva (ver «Plano de control de AX»);
+- ningún pod de AX recibe un token de la API de Kubernetes ni permiso RBAC
+  alguno, y nada de AX se publica (ver «Exposición»).
+
+### Imágenes de AX
+
+`config/ax-lab.yml` fija en `ax.images` el digest del manifiesto de una
+sola plataforma (`linux/amd64`) de cada imagen, y el registro local las
+guarda como `<nombre>:f009cc8-issue375` (`ax.tag`):
+
+<!-- markdownlint-disable MD013 -->
+
+| Imagen | Digest | Origen en el laboratorio manual | Uso |
+| --- | --- | --- | --- |
+| `ax-controller` | `sha256:2a744737…51d2` | ko, `ax-controller-7ebf6094…` | Deployment `ax-controller` |
+| `ax-server` | `sha256:621ce24e…67f1` | ko, `ax-server-340c3583…` | Deployment `ax-server` |
+| `ax-task-runner` | `sha256:a5f9ee65…0bd4` | buildx, índice `5d536baa…` | Base de la imagen de agentes |
+| `ax-agents` | `sha256:d136aebb…2682` | buildx, índice `f82e9848…` | Imagen de cada Task de `ax-tarea` |
+
+<!-- markdownlint-enable MD013 -->
+
+Los dos primeros son exactamente los manifiestos que ko subió, y sus bytes
+están en `images/ax/manifests/`: el validador exige que den el digest
+fijado. De los otros dos, el laboratorio manual subió un índice de buildx
+con dos entradas: el manifiesto `linux/amd64` y una atestación de
+procedencia (`vnd.docker.reference.type: attestation-manifest`). El gestor
+solo copia manifiestos de una plataforma, así que se fija ese manifiesto y
+no el índice; Substrate solo exige que la imagen de una Task lleve `@`
+(`cmd/ateapi/internal/controlapi/actor_template.go`, líneas 271 a 278, en
+el commit fijado), y `ax-tarea` la referencia por ese digest. El manifiesto
+es el mismo, byte a byte; la atestación se queda en la evidencia de la
+retirada.
+
+Como las de Substrate, se mueven solo por la API HTTP del registro,
+verificando cada blob, y comparten la copia de seguridad de
+`/var/backups/dockerswarm/ax-lab/images` (unos 480 MB más: la de agentes
+ocupa 432 MiB, con una capa de 241 MiB, y comparte sus ocho primeras capas
+con la del runner). En cada apply, `ax_images.yml`
+copia a la copia las que le falten, restaura en el registro las que falten
+o cuyo tag apunte a otro manifiesto, las comprueba todas y vuelve a exigir
+`oom_kill 0` en el `memory.events` de `kind-registry`, porque la capa de
+241 MiB se sube con el límite de 256 MiB aplicado. Todo antes de arrancar
+el nodo.
+
+La CLI `ax` es un binario del host, no una imagen: se guarda, una sola
+vez, en `/var/backups/dockerswarm/ax-lab/binaries/ax` (`root:root 0600`, en
+un directorio `0700`), y el rol la instala en
+`/opt/dockerswarm/ax-lab/bin/ax` (`root:root 0755`) solo si su sha256
+difiere, después de exigir que la copia tenga el sha256 fijado
+(`ax.cli_sha256`). Está enlazada dinámicamente (`CGO_ENABLED=1`, `Makefile`
+de AX, línea 36) contra la glibc 2.41 de la imagen `golang:1.27.1`; el host
+tiene la 2.43.
+
+### Semilla de AX
+
+Se siembra en la ventana de los cambios 2 y 3, con el laboratorio manual
+todavía en marcha (ver «Ventana del laboratorio»): son copias inofensivas,
+y la retirada borra las únicas fuentes. Como la semilla precede a la fusión
+del cambio 4, se ejecuta desde un clon limpio en su commit aprobado (en el
+clon operativo, `git checkout --detach <commit>`), que es el que conoce
+`--image-set ax`. `--source-naming ko-md5` lee las imágenes de ko del
+repositorio con el md5 de su ruta de importación en `github.com/google/ax`;
+las de buildx se leen por su nombre:
+
+<!-- markdownlint-disable MD013 -->
+
+```bash
+sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py export \
+  --image-set ax \
+  --registry 127.0.0.1:5001 \
+  --layout /var/backups/dockerswarm/ax-lab/images \
+  --tag f009cc8-issue375 \
+  --source-naming ko-md5 \
+  --image=ax-controller=sha256:2a744737051c6e877213e25f49ff2408b3399e8f3176f4e203df9c515fc351d2 \
+  --image=ax-server=sha256:621ce24e8887a6fcbf4d4b31da1dc005e0c54210bc28275a912640b97c2667f1
+sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py export \
+  --image-set ax \
+  --registry 127.0.0.1:5001 \
+  --layout /var/backups/dockerswarm/ax-lab/images \
+  --tag f009cc8-issue375 \
+  --image=ax-task-runner=sha256:a5f9ee65df155af434ecf06cb79be4beb7d09b2621d05b38730c682925220bd4 \
+  --image=ax-agents=sha256:d136aebb3f8393e4c994ecd7e4dd4296d5eea7b38e2a32d8087776dae9bb2682
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation ax-lab-seed -- \
+  /usr/bin/install -d -o root -g root -m 0700 \
+  /var/backups/dockerswarm/ax-lab/binaries
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation ax-lab-seed -- \
+  /usr/bin/install -o root -g root -m 0600 /opt/ax-lab/bin/ax \
+  /var/backups/dockerswarm/ax-lab/binaries/ax
+sudo -- sha256sum /var/backups/dockerswarm/ax-lab/binaries/ax
+```
+
+<!-- markdownlint-enable MD013 -->
+
+La salida de cada `export` dice `exported` para cada imagen, y
+`image-status` con `--image-set ax`, el mismo `--layout`, el mismo `--tag` y
+las cuatro `--image` tiene que decir `complete` para las cuatro. El
+`sha256sum` de la CLI tiene que ser
+`acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7`, el de
+`ax.cli_sha256`. Solo entonces se sigue con la retirada.
+
+### Reproducibilidad de AX
+
+El job `reproduce-ax` de `.github/workflows/ax-lab-reproducibility.yml`
+prueba en la CI pública lo que se puede probar de esas pins, sin publicar
+nada ni usar credenciales:
+
+1. lee de `validate-ax-lab.py --ax-plan` el commit de AX, el parche, el de
+   Substrate, la imagen `golang:1.27.1` y la base de ko;
+2. clona google/ax con todos sus tags (el binario lleva la
+   pseudo-versión `v0.3.1-0.20260924134026-f009cc81c9a5+dirty`, que Go
+   deriva del tag `v0.3.0`) y exige ese commit, el árbol limpio y
+   `git describe --tags --abbrev=0` igual a `v0.3.0`;
+3. ejecuta `go test ./...` en el commit sin parche como línea base;
+4. comprueba el sha256 del parche, lo aplica con `git apply --index` (sin
+   commit: los binarios del laboratorio manual llevan `vcs.modified=true`)
+   y exige que `git diff --cached` dé ese mismo sha256;
+5. recompila la CLI y el binario del runner con las opciones exactas del
+   `Makefile` (líneas 36 y 49) en la imagen `golang:1.27.1` fijada, y exige
+   sus sha256 (`ax.cli_sha256` y `ax.task_runner_binary_sha256`);
+6. recompila con ko v0.19.1 (el de `hack/tools/ko/go.mod` de Substrate,
+   línea 89) `ax-controller` y `ax-server`, con la base
+   `cgr.dev/chainguard/static@sha256:41e17ed8…` (`ax.ko_base_image`), y
+   exige que cada manifiesto sea igual al fijado de `images/ax/manifests`
+   salvo la anotación `org.opencontainers.image.base.name`, que ko escribe
+   con la referencia de la base: `…:latest` en el laboratorio manual,
+   `…@sha256:…` en la CI. La configuración y las capas son las mismas;
+7. vuelve a ejecutar `go test ./...` con el parche y falla si aparece un
+   paquete que no fallaba ya sin él.
+
+### Lo que no se puede codificar fielmente
+
+- Las imágenes del runner y de agentes. Se compilaron con buildx a partir
+  de `python:3.12-slim` y `node:24-trixie-slim` por digest, pero con
+  paquetes de apt de los espejos vivos (versiones `+deb13uN` que
+  desaparecen), `google-antigravity==0.1.18` sin hashes de sus 44
+  dependencias, `npm ci` (con integridad en el lock, pero con el script de
+  instalación de Claude Code), fechas de fichero de la compilación y la
+  atestación de procedencia. Recompilarlas da otros digests: solo se
+  siembran. Sus entradas exactas están en `images/ax-task-runner/` y
+  `images/ax-agents/` como registro de su procedencia (con sus sha256 en
+  `tests/test_ax_lab_ax_contract.py`), y reconstruirlas sería un cambio
+  revisado con pins nuevos. Lo que sí se prueba es el binario del runner
+  que llevan dentro (paso 5 de «Reproducibilidad de AX»).
+- La copia de las imágenes vive en el mismo host: perder el host es
+  perderlas, igual que las de Substrate (ver «Límites conocidos»).
+- La prueba de ko depende de que `cgr.dev` siga sirviendo el digest de la
+  base; si deja de hacerlo, la prueba se queda en los binarios y las copias
+  sembradas siguen siendo la referencia.
+- La sesión de Codex es estado: su refresh token es de un solo uso (ver
+  «Herramientas del operador»).
+- Las credenciales de las Tasks quedan en reposo en Redis, en las
+  `ActorTemplate` y en los snapshots, porque AX no tiene referencias a
+  secretos (google/ax#348; ver «Credenciales»).
+- Los túneles de la CLI (google/ax#376) se contienen con los scopes de las
+  herramientas, pero no se arreglan; la reparación de los workers es un
+  rodeo; y `TaskSpec.resources` no se aplica (google/ax#369).
+
+### Plano de control de AX
+
+`ansible/roles/ax_lab/templates/ax/ax-system.yaml.j2` es
+`deploy/redis.yaml`, `deploy/ax-server.yaml` y `deploy/ax-controller.yaml`
+de upstream en el commit fijado con estas desviaciones, y ninguna más (el
+validador y `tests/test_ax_lab_ax_contract.py` las fijan campo a campo):
+
+- imágenes por tag y digest fijado en lugar de las rutas `ko://`;
+- sin el ClusterRole ni el ClusterRoleBinding de upstream, que conceden al
+  controlador `get`, `list` y `watch` de todos los Secrets del clúster
+  (`deploy/ax-controller.yaml`, líneas 26 a 46): su única llamada a la API
+  de Kubernetes lee el Secret `gemini-api-secret`, que este laboratorio no
+  crea, y sin token se queda en cadena vacía;
+- `automountServiceAccountToken: false` en la ServiceAccount del
+  controlador y en los tres pods. El controlador conserva su token
+  proyectado para Substrate (audiencia `api.ate-system.svc`, 7 200 s), que
+  es otro volumen;
+- `AX_SNAPSHOTS_BUCKET=gs://ate-snapshots/ax/`, el bucket de rustfs de
+  Substrate, que el laboratorio manual puso con `kubectl set env`;
+- Redis con un volumen y solo snapshots RDB (ver «Redis»);
+- `type: ClusterIP` escrito en los dos Services, aunque es el valor por
+  defecto: así su dueño es el gestor de campos `ax-lab` y el diff del
+  servidor ve que otra mano los publique. `kubectl apply --server-side` deja
+  en paz un campo del que no es dueño, así que un NodePort puesto con
+  `kubectl patch` sobre un tipo implícito no sería deriva;
+- dos NetworkPolicies de entrada en `ax-system` (ver «Exposición»);
+- las cantidades de CPU en forma canónica (`"1"` en lugar de `1000m`), para
+  que el servidor no vea una diferencia que no hay.
+
+`templates/ax/ax-workers.yaml.j2` añade el espacio de nombres `ax-workers`
+y el WorkerPool (ver «WorkerPool y capacidad dentro del nodo»). Los dos
+espacios de nombres llevan `com.apptolast.managed-by: ansible`.
+
+El validador renderiza las dos plantillas como el lookup `template` de
+Ansible e imprime el sha256 de cada una con `--ax-manifests-sha256`; el rol
+las renderiza en el controlador y exige esos mismos sha256 antes de
+escribir nada. Nunca se escriben en el host: van por la entrada estándar a
+`kubectl`.
+
+`ax_read.yml` compara lo fijado con el clúster con
+`kubectl diff --server-side --field-manager ax-lab --force-conflicts`: el
+código 0 es que no hay diferencia, el 1 que la hay y cualquier otro, error.
+Si falta un espacio de nombres no hay diff posible y cuenta como deriva.
+Solo con deriva, `ax.yml`:
+
+1. escribe `installing` en `/opt/dockerswarm/ax-lab/state/ax.json`;
+2. aplica `ax-system.yaml` con `kubectl apply --server-side` y el mismo
+   gestor de campos, espera el despliegue de `ax-redis`, `ax-server` y
+   `ax-controller` y exige que cada pod de `ax-controller` que haya
+   arrancado este apply (uno cuyo UID no existía antes y que no se está
+   borrando) haya escrito «starting AX task worker»
+   (`internal/controller/worker.go`, línea 68): no tiene sonda de
+   preparación y los eventos publicados antes de suscribirse se pierden
+   (google/ax#354). Lo escribe una vez, al arrancar, así que se leen los
+   primeros 64 KiB del log de ese pod, que no se muestra. Un controlador
+   que ya corría, como con una deriva solo de `state` o de
+   `ax-workers.yaml`, no se vuelve a leer: #354 solo afecta a lo que se
+   publica justo tras un arranque, y su log puede haber crecido más allá de
+   cualquier lectura acotada;
+3. aplica `ax-workers.yaml`.
+
+Siempre, haya deriva o no: el `--route-timeout` del router (ver «Router»),
+la reparación de los workers (ver «Workers tras un reinicio») y la espera a
+que el WorkerPool esté listo. Después vuelve a leerlo todo y exige que no
+quede diferencia, que el router tenga su argumento, que no quede ningún
+worker viejo, que los espacios de nombres que ya existían sean los mismos
+objetos y que el nodo nunca haya llegado a su límite de memoria (ver
+«WorkerPool y capacidad dentro del nodo»); solo entonces escribe
+`installed` con los UID de los dos espacios de nombres. Un segundo apply
+informa `changed=0`. Ninguna reinstalación de Substrate ni ningún cambio de
+AX corre mientras un `ax-tarea` o una orden `ax` estén en marcha (sus
+scopes `ax-tarea-*` y `ax-cli-*`): `ate-setup` reinicia el router, que
+cortaría el `ax ssh` de la tarea. El apply se detiene antes y hay que
+repetirlo cuando terminen. Arrancar un nodo parado o volver a poner
+`proxy_arp` no lo impide: con el nodo parado no corre ninguna tarea.
+
+Todo `kubectl` del rol usa el kubeconfig y el `HOME` del laboratorio,
+`--context kind-kind` y `--request-timeout 10s`; las esperas son sondeos
+acotados, nunca un `watch`.
+
+### Propiedad de AX
+
+Como con Substrate, los espacios de nombres de AX nunca se adoptan:
+
+- si `ax-system` o `ax-workers` existen sin un fichero de estado de este
+  mismo nodo (el ID del contenedor), el rol se detiene. Así se detiene ante
+  los del laboratorio manual, que se borran con él;
+- si el fichero de este nodo registró un UID y el espacio de nombres vivo
+  tiene otro, alguien lo recreó a mano, y el rol se detiene;
+- si falta uno que el fichero registró, se vuelve a crear: no guarda nada
+  que no se pueda recrear;
+- `installing` del mismo nodo se reanuda: el apply vuelve a aplicar.
+
+Para retirar AX o recrear sus espacios de nombres, con el mismo lock:
+`/opt/dockerswarm/ax-lab/bin/kubectl delete namespace ax-workers ax-system`
+con el kubeconfig del laboratorio, y borrar
+`/opt/dockerswarm/ax-lab/state/ax.json`.
+
+### Redis
+
+Upstream despliega Redis sin volumen (`deploy/redis.yaml`, líneas 38 a
+50), así que el reinicio del nodo del 2026-09-25 borró las cuatro Tasks del
+laboratorio manual mientras Substrate conservaba sus plantillas, sus
+actores y sus snapshots, sin nadie que los borrara. El rol le da un
+PersistentVolumeClaim `ax-redis-data` de 1 024 MiB en la StorageClass
+`standard` de kind (`local-path`, en el volumen anónimo `/var` del nodo),
+estrategia `Recreate` y `--save 60 1 --appendonly no`:
+
+- solo RDB, no AOF: AOF conserva cada `SET`, token incluido, hasta que se
+  reescribe, y con estos tamaños casi nunca se reescribiría. Con RDB, una
+  Task borrada desaparece del disco en el siguiente guardado, en 60 s;
+- tras un reinicio, las Tasks que existían siguen ahí y borrarlas borra de
+  verdad su actor y sus plantillas. Una Task que estaba en marcha muestra
+  un estado viejo, porque el controlador solo reacciona a eventos: se
+  borra;
+- el guardado puede perder hasta 60 s, y un evento entregado pero no
+  confirmado en el momento del reinicio se pierde (cada arranque crea un
+  consumidor nuevo que solo lee eventos nuevos,
+  `internal/store/redis/store.go`, líneas 767 a 775);
+- el volumen se pierde al recrear el clúster, como todo lo demás.
+
+`ax-tarea` borra sus Tasks al terminar, así que antes de un reinicio
+planificado del host o de Docker solo quedan las de `CONSERVAR=1` o las
+creadas a mano: se listan con `sudo ax get tasks -a default` y se borran
+con `sudo ax delete task <nombre> -a default`.
+
+### WorkerPool y capacidad dentro del nodo
+
+AX no crea WorkerPools (sus `ActorTemplate` no llevan selector de worker,
+google/ax#368): el laboratorio declara uno, `ax-workers/ax`, con
+`ax.worker_pool`:
+
+- 1 réplica con 1 536 MiB pedidos y de límite y 250m a 1 500m de CPU, la
+  imagen `ateom-gvisor` fijada de Substrate, `sandboxClass: gvisor` y el
+  selector de nodo `ate.dev/substrate-version: "67253354"`;
+- una Task a la vez: `ax-tarea` toma un lock y el único worker solo tiene
+  sitio para un actor. El actor dorado que Substrate crea para cada
+  plantilla también corre en un worker del pool y se suspende antes de que
+  la plantilla esté lista
+  (`cmd/ateapi/internal/controlapi/template_reconciler.go` de Substrate,
+  líneas 183 a 189 y 240 a 245), así que basta uno.
+
+El kubelet ve toda la memoria del host, no los 3 584 MiB del contenedor, y
+nada dentro del nodo impide que los límites de los workers pasen del límite
+del nodo. El validador exige por eso:
+
+- `réplicas × memoria ≤ 3 584 − node_platform_reserve_mib`, con la reserva
+  de la plataforma en 1 792 MiB, que el validador no deja bajar: el
+  2026-09-25 el nodo medía 1 214 MiB de memoria anónima y 82 MiB de kernel,
+  más la caché caliente de etcd, los binarios y las imágenes. Dos workers de
+  1 536 MiB, como en el laboratorio manual, se pasarían en 1 280 MiB;
+- `réplicas × límite de CPU ≤ límite de CPU del nodo − 500m`: con el nodo
+  en 2 CPU, los workers juntos nunca dejan sin CPU a etcd, la API y
+  Substrate. Un worker tiene hasta 1 500m; dos, 750m cada uno.
+
+Tras cada apply, el rol lee
+`/sys/fs/cgroup/system.slice/docker-<ID>.scope/memory.events.local` del
+nodo y exige `oom 0`: el nodo nunca se quedó sin memoria en su propio
+límite. Según `memory.events` en la documentación de cgroup v2 del kernel,
+`oom` cuenta las veces que una reserva iba a fallar en ese límite; llegar a
+él y recuperar memoria, por ejemplo caché, cuenta en `max`, que no se
+exige. El fichero local no cuenta a un worker que llegue al suyo, que es lo
+esperado.
+
+### Router
+
+`atenet-router` corta a los 10 s cada petición de la ruta de un actor
+(`defaultRouteTimeout`, `cmd/atenet/internal/router/xds.go`, línea 143, en
+el Substrate fijado), y una sesión de `ax ssh` con un agente dura mucho más:
+en el laboratorio manual, Codex agotó ese tiempo. El rol añade
+`--route-timeout=1h` (`ax.router_route_timeout`,
+`cmd/atenet/internal/router/cmd.go`, línea 73) a los argumentos del
+contenedor `atenet-router` con un parche JSON cuyas
+operaciones `test` fallan si el contenedor o el argumento ya no están donde
+se leyeron, y espera su despliegue. `ate-setup` es dueño de esa lista y la
+reescribe en cada reinstalación de Substrate, así que el apply siguiente la
+vuelve a corregir. Más de un `--route-timeout` detiene el apply: solo lo
+pone una edición a mano. Upstream avisa de que el drenaje no crece con él
+(`manifests/ate-install/atenet-router.yaml`, líneas 176 a 183): un turno
+largo no sobrevive a un reinicio del router.
+
+### Workers tras un reinicio
+
+Tras un reinicio del nodo, Substrate conserva la IP antigua de cada worker:
+un Worker se llama como el UID de su pod y su IP no cambia nunca
+(`cmd/atecontroller/internal/workersync/syncer.go`, línea 67 y líneas 302
+a 308), pero el pod vuelve con otra. Una Task en ese worker arranca y sale
+a Internet, pero nadie entra en ella: su espacio de trabajo nunca pasa a
+listo y `ax ssh` falla. El 2026-09-25 el laboratorio manual estuvo así unas
+cinco horas, con 124 avisos «registered worker IP disagrees with its pod»
+del `ate-controller` y ninguna alerta.
+
+La regla, en `ax_read.yml` y `workers.yml`: todo pod con la etiqueta
+`ate.dev/worker-pool`, en cualquier espacio de nombres, cuyo
+`creationTimestamp` sea anterior al `State.StartedAt` del contenedor del
+nodo se borra, y su WorkerPool crea otro. Docker da `StartedAt` con
+nanosegundos y Kubernetes el `creationTimestamp` en segundos enteros, así
+que un pod creado en el mismo segundo del arranque se conserva: no puede
+existir antes de la API. `--check` informa de cuántos se recrearían; el
+apply los borra y espera hasta que no quede ninguno y el WorkerPool esté
+listo. Solo ocurre tras un reinicio del nodo, cuando todo actor de esos
+workers ya murió. `proxy_arp` y `proxy_ndp`, la otra mitad de la
+reparación, son de `node.yml`.
+
+### Herramientas del operador
+
+El rol instala dos órdenes, como `root:root 0750` y comprobadas con
+`sh -n`, y se niega a escribir sobre un enlace simbólico (el laboratorio
+manual deja `/usr/local/sbin/ax-tarea` como enlace, así que la retirada lo
+borra). Las dos se ejecutan solo como root.
+
+`sudo ax <argumentos>` (`/usr/local/sbin/ax`) es la CLI de AX con el
+kubeconfig, el `HOME` y el `PATH` del laboratorio. La CLI de google/ax deja
+vivos sus port-forward a `ax-server`, que no tiene autenticación
+(google/ax#376), y al router, en la loopback y reutilizables por cualquier
+usuario local, y los recuerda por PID en `$AX_HOME/tunnels`. La orden corre
+cada ejecución en un scope de systemd propio (`ax-cli-<pid>-<hora>`) con un
+`AX_HOME` temporal bajo `/run`, para el scope al terminar y borra ese
+directorio: no queda ningún túnel abierto. También con `Ctrl+C`, un `kill` o
+al cerrarse la terminal: el port-forward de la CLI va en su propio grupo de
+procesos (`internal/tunnel/tunnel.go`, líneas 241 y 326) y no recibe la
+señal, así que las trampas de `INT`, `TERM` y `HUP` esperan a que la CLI
+termine, paran el scope y salen con 130, 143 o 129.
+
+`sudo ax-tarea <repo> "<instrucción>" [claude|codex]`
+(`/usr/local/sbin/ax-tarea`) crea un Workspace con el repositorio y una
+Task con la imagen `ax-agents` fijada, ejecuta el agente con `ax ssh` y lo
+borra todo al terminar. Opcionales: `RAMA` (`main`), `TURNOS` (20, solo
+Claude), `CPU` (1) y `MEMORIA` (`1Gi`), que AX pide pero no aplica
+(google/ax#369: el techo real es el del worker, 1 500m y 1 536 MiB), y
+`CONSERVAR=1`. Es la herramienta del laboratorio manual codificada, tal
+como estaba en el host el 2026-09-25 a las 23:17Z, con:
+
+- el mismo scope de systemd y `AX_HOME` temporal que `ax`, con las mismas
+  trampas de `INT`, `TERM` y `HUP` fuera del scope: con `Ctrl+C`, la parte
+  de dentro borra antes la Task y solo después se para el scope con sus
+  túneles;
+- solo repositorios `https://`, sin credenciales en la URL ni comillas; la
+  rama, `CPU`, `MEMORIA` y el directorio del repositorio validados, y sin
+  saltos de línea, porque acaban dentro del YAML de la Task o del `sh -c`
+  del sandbox; `TURNOS` entero;
+- un `flock` en `/run/lock/ax-tarea.lock`: una sola a la vez; y se niega a
+  empezar mientras exista una marca `/run/lock/dockerswarm-*.marker`, es
+  decir, junto a un apply o una operación directa bajo el lock host-global.
+  El playbook, a su vez, ni reinstala Substrate ni cambia AX mientras corre
+  una (ver «Plano de control de AX»);
+- la autorreparación del laboratorio manual antes de crear la Task:
+  `proxy_arp` y `proxy_ndp` si el nodo los perdió y, si algún pod del pool
+  en `ax-workers` es anterior al arranque del nodo, borra todos los del
+  pool en ese espacio de nombres y espera a su despliegue. El playbook, en
+  cambio, borra solo los anteriores al arranque, en cualquier espacio de
+  nombres. Los dos solo actúan tras un reinicio del nodo, cuando ningún
+  actor sigue vivo;
+- el token solo en la entrada estándar de `ax apply -f -`, nunca en un
+  argumento; sin `set -x`;
+- Claude con `--setting-sources user --strict-mcp-config` (Claude Code
+  2.1.274, el de `images/ax-agents/package.json`): un
+  `.claude/settings.json` o un `.mcp.json` del repositorio clonado no
+  pueden añadir hooks, permisos ni servidores MCP junto al token;
+- `trap` de salida, más `INT`, `TERM` y `HUP`, que borran la Task y el
+  Workspace; y como `ax delete` solo los marca, espera hasta 90 s a que
+  desaparezcan. Solo cuenta como borrado el `NotFound` de `ax-server`
+  (`internal/server/server.go`, líneas 83-84 y 315-316): un túnel o un
+  servidor caídos también hacen fallar `ax get`. Si no, avisa con la orden
+  para reintentar. Con `CONSERVAR=1` avisa de que el token sigue en la
+  definición de la Task;
+- para Codex, la copia de vuelta de su sesión (abajo).
+
+Diferencias con la del laboratorio manual: las rutas de
+`/opt/dockerswarm/ax-lab`, la imagen por el digest de su manifiesto, el
+texto de uso, la validación de `RAMA`, `CPU`, `MEMORIA` y la URL, la marca
+del lock host-global, el aviso de `CONSERVAR=1`, el mensaje de los límites,
+la trampa de `HUP` dentro del scope, el borrado confirmado por `NotFound`,
+la orden de reintento con `-a default` y la copia de vuelta de Codex.
+
+La sesión de Codex (`/etc/dockerswarm/ax/codex/auth.json`) lleva un refresh
+token de un solo uso: el binario de Codex fijado rechaza uno ya usado («your
+refresh token was already used»). La Task recibe la sesión del host, y si
+Codex la renueva dentro del sandbox, la del host deja de valer para la
+siguiente. `ax-tarea` la lee de vuelta del sandbox con `ax ssh` (de
+`$CODEX_HOME/auth.json`, `/root/.codex` en la imagen de agentes), una sola
+vez: al terminar Codex o, si la tarea llegó a estar lista, antes de
+borrarla tras una interrupción. Lee como mucho 64 KiB y un byte, a un
+fichero `0600` de su `AX_HOME`: un `auth.json` que fuera un flujo sin fin no
+llena `/run`, que es memoria del host. Solo sustituye la del host, de forma
+atómica (fichero temporal `0600` en el mismo directorio, `fsync` y
+`rename`), si:
+
+- la del host es un fichero regular `0600` de root, sin enlaces, y las dos
+  miden como mucho 64 KiB y son JSON sin claves repetidas;
+- tienen las mismas claves, también dentro de `tokens`, y ningún token
+  vacío;
+- `tokens.account_id` y el resto de campos, salvo los tokens y
+  `last_refresh`, no cambian, y el refresh token es otro;
+- `last_refresh` es una fecha RFC 3339 en UTC posterior a la del host y
+  de esta tarea: ni anterior a su creación ni futura, con 2 minutos de
+  margen. Así un fichero con una fecha lejana no bloquea las copias de
+  vuelta siguientes.
+
+Estas comprobaciones evitan copiar por error otra sesión o un fichero a
+medias, no a un sandbox hostil: su código tiene la sesión entera y puede
+escribir un `auth.json` con el `account_id` del host y tokens suyos, que
+serían la sesión de las siguientes tareas de Codex (ver «Límites
+conocidos»). Si algo no cuadra, o no se puede leer, la del host no se toca
+y se avisa. Nunca se imprime ningún valor.
+
+No se lanzan Tasks durante las ventanas de medida del Observatorio: los
+sandboxes de gVisor inundan su auditoría de `ptrace`.
+
+### Modo check de AX
+
+Con `--check`, el rol lee las imágenes de AX en el registro y en la copia,
+y AX en el clúster si el nodo corre y Substrate coincide con lo fijado,
+con las mismas comprobaciones de propiedad que el apply, e informa de qué
+copiaría o restauraría, si aplicaría AX y por qué (`state`, un manifiesto o
+un espacio de nombres), si pondría el `--route-timeout`, cuántos workers
+recrearía y si el apply se detendría por un `ax-tarea` o una orden `ax` en
+marcha, con Substrate o AX por cambiar. Los
+módulos `copy` y `template` de `ax_host.yml` informan de si instalarían la
+CLI o las herramientas.
 
 ## Capacidad
 
@@ -985,9 +1512,10 @@ ni reserva de memoria, y el registro no tiene ningún límite. Fusionar este
 cambio con el laboratorio manual todavía en el host detendría cualquier
 apply salvo `ax-lab`, y el propio `ax-lab` se negaría a tocar un nodo que no
 creó. Por eso los cambios 2 y 3 se fusionan juntos, en la ventana en la que
-se siembra la copia de Substrate, se retira el laboratorio manual y se
-aplica `ax-lab` (ver «Ventana del laboratorio»); el cambio 4 los sigue. Una
-vez retirado, su ausencia ya no detiene nada.
+se siembran las copias de Substrate y de AX, se retira el laboratorio manual
+y se aplica `ax-lab` (ver «Ventana del laboratorio»). El cambio 4 los sigue
+en su propia ventana (ver «Ventana del cambio 4»). Una vez retirado, su
+ausencia ya no detiene nada.
 
 ## Ventana del laboratorio
 
@@ -998,12 +1526,15 @@ En una ventana exclusiva, en este orden:
    que imprimió su primer run) y pone `ax_lab_substrate_fallback_builds:
    [ate-setup]`, porque el laboratorio manual no tiene esa imagen.
    Cualquier otra decisión sobre un digest que no se reproduzca también va
-   en él (ver «Reproducibilidad»).
+   en él (ver «Reproducibilidad»). El cambio 4 también aprobado, con su job
+   `reproduce-ax` en verde: su gestor es el que siembra AX en el paso 3.
 2. Suspender las Tasks de AX (paso 1 de «Retirar el laboratorio manual»).
 3. Sembrar la copia de seguridad desde el laboratorio manual, todavía en
-   marcha (ver «Semilla desde el laboratorio manual»), y comprobar con
-   `image-status` que las seis imágenes están `complete`. Sin esto, retirar
-   el laboratorio borra las únicas copias de sus imágenes.
+   marcha: las seis imágenes de Substrate (ver «Semilla desde el
+   laboratorio manual»), las cuatro de AX y la CLI (ver «Semilla de AX»).
+   Comprobar con `image-status` que las diez están `complete` y el sha256
+   de la CLI. Sin esto, retirar el laboratorio borra las únicas copias de
+   sus imágenes.
 4. Retirar el laboratorio manual (ver «Retirar el laboratorio manual»),
    conservando la imagen `golang` fijada, que ahorra una descarga de
    1,3 GB a la compilación de `ate-setup`.
@@ -1020,7 +1551,70 @@ En una ventana exclusiva, en este orden:
    `oom_kill 0`.
 8. Un segundo apply informa `changed=0`.
 9. Un cambio revisado devuelve `ax_lab_substrate_fallback_builds` a `[]`.
-   Después, el cambio 4.
+   El cambio 4 se aplica después, en otra ventana (ver «Ventana del cambio
+   4»).
+
+## Ventana del cambio 4
+
+Separada de la anterior: su retirada es borrar dos espacios de nombres, y
+la de los cambios 2 y 3 ya dejó el laboratorio manual retirado y las copias
+de AX sembradas. Exclusiva y fuera de las ventanas de medida del
+Observatorio, bajo el mismo lock y desde el clon operativo en el commit
+fusionado:
+
+1. Antes: el cambio 4 aprobado, con los dos jobs de reproducibilidad en
+   verde, y `image-status --image-set ax` con las cuatro imágenes
+   `complete` en la copia.
+2. Fusionar el cambio 4 y dejar el clon operativo en ese commit, limpio.
+3. `--check`: debe informar de instalar la CLI y las dos órdenes, de
+   restaurar en el registro las cuatro imágenes de AX y de aplicar AX
+   (`state`, `ax-system.yaml`, `ax-workers.yaml`) y el `--route-timeout`.
+4. El apply real. Revisar el `memory.peak` del registro y que su
+   `memory.events` siga en `oom_kill 0`; el del nodo lo exige el rol (ver
+   «WorkerPool y capacidad dentro del nodo»).
+5. Un segundo apply informa `changed=0`.
+6. Antes de la prueba de humo, que es la primera vez que un worker de
+   1 500m corre bajo el tope de 2 CPU del nodo, anotar del nodo
+   (`/sys/fs/cgroup/system.slice/docker-<ID>.scope`, con el ID de
+   `docker inspect -f '{{.Id}}' kind-control-plane`) `memory.peak`,
+   `memory.events.local` y `cpu.stat` (`nr_periods`, `nr_throttled` y
+   `throttled_usec`), y los reinicios de los pods de `kube-system` y
+   `ate-system`, con el kubeconfig del laboratorio: `kubectl get pods -n
+   kube-system -o
+   custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount`,
+   y lo mismo con `-n ate-system`.
+7. Comprobación (ver «Verificación»), y la prueba de humo con
+   `sudo ax-tarea https://github.com/<repo público pequeño>
+   "<instrucción de solo lectura>" claude` (Codex, cuando su cuota lo
+   permita). Durante una segunda Task con `CONSERVAR=1`, desde dentro con
+   `sudo ax ssh`: `curl -m5
+   http://ax-server.ax-system.svc.cluster.local:8080/healthz` y una conexión
+   TCP a `ax-redis.ax-system:6379` tienen que fallar, y como control
+   positivo en la misma ejecución, `getent hosts github.com` y un `curl` a
+   `https://github.com` tienen que funcionar; anotar si responden
+   `rustfs.ate-system.svc:9000` y `kind-registry:5000`. Después, borrarla.
+8. Tras la prueba de humo, repetir las lecturas del paso 6. Tienen que
+   seguir `oom 0` en `memory.events.local` del nodo, que no cuenta a un
+   worker que llegue a su propio límite, y los mismos reinicios en
+   `kube-system` y `ate-system`: etcd, la API y Substrate aguantaron un
+   worker ocupado bajo el tope. Si no, AX se retira (abajo). Anotar en
+   [CAPACITY.md](CAPACITY.md) el `memory.peak` del nodo con AX y lo que
+   crecieron `nr_throttled` y `throttled_usec` durante la prueba.
+9. Opcional en esta ventana, y si no, del cambio 5: la prueba de reinicio,
+   `docker stop --time 60 kind-control-plane` con el lock y otro apply, que
+   debe informar de recrear un worker (este cambio ya codifica la
+   reparación, en `workers.yml`), y repetir la prueba de humo con las
+   lecturas de los pasos 6 y 8.
+
+Si algo falla antes de dar AX por bueno, con el mismo lock se borran
+`ax-workers` y `ax-system` (ver «Propiedad de AX»), `state/ax.json`,
+`/usr/local/sbin/ax`, `/usr/local/sbin/ax-tarea` y la CLI instalada,
+`/opt/dockerswarm/ax-lab/bin/ax`; se revierte el cambio y se aplica
+`ax-lab`. Sin el cambio 4 nada gestiona esas tres órdenes: se quedarían,
+con la autorreparación de `ax-tarea`, que borra pods de workers. Substrate
+no se toca: `atenet-router` conserva `--route-timeout=1h`, que no molesta,
+hasta que `ate-setup` lo reinstale, y las copias de las imágenes de AX y de
+la CLI siguen en `/var/backups/dockerswarm/ax-lab`.
 
 ## Retirar el laboratorio manual
 
@@ -1055,8 +1649,13 @@ que el laboratorio codificado vuelve a usar.
    - `kubectl get nodes,pods -A -o wide` con el kubeconfig manual
      (`/opt/ax-lab/home/.kube/config`), nunca `get secrets`;
    - la lista de repositorios del registro (`/v2/_catalog`);
-   - copias de `/opt/ax-lab/SPIKE-LOG.txt` y
-     `/opt/ax-lab/substrate/bin/kind-config.yaml`.
+   - los manifiestos de atestación de los índices del runner y de agentes
+     (`ax-task-runner@sha256:622a63a6…` y `ax-agents@sha256:a20f5b9f…`),
+     su única procedencia de compilación;
+   - copias de `/opt/ax-lab/SPIKE-LOG.txt`,
+     `/opt/ax-lab/substrate/bin/kind-config.yaml`,
+     `/opt/ax-lab/manifests/*.yaml`, `/opt/ax-lab/bin/ax-tarea` y
+     `/usr/local/sbin/ax`, que no guardan ninguna credencial.
 3. Borrar el clúster manual con el kind v0.33.0 oficial que el playbook ya
    instaló, `/opt/dockerswarm/ax-lab/bin/kind` (sha256 de
    `config/ax-lab.yml`), pero con el `HOME` y el kubeconfig del laboratorio
@@ -1095,22 +1694,26 @@ que el laboratorio codificado vuelve a usar.
 6. Borrar el resto del ensayo: `/opt/ax-lab` entero, la imagen
    `ax-toolbox:spike` y el volumen `ax-lab-gomod`, y revisar con
    `docker image ls` las demás imágenes que el ensayo construyó o descargó
-   en el host antes de borrarlas una a una. Se conserva la imagen
-   `golang@sha256:3680233e…` de `images.toolbox`, la de la compilación de
-   reserva. Antes de este paso y del 3, la copia de Substrate tiene que
-   estar sembrada (ver «Ventana del laboratorio»).
+   en el host antes de borrarlas una a una, y las órdenes
+   `/usr/local/sbin/ax` y `/usr/local/sbin/ax-tarea`, que es un enlace a
+   `/opt/ax-lab` y sobre el que el rol se niega a escribir. Se conserva la
+   imagen `golang@sha256:3680233e…` de `images.toolbox`, la de la
+   compilación de reserva. Antes de este paso y del 3, la copia de
+   Substrate y la de AX tienen que estar sembradas (ver «Ventana del
+   laboratorio»).
 7. Comprobar que no queda nada: ni contenedores `kind-control-plane` y
    `kind-registry`, ni red `kind`, ni `/opt/ax-lab`. Después, con los cambios
    2 y 3 fusionados (ver «Ventana del laboratorio»), aplicar `ax-lab` con
-   `--check` y de verdad (ver «Aplicación»); el cambio 4 los sigue.
+   `--check` y de verdad (ver «Aplicación»); el cambio 4 los sigue en su
+   propia ventana.
 
 ## Recrear el clúster
 
 Cuando cambian la configuración de kind, la imagen del nodo, la versión de
 kind o la versión de Substrate, o el rol se detiene porque una prueba de
 propiedad ya no coincide (la del nodo o la de los objetos de Substrate), el
-clúster se recrea en una ventana exclusiva, suspendiendo antes las Tasks de
-AX y con el mismo lock:
+clúster se recrea en una ventana exclusiva, borrando antes las Tasks de AX
+que queden (ver «Redis») y con el mismo lock:
 
 ```bash
 sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
@@ -1137,9 +1740,9 @@ mismo volumen `ax-lab-registry`, al que el siguiente apply restaura desde la
 copia de seguridad cualquier imagen que falte. Recrear el clúster pierde
 todo lo que corría dentro: el siguiente apply encuentra un nodo con otro ID
 y sin objetos de Substrate, así que vuelve a instalarlo con `ate-setup` sin
-compilar nada, y tras el cambio 4 reinstala AX. El fichero
-`state/substrate.json` del nodo anterior no se borra: se sobrescribe con el
-del nuevo.
+compilar nada, y reinstala AX. Los ficheros `state/substrate.json` y
+`state/ax.json` del nodo anterior no se borran: se sobrescriben con los del
+nuevo.
 
 ## Aceptación del nodo privilegiado
 
@@ -1169,7 +1772,8 @@ laboratorio» (ver «Verificación»).
 
 | Pieza | Versión | Motivo |
 | --- | --- | --- |
-| AX | `f009cc8` (main, 2026-09-24) | Incluye `e6211f8` (google/ax#390), que no está en ninguna release: v0.3.0 es anterior |
+| AX | `f009cc8` (main, 2026-09-24) con google/ax#375 | Incluye `e6211f8` (google/ax#390). v0.3.1 (`e70162a`, 2026-09-25) ya lo incluye, pero ni v0.3.1 ni `main` (`c5c1ac5`) arreglan google/ax#375, y subir exige recompilar las cuatro imágenes con pins nuevos (ver «Parche local») |
+| Claude Code y Codex | 2.1.274 y 0.156.1 | Los de `images/ax-agents/package-lock.json`; 2.1.274 era la etiqueta `stable` de npm y 2.1.282 la `latest` |
 | Agent Substrate | `67253354` (2026-09-11) | El commit que AX fija en su `go.mod` (línea 7) |
 | kind | v0.33.0 | El que fija Substrate en `hack/tools/kind/go.mod` (línea 19) |
 | Kubernetes | v1.37.0 | La imagen por defecto de kind v0.33.0, con el mismo digest (`pkg/apis/config/defaults/image.go`, línea 21) |
@@ -1180,27 +1784,43 @@ laboratorio» (ver «Verificación»).
 <!-- markdownlint-enable MD013 -->
 
 `config/ax-lab.yml` fija además por tag y digest las imágenes upstream que
-usa el laboratorio (`kindest/node`, `registry`, `redis`,
-`nginx-unprivileged` y `golang`), y las de Substrate por digest (ver
-«Imágenes fijadas»). Subir una versión es un cambio revisado de
-`config/ax-lab.yml` y de su prueba de contrato, que fija los valores
-revisados, nunca una edición en el host.
+usa el laboratorio (`kindest/node`, `registry`, `redis` y `golang`), y las
+de Substrate y AX por digest (ver «Imágenes fijadas» e «Imágenes de AX»).
+Subir una versión es un cambio revisado de `config/ax-lab.yml` y de su
+prueba de contrato, que fija los valores revisados, nunca una edición en el
+host.
 
 ## Parche local
 
-El laboratorio manual compila AX con `/opt/ax-lab/patches/ax-issue-375.patch`,
-basado en los cambios propuestos en google/ax#375. Todavía no está en este
-repositorio: se versionará, con su sha256 y su atribución, junto al plano de
-control de AX. El parche:
+Las cuatro imágenes de AX se compilaron con
+`images/ax/google-ax-375.patch`, byte a byte el diff que el laboratorio
+manual dejó preparado (`git apply --index`, sin commit) sobre `f009cc8`:
+sha256 `7b8bff50…9d72`, que `sources.ax.patch` fija y el validador
+comprueba. Es la rama `local-models` de `arkady-emelyanov/ax` (commits
+`c7fd10b` y `89fa366`, sobre `d8ed0fe`) propuesta en google/ax#375, sin el
+`__pycache__` que esa rama versiona; ver `images/ax/README.md`. El parche:
 
 - separa `/readyz`, la sonda de Substrate que abre el egress, de
-  `/readyz?check=workspace`, la pregunta del controlador. Sin él, el runner
-  espera a preparar el workspace para responder a la sonda que le daría red,
-  así que nunca clona ni ejecuta el `goal`;
-- añade el proveedor `openai`, para que el `goal` use
-  `LocalOpenAIAgentConfig` del SDK de Antigravity con `AX_MODEL_BASE_URL`,
-  `AX_MODEL_NAME` y `AX_MODEL_API_KEY`;
-- corrige `.dockerignore` para `Dockerfile.task-runner` (google/ax#364).
+  `/readyz?check=workspace`, la pregunta del controlador, y ejecuta los
+  `goal` en segundo plano cuando el sandbox ya está listo. Es la parte que
+  importa: el proxy de egress de Substrate solo deja pasar a un actor en
+  `ACTOR_STATE_RUNNING`, y sin el parche el runner espera a clonar para
+  responder a la sonda que le daría red, así que nunca clona;
+- sube a 300 s el tiempo de la sonda de preparación en la `ActorTemplate`
+  (y deja un comentario de `internal/substrate/client.go` desfasado, que no
+  se toca para no cambiar el sha256);
+- añade el proveedor `openai` al cliente de modelos, que en el commit
+  fijado nadie llama, y la vía `AX_MODEL_BASE_URL` del bootstrap de
+  Antigravity, que solo usaba el proxy de OpenAI retirado;
+- corrige `.dockerignore` para `Dockerfile.task-runner` (google/ax#364, ya
+  arreglado en v0.3.1 por google/ax#403).
+
+google/ax#375 sigue abierto y sin respuesta, y los ficheros de la parte que
+importa no han cambiado en upstream desde `dc4f36c` (2026-09-20). Subir AX
+es un cambio revisado: quitar la parte de `.dockerignore`, rehacer la de
+`internal/substrate/client.go` sobre google/ax#395, recompilar las cuatro
+imágenes fuera del host y fijarlas de nuevo. Solo la CI aplica el parche;
+el host nunca compila AX.
 
 ## Credenciales
 
@@ -1217,17 +1837,42 @@ documento solo recoge sus metadatos:
 | `claude-oauth-token` | `root:root 0600` | Token OAuth de Claude Code (`CLAUDE_CODE_OAUTH_TOKEN`) |
 | `codex/` | `root:root 0700` | Configuración de Codex CLI |
 | `codex/auth.json`, `codex/config.toml` | `root:root 0600` | Sesión y configuración de Codex CLI |
-| `openai-api-key` | `root:root 0600` | Clave del proxy de OpenAI que usa el `goal` de los Workspaces |
+| `openai-api-key` | `root:root 0600` | Sin uso: la clave del proxy de OpenAI, que no se codifica |
 
 <!-- markdownlint-enable MD013 -->
 
+El rol nunca lee, copia ni imprime esos ficheros, ni comprueba su
+existencia: solo `ax-tarea`, que ejecuta el propietario, lee
+`claude-oauth-token` o `codex/auth.json`, y escribe de vuelta este último
+cuando Codex lo renueva (ver «Herramientas del operador»). El proxy de
+OpenAI del laboratorio manual no se codifica: `ax-tarea` nunca usa `goal`,
+no atendió ninguna petición desde el reinicio del 2026-09-25 y cualquier pod
+o sandbox podía gastar su clave; su fichero queda sin uso.
+
 AX solo entrega variables de entorno a una Task: `EnvVar` no tiene
-`valueFrom` (google/ax#348). Una credencial pasada así queda en claro en
-Redis, en la `ActorTemplate` de Substrate y dentro del sandbox. Por eso la
-clave de OpenAI llega a través del proxy y no como variable de la Task. Las
-de Claude Code y Codex solo pueden llegar por variables (la imagen de agentes
-del laboratorio manual lee la sesión de Codex de `CODEX_AUTH_JSON_B64`), así
-que quedan expuestas de esa forma; este repositorio no las codifica.
+`valueFrom` (google/ax#348), `ax ssh` no tiene canal de entrada ni de
+entorno (`cmd/ax/main.go`, líneas 1216 a 1220) y la única vía con Secret,
+`gemini-api-secret`, también acaba en claro en la plantilla. Así que
+`ax-tarea` pasa `CLAUDE_CODE_OAUTH_TOKEN` o `CODEX_AUTH_JSON_B64` en
+`spec.env`, por la entrada estándar de `ax apply`, y la credencial queda en
+claro en estos sitios mientras existe la Task, con esta mitigación:
+
+<!-- markdownlint-disable MD013 -->
+
+| Dónde | Mitigación |
+| --- | --- |
+| Clave `ax:task:default:<nombre>` de Redis, su RDB y la API de `ax-server`, sin autenticación (google/ax#376) | NetworkPolicies de `ax-server` y `ax-redis`; los túneles de la CLI solo viven lo que dura cada orden; `ax-tarea` borra la Task y espera a que desaparezca |
+| `ActorTemplate` de Substrate, con el entorno y `AX_TASK_YAML`, legible con cualquier token de cuenta de servicio con la audiencia de `ate-api` | AX borra las plantillas al borrar la Task; ningún pod de AX monta un token de la API |
+| Entorno del sandbox, su servidor de metadatos y el `exec` de invitado de `debug: true` | Solo el router llega a los workers (NetworkPolicy de Substrate); una Task a la vez |
+| Snapshots dorados de rustfs, que siguen tras borrar la Task y se leen con las claves estáticas de upstream | Evitar `CONSERVAR=1`; desaparecen al recrear el clúster; la ventana del cambio 4 anota si un sandbox llega a rustfs |
+
+<!-- markdownlint-enable MD013 -->
+
+`ax-agent` borra `CODEX_AUTH_JSON_B64` de su propio entorno, pero la
+variable sigue en `AX_TASK_YAML` y en el servidor de metadatos del sandbox.
+Una vía de entorno para `ax ssh`, que la API de invitado ya admite
+(`internal/guest/client.go`, líneas 84 a 103), sacaría los tokens de todos
+esos sitios: queda para upstream.
 
 El kubeconfig de administrador del clúster,
 `/opt/dockerswarm/ax-lab/home/.kube/config`, es otra credencial del host:
@@ -1239,8 +1884,24 @@ Nada del laboratorio se publica:
 
 - `ax-server` no tiene autenticación ni autorización (google/ax#376). No se
   publica nunca: ni ruta de Traefik, ni NodePort, ni LoadBalancer, ni
-  Ingress, ni `hostPort`. Solo se alcanza con `kubectl port-forward` desde el
-  propio host.
+  Ingress, ni `hostPort`, y el validador lo rechaza. Sus Services escriben
+  `type: ClusterIP`, así que el diff de cada apply ve que otra mano los
+  publique (ver «Plano de control de AX»). Solo se alcanza con
+  `kubectl port-forward` desde el propio host, que la CLI abre y las órdenes
+  `ax` y `ax-tarea` cierran al terminar (ver «Herramientas del operador»);
+  mientras una corre, cualquier proceso local puede usar ese puerto.
+- Dos NetworkPolicies de entrada en `ax-system`: a `ax-server` no llega
+  ningún pod, y a `ax-redis` solo `ax-server` y `ax-controller`, en el
+  6379. kindnet aplica NetworkPolicies (`kube-network-policies`), el
+  tráfico desde el propio nodo, como las sondas del kubelet, siempre pasa, y
+  `kubectl port-forward` entra en el pod sin pasar por ellas. No se ha
+  comprobado desde un sandbox, cuyo tráfico sale por el egress de
+  Substrate: la ventana del cambio 4 lo prueba con un control positivo.
+- Ningún pod de AX monta un token de la API de Kubernetes, un Secret ni
+  nada en `/var/run/secrets/kubernetes.io`, ni tiene permisos RBAC: el
+  validador solo admite el token proyectado del controlador para Substrate,
+  y el ClusterRole de upstream, que leería todos los Secrets del clúster, no
+  se instala.
 - La API de Kubernetes solo escucha en `127.0.0.1:6443` y el registro local
   en `127.0.0.1:5001` y `[::1]:5001`. El validador rechaza cualquier otra
   dirección, y el rol se detiene si el contenedor vivo publica otra cosa.
@@ -1250,12 +1911,12 @@ Nada del laboratorio se publica:
   hacerlo en `kind-registry:5000`, porque está en la red `kind` con el nodo
   y nada filtra el tráfico de los pods (ver «Límites conocidos»). También
   puede llenar el volumen `ax-lab-registry` en el disco del host. Es un
-  riesgo aceptado del laboratorio. Desde el cambio 3, cada carga de
-  Substrate referencia su imagen por digest (`@sha256:`), el rol exige esas
-  referencias exactas y restaura en el registro cualquier tag movido desde
-  la copia de seguridad. El cambio 4 lo extiende a toda imagen de AX que el
-  clúster descargue de `localhost:5001`, con su validador. Así, sobrescribir
-  un tag en el registro no cambia lo que ejecuta el clúster.
+  riesgo aceptado del laboratorio. Cada carga de Substrate y de AX, el
+  WorkerPool y la imagen de cada Task de `ax-tarea` referencian su imagen
+  por digest (`@sha256:`), el validador y el rol exigen esas referencias
+  exactas y cada apply restaura en el registro cualquier tag movido desde la
+  copia de seguridad. Así, sobrescribir un tag en el registro no cambia lo
+  que ejecuta el clúster.
 - El laboratorio no añade nada a `platform_public_tcp_ports` ni toca el
   firewall del host.
 
@@ -1274,7 +1935,8 @@ con el mismo wrapper y lock que el resto de playbooks:
 
 El primer apply, tras retirar el laboratorio manual, crea el clúster y el
 registro e instala Substrate; si compila `ate-setup`, puede tardar una hora
-(ver «Ventana del laboratorio»). No toca Swarm. Mientras exista el
+(ver «Ventana del laboratorio»). El de AX se hace en su propia ventana (ver
+«Ventana del cambio 4»). No toca Swarm. Mientras exista el
 laboratorio manual, `--check` y el apply se detienen en la prueba de
 propiedad, antes de escribir nada. Mientras un digest de Substrate esté
 pendiente, los dos se niegan a empezar.
@@ -1310,6 +1972,21 @@ pendiente, los dos se niegan a empezar.
 - El nodo tiene `ate.dev/substrate-version=67253354`, existe el DaemonSet
   `atelet-67253354` y cada carga de `substrate.workloads` corre con sus
   imágenes exactas y está lista.
+- `image-status --image-set ax` con `--tag f009cc8-issue375` y las cuatro
+  `--image` de `ax.images` dice `pinned` y `complete` en todas, y
+  `sudo -- sha256sum /opt/dockerswarm/ax-lab/bin/ax
+  /var/backups/dockerswarm/ax-lab/binaries/ax` da `ax.cli_sha256` en los
+  dos.
+- `/usr/local/sbin/ax` y `/usr/local/sbin/ax-tarea` son ficheros regulares
+  `root:root 0750`, y `sudo ax get tasks -a default` responde sin dejar
+  ningún `kubectl port-forward` después (`pgrep -af port-forward`).
+- `/opt/dockerswarm/ax-lab/state/ax.json` es `root:root 0600`, dice
+  `installed` y guarda el ID del nodo vivo y los UID de `ax-system` y
+  `ax-workers`.
+- Los Deployments de `ax-system` corren con sus imágenes exactas, sin
+  ClusterRole `ax-controller`, el WorkerPool `ax-workers/ax` está listo con
+  una réplica y `atenet-router` lleva un solo `--route-timeout=1h`.
+- `memory.events.local` del nodo dice `oom 0`.
 - `/opt/dockerswarm/deployments/ax-lab.yml` registra el commit aplicado.
 - Un segundo apply informa `changed=0`.
 
@@ -1318,8 +1995,8 @@ pendiente, los dos se niegan a empezar.
 Se retira a mano, en una ventana exclusiva y con el mismo lock que en
 «Recrear el clúster», y en este orden:
 
-1. Suspender o borrar las Tasks de AX, como en el paso 1 de «Retirar el
-   laboratorio manual».
+1. Borrar las Tasks de AX con `sudo ax delete task <nombre> -a default`
+   (ver «Redis»).
 2. Borrar el clúster con la orden de «Recrear el clúster», sin volver a
    aplicar.
 3. Borrar el registro y su volumen:
@@ -1329,8 +2006,10 @@ Se retira a mano, en una ventana exclusiva y con el mismo lock que en
    comprobar que no le queda ningún contenedor: `/usr/bin/docker network rm
    kind`.
 5. Borrar `/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf`,
-   `/opt/dockerswarm/ax-lab` (con el checkout, las cachés y el fichero de
-   estado de Substrate) y `/var/backups/dockerswarm/ax-lab`, y las imágenes
+   `/usr/local/sbin/ax`, `/usr/local/sbin/ax-tarea`,
+   `/opt/dockerswarm/ax-lab` (con el checkout, las cachés, la CLI y los
+   ficheros de estado) y `/var/backups/dockerswarm/ax-lab` (con las
+   imágenes y la CLI), y las imágenes
    que Docker guardó en el host: `localhost:5001/ate-setup@<digest>`, que
    descargó para ejecutarlo, y `golang@<digest>` de `images.toolbox`. Los
    límites de inotify vuelven a sus valores previos en el siguiente
@@ -1377,16 +2056,19 @@ container outside the active profile is running».
   prueba, hasta que se borra (ver «Límites y política de reinicio»).
 - El registro local no tiene autenticación y cualquier proceso del host o
   carga del clúster puede escribir en él (ver «Exposición»). Para Substrate
-  lo compensan las referencias por digest y la restauración de cada apply;
-  para AX, el cambio 4.
+  y AX lo compensan las referencias por digest y la restauración de cada
+  apply.
 - El laboratorio no guarda estado que haya que conservar: no entra en el
   backup, igual que RacingGame. De un laboratorio perdido, el clúster, el
-  registro y Substrate se recrean desde este repositorio; AX, hasta el
-  cambio 4, se reinstala a mano.
-- La copia de seguridad de las imágenes de Substrate vive en el mismo host.
-  En un host reconstruido no existe: las imágenes vuelven con una copia
-  llevada a mano al nuevo host y restaurada con `import`, o con la
-  compilación de reserva autorizada imagen a imagen, que depende de que
+  registro, Substrate y AX se recrean desde este repositorio y su copia de
+  imágenes; las Tasks que existieran se pierden.
+- La copia de seguridad de las imágenes de Substrate y de AX y de la CLI
+  vive en el mismo host. En un host reconstruido no existe: vuelven con una
+  copia de `/var/backups/dockerswarm/ax-lab` llevada a mano al nuevo host y
+  restaurada con `import`. Si no la hay, las de AX y la CLI solo vuelven
+  recompilándolas en un cambio revisado con pins nuevos (ver «Lo que no se
+  puede codificar fielmente»), y las de Substrate con la compilación de
+  reserva autorizada imagen a imagen, que depende de que
   `gcr.io` siga sirviendo la base distroless fijada y `proxy.golang.org` los
   módulos de ko. El tarball nocturno de gVisor que fija Substrate
   (`sandboxconfig-gvisor.yaml`, líneas 34 y 35) también tiene que seguir en
@@ -1413,5 +2095,25 @@ container outside the active profile is running».
   (ver «Contenedores transitorios»).
 - El nodo del laboratorio manual llegó a un `memory.peak` de 3 494 457 344
   bytes (3,25 GiB), el 93 % de su límite de 3 584 MiB, con Substrate, AX y
-  dos workers. Substrate solo no se ha medido con el nodo codificado; el
-  cambio 4 tiene que medir el pico con AX antes de dar el límite por bueno.
+  dos workers, casi todo caché de páginas (`memory.events` en `max 0` y
+  `oom_kill 0`). El cambio 4 deja un solo worker, acota los límites de los
+  workers con la reserva de la plataforma y exige `oom 0` en
+  `memory.events.local` del nodo tras cada apply (ver «WorkerPool y
+  capacidad dentro del nodo»); el pico con AX se anota en la ventana del
+  cambio 4.
+- Las credenciales de las Tasks quedan en claro en Redis y su RDB, en las
+  `ActorTemplate` y en los snapshots dorados de rustfs, que siguen tras
+  borrar la Task hasta que se recrea el clúster (ver «Credenciales»). No
+  hay referencia a secretos en AX (google/ax#348).
+- Mientras corre una orden `ax` o un `ax-tarea`, su túnel a `ax-server`, sin
+  autenticación, está abierto en la loopback para cualquier proceso local.
+- La copia de vuelta de la sesión de Codex no distingue unos tokens de la
+  misma cuenta de los de otra: nada local puede. Una tarea de Codex cuyo
+  sandbox ejecute código hostil puede dejar al host una sesión elegida por
+  ese código, que usarían las tareas de Codex siguientes (ver «Herramientas
+  del operador»).
+- Tras un reinicio inesperado, una Task que estaba en marcha muestra un
+  estado viejo: se borra (ver «Redis»).
+- Las NetworkPolicies de AX no son control de salida, que sigue sin
+  aplicarse, y su efecto sobre el tráfico de un sandbox está por comprobar
+  (ver «Exposición»).

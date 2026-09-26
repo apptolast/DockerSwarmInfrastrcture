@@ -657,14 +657,18 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
 
     def test_the_node_starts_only_after_its_images_and_before_substrate(self) -> None:
         names = list(self.main)
+        # AX's images are restored before the node starts, and AX is
+        # installed after Substrate, whose WorkerPool kind it uses.
         applies = [
             ("Keep the Substrate checkout and fallback builds outside check mode", "artifacts.yml"),
             ("Reconcile the lab cluster and its local registry outside check mode", "cluster.yml"),
             ("Seed and verify the pinned Substrate images outside check mode", "images.yml"),
+            ("Seed and verify the pinned AX images outside check mode", "ax_images.yml"),
             ("Start and prepare the lab node outside check mode", "node.yml"),
             ("Install Substrate only on drift outside check mode", "substrate.yml"),
+            ("Install AX only on drift and repair its workers outside check mode", "ax.yml"),
         ]  # fmt: skip
-        self.assertEqual(names[-5:], [name for name, _file in applies])
+        self.assertEqual(names[-7:], [name for name, _file in applies])
         for name, task_file in applies:
             with self.subTest(task=name):
                 self.assertEqual(
@@ -678,6 +682,8 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
         checks = [
             ("Read the pinned Substrate images in the registry and the backup", "images_read.yml"),
             ("Read Substrate in the lab cluster and prove its ownership", "substrate_read.yml"),
+            ("Read the pinned AX images in the registry and the backup", "ax_images_read.yml"),
+            ("Read AX in the lab cluster and prove its ownership", "ax_read.yml"),
         ]  # fmt: skip
         for name, task_file in checks:
             with self.subTest(task=name):
@@ -748,8 +754,9 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 [
                     clone,
                     "the apply stops before building ate-setup: kind-control-plane"
-                    " runs, so suspend the AX Tasks, stop it under the host-global"
-                    " lock and apply again (docs/AX.md, «Compilación de reserva»)",
+                    " runs, so delete the remaining AX Tasks (sudo ax delete task"
+                    " <name> -a default), stop it under the host-global lock and"
+                    " apply again (docs/AX.md, «Compilación de reserva»)",
                     "install Substrate with ate-setup: state",
                 ],
             ),
@@ -1491,6 +1498,8 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "Read Substrate in the lab cluster and prove its ownership",
                 "Require Substrate to be readable in the running lab node",
                 "Keep the Substrate reads from before any install",
+                "Read the AX operator helpers that are running before Substrate changes",
+                "Refuse to reinstall Substrate while an ax-tarea or the ax CLI runs",
                 "Record the Substrate install intent",
                 "Install Substrate with the pinned ate-setup only on drift",
                 "Read Substrate after the install",
@@ -1499,7 +1508,7 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "Wait for every Substrate workload to be ready",
             ],
         )
-        for name in (names[0], names[5]):
+        for name in (names[0], names[7]):
             self.assertEqual(
                 self.substrate[name]["ansible.builtin.import_tasks"],
                 "substrate_read.yml",
@@ -1628,6 +1637,55 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "ax_lab_substrate_uids_before": "{{ ax_lab_substrate_uids }}",
                 "ax_lab_substrate_drift_before": "{{ ax_lab_substrate_drift }}",
             },
+        )
+
+    def test_substrate_is_never_reinstalled_under_a_running_ax_helper(self) -> None:
+        # ate-setup rolls atenet-router: a running ax-tarea would lose its
+        # `ax ssh` stream, and ax.yml would then refuse to restore the
+        # router's route timeout (docs/AX.md, «Router»).
+        read = self.substrate[
+            "Read the AX operator helpers that are running before Substrate changes"
+        ]
+        self.assertEqual(
+            read["ansible.builtin.command"]["argv"],
+            [
+                "/usr/bin/systemctl",
+                "list-units",
+                "--type=scope",
+                "--state=active",
+                "--plain",
+                "--no-legend",
+                "--no-pager",
+                "ax-tarea-*",
+                "ax-cli-*",
+            ],
+        )
+        self.assertEqual(read["when"], "ax_lab_substrate_drift | length > 0")
+        self.assertIs(read["changed_when"], False)
+        refuse = self.substrate[
+            "Refuse to reinstall Substrate while an ax-tarea or the ax CLI runs"
+        ]
+        running = ["ax-tarea-4242-1790000000.scope loaded active running ax-tarea"]
+        self.assert_pass(
+            [refuse],
+            ax_lab_substrate_drift=[],
+            ax_lab_substrate_helper_scopes={"skipped": True, "changed": False},
+        )
+        self.assert_pass(
+            [refuse],
+            ax_lab_substrate_drift=["workloads"],
+            ax_lab_substrate_helper_scopes={"rc": 0, "stdout_lines": []},
+        )
+        self.assert_fail(
+            [refuse],
+            "(ax-tarea-4242-1790000000.scope)",
+            ax_lab_substrate_drift=["workloads"],
+            ax_lab_substrate_helper_scopes={"rc": 0, "stdout_lines": running},
+        )
+        names = list(self.substrate)
+        self.assertLess(
+            names.index(refuse["name"]),
+            names.index("Record the Substrate install intent"),
         )
 
     def test_the_installed_substrate_is_verified_before_it_is_recorded(self) -> None:
@@ -1803,6 +1861,7 @@ class ReproducibilityWorkflowTests(unittest.TestCase):
         on = self.workflow["on"]
         paths = [
             "config/ax-lab.yml",
+            "images/ax/**",
             "scripts/manage-ax-lab-substrate.py",
             "scripts/validate-ax-lab.py",
             ".github/workflows/ax-lab-reproducibility.yml",
@@ -1811,8 +1870,9 @@ class ReproducibilityWorkflowTests(unittest.TestCase):
         self.assertEqual(on["push"], {"branches": ["main"], "paths": paths})
         self.assertIn("workflow_dispatch", on)
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
-        self.assertEqual(list(self.workflow["jobs"]), ["reproduce"])
-        self.assertNotIn("permissions", self.workflow["jobs"]["reproduce"])
+        self.assertEqual(list(self.workflow["jobs"]), ["reproduce", "reproduce-ax"])
+        for job in self.workflow["jobs"].values():
+            self.assertNotIn("permissions", job)
 
     def test_every_action_is_pinned_by_full_commit(self) -> None:
         steps = self.workflow["jobs"]["reproduce"]["steps"]

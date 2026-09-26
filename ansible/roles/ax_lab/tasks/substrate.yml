@@ -19,6 +19,39 @@
     ax_lab_substrate_uids_before: "{{ ax_lab_substrate_uids }}"
     ax_lab_substrate_drift_before: "{{ ax_lab_substrate_drift }}"
 
+# ate-setup's reinstall rolls atenet-router and drops its route timeout
+# (docs/AX.md, «Router»): a running ax-tarea would lose its `ax ssh`
+# stream, and ax.yml would then refuse to add the timeout back. So, as
+# ax.yml does for AX, nothing is reinstalled under one.
+- name: Read the AX operator helpers that are running before Substrate changes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-units
+      - --type=scope
+      - --state=active
+      - --plain
+      - --no-legend
+      - --no-pager
+      - ax-tarea-*
+      - ax-cli-*
+  register: ax_lab_substrate_helper_scopes
+  changed_when: false
+  when: ax_lab_substrate_drift | length > 0
+
+- name: Refuse to reinstall Substrate while an ax-tarea or the ax CLI runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_substrate_helper_scopes is skipped
+        or ax_lab_substrate_helper_scopes.stdout_lines | select | list == []
+    fail_msg: >-
+      Substrate would be reinstalled ({{ ax_lab_substrate_drift | join(", ")
+      }}) under a running ax-tarea or ax CLI ({{
+      ax_lab_substrate_helper_scopes.stdout_lines | default([]) | select
+      | map("split") | map("first") | join(", ") }}): wait until it ends and
+      apply again (docs/AX.md, «Herramientas del operador»).
+
 # Written before ate-setup runs: a run interrupted from here on leaves
 # `installing` for this node, which the next apply resumes with ate-setup,
 # which keeps whatever it already created. The UIDs a verified install

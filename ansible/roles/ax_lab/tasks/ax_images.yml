@@ -1,0 +1,105 @@
+---
+# Apply only, after images.yml and before node.yml: the pinned AX images,
+# like Substrate's, move between the shared backup layout and the registry
+# byte for byte through the registry HTTP API. There is no fallback build:
+# an AX image in neither place stops the apply.
+- name: Read the pinned AX images in the running registry
+  ansible.builtin.import_tasks: ax_images_read.yml
+
+- name: Refuse a pinned AX image held by neither backup nor registry
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_image_status.registry is not none
+      - ax_lab_ax_lost == []
+    fail_msg: >-
+      {{ ax_lab_ax_lost | join(", ") }} is in neither the backup layout nor
+      the local registry, and AX images are never compiled here. Seed the
+      backup from the manual lab (docs/AX.md, «Semilla de AX») or, once it is
+      gone, rebuild the image under a new pin in a reviewed change.
+
+- name: Back up the pinned AX images the backup lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "export",
+          "--image-set",
+          "ax",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.ax.tag,
+        ]
+        + (
+          ax_lab_ax_exports
+          | zip(ax_lab_ax_exports | map("extract", ax_lab.ax.images))
+          | map("join", "=") | map("regex_replace", "^", "--image=") | list
+        )
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: ax_lab_ax_exports | length > 0
+  changed_when: true
+
+- name: Restore the pinned AX images the registry lacks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          "/usr/bin/python3",
+          ax_lab_substrate_manager,
+          "import",
+          "--image-set",
+          "ax",
+          "--registry",
+          "127.0.0.1:" ~ ax_lab.registry.host_port,
+          "--layout",
+          ax_lab.substrate.backup_directory,
+          "--tag",
+          ax_lab.ax.tag,
+        ]
+        + (
+          ax_lab_ax_imports
+          | zip(ax_lab_ax_imports | map("extract", ax_lab.ax.images))
+          | map("join", "=") | map("regex_replace", "^", "--image=") | list
+        )
+      }}
+  environment: "{{ operation_lock_guard_environment }}"
+  when: ax_lab_ax_imports | length > 0
+  changed_when: true
+
+- name: Read the pinned AX images after seeding them
+  ansible.builtin.import_tasks: ax_images_read.yml
+
+- name: Verify every pinned AX image in the registry and the backup
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_image_status.registry is not none
+      - ax_lab_ax_in_registry | sort == ax_lab.ax.images | sort
+      - ax_lab_ax_in_backup | sort == ax_lab.ax.images | sort
+    fail_msg: >-
+      The local registry or the backup layout does not hold every pinned AX
+      image under its digest: {{ ax_lab_ax_image_status }}.
+
+# The agents image is 432 MiB, with a 241 MiB layer: the registry has to
+# take it within its 256 MiB limit without the kernel killing inside it.
+- name: Read the memory events of the local registry after the AX images
+  ansible.builtin.slurp:
+    src: >-
+      {{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_registry.id
+      ~ ".scope/memory.events" }}
+  register: ax_lab_ax_registry_memory_events
+
+- name: Require no OOM kill in the local registry after the AX images
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ax_lab_ax_registry_memory_events.content | b64decode).splitlines()
+        | select("match", "^oom_kill ") | list == ["oom_kill 0"]
+    fail_msg: >-
+      The kernel killed a process inside {{ ax_lab.registry.container }}
+      while it took the AX images: its memory limit is too small for them
+      (docs/AX.md, «Imágenes de AX»).

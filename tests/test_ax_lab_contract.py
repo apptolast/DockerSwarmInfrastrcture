@@ -43,10 +43,27 @@ IMAGES = "ansible/roles/ax_lab/tasks/images.yml"
 IMAGES_READ = "ansible/roles/ax_lab/tasks/images_read.yml"
 SUBSTRATE = "ansible/roles/ax_lab/tasks/substrate.yml"
 SUBSTRATE_READ = "ansible/roles/ax_lab/tasks/substrate_read.yml"
+AX_HOST = "ansible/roles/ax_lab/tasks/ax_host.yml"
+AX_IMAGES = "ansible/roles/ax_lab/tasks/ax_images.yml"
+AX_IMAGES_READ = "ansible/roles/ax_lab/tasks/ax_images_read.yml"
+AX_READ = "ansible/roles/ax_lab/tasks/ax_read.yml"
+AX_APPLY = "ansible/roles/ax_lab/tasks/ax.yml"
+WORKERS = "ansible/roles/ax_lab/tasks/workers.yml"
 MANAGER = "scripts/manage-ax-lab-substrate.py"
 # The files main.yml imports in --check too: every task in them must be
 # read-only there.
-CHECK_MODE_FILES = (MAIN, HOST, INSPECT, READ, OWNERSHIP, IMAGES_READ, SUBSTRATE_READ)
+CHECK_MODE_FILES = (
+    MAIN,
+    HOST,
+    INSPECT,
+    READ,
+    OWNERSHIP,
+    IMAGES_READ,
+    SUBSTRATE_READ,
+    AX_HOST,
+    AX_IMAGES_READ,
+    AX_READ,
+)
 SYSCTL_PATH = "/etc/sysctl.d/99-z-dockerswarm-ax-lab.conf"
 WATCHES = "fs.inotify.max_user_watches"
 INSTANCES = "fs.inotify.max_user_instances"
@@ -106,6 +123,11 @@ def role_variables() -> dict[str, Any]:
         "ax_lab_substrate_manager": (
             lab["install_root"] + "/bin/manage-ax-lab-substrate.py"
         ),
+        "ax_lab_ax_cli": lab["install_root"] + "/bin/ax",
+        "ax_lab_ax_state_path": lab["install_root"] + "/state/ax.json",
+        "ax_lab_ax_helper_directory": "/usr/local/sbin",
+        "ax_lab_ax_runtime_directory": "/run",
+        "ax_lab_ax_lock_directory": "/run/lock",
         "platform_install_root": "/opt/dockerswarm",
         "role_path": str(ROLE),
     }
@@ -628,9 +650,6 @@ class AxLabValidatorTests(unittest.TestCase):
                 "852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696",
                 "redis": "docker.io/library/redis:7-alpine@sha256:"
                 "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
-                "openai_proxy": "docker.io/nginxinc/nginx-unprivileged:1.30-alpine"
-                "@sha256:"
-                "4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5",
                 # The image the manual lab's toolbox was built on (the spike's
                 # Dockerfile, FROM line 3), still cached on the host.
                 "toolbox": "docker.io/library/golang:1.27.1@sha256:"
@@ -714,7 +733,7 @@ class AxLabValidatorTests(unittest.TestCase):
             self.set_lab("binaries/kind/os", "linux"), "kind: unexpected"
         )
         self.assert_rejected(self.set_lab("images/extra", "x"), "images: unexpected")
-        for value in (1, 3, True, "2"):
+        for value in (1, 2, 4, True, "3"):
             with self.subTest(schema_version=value):
                 self.assert_rejected(
                     self.set_lab("schema_version", value), "schema_version"
@@ -872,7 +891,15 @@ class AxLabValidatorTests(unittest.TestCase):
         ):
             with self.subTest(image=value):
                 self.assert_rejected(self.set_lab("images/kind_node", value), message)
-        for name in ("registry", "redis", "openai_proxy"):
+        # The OpenAI proxy was dropped with its pin (docs/AX.md, «Credenciales»).
+        self.assert_rejected(
+            self.set_lab(
+                "images/openai_proxy",
+                "docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:" + digest,
+            ),
+            "images: unexpected",
+        )
+        for name in ("registry", "redis"):
             with self.subTest(image=name):
                 self.assert_rejected(
                     self.set_lab(
@@ -1330,6 +1357,11 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "ax_lab_substrate_manager": (
                     "{{ ax_lab_bin_directory }}/manage-ax-lab-substrate.py"
                 ),
+                "ax_lab_ax_cli": "{{ ax_lab_bin_directory }}/ax",
+                "ax_lab_ax_state_path": "{{ ax_lab_state_directory }}/ax.json",
+                "ax_lab_ax_helper_directory": "/usr/local/sbin",
+                "ax_lab_ax_runtime_directory": "/run",
+                "ax_lab_ax_lock_directory": "/run/lock",
             },
         )
         self.assertFalse((ROLE / "handlers").exists())
@@ -1363,6 +1395,11 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             {**self.variables, "ax_lab_cache_directory": "/tmp/cache"},
             {**self.variables, "ax_lab_substrate_state_path": "/tmp/s.json"},
             {**self.variables, "ax_lab_substrate_manager": "/tmp/manager.py"},
+            {**self.variables, "ax_lab_ax_cli": "/usr/local/bin/ax"},
+            {**self.variables, "ax_lab_ax_state_path": "/tmp/ax.json"},
+            {**self.variables, "ax_lab_ax_helper_directory": "/usr/local/bin"},
+            {**self.variables, "ax_lab_ax_runtime_directory": "/tmp"},
+            {**self.variables, "ax_lab_ax_lock_directory": "/tmp"},
         ]
         for index, variables in enumerate(cases):
             with self.subTest(case=index):
@@ -1458,6 +1495,15 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 ("/etc", True),
                 ("/etc/sysctl.d", True),
                 ("{{ ax_lab_sysctl_path }}", False),
+                ("{{ ax_lab_ax_cli }}", False),
+                ("{{ ax_lab_ax_state_path }}", False),
+                ("{{ ax_lab.ax.cli_backup | dirname }}", True),
+                ("{{ ax_lab.ax.cli_backup }}", False),
+                ("/usr", True),
+                ("/usr/local", True),
+                ("{{ ax_lab_ax_helper_directory }}", True),
+                ("{{ ax_lab_ax_helper_directory }}/ax", False),
+                ("{{ ax_lab_ax_helper_directory }}/ax-tarea", False),
             ],
         )
 
@@ -1768,8 +1814,9 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn("credential_directory", text)
                 self.assertNotIn("/etc/dockerswarm", text)
-        # The only files the role reads back are its own ownership proofs and
-        # the registry's memory events.
+        # The only files the role reads back are its own ownership proofs, the
+        # registry's memory events, after Substrate's and AX's images, and
+        # the node's own.
         slurps = sorted(
             task["ansible.builtin.slurp"]["src"]
             for path in role_task_files()
@@ -1779,8 +1826,13 @@ class AxLabRoleTests(AnsibleTaskAssertions, unittest.TestCase):
         self.assertEqual(
             slurps,
             [
+                '{{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_node.id'
+                ' ~ ".scope/memory.events.local" }}',
                 '{{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_registry.id'
                 ' ~ ".scope/memory.events" }}',
+                '{{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_registry.id'
+                ' ~ ".scope/memory.events" }}',
+                "{{ ax_lab_ax_state_path }}",
                 "{{ ax_lab_cluster_state_path }}",
                 "{{ ax_lab_substrate_state_path }}",
             ],
@@ -3081,7 +3133,9 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     continue
                 kubectl_tasks += 1
                 with self.subTest(task=task["name"]):
-                    self.assertEqual(path.name, "node.yml")
+                    self.assertIn(
+                        path.name, ("node.yml", "ax_read.yml", "ax.yml", "workers.yml")
+                    )
                     self.assertEqual(argv[0], "{{ ax_lab_bin_directory }}/kubectl")
                     self.assertEqual(
                         argv[1:7],
@@ -3097,7 +3151,10 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     self.assertEqual(
                         task["environment"], {"HOME": "{{ ax_lab_home_directory }}"}
                     )
-        self.assertEqual(kubectl_tasks, 5)
+        # node.yml's five, and AX's: five reads, nine apply steps (with the
+        # controller pods read before and after the apply) and the worker
+        # repair's two.
+        self.assertEqual(kubectl_tasks, 21)
 
     def test_check_mode_reports_the_planned_changes(self) -> None:
         describe = self.inspect[

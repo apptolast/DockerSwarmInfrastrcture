@@ -1,0 +1,9 @@
+{
+  "name": "ax-agents",
+  "private": true,
+  "description": "Unmodified Claude Code and Codex CLI for AX task sandboxes",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.274",
+    "@openai/codex": "0.156.1"
+  }
+}

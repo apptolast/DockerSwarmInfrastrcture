@@ -1,0 +1,394 @@
+---
+# Apply only, after substrate.yml: AX's control plane and WorkerPool from
+# their manifests, server-side and only on drift; the router's route
+# timeout; the workers a node restart left stale. Then everything is read
+# again and verified, and only then is the proof recorded.
+- name: Read AX in the lab cluster and prove its ownership
+  ansible.builtin.import_tasks: ax_read.yml
+
+- name: Require AX to be readable in the running lab node
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_readable
+    fail_msg: >-
+      AX could not be read in {{ ax_lab.cluster.node_container }}.
+
+- name: Keep the AX reads from before any change
+  ansible.builtin.set_fact:
+    ax_lab_ax_drift_before: "{{ ax_lab_ax_drift }}"
+    ax_lab_ax_namespaces_before: "{{ ax_lab_ax_namespaces }}"
+    ax_lab_ax_changes: >-
+      {{
+        ax_lab_ax_drift
+        + (["router"] if ax_lab_ax_router_drift else [])
+        + (["workers"] if ax_lab_ax_stale_workers else [])
+      }}
+
+# An ax-tarea holds its own lock and refuses to start beside this run's
+# marker; this is the other direction. A task mid-run would lose its worker
+# or its router stream.
+- name: Refuse to change AX while an ax-tarea or the ax CLI runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_ax_changes == []
+        or ax_lab_ax_helper_scopes.stdout_lines | select | list == []
+    fail_msg: >-
+      {{ ax_lab_ax_changes | join(", ") }} would change under a running
+      ax-tarea or ax CLI ({{ ax_lab_ax_helper_scopes.stdout_lines | select
+      | map("split") | map("first") | join(", ") }}): wait until it ends and
+      apply again (docs/AX.md, «Herramientas del operador»).
+
+# Written before the first apply: a run interrupted from here on leaves
+# `installing` for this node, which the next apply resumes. The namespace
+# UIDs a verified install recorded are carried over, but for a namespace
+# deleted since, which the apply creates again with another UID.
+- name: Record the AX install intent
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_ax_expected_state
+        | combine({
+          "phase": "installing",
+          "namespaces": ax_lab_ax_recorded | dict2items
+          | selectattr("key", "in", ax_lab_ax_namespaces) | items2dict,
+        })
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_ax_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_ax_drift | length > 0
+
+# The controller pods before the apply: the log gate below concerns only
+# one this apply starts.
+- name: Read the AX controller pods before the apply
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - pods
+      - --namespace
+      - ax-system
+      - --selector
+      - app.kubernetes.io/name=ax-controller
+      - --no-headers
+      - --output
+      - custom-columns=UID:.metadata.uid
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_controller_before
+  changed_when: false
+  when: ax_lab_ax_drift | length > 0
+
+- name: Apply the AX control plane server-side only on drift
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - apply
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_ax_manifests['ax-system.yaml'] }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  when: ax_lab_ax_drift | length > 0
+  changed_when: true
+
+# Health, separate from drift: a Deployment that does not roll out fails the
+# run and never triggers an apply.
+- name: Wait for each AX control plane Deployment to roll out
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - rollout
+      - status
+      - "deployment/{{ item }}"
+      - --namespace
+      - ax-system
+      - --timeout=10s
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  loop: [ax-redis, ax-server, ax-controller]
+  register: ax_lab_ax_rollout
+  until: ax_lab_ax_rollout.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+# A pod being deleted shows its deletionTimestamp, any other `<none>`.
+- name: Read the AX controller pods after the rollout
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - pods
+      - --namespace
+      - ax-system
+      - --selector
+      - app.kubernetes.io/name=ax-controller
+      - --no-headers
+      - --output
+      - >-
+        custom-columns=NAME:.metadata.name,UID:.metadata.uid,DELETED:.metadata.deletionTimestamp
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_controller_after
+  changed_when: false
+  when: ax_lab_ax_drift | length > 0
+
+- name: Record the AX controller pods this apply started
+  ansible.builtin.set_fact:
+    ax_lab_ax_controller_started: >-
+      {{
+        [] if ax_lab_ax_controller_after is skipped else
+        ax_lab_ax_controller_after.stdout_lines
+        | select("match", "^[a-z0-9.-]+ +[a-z0-9-]+ +<none>$") | map("split")
+        | rejectattr(
+          "1", "in", ax_lab_ax_controller_before.stdout_lines | map("trim")
+          | list
+        )
+        | map("first") | list
+      }}
+
+# ax-controller has no readiness probe, and it skips every event published
+# before it subscribes (google/ax#354): a controller this apply starts must
+# log that it consumes task events before any Task is created. It logs it
+# once, as it starts (internal/controller/worker.go, line 68), so only the
+# head of that pod's log is read; a controller that already ran is not read
+# again, since its log may have grown past any bounded read. Never shown.
+- name: Read the head of each AX controller log this apply started
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - logs
+      - "pod/{{ item }}"
+      - --namespace
+      - ax-system
+      - --limit-bytes=65536
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  loop: "{{ ax_lab_ax_controller_started }}"
+  register: ax_lab_ax_controller_log
+  until: >-
+    ax_lab_ax_controller_log.rc == 0
+    and "starting AX task worker" in ax_lab_ax_controller_log.stdout
+  retries: 18
+  delay: 5
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require each AX controller this apply started to consume task events
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_ax_controller_log.results | default([])
+        | rejectattr("rc", "equalto", 0) | list == []
+      - >-
+        ax_lab_ax_controller_log.results | default([])
+        | map(attribute="stdout")
+        | reject("search", "starting AX task worker") | list == []
+    fail_msg: >-
+      ax-controller never logged «starting AX task worker»
+      (internal/controller/worker.go, line 68): Tasks created now would be
+      skipped (google/ax#354). Read its log with the lab kubeconfig.
+
+- name: Give the atenet router its route timeout only when it differs
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - patch
+      - deployment
+      - atenet-router
+      - --namespace
+      - ate-system
+      - --type
+      - json
+      - --field-manager
+      - ax-lab
+      - --patch
+      - "{{ ax_lab_ax_router_patch | to_json }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  when: ax_lab_ax_router_drift
+  changed_when: true
+
+- name: Wait for the atenet router to roll out with its route timeout
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - rollout
+      - status
+      - deployment/atenet-router
+      - --namespace
+      - ate-system
+      - --timeout=10s
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_router_rollout
+  until: ax_lab_ax_router_rollout.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  when: ax_lab_ax_router_drift
+
+# After Substrate: the WorkerPool kind is one of its CRDs.
+- name: Apply the AX WorkerPool server-side only on drift
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - apply
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_ax_manifests['ax-workers.yaml'] }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  when: ax_lab_ax_drift | length > 0
+  changed_when: true
+
+- name: Recreate the workers the node's last start left stale
+  ansible.builtin.import_tasks: workers.yml
+
+- name: Wait for the WorkerPool to be ready
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - workerpool
+      - "{{ ax_lab.ax.worker_pool.name }}"
+      - --namespace
+      - "{{ ax_lab.ax.worker_pool.namespace }}"
+      - --output
+      - jsonpath={.spec.replicas}{" "}{.status.readyReplicas}
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_pool
+  until: >-
+    ax_lab_ax_pool.rc == 0
+    and ax_lab_ax_pool.stdout.split()
+    == [ax_lab.ax.worker_pool.replicas | string] * 2
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Read AX after the changes
+  ansible.builtin.import_tasks: ax_read.yml
+
+# Everything the apply converges, read back: no manifest the server would
+# change, the route timeout, no stale worker, and the namespaces that
+# existed before still the same objects.
+- name: Verify the installed AX
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_drift | reject("equalto", "state") | list == []
+      - not ax_lab_ax_router_drift
+      - ax_lab_ax_stale_workers == []
+      - >-
+        ax_lab_ax_namespaces | dict2items
+        | selectattr("key", "in", ax_lab_ax_namespaces_before) | items2dict
+        == ax_lab_ax_namespaces_before
+    fail_msg: >-
+      AX differs from its pinned install after the apply: a manifest the
+      server would still change, the router's route timeout, a stale worker
+      or a namespace recreated meanwhile. Nothing further is recorded
+      (docs/AX.md, «Plano de control de AX»).
+
+# docs/AX.md, «WorkerPool y capacidad dentro del nodo»: the node never ran
+# out of memory at its own limit (`oom`, an allocation that failed after
+# reclaim; `max` would also count reaching it and reclaiming page cache).
+# The local file counts this cgroup's own limit only, not a worker that
+# reached its own.
+- name: Read the memory events of the lab node itself
+  ansible.builtin.slurp:
+    src: >-
+      {{ "/sys/fs/cgroup/system.slice/docker-" ~ ax_lab_node.id
+      ~ ".scope/memory.events.local" }}
+  register: ax_lab_ax_node_memory_events
+
+- name: Require the lab node never to have run out of memory at its limit
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ax_lab_ax_node_memory_events.content | b64decode).splitlines()
+        | select("match", "^oom ") | list == ["oom 0"]
+    fail_msg: >-
+      {{ ax_lab.cluster.node_container }} ran out of memory at its own limit
+      since it started: the workers and the platform do not fit in it
+      (docs/AX.md, «WorkerPool y capacidad dentro del nodo»).
+
+- name: Record the proof of the installed AX
+  ansible.builtin.copy:
+    content: >-
+      {{
+        ax_lab_ax_expected_state
+        | combine({"phase": "installed", "namespaces": ax_lab_ax_namespaces})
+        | to_nice_json
+      }}
+    dest: "{{ ax_lab_ax_state_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: ax_lab_ax_drift_before | length > 0

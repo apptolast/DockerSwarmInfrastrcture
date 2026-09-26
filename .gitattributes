@@ -41,3 +41,7 @@ config/logrotate/iptables text eol=lf
 *.path    text eol=lf
 *.tfbackend text eol=lf
 *.tfvars  text eol=lf
+
+# Entradas de AX fijadas por su sha256 (images/ax/README.md): el parche lleva
+# espacios al final de sus líneas de contexto, que son parte del diff.
+images/ax/google-ax-375.patch text eol=lf -whitespace

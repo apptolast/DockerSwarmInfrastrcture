@@ -1,0 +1,291 @@
+---
+# AX's control plane, applied server-side by the ax_lab role only on drift
+# (docs/AX.md, «Plano de control de AX»). It is upstream's deploy/redis.yaml,
+# deploy/ax-server.yaml and deploy/ax-controller.yaml at sources.ax, with
+# only these deviations: images by tag and pinned digest instead of ko import
+# paths; no ClusterRole or ClusterRoleBinding and no Kubernetes API token in
+# any pod; AX_SNAPSHOTS_BUCKET set; Redis on a volume with RDB snapshots only;
+# `type: ClusterIP` written out, so that the role's server-side diff sees
+# another hand publish either Service; and two NetworkPolicies that keep
+# sandboxes away from ax-server and ax-redis.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ax-system
+  labels:
+    com.apptolast.managed-by: ansible
+---
+# Only for the projected Substrate token below: it is granted nothing.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ax-controller
+  namespace: ax-system
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ax-redis-data
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-redis
+    app.kubernetes.io/part-of: ax
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: {{ ax_lab.ax.redis.volume_mib }}Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ax-redis
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-redis
+    app.kubernetes.io/part-of: ax
+spec:
+  replicas: 1
+  # One pod at a time on its ReadWriteOnce volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ax-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ax-redis
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: redis
+          image: {{ ax_lab.images.redis }}
+          # RDB only: a deleted Task leaves the file at the next save.
+          args:
+            - --save
+            - "{{ ax_lab.ax.redis.save_seconds }} 1"
+            - --appendonly
+            - "no"
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - mountPath: /data
+              name: data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ax-redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ax-redis
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-redis
+    app.kubernetes.io/part-of: ax
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    app.kubernetes.io/name: ax-redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ax-server
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-server
+    app.kubernetes.io/part-of: ax
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ax-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ax-server
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ax-server
+          image: localhost:5001/ax-server:{{ ax_lab.ax.tag }}@{{
+            ax_lab.ax.images["ax-server"] }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr=:8080
+            - --redis-addr=ax-redis.ax-system.svc.cluster.local:6379
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ax-server
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-server
+    app.kubernetes.io/part-of: ax
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app.kubernetes.io/name: ax-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ax-controller
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-controller
+    app.kubernetes.io/part-of: ax
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ax-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ax-controller
+    spec:
+      serviceAccountName: ax-controller
+      # Its one Kubernetes API call reads the gemini-api-secret Secret this
+      # lab never creates; Substrate is reached with the token projected
+      # below, not with this one.
+      automountServiceAccountToken: false
+      containers:
+        - name: controller
+          image: localhost:5001/ax-controller:{{ ax_lab.ax.tag }}@{{
+            ax_lab.ax.images["ax-controller"] }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --redis-addr=ax-redis.ax-system.svc.cluster.local:6379
+            - --substrate-endpoint=api.ate-system.svc.cluster.local:443
+            - --substrate-authority=api.ate-system.svc
+            - --substrate-token-file=/var/run/secrets/ateapi/token
+            - --substrate-ca-file=/run/servicedns-ca/trust-bundle.pem
+            - --template=default-template
+            - --template-atespace=ax-system
+          env:
+            - name: ATENET_ROUTER_ADDR
+              value: atenet-router.ate-system.svc.cluster.local:80
+            - name: AX_SNAPSHOTS_BUCKET
+              value: {{ ax_lab.ax.snapshots_bucket }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - mountPath: /var/run/secrets/ateapi
+              name: ate-token
+              readOnly: true
+            - mountPath: /run/servicedns-ca
+              name: servicedns-ca
+              readOnly: true
+      volumes:
+        - name: ate-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 7200
+                  path: token
+        - name: servicedns-ca
+          projected:
+            defaultMode: 420
+            sources:
+              - clusterTrustBundle:
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+                  signerName: servicedns.podcert.ate.dev/identity
+---
+# Only AX's own two pods reach Redis. The kubelet's probes come from the
+# node, which a NetworkPolicy always allows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ax-redis
+  namespace: ax-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ax-redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - ax-controller
+                  - ax-server
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# No pod reaches ax-server, which has no authentication (google/ax#376): the
+# CLI reaches it through `kubectl port-forward`, which no NetworkPolicy sees.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ax-server
+  namespace: ax-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ax-server
+  policyTypes:
+    - Ingress

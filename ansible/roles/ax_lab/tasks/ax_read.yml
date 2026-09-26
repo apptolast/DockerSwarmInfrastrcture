@@ -1,0 +1,429 @@
+---
+# Read AX in the lab cluster and prove its ownership, without changing
+# anything: in --check as the host is, and in the apply after substrate.yml
+# and again after every change. The cluster is read only while the node runs
+# and Substrate was read in it (in --check, only once Substrate matches its
+# pin, since its WorkerPool kind comes with it). As with Substrate, the AX
+# namespaces are never adopted: only a state file for this exact node proves
+# this role created them, and the UIDs it recorded must not change.
+- name: Inspect the AX state file without following links
+  ansible.builtin.stat:
+    path: "{{ ax_lab_ax_state_path }}"
+    follow: false
+    get_checksum: false
+  register: ax_lab_ax_state_file
+
+- name: Require a root-only regular AX state file when there is one
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ax_lab_ax_state_file.stat.exists or (
+          ax_lab_ax_state_file.stat.isreg
+          and not ax_lab_ax_state_file.stat.islnk
+          and ax_lab_ax_state_file.stat.uid == 0
+          and ax_lab_ax_state_file.stat.gid == 0
+          and ax_lab_ax_state_file.stat.mode == "0600"
+        )
+    fail_msg: "{{ ax_lab_ax_state_path }} is not a root:root 0600 regular file."
+
+- name: Read the AX state file
+  ansible.builtin.slurp:
+    src: "{{ ax_lab_ax_state_path }}"
+  register: ax_lab_ax_state_content
+  when: ax_lab_ax_state_file.stat.exists
+
+- name: Record the AX state and whether AX can be read in the cluster
+  ansible.builtin.set_fact:
+    ax_lab_ax_state: >-
+      {{
+        (ax_lab_ax_state_content.content | b64decode | from_json)
+        if ax_lab_ax_state_file.stat.exists else none
+      }}
+    ax_lab_ax_readable: >-
+      {{
+        ax_lab_node is not none
+        and ax_lab_node.status == "running"
+        and ax_lab_substrate_cluster is not none
+        and (not ansible_check_mode or ax_lab_substrate_drift == [])
+      }}
+    ax_lab_ax_time_re: >-
+      [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}
+
+# An ax-tarea or `ax` run lives in its own systemd scope (docs/AX.md,
+# «Herramientas del operador»); an apply never changes AX under one.
+- name: Read the AX operator helpers that are running
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-units
+      - --type=scope
+      - --state=active
+      - --plain
+      - --no-legend
+      - --no-pager
+      - ax-tarea-*
+      - ax-cli-*
+  register: ax_lab_ax_helper_scopes
+  changed_when: false
+  check_mode: false
+
+- name: Read the AX namespaces
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - namespaces
+      - ax-system
+      - "{{ ax_lab.ax.worker_pool.namespace }}"
+      - --ignore-not-found
+      - --no-headers
+      - --output
+      - custom-columns=NAME:.metadata.name,UID:.metadata.uid
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_namespaces_read
+  changed_when: false
+  check_mode: false
+  when: ax_lab_ax_readable
+
+- name: Record the AX namespaces as read
+  ansible.builtin.set_fact:
+    ax_lab_ax_namespaces: >-
+      {{
+        {} if ax_lab_ax_namespaces_read is skipped else
+        dict(
+          ax_lab_ax_namespaces_read.stdout_lines | select
+          | map("split") | list
+        )
+      }}
+    ax_lab_ax_expected_state: >-
+      {{
+        none if ax_lab_node is none else
+        ax_lab_ax_identity | combine({"node_container_id": ax_lab_node.id})
+      }}
+    ax_lab_ax_state_for_node: >-
+      {{
+        ax_lab_ax_state is not none
+        and ax_lab_node is not none
+        and ax_lab_ax_state.node_container_id | default("") == ax_lab_node.id
+      }}
+
+- name: Record the AX namespace UIDs the state holds for this node
+  ansible.builtin.set_fact:
+    ax_lab_ax_recorded: >-
+      {{
+        (ax_lab_ax_state.namespaces | default({}))
+        if ax_lab_ax_state_for_node else {}
+      }}
+
+- name: Refuse AX namespaces this role did not create
+  ansible.builtin.assert:
+    that:
+      - ax_lab_ax_namespaces == {} or ax_lab_ax_state_for_node
+    fail_msg: >-
+      {{ ax_lab_ax_namespaces | list | join(", ") }} exist, but no state file
+      for this node proves this role created them, and they are never
+      adopted. Delete them in an exclusive window (docs/AX.md, «Propiedad de
+      AX»).
+  when: ax_lab_ax_readable
+
+# A namespace deleted since the state recorded it is created again; one
+# that another hand recreated is never adopted.
+- name: Refuse AX namespaces recreated since they were recorded
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_ax_recorded | dict2items
+        | selectattr("key", "in", ax_lab_ax_namespaces) | items2dict
+        == ax_lab_ax_namespaces | dict2items
+        | selectattr("key", "in", ax_lab_ax_recorded) | items2dict
+    fail_msg: >-
+      An AX namespace has another UID than {{ ax_lab_ax_state_path }}
+      recorded: another hand recreated it. Delete it in an exclusive window
+      (docs/AX.md, «Propiedad de AX»).
+  when:
+    - ax_lab_ax_readable
+    - ax_lab_ax_state_for_node
+
+# What an apply would change, exactly as the apply sends it: exit 0 is no
+# difference, 1 a difference, anything else an error. A missing namespace
+# is drift without a diff, since a dry run cannot place objects in it.
+- name: Diff the AX control plane against the cluster server-side
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - diff
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_ax_manifests['ax-system.yaml'] }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_system_diff
+  changed_when: false
+  failed_when: ax_lab_ax_system_diff.rc not in [0, 1]
+  check_mode: false
+  when:
+    - ax_lab_ax_readable
+    - '"ax-system" in ax_lab_ax_namespaces'
+
+- name: Diff the AX WorkerPool against the cluster server-side
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - diff
+      - --server-side
+      - --field-manager
+      - ax-lab
+      - --force-conflicts
+      - --filename
+      - "-"
+    stdin: "{{ ax_lab_ax_manifests['ax-workers.yaml'] }}"
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_workers_diff
+  changed_when: false
+  failed_when: ax_lab_ax_workers_diff.rc not in [0, 1]
+  check_mode: false
+  when:
+    - ax_lab_ax_readable
+    - ax_lab.ax.worker_pool.namespace in ax_lab_ax_namespaces
+
+# Drift is the only trigger of an apply: a state file that is missing, not
+# `installed` or pinned to another install, a missing namespace, or a
+# manifest the server would change.
+- name: Record the AX drift
+  ansible.builtin.set_fact:
+    ax_lab_ax_drift: >-
+      {{
+        [] if not ax_lab_ax_readable else
+        (
+          ["state"]
+          if not ax_lab_ax_state_for_node
+          or ax_lab_ax_state.phase | default("") != "installed"
+          or ax_lab_ax_state
+          | dict2items
+          | rejectattr("key", "in", ["phase", "namespaces"])
+          | items2dict != ax_lab_ax_expected_state
+          else []
+        )
+        + (
+          ["ax-system.yaml"]
+          if ax_lab_ax_system_diff is skipped
+          or ax_lab_ax_system_diff.rc == 1
+          else []
+        )
+        + (
+          ["ax-workers.yaml"]
+          if ax_lab_ax_workers_diff is skipped
+          or ax_lab_ax_workers_diff.rc == 1
+          else []
+        )
+      }}
+
+# ate-setup owns the router's Deployment and drops this argument on every
+# reinstall (its forced server-side apply owns the whole args list), so the
+# role adds it back after substrate.yml.
+- name: Read the atenet router's containers and arguments
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - deployment
+      - atenet-router
+      - --namespace
+      - ate-system
+      - --output
+      - >-
+        jsonpath={.spec.template.spec.containers[*].name}{"\n"}{.spec.template.spec.containers[?(@.name=="atenet-router")].args}
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_router_read
+  changed_when: false
+  check_mode: false
+  when: ax_lab_ax_readable
+
+- name: Record the atenet router's route timeout
+  ansible.builtin.set_fact:
+    ax_lab_ax_router_names: >-
+      {{
+        [] if ax_lab_ax_router_read is skipped else
+        ax_lab_ax_router_read.stdout_lines[0].split()
+      }}
+    ax_lab_ax_router_args: >-
+      {{
+        [] if ax_lab_ax_router_read is skipped else
+        ax_lab_ax_router_read.stdout_lines[1:] | first | default("[]")
+        | from_json
+      }}
+    ax_lab_ax_router_arg: "--route-timeout={{ ax_lab.ax.router_route_timeout }}"
+
+- name: Record whether the atenet router needs its route timeout
+  ansible.builtin.set_fact:
+    ax_lab_ax_router_timeouts: >-
+      {{ ax_lab_ax_router_args | select("match", "^--route-timeout=") | list }}
+    ax_lab_ax_router_drift: >-
+      {{
+        ax_lab_ax_readable
+        and ax_lab_ax_router_args
+        | select("match", "^--route-timeout=") | list
+        != [ax_lab_ax_router_arg]
+      }}
+
+- name: Refuse an atenet router without one route timeout to converge
+  ansible.builtin.assert:
+    that:
+      - '"atenet-router" in ax_lab_ax_router_names'
+      - ax_lab_ax_router_timeouts | length <= 1
+    fail_msg: >-
+      ate-system/atenet-router has no atenet-router container or more than
+      one --route-timeout argument, which only a hand edit adds. Reinstall
+      Substrate or recreate the cluster (docs/AX.md, «Router»).
+  when: ax_lab_ax_readable
+
+# A JSON patch whose test operations fail unless the container and the old
+# argument are still where they were read.
+- name: Record the JSON patch that sets the route timeout
+  ansible.builtin.set_fact:
+    ax_lab_ax_router_patch: >-
+      {{
+        [
+          {
+            "op": "test",
+            "path": "/spec/template/spec/containers/"
+            ~ ax_lab_ax_router_names.index("atenet-router") ~ "/name",
+            "value": "atenet-router",
+          }
+        ]
+        + (
+          [
+            {
+              "op": "add",
+              "path": "/spec/template/spec/containers/"
+              ~ ax_lab_ax_router_names.index("atenet-router") ~ "/args/-",
+              "value": ax_lab_ax_router_arg,
+            }
+          ]
+          if ax_lab_ax_router_timeouts == [] else
+          [
+            {
+              "op": "test",
+              "path": "/spec/template/spec/containers/"
+              ~ ax_lab_ax_router_names.index("atenet-router") ~ "/args/"
+              ~ ax_lab_ax_router_args.index(ax_lab_ax_router_timeouts[0]),
+              "value": ax_lab_ax_router_timeouts[0],
+            },
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/"
+              ~ ax_lab_ax_router_names.index("atenet-router") ~ "/args/"
+              ~ ax_lab_ax_router_args.index(ax_lab_ax_router_timeouts[0]),
+              "value": ax_lab_ax_router_arg,
+            },
+          ]
+        )
+      }}
+  when: ax_lab_ax_router_drift
+
+# After a node restart Substrate keeps each worker's old IP: a Worker is
+# named after its pod's UID and its IP never changes
+# (cmd/atecontroller/internal/workersync/syncer.go, line 67 and lines
+# 302-308), so a task placed on such a worker starts but nobody reaches it.
+# A worker pod created before the node last started is stale. Docker's
+# StartedAt has nanoseconds and a creationTimestamp whole seconds plus `Z`,
+# so one created in the node's own second sorts after it and is kept.
+- name: Read when the lab node last started
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - "{% raw %}{{json .State.StartedAt}}{% endraw %}"
+      - "{{ ax_lab.cluster.node_container }}"
+  register: ax_lab_ax_node_started
+  changed_when: false
+  check_mode: false
+  when: ax_lab_ax_readable
+
+- name: Read every worker pod in the lab cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ ax_lab_bin_directory }}/kubectl"
+      - --kubeconfig
+      - "{{ ax_lab_kubeconfig_path }}"
+      - --context
+      - "kind-{{ ax_lab.cluster.name }}"
+      - --request-timeout
+      - 10s
+      - get
+      - pods
+      - --all-namespaces
+      - --selector
+      - ate.dev/worker-pool
+      - --no-headers
+      - --output
+      - >-
+        custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CREATED:.metadata.creationTimestamp
+  environment:
+    HOME: "{{ ax_lab_home_directory }}"
+  register: ax_lab_ax_worker_pods
+  changed_when: false
+  check_mode: false
+  when: ax_lab_ax_readable
+
+- name: Require well-formed node and worker times
+  ansible.builtin.assert:
+    that:
+      - >-
+        ax_lab_ax_node_started.stdout | from_json
+        is match("^" ~ ax_lab_ax_time_re ~ "([.][0-9]+)?Z$")
+      - >-
+        ax_lab_ax_worker_pods.stdout_lines | select
+        | reject(
+          "match", "^[a-z0-9.-]+ +[a-z0-9.-]+ +" ~ ax_lab_ax_time_re ~ "Z$"
+        )
+        | list == []
+    fail_msg: >-
+      The start time of {{ ax_lab.cluster.node_container }} or a worker pod's
+      creationTimestamp is not an RFC 3339 time in UTC.
+  when: ax_lab_ax_readable
+
+- name: Record the worker pods created before the node started
+  ansible.builtin.set_fact:
+    ax_lab_ax_stale_workers: >-
+      {{
+        [] if not ax_lab_ax_readable else
+        ax_lab_ax_worker_pods.stdout_lines | select | map("split")
+        | selectattr(
+          "2", "lt", (ax_lab_ax_node_started.stdout | from_json)[:19]
+        )
+        | list
+      }}
