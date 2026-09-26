@@ -25,7 +25,8 @@
 
 # An adopted network serves plain containers deployed outside this
 # repository, which can only join an attachable overlay; on a rebuilt host
-# it has to be born attachable. Every other edge network never is.
+# it has to be born attachable. Every other edge network never is. Swarm
+# allocates each subnet, except where edge_network_subnets fixes one.
 - name: Create missing isolated overlay edge networks
   ansible.builtin.command:
     argv: >-
@@ -37,6 +38,11 @@
         + (
           ["--attachable"]
           if item.item in edge_adopted_attachable_networks
+          else []
+        )
+        + (
+          ["--subnet", edge_network_subnets[item.item]]
+          if item.item in edge_network_subnets
           else []
         )
         + [item.item]
@@ -76,10 +82,17 @@
       - >-
         (item.stdout | from_json | first).Options.encrypted
         | default(None) == ""
+      # The AX forwarder admits only its reviewed subnet: a network Swarm
+      # numbered otherwise would leave Traefik without a way to the panel.
+      - >-
+        item.item not in edge_network_subnets
+        or (item.stdout | from_json | first).IPAM.Config
+        | map(attribute="Subnet") | list
+        == [edge_network_subnets[item.item]]
     fail_msg: >-
       Edge network {{ item.item }} does not match the encrypted
-      Swarm contract, or is attachable without being reviewed as an
-      adopted application network.
+      Swarm contract, is attachable without being reviewed as an
+      adopted application network, or lacks its fixed subnet.
   loop: "{{ edge_networks_verified.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -562,8 +575,9 @@
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
         Spec.TaskTemplate.ContainerSpec.Configs | length == 2
-      # Exactly the ACME token plus the reviewed basicAuth users files, each
-      # read-only for the runtime user and nothing else.
+      # Exactly the ACME token, the reviewed basicAuth users files and the
+      # upstream mTLS material, each read-only for the runtime user and
+      # nothing else.
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
         Spec.TaskTemplate.ContainerSpec.Secrets
@@ -571,6 +585,7 @@
         == (
           [edge_traefik_cloudflare_secret_name]
           + edge_traefik_basicauth_secrets.values() | list
+          + edge_traefik_upstream_mtls_secrets.values() | list
         ) | sort
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
@@ -582,6 +597,7 @@
         == (
           ["cloudflare_dns_api_token"]
           + edge_traefik_basicauth_secrets.keys() | list
+          + edge_traefik_upstream_mtls_secrets.keys() | list
         ) | sort
       - >-
         (edge_deployed_traefik_service.stdout | from_json | first).
@@ -748,7 +764,9 @@
     # A missing or empty users file does not fail the task: Traefik only
     # disables that router, which then answers 404. Require the Basic
     # challenge of each authenticated route instead. The request carries no
-    # credentials, so it costs no bcrypt work.
+    # credentials, so it costs no bcrypt work. A hostname's first deploy
+    # obtains its certificate by DNS-01 and, with sniStrict, Traefik refuses
+    # its TLS handshake until then, so the probe waits up to five minutes.
     - name: Prove every basicAuth route answers its Basic challenge
       ansible.builtin.command:
         argv: >-
@@ -783,6 +801,8 @@
       loop:
         - hostname: logs-satisfactory.apptolast.com
           realm: Satisfactory logs
+        - hostname: ax.apptolast.com
+          realm: AX
       loop_control:
         label: "{{ item.hostname }}"
       register: edge_basicauth_challenges
@@ -799,7 +819,7 @@
             multiline=True,
             ignorecase=True
           )
-      retries: 36
+      retries: 60
       delay: 5
 
   rescue:

@@ -24,11 +24,26 @@
       # in stacks/edge/dynamic.yml.j2; each value is a versioned secret.
       - >-
         edge_traefik_basicauth_secrets == {
-          'basicauth_satisfactory_logs': 'edge-basicauth-satisfactory-logs-v1'
+          'basicauth_satisfactory_logs': 'edge-basicauth-satisfactory-logs-v1',
+          'basicauth_ax': 'edge-basicauth-ax-v1'
+        }
+      - >-
+        edge_traefik_upstream_mtls_secrets == {
+          'ax_upstream_ca': 'edge-ax-upstream-ca-v1',
+          'ax_upstream_client': 'edge-ax-upstream-client-v1'
         }
       - >-
         edge_traefik_cloudflare_secret_name
         not in edge_traefik_basicauth_secrets.values() | list
+        + edge_traefik_upstream_mtls_secrets.values() | list
+      - >-
+        edge_traefik_basicauth_secrets.values() | list
+        | intersect(edge_traefik_upstream_mtls_secrets.values() | list)
+        | length == 0
+      - >-
+        edge_traefik_basicauth_secrets.keys() | list
+        | intersect(edge_traefik_upstream_mtls_secrets.keys() | list)
+        | length == 0
       - >-
         edge_traefik_acme_storage_filename
         is match("^[a-zA-Z0-9][a-zA-Z0-9_.-]*\\.json$")
@@ -50,7 +65,8 @@
           'organizationweb': 'apptolast-edge-organizationweb',
           'racinggame': 'apptolast-edge-racinggame',
           'observatorio': 'apptolast-edge-observatorio',
-          'satisfactory': 'apptolast-edge-satisfactory'
+          'satisfactory': 'apptolast-edge-satisfactory',
+          'ax': 'apptolast-edge-ax'
         }
       - >-
         edge_application_networks.values() | list
@@ -61,11 +77,17 @@
       - racinggame.edge_network == 'apptolast-edge-racinggame'
       - >-
         edge_adopted_attachable_networks
-        == ['apptolast-edge-observatorio', 'apptolast-edge-satisfactory']
+        == [
+          'apptolast-edge-observatorio',
+          'apptolast-edge-satisfactory',
+          'apptolast-edge-ax'
+        ]
       - >-
         edge_adopted_attachable_networks
         | difference(edge_application_networks.values() | list)
         | length == 0
+      - >-
+        edge_network_subnets == {'apptolast-edge-ax': '10.0.250.0/24'}
       - edge_monitoring_network not in edge_networks.values()
       - edge_monitoring_network not in edge_application_networks.values()
       - edge_deployment_profile in ["production", "acme-staging"]
@@ -166,6 +188,45 @@
       manual-bootstrap provenance.
     quiet: true
   loop: "{{ edge_basicauth_secret_inspect.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+
+# Metadata only, like the users files: the CA certificate and the client
+# key pair are never read here. The upstream's bootstrap creates them.
+- name: Verify the upstream mTLS secrets exist
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ item }}"
+  loop: "{{ edge_traefik_upstream_mtls_secrets.values() | list | sort }}"
+  register: edge_upstream_mtls_secret_inspect
+  changed_when: false
+  no_log: true
+  check_mode: false
+
+- name: Verify the upstream mTLS secret provenance labels
+  ansible.builtin.assert:
+    that:
+      - >-
+        edge_upstream_mtls_secret_inspect.results | map(attribute="item")
+        | list
+        == edge_traefik_upstream_mtls_secrets.values() | list | sort
+      - item.rc | default(1) == 0
+      - (item.stdout | from_json | first).Spec.Name == item.item
+      - >-
+        (item.stdout | from_json | first).
+        Spec.Labels["com.apptolast.managed-by"] == "manual-bootstrap"
+      - >-
+        (item.stdout | from_json | first).
+        Spec.Labels["com.apptolast.purpose"] == "traefik-upstream-mtls"
+    fail_msg: >-
+      A Traefik upstream mTLS secret exists but lacks the reviewed
+      manual-bootstrap provenance.
+    quiet: true
+  loop: "{{ edge_upstream_mtls_secret_inspect.results }}"
   loop_control:
     label: "{{ item.item }}"
   no_log: true

@@ -112,6 +112,11 @@ accessLog:
   format: json
   bufferingSize: 100
   fields:
+    # basicAuth anota en ClientUsername lo que se escriba como usuario,
+    # tambien si el login falla: una contrasena tecleada en ese campo
+    # acabaria en el log de acceso.
+    names:
+      ClientUsername: drop
     queryParameters:
       defaultMode: drop
     headers:

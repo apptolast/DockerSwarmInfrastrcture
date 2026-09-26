@@ -72,13 +72,15 @@ print(
 print(traefik["mode"])
 print(traefik["spec_exact"] or "")
 print(traefik["spec_pattern"])
-# The ACME token plus every reviewed basicAuth users file.
+# The ACME token, every reviewed basicAuth users file and the upstream
+# mTLS material.
 print(
     json.dumps(
         sorted(
             [
                 group_vars["edge_traefik_cloudflare_secret_name"],
                 *group_vars["edge_traefik_basicauth_secrets"].values(),
+                *group_vars["edge_traefik_upstream_mtls_secrets"].values(),
             ]
         )
     )

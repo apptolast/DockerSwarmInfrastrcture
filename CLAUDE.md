@@ -506,6 +506,17 @@ the service's `PreviousSpec`). This part of the gate lifts only after that
 window verifies and a repeat apply reports `changed=0`; the evidence change
 then records it here.
 
+Once the AX web panel route (`docs/EDGE.md`, «Ruta de AX») is merged, which
+happens together with or after the panel's lab deployment, every `edge` or
+`site` apply also requires the route's three Docker secrets and stops before
+mutating anything, `--check` included, while one is missing; the two mTLS
+secrets only come from the panel's `scripts/ax-web-bootstrap.sh init`. From
+then on **apply `edge` (or `site`) only through «Ventana de aplicación de la
+ruta» in `docs/EDGE.md`**, not through the Satisfactory window. It starts
+only after the Satisfactory window is recorded, stops if the live service no
+longer matches the last recorded window, and needs a lockout after failed
+logins or the owner's written acceptance of going live without one.
+
 Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
 `95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
 rules whenever that unit runs. A `--playbook platform` apply runs the base

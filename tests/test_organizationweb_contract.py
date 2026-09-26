@@ -213,6 +213,8 @@ class OrganizationWebContractTests(unittest.TestCase):
                 "satisfactory-ws",
                 "satisfactory-companions",
                 "satisfactory-logs",
+                "ax",
+                "ax-health",
             },
         )
         router = dynamic["http"]["routers"]["organizationweb"]
@@ -232,6 +234,7 @@ class OrganizationWebContractTests(unittest.TestCase):
                 "edge-racinggame",
                 "edge-observatorio",
                 "edge-satisfactory",
+                "edge-ax",
             },
         )
 

@@ -76,87 +76,133 @@ traefik_image_re='^((docker\.io/library/)?traefik(:v3)?@sha256:[a-f0-9]{64}|dock
 [[ "${traefik_image}" =~ ${traefik_image_re} ]] ||
   fail "rendered Traefik image is neither digest-pinned nor the v3 channel"
 
-validation_name="edge-config-validation-$$"
+validation_prefix="edge-config-validation-$$"
+validation_dir="${PROJECT_DIR}/.build/edge-validation"
 cleanup() {
-  docker container rm --force "${validation_name}" >/dev/null 2>&1 || true
+  docker container rm --force \
+    "${validation_prefix}-static" "${validation_prefix}-render" \
+    >/dev/null 2>&1 || true
+  rm -rf -- "${validation_dir}"
 }
 trap cleanup EXIT
 
-docker run \
-  --detach \
-  --name "${validation_name}" \
-  --read-only \
-  --user 65532:65532 \
-  --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777 \
-  --tmpfs /data:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700 \
-  --env CF_DNS_API_TOKEN=validation-placeholder \
-  --volume "${PROJECT_DIR}/.build/edge/static.yml:/etc/traefik.yml:ro" \
-  --volume \
-    "${PROJECT_DIR}/tests/fixtures/traefik-empty-dynamic.yml:/etc/traefik-dynamic.yml:ro" \
-  "${traefik_image}" \
-  --configFile=/etc/traefik.yml >/dev/null
+# Boot the pinned Traefik as the edge runs it, with a static and a dynamic
+# file and any extra `docker run` options, wait for its healthcheck and
+# reject every warning-or-higher entry except the known v3.7 notices.
+boot_traefik() {
+  local name=$1
+  local static_file=$2
+  local dynamic_file=$3
+  shift 3
 
-healthy=false
-for _ in {1..20}; do
-  if docker exec \
-    "${validation_name}" \
-    traefik healthcheck \
-    --configFile=/etc/traefik.yml >/dev/null 2>&1; then
-    healthy=true
-    break
+  docker run \
+    --detach \
+    --name "${name}" \
+    --read-only \
+    --user 65532:65532 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777 \
+    --tmpfs /data:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700 \
+    --volume "${static_file}:/etc/traefik.yml:ro" \
+    --volume "${dynamic_file}:/etc/traefik-dynamic.yml:ro" \
+    "$@" \
+    "${traefik_image}" \
+    --configFile=/etc/traefik.yml >/dev/null
+
+  local healthy=false
+  local running
+  for _ in {1..20}; do
+    if docker exec \
+      "${name}" \
+      traefik healthcheck \
+      --configFile=/etc/traefik.yml >/dev/null 2>&1; then
+      healthy=true
+      break
+    fi
+
+    running="$(docker inspect --format '{{.State.Running}}' "${name}")"
+    if [[ "${running}" != true ]]; then
+      docker logs "${name}" >&2
+      fail "Traefik stopped during configuration validation"
+    fi
+    sleep 1
+  done
+  [[ "${healthy}" == true ]] || fail "Traefik healthcheck did not converge"
+
+  local runtime_identity
+  runtime_identity="$(
+    docker inspect \
+      --format \
+      '{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.SecurityOpt}}' \
+      "${name}"
+  )"
+  [[ "${runtime_identity}" == \
+    '65532:65532|true|["ALL"]|["no-new-privileges:true"]' ]] ||
+    fail "Traefik validation container lost a security invariant"
+
+  local traefik_logs problem_logs unknown_logs
+  traefik_logs="$(docker logs "${name}" 2>&1)"
+  problem_logs="$(
+    grep -Ei '"level":"(warn|error|fatal|panic)"' <<<"${traefik_logs}" ||
+      true
+  )"
+  unknown_logs="$(
+    grep -Fv -e "${KNOWN_WARNING}" -e "${KNOWN_DEPRECATION}" \
+      <<<"${problem_logs}" ||
+      true
+  )"
+  if [[ -n "${unknown_logs}" ]]; then
+    printf '%s\n' "${unknown_logs}" >&2
+    fail "Traefik emitted an unexpected warning-or-higher entry"
   fi
+  local known_warning_count deprecation_count
+  known_warning_count="$(
+    grep -Fc "${KNOWN_WARNING}" <<<"${problem_logs}" ||
+      true
+  )"
+  [[ "${known_warning_count}" -eq 1 ]] ||
+    fail "the unconditional pinned Traefik warning did not occur exactly once"
+  deprecation_count="$(
+    grep -Fc "${KNOWN_DEPRECATION}" <<<"${problem_logs}" ||
+      true
+  )"
+  [[ "${deprecation_count}" -eq 0 || "${deprecation_count}" -eq "${ENTRYPOINT_COUNT}" ]] ||
+    fail "the underscoreHeadersStrategy deprecation did not occur once per entry point"
 
-  running="$(docker inspect --format '{{.State.Running}}' "${validation_name}")"
-  if [[ "${running}" != true ]]; then
-    docker logs "${validation_name}" >&2
-    fail "Traefik stopped during configuration validation"
-  fi
-  sleep 1
-done
-[[ "${healthy}" == true ]] || fail "Traefik healthcheck did not converge"
+  docker container rm --force "${name}" >/dev/null
+}
 
-runtime_identity="$(
-  docker inspect \
-    --format \
-    '{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.SecurityOpt}}' \
-    "${validation_name}"
-)"
-[[ "${runtime_identity}" == \
-  '65532:65532|true|["ALL"]|["no-new-privileges:true"]' ]] ||
-  fail "Traefik validation container lost a security invariant"
+# The rendered static configuration, ACME resolver included, with a minimal
+# dynamic file.
+boot_traefik \
+  "${validation_prefix}-static" \
+  "${PROJECT_DIR}/.build/edge/static.yml" \
+  "${PROJECT_DIR}/tests/fixtures/traefik-empty-dynamic.yml" \
+  --env CF_DNS_API_TOKEN=validation-placeholder
 
-traefik_logs="$(docker logs "${validation_name}" 2>&1)"
-problem_logs="$(
-  grep -Ei '"level":"(warn|error|fatal|panic)"' <<<"${traefik_logs}" ||
-    true
-)"
-unknown_logs="$(
-  grep -Fv -e "${KNOWN_WARNING}" -e "${KNOWN_DEPRECATION}" \
-    <<<"${problem_logs}" ||
-    true
-)"
-if [[ -n "${unknown_logs}" ]]; then
-  printf '%s\n' "${unknown_logs}" >&2
-  fail "Traefik emitted an unexpected warning-or-higher entry"
-fi
-known_warning_count="$(
-  grep -Fc "${KNOWN_WARNING}" <<<"${problem_logs}" ||
-    true
-)"
-[[ "${known_warning_count}" -eq 1 ]] ||
-  fail "the unconditional pinned Traefik warning did not occur exactly once"
-deprecation_count="$(
-  grep -Fc "${KNOWN_DEPRECATION}" <<<"${problem_logs}" ||
-    true
-)"
-[[ "${deprecation_count}" -eq 0 || "${deprecation_count}" -eq "${ENTRYPOINT_COUNT}" ]] ||
-  fail "the underscoreHeadersStrategy deprecation did not occur once per entry point"
+# The whole rendered dynamic configuration, so an option Traefik rejects or
+# drops fails here and not in the production apply: a serversTransport
+# whose TLS configuration falls back to the default one logs `Could not
+# configure HTTP Transport` at ERROR, an unknown key stops the file provider
+# (and with it /ping), and a middleware that cannot be built disables its
+# router with an ERROR. Only the ACME resolver and the backend health checks
+# are removed, and every file under /run/secrets is a throwaway stand-in of
+# its kind (scripts/prepare-traefik-validation.py). /ping is served by the
+# render's own edge-ping-internal router.
+rm -rf -- "${validation_dir}"
+"${PYTHON_BIN}" "${SCRIPT_DIR}/prepare-traefik-validation.py" \
+  "${PROJECT_DIR}/.build/edge" "${validation_dir}" >/dev/null
+boot_traefik \
+  "${validation_prefix}-render" \
+  "${validation_dir}/static.yml" \
+  "${validation_dir}/dynamic.yml" \
+  --volume "${validation_dir}/secrets:/run/secrets:ro"
 
 cleanup
 trap - EXIT
 
 printf '%s\n' \
   "Traefik config, healthcheck and hardening validation passed." \
+  "The whole rendered dynamic configuration loaded." \
   "No warning-or-higher entries beyond the known v3.7 notices."
