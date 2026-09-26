@@ -496,15 +496,18 @@ routes, a `basicAuth` middleware and the `apptolast-edge-satisfactory`
 network. All three are now codified in `stacks/edge/` exactly as they run,
 except that the login reads its users from the Docker Secret
 `edge-basicauth-satisfactory-logs-v1` instead of a hash in this public
-repository. The live service still runs the hand-made Config and that secret
-does not exist yet, so **do not apply `--playbook edge` (or `site`) except
-through the window procedure in `docs/EDGE.md` («Ventana de aplicación»)**:
-it creates the secret from the live hash without printing it, records every
-public route before and after, and rolls back to the previous Config names
-on any difference found before the repeat apply (the repeat apply replaces
-the service's `PreviousSpec`). This part of the gate lifts only after that
-window verifies and a repeat apply reports `changed=0`; the evidence change
-then records it here.
+repository. **This part of the gate is lifted.** The window procedure in
+`docs/EDGE.md` («Ventana de aplicación») ran on 2026-09-26 from `e62fd93`
+and created that secret from the live hash without printing it. Its first
+apply failed at the post-deploy health gate while the new task was already
+healthy (a race fixed by #77); every public route answered the same before
+and after and the login file matched the live entry, so it was not rolled
+back, and a repeat apply reported `changed=0`
+(`docs/DEPLOYMENT_STATUS.md`, «Aplicado y verificado»). The live service now
+runs the rendered Config and `--playbook edge` applies normally again;
+`site` also runs `platform`, which stays restricted below.
+`docker service rollback edge_traefik` no longer returns to the hand-made
+Config: going back is a reviewed change and another `edge` apply.
 
 Once the AX web panel route (`docs/EDGE.md`, «Ruta de AX») is merged, which
 happens together with or after the panel's lab deployment, every `edge` or
@@ -515,7 +518,10 @@ then on **apply `edge` (or `site`) only through «Ventana de aplicación de la
 ruta» in `docs/EDGE.md`**, not through the Satisfactory window. It starts
 only after the Satisfactory window is recorded, stops if the live service no
 longer matches the last recorded window, and needs a lockout after failed
-logins or the owner's written acceptance of going live without one.
+logins or the owner's written acceptance of going live without one. The
+route (#79) and the panel (#78) were applied in that window on 2026-09-26,
+with the owner's delegated acceptance of going live before the lockout
+(`docs/DEPLOYMENT_STATUS.md`, «Panel web de AX: ventana 2»).
 
 Manual `dockerswarm-docker-firewall.service` drop-ins (`90-satisfactory.conf`,
 `95-sftp.conf`) re-add the SFTP (2222) and Satisfactory (7777/8888) ingress
