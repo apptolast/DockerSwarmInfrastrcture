@@ -637,11 +637,14 @@ class EdgeAccessLogWindowDocsTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, window)
+        # Applied on 2026-09-26: its record starts from the last recorded edge
+        # window (the web panel's final index) and records its own final one.
         status = self.text("docs/DEPLOYMENT_STATUS.md")
-        step = status[status.index("3. `edge` en la «Ventana del log de acceso»") :]
-        step = step[: step.index("4. Verificar")]
-        self.assertIn("PR #80", step)
-        self.assertIn("`Version.Index`", step)
+        start = status.index("### CrowdSec y log de acceso de Traefik (2026-09-26)")
+        entry = status[start : status.index(" ### ", start + 1)]
+        for index in ("147822", "147852"):
+            with self.subTest(index=index):
+                self.assertIn("`Version.Index` " + index, entry)
 
 
 if __name__ == "__main__":
