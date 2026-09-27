@@ -55,7 +55,7 @@ WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
 # The two ko builds of images/ax-web at 87588c5 produced this manifest
 # digest (images/ax-web/README.md); CI rebuilds it and compares.
 PINNED_DIGEST = (
-    "sha256:e8128547a95a3adcbb9a488faa9b379fdb9fa132337d7404cad073b2c3d78faa"
+    "sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf"
 )
 NODE_ID = "b" * 64
 EDGE_ID = "d" * 64
@@ -318,7 +318,7 @@ class WebValidatorTests(unittest.TestCase):
         self.assertEqual(web["origin"], "https://ax.apptolast.com")
         self.assertEqual(web["tls_directory"], "/etc/dockerswarm/ax/web-tls")
         self.assertEqual(web["repo_hosts"], ["github.com"])
-        self.assertEqual(web["blackout_utc"], "22:30-00:40")
+        self.assertEqual(web["blackout_utc"], "")
         forwarder = web["forwarder"]
         self.assertEqual(forwarder["container"], "ax-web-edge")
         self.assertEqual(forwarder["edge_network"], "apptolast-edge-ax")
@@ -388,7 +388,7 @@ class WebValidatorTests(unittest.TestCase):
         )
         (container,) = pod["containers"]
         self.assertEqual(
-            container["image"], f"localhost:5001/ax-web:0.1.0@{PINNED_DIGEST}"
+            container["image"], f"localhost:5001/ax-web:0.2.0@{PINNED_DIGEST}"
         )
         self.assertEqual(
             container["securityContext"],
@@ -574,7 +574,7 @@ class WebValidatorTests(unittest.TestCase):
             ),
             (
                 "image by tag",
-                lambda o: container(o).update(image="localhost:5001/ax-web:0.1.0"),
+                lambda o: container(o).update(image="localhost:5001/ax-web:0.2.0"),
                 "pinned images",
             ),
             (
@@ -729,7 +729,7 @@ class WebValidatorTests(unittest.TestCase):
             ("node port outside the range", web(node_port=8443), "node_port"),
             ("another namespace", web(namespace="default"), "namespace"),
             ("another origin", web(origin="https://ax.example.com"), "origin"),
-            ("no Observatorio window", web(blackout_utc="23:00-23:30"), "blackout"),
+            ("a blackout window", web(blackout_utc="22:30-00:40"), "blackout"),
             ("too many turns", web(max_turns=51), "max_turns"),
             ("too long", web(max_timeout_minutes=60), "max_timeout"),
             ("an IP as repo host", web(repo_hosts=["10.0.0.1"]), "repo_hosts"),
@@ -1077,7 +1077,7 @@ class WebRoleTests(unittest.TestCase):
             "CPU": {"nano_cpus": 0},
             "PIDs": {"pids_limit": None},
             "restart always": {"restart_policy": {"Name": "always", "MaximumRetryCount": 0}},
-            "another image": {"image": "localhost:5001/ax-web:0.1.0"},
+            "another image": {"image": "localhost:5001/ax-web:0.2.0"},
             "any peer": {"cmd": forwarder_argv(lab())[:-1] + ["0.0.0.0/1"]},
             "another entrypoint": {"entrypoint": ["/bin/sh"]},
             "host network": {"network_mode": "host"},

@@ -401,8 +401,9 @@ WEB_FORWARDER = "ax-web-edge"
 WEB_EDGE_NETWORK = "apptolast-edge-ax"
 WEB_PORT = 8443
 WEB_HEALTH_PORT = 8081
-# The Observatorio window, 22:30-00:40 UTC (docs/AX.md).
-WEB_BLACKOUT = "22:30-00:40"
+# No blackout: the owner dropped the Observatorio window (22:30-00:40 UTC)
+# from the panel on 2026-09-28 (docs/AX.md).
+WEB_BLACKOUT = ""
 # kind's default IPv4 pod subnet: kind-config.yaml.j2 sets none, and
 # validate_kind_config_render refuses any other networking key.
 KIND_POD_SUBNET = "10.244.0.0/16"
