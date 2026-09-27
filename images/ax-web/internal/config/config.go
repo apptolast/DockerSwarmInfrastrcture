@@ -19,7 +19,8 @@ import (
 // maxFileBytes bounds the configuration file.
 const maxFileBytes = 64 << 10
 
-// Config is the panel's whole configuration. Every field is required.
+// Config is the panel's whole configuration. Every field is required
+// except Blackout, whose absence or "" means no window.
 type Config struct {
 	// AXServer is ax-server's in-cluster host:port (plain HTTP/2, gRPC).
 	AXServer string `json:"ax_server"`

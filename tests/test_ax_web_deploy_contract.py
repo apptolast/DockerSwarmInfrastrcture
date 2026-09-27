@@ -52,8 +52,8 @@ WEB_APPLY = "ansible/roles/ax_lab/tasks/web.yml"
 EXAMPLES = "ansible/roles/ax_lab/tasks/examples.yml"
 BOOTSTRAP = ROOT / "scripts/ax-web-bootstrap.sh"
 WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
-# The two ko builds of images/ax-web at 87588c5 produced this manifest
-# digest (images/ax-web/README.md); CI rebuilds it and compares.
+# The two ko builds of images/ax-web at 55e4865 (0.2.0, no blackout)
+# produced this manifest digest; CI rebuilds it and compares.
 PINNED_DIGEST = (
     "sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf"
 )

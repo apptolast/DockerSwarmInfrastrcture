@@ -34,11 +34,15 @@ solo texto; la tarea y su workspace se borran al terminar.
 
 - **Una sola ejecución a la vez.** Tampoco arranca si existe cualquier tarea
   `web-*` o `tarea-*` (las de `ax-tarea`).
-- **Ventana del Observatorio.** Rechaza una ejecución cuyo intervalo
-  `[ahora, ahora + 3 min + tiempo máximo + max(2 min, antelación)]` toque
-  22:30-00:40 UTC, cancela la activa con esa antelación (5 minutos) y no
-  reanuda tareas dentro de ella. Así el vigilante nunca corta una ejecución
-  que se aceptó.
+- **Ventana sin ejecuciones (opcional).** Si `blackout` fija una ventana
+  UTC diaria `HH:MM-HH:MM`, rechaza una ejecución cuyo intervalo
+  `[ahora, ahora + 3 min + tiempo máximo + max(2 min, antelación)]` la
+  toque, cancela la activa con esa antelación (`watchdog_lead_minutes`) y
+  no reanuda tareas dentro de ella. Así el vigilante nunca corta una
+  ejecución que se aceptó. Con `""` no hay ventana: nada se rechaza, se
+  cancela ni se bloquea por la hora. El laboratorio no fija ninguna desde el
+  2026-09-28, por decisión del propietario (antes, 22:30-00:40, la del
+  Observatorio; ver `docs/AX.md`).
 - **Salida en directo.** El Envoy de atenet-router corta cada flujo a los
   10 s si no se le da otro `--route-timeout`. Tras cada corte el panel
   pregunta al sandbox con `GetProcess` y, mientras el agente sigue en
