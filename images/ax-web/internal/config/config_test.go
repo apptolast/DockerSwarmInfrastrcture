@@ -144,3 +144,22 @@ func TestWindowAroundMidnight(t *testing.T) {
 		t.Error(w.String())
 	}
 }
+
+// An empty blackout is no window: every run is allowed at any hour.
+func TestNoWindow(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(valid, `"22:30-00:40"`, `""`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := c.Window()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.None() || w.String() != "" {
+		t.Errorf("window %+v %q", w, w.String())
+	}
+	if w.Contains(at("2026-09-25T23:00:00Z")) ||
+		w.Overlaps(at("2026-09-25T00:00:00Z"), at("2026-09-27T00:00:00Z")) {
+		t.Error("the zero window overlaps")
+	}
+}

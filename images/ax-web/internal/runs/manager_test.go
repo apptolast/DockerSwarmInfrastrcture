@@ -306,6 +306,22 @@ func TestBlackoutRefusal(t *testing.T) {
 	}
 }
 
+// With no blackout, a run starts inside the hours of the Observatorio window.
+func TestNoBlackout(t *testing.T) {
+	e := newEnv(t, time.Date(2026, 9, 26, 23, 0, 0, 0, time.UTC), func(o *Options) {
+		o.Blackout = config.Window{}
+	})
+	e.ready(t)
+	s := spec()
+	s.Timeout = 45 * time.Minute
+	r, err := e.m.Start(context.Background(), s, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = e.m.Cancel(r.ID, "test")
+	wait(t, r)
+}
+
 func TestCancelRunning(t *testing.T) {
 	e := newEnv(t, daytime, nil)
 	e.ready(t)

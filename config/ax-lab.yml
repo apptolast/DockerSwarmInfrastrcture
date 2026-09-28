@@ -344,9 +344,9 @@ ax_lab:
     # registry like the AX images; never built on this host.
     image:
       name: ax-web
-      tag: "0.1.0"
+      tag: "0.2.0"
       digest: >-
-        sha256:e8128547a95a3adcbb9a488faa9b379fdb9fa132337d7404cad073b2c3d78faa
+        sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf
     # The panel's mTLS port, published by a NodePort Service on the kind
     # bridge only (the node's ports are not published on the host), and its
     # plain probe port, which no Service exposes.
@@ -367,11 +367,14 @@ ax_lab:
     # recreation without touching Traefik.
     tls_directory: /etc/dockerswarm/ax/web-tls
     # What a run may use: public https repositories of these hosts only, up
-    # to max_turns turns and max_timeout_minutes minutes, never across the
-    # Observatorio window (UTC); an active run is cancelled
-    # watchdog_lead_minutes before it.
+    # to max_turns turns and max_timeout_minutes minutes. blackout_utc is a
+    # daily UTC window with no runs ("HH:MM-HH:MM"; an active run is
+    # cancelled watchdog_lead_minutes before it), or "" for none: by owner
+    # decision of 2026-09-28 the panel no longer stops for the Observatorio
+    # window (22:30-00:40), and runs inside it do reach the Observatorio's
+    # audit (docs/AX.md).
     repo_hosts: [github.com]
-    blackout_utc: "22:30-00:40"
+    blackout_utc: ""
     watchdog_lead_minutes: 5
     max_turns: 50
     max_timeout_minutes: 45

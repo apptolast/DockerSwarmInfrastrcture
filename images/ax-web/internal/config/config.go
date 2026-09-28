@@ -35,10 +35,11 @@ type Config struct {
 	// Origin is the public origin the browser uses; POSTs from any other
 	// origin are refused.
 	Origin string `json:"origin"`
-	// Blackout is the daily UTC window with no runs, "HH:MM-HH:MM".
+	// Blackout is the daily UTC window with no runs, "HH:MM-HH:MM", or ""
+	// for none.
 	Blackout string `json:"blackout"`
 	// WatchdogLeadMinutes is how long before the blackout an active run is
-	// cancelled.
+	// cancelled. It does nothing without a blackout.
 	WatchdogLeadMinutes int `json:"watchdog_lead_minutes"`
 	// MaxTurns and MaxTimeoutMinutes cap every run.
 	MaxTurns          int `json:"max_turns"`
@@ -191,13 +192,17 @@ func (c *Config) MaxTimeout() time.Duration {
 }
 
 // Window is a daily UTC interval [Start, End) in minutes after midnight.
-// End < Start means it wraps past midnight, like 22:30-00:40.
+// End < Start means it wraps past midnight, like 22:30-00:40. The zero
+// Window is no window at all: it overlaps nothing.
 type Window struct {
 	Start, End int
 }
 
-// ParseWindow reads "HH:MM-HH:MM".
+// ParseWindow reads "HH:MM-HH:MM", or "" as the zero Window.
 func ParseWindow(s string) (Window, error) {
+	if s == "" {
+		return Window{}, nil
+	}
 	if !blackoutF.MatchString(s) {
 		return Window{}, errors.New(`blackout must be "HH:MM-HH:MM" in UTC`)
 	}
@@ -214,6 +219,9 @@ func ParseWindow(s string) (Window, error) {
 
 // Overlaps reports whether [from, to) meets any daily instance of w.
 func (w Window) Overlaps(from, to time.Time) bool {
+	if w.None() {
+		return false
+	}
 	from, to = from.UTC(), to.UTC()
 	if !to.After(from) {
 		to = from.Add(time.Nanosecond)
@@ -238,7 +246,16 @@ func (w Window) Contains(t time.Time) bool {
 	return w.Overlaps(t, t.Add(time.Nanosecond))
 }
 
+// None reports whether w is the zero Window, which ParseWindow returns
+// only for "": it refuses any other empty interval.
+func (w Window) None() bool {
+	return w.Start == w.End
+}
+
 // String prints w as it is configured.
 func (w Window) String() string {
+	if w.None() {
+		return ""
+	}
 	return fmt.Sprintf("%02d:%02d-%02d:%02d", w.Start/60, w.Start%60, w.End/60, w.End%60)
 }

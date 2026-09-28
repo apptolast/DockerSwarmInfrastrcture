@@ -26,8 +26,8 @@ interfaz web): lista las tareas, lanza Claude sobre un repositorio público
 tarea al terminar. Pide usuario y contraseña, y entre Traefik y el panel
 hay un certificado cliente (mTLS). Quien tenga la contraseña puede gastar
 tu cuota de Claude: guárdala como guardas el token. El panel rechaza una
-ejecución si hay una tarea `tarea-*` de `ax-tarea` o si se cruzaría con la
-ventana {{ ax_lab.web.blackout_utc }} UTC. Con un solo worker, no lances `ax-tarea`
+ejecución si hay una tarea `tarea-*` de `ax-tarea`{% if ax_lab.web.blackout_utc %} o si se cruzaría con la
+ventana {{ ax_lab.web.blackout_utc }} UTC{% endif %}. Con un solo worker, no lances `ax-tarea`
 mientras el panel tiene una ejecución en marcha (una tarea `web-*`): se
 quedaría esperando al worker. Todo lo demás está en `docs/AX_WEB.md` del
 repositorio de infraestructura.
