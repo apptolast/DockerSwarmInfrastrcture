@@ -567,6 +567,41 @@ PR #81, desde `main` en `7795b84`. Bloquea las IP que fallan el login en
 - El panel sigue respondiendo `401` sin credenciales y `200` con ellas, y
   `/healthz` `200`.
 
+### Panel web de AX sin ventana (2026-09-28)
+
+PR #84, desde `main` en `bc39fb8`. Por decisión del propietario, el panel ya
+no tiene ventana sin ejecuciones: `web.blackout_utc: ""` y la imagen
+`ax-web:0.2.0` (ver [AX_WEB.md](AX_WEB.md), «Imagen», y [AX.md](AX.md)).
+Horas en UTC:
+
+- Imagen `ax-web:0.2.0`, con el digest que la ejecución 36359590442 de la CI
+  compiló dos veces:
+  `sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf`.
+  Sembrada (2026-09-27 23:47) con `seed-layout --image-set web --tag 0.2.0`
+  desde el artefacto `ax-web-oci-layout` de esa ejecución; `ax-web:0.1.0`
+  sigue en la copia para volver atrás.
+- `ax-lab --check` (2026-09-27 23:54, desde el commit del PR, con el mismo
+  árbol que `bc39fb8`) `ok=145 changed=3 failed=0`: los tres cambios son el
+  `LEEME.md` y los dos metadatos, y el plan del panel anunció restaurar
+  `ax-web` en el registro, aplicar del lado del servidor `state` y
+  `ax-web.yaml`, y recrear `ax-web-edge` por deriva.
+- Apply (00:05:12-00:07:20) `ok=340 changed=11 failed=0`, sin avisos: el
+  `LEEME.md`, la imagen restaurada al registro (que queda con `0.1.0` y
+  `0.2.0`), el manifiesto del panel, la imagen en el host y el reenviador
+  `ax-web-edge` recreado y conectado a `apptolast-edge-ax`, más `web.json`
+  (`installing` y después `installed`) y los metadatos.
+  - Pod nuevo `ax-web-5dbf6c86fb-4ml4z` (00:06:57) listo, con 0 reinicios, y
+    la configuración con `"blackout": ""`. El reenviador arrancó a las
+    00:07:12 con la misma imagen, `65532:65532`, solo lectura, 32 MiB y las
+    redes `kind` y `apptolast-edge-ax`.
+  - Nodo `kind-control-plane` tras el apply: unos 1 960 MiB de los 3 584 MiB
+    del límite, y `memory.events` con `oom 0` y `oom_kill 0`. No se reinició
+    (sigue desde el 2026-09-26 01:03) y `kernel.core_pattern` sigue en
+    `|/bin/false`.
+  - Repetido (00:07:33-00:09:31): `ok=331 changed=0 failed=0`.
+- `https://ax.apptolast.com` responde `401` sin credenciales y `/healthz`
+  `200`.
+
 ### Incidentes de carga (2026-09-26)
 
 La carga de la orquestación de estas ventanas causó dos incidentes. Horas en
