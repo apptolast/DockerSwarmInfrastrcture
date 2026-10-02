@@ -66,7 +66,7 @@
 
   function deskState(agent) {
     const st = O.sel.agentState(agent.id);
-    let chip = STATE_TEXT[st.state];
+    let chip = O.own(STATE_TEXT, st.state);
     let bubble = "";
     if (st.state === "working") {
       const j = st.job;
@@ -379,7 +379,7 @@
       const title = wrap(job.title || "(sin título)", 22, 2);
       lines.push({ t: title[0], cls: "slot-title" });
       if (title[1]) lines.push({ t: title[1], cls: "slot-title" });
-      lines.push({ t: a.name + " · " + (L.status[job.status] || job.status), cls: "slot-sub" });
+      lines.push({ t: a.name + " · " + (O.own(L.status, job.status) || job.status), cls: "slot-sub" });
       label = "Sandbox ocupado por " + a.name + ": " + (job.title || "");
     } else if (!ax.ready) {
       lines.push({ t: "AX no está listo", cls: "slot-title" });
@@ -734,11 +734,11 @@
             ui.avatar(agent, "xl"),
             h("div", null,
               h("p", { class: "agent-hero-role", text: agent.role }),
-              h("p", { class: "muted mono", text: (L.harness[agent.harness] || agent.harness) + " · " + ui.modelLabel(agent.harness, agent.model, agent.effort) }),
+              h("p", { class: "muted mono", text: (O.own(L.harness, agent.harness) || agent.harness) + " · " + ui.modelLabel(agent.harness, agent.model, agent.effort) }),
               h("p", { class: "chips" },
-                h("span", { class: "badge badge-soft", title: (L.modes[agent.mode] || {}).hint || null, text: "Modo " + ((L.modes[agent.mode] || {}).label || agent.mode).toLowerCase() }),
+                h("span", { class: "badge badge-soft", title: (O.own(L.modes, agent.mode) || {}).hint || null, text: "Modo " + ((O.own(L.modes, agent.mode) || {}).label || agent.mode).toLowerCase() }),
                 h("span", { class: "badge badge-soft", text: "v" + agent.version }),
-                h("span", { class: "badge badge-soft", text: STATE_TEXT[st.state] })))),
+                h("span", { class: "badge badge-soft", text: O.own(STATE_TEXT, st.state) })))),
           h("div", { class: "row-actions" },
             ui.btn("Encargar trabajo", { href: "#/nuevo?agente=" + O.enc(agent.id), kind: "primary", icon: "plus", size: "sm" }),
             ui.btn("Editar", { href: "#/agentes/" + O.enc(agent.id), icon: "edit", size: "sm" })),

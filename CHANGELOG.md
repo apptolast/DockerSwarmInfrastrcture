@@ -8,10 +8,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
-- Despliegue de la Oficina de agentes, la versión 1.0.0 del panel web de AX
+- Despliegue de la Oficina de agentes, la versión 1.0 del panel web de AX
   (ver [`docs/AX_WEB.md`](docs/AX_WEB.md), «Oficina», y
   [`docs/OFICINA.md`](docs/OFICINA.md)). `config/ax-lab.yml` sube
-  `web.image.tag` a `1.0.0` (el digest se fija con el que compile la CI),
+  `web.image.tag` a `1.0.1` (el digest se fija con el que compile la CI; la
+  `1.0.0` se compiló y sembró, pero se sustituyó antes de desplegarla por
+  los arreglos de la revisión de seguridad de la interfaz),
   `max_turns` a 150 y `max_timeout_minutes` a 90, y añade `extra_origins`
   (`https://oficina.apptolast.com`) y `web.office`: 1 024 MiB de estado,
   200 trabajos en cola, 3 000 de retención y seis proyectos sembrados,

@@ -405,12 +405,13 @@
         ta.value = m.text;
         return h("li", { class: "memory-item is-editing" },
           ui.field("Editar lección", ta, { counter: ui.counter(ta, 600, "runes") }),
+          ui.invisibleNote(ta),
           h("div", { class: "row-actions" },
             ui.btn("Guardar", { size: "sm", kind: "primary", onClick: (e) => mem({ action: "edit", id: m.id, text: ta.value.trim() }, e.currentTarget, "Lección actualizada.") }),
             ui.btn("Cancelar", { size: "sm", kind: "ghost", onClick: () => { state.editing = null; state.redraw(); } })));
       }
       return h("li", { class: ["memory-item", m.active && idx < max ? "is-injected" : null] },
-        h("p", { class: "memory-text", text: m.text }),
+        h("p", { class: "memory-text", text: O.visible(m.text) }),
         h("p", { class: "muted small" },
           ui.time(m.created),
           m.source_job ? [" · de ", h("a", { href: "#/trabajo/" + O.enc(m.source_job), class: "mono", text: m.source_job })] : " · añadida a mano",

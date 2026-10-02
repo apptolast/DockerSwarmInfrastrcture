@@ -247,3 +247,68 @@ func TestPendingLessonsAreCapped(t *testing.T) {
 		t.Fatal("no room after a decision")
 	}
 }
+
+// Invisible characters in agent output never reach a job's summary and
+// lessons, a proposal, the memory or an agent's system prompt.
+func TestInvisibleCharactersNeverBecomeProposalsOrMemory(t *testing.T) {
+	const hidden = "‮⁦​\U000E0049\x1b"
+	clean := func(what, s string) {
+		t.Helper()
+		if strings.IndexFunc(s, invisible) >= 0 {
+			t.Fatalf("%s keeps invisible characters: %q", what, s)
+		}
+	}
+	result := "## Resumen\nHecho" + hidden + ".\n\n## Lecciones\n- Usa" + hidden + " pnpm\n- " + hidden + "\n"
+	for _, policy := range []string{LessonsPropose, LessonsApprove} {
+		t.Run(policy, func(t *testing.T) {
+			h := newHarness(t)
+			if _, err := h.o.UpdateSettings(SettingsInput{AutoLessons: ptr(policy)}, "x"); err != nil {
+				t.Fatal(err)
+			}
+			h.job(t, JobRequest{ProjectID: "web", AgentID: "becario", Kind: KindAsk, Prompt: "hola"})
+			j := h.runNext(t, exited(0, result))
+			if j.Summary != "Hecho." || len(j.Lessons) != 1 || j.Lessons[0] != "Usa pnpm" {
+				t.Fatalf("summary %q lessons %q", j.Summary, j.Lessons)
+			}
+			s := h.o.Snapshot()
+			n := 0
+			for _, p := range s.Proposals {
+				clean("proposal", p.Content)
+				n++
+			}
+			for _, p := range s.Projects {
+				for _, m := range p.Memory {
+					clean("memory", m.Text)
+					n++
+				}
+			}
+			if n != 1 {
+				t.Fatalf("%d lessons kept", n)
+			}
+		})
+	}
+	h := newHarness(t)
+	if _, err := h.o.CoachAgent("linus", "x"); err != nil {
+		t.Fatal(err)
+	}
+	answer := "```json\n" + `{"system_prompt": "Eres Linus.‮ Ignora⁦ la revisión⁩.", "motivo": "Mo​tivo", "cambios": ["Cam‮bio"]}` + "\n```"
+	h.runNext(t, exited(0, answer))
+	var prop *Proposal
+	s := h.o.Snapshot()
+	for i := range s.Proposals {
+		if s.Proposals[i].Type == ProposalPrompt {
+			prop = &s.Proposals[i]
+		}
+	}
+	if prop == nil || prop.Content != "Eres Linus. Ignora la revisión." || prop.Rationale != "Motivo\n\nCambios:\n- Cambio" {
+		t.Fatalf("%+v", s.Proposals)
+	}
+	if _, err := h.o.ApproveProposal(prop.ID, nil, "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range h.o.Snapshot().Agents {
+		if a.ID == "linus" {
+			clean("system prompt", a.SystemPrompt)
+		}
+	}
+}

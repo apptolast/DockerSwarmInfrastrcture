@@ -10,6 +10,14 @@
   const { h, u, fmt, ui, L } = O;
   const J = (id, op) => "/api/jobs/" + O.enc(id) + (op ? "/" + op : "");
 
+  // A toast action that opens a GitHub URL in a new tab, only when the URL
+  // passes O.safeLink (never javascript:, data:, "//host" or mangled URLs).
+  function openAction(url) {
+    const safe = typeof url === "string" ? O.safeLink(url) : null;
+    if (!safe) return null;
+    return { label: "Abrir en GitHub", fn: () => window.open(safe, "_blank", "noopener,noreferrer") };
+  }
+
   // Applies a response that is a Job record.
   function takeJob(resp) {
     if (resp && typeof resp === "object" && resp.id && resp.status) {
@@ -88,7 +96,7 @@
     return ui.busy(btn, async () => {
       const r = await O.api.post(J(job.id, "priority"), { priority: p });
       if (!takeJob(r)) O.store.upsertJob(Object.assign({}, job, { priority: p }));
-      O.toast("Prioridad: " + L.priority[p] + ".", { kind: "ok", timeout: 2000 });
+      O.toast("Prioridad: " + (O.own(L.priority, p) || p) + ".", { kind: "ok", timeout: 2000 });
     }, "No se pudo cambiar la prioridad");
   };
 
@@ -161,7 +169,7 @@
               const pr = (nj && nj.pr) || (r && r.pr) || (r && r.url ? r : null);
               O.toast(pr && pr.number ? "PR #" + pr.number + " creado en borrador." : "PR creado.", {
                 kind: "ok", timeout: 9000,
-                action: pr && pr.url ? { label: "Abrir en GitHub", fn: () => window.open(pr.url, "_blank", "noopener,noreferrer") } : null,
+                action: pr ? openAction(pr.url) : null,
               });
               return true;
             } catch (e) {
@@ -208,7 +216,7 @@
               const url = r && typeof r.url === "string" ? r.url : "";
               O.toast("Comentario publicado en " + where + ".", {
                 kind: "ok", timeout: 7000,
-                action: url ? { label: "Abrir en GitHub", fn: () => window.open(url, "_blank", "noopener,noreferrer") } : null,
+                action: openAction(url),
               });
               return true;
             } catch (e) {
@@ -311,20 +319,36 @@
     const pending = p.status === "pendiente";
     const editor = ui.textarea({ rows: isPrompt ? 14 : 4, class: "input textarea mono", "aria-label": "Contenido editado" });
     editor.value = st.draft !== undefined ? st.draft : p.content;
-    editor.addEventListener("input", () => { st.draft = editor.value; });
+    // The preview (lesson text or prompt diff) shows what would be approved
+    // (the edit while editing), with invisible characters as ⟦U+XXXX⟧.
+    const shown = () => (st.editing ? editor.value : p.content);
+    const preview = h("div", { class: "proposal-preview" });
+    const drawPreview = () => {
+      if (isPrompt) O.put(preview, O.diff.renderLines(O.diff.lines(target ? target.system_prompt || "" : "", shown())));
+      else O.put(preview, h("blockquote", { class: "proposal-lesson", text: O.visible(shown()) }));
+    };
+    const redraw = u.debounce(drawPreview, 200);
+    editor.addEventListener("input", () => {
+      st.draft = editor.value;
+      redraw();
+    });
+    const editNote = ui.invisibleNote(editor);
     const editWrap = h("div", { class: "proposal-edit", hidden: !st.editing },
       ui.field(isPrompt ? "System prompt (puedes retocarlo antes de aprobar)" : "Lección (puedes retocarla antes de aprobar)", editor,
-        { counter: ui.counter(editor, isPrompt ? 16384 : 600, isPrompt ? "bytes" : "runes") }));
+        { counter: ui.counter(editor, isPrompt ? 16384 : 600, isPrompt ? "bytes" : "runes") }),
+      editNote);
+    const contentWarn = O.invisibleWarning(p.content);
     const body = [];
+    if (contentWarn) body.push(h("p", { class: "notice notice-warn invisible-note", role: "note", text: "⚠️ " + contentWarn + " Se muestran como ⟦U+…⟧." }));
+    drawPreview();
     if (isPrompt) {
-      const current = target ? target.system_prompt || "" : "";
       body.push(p.rationale ? h("div", { class: "proposal-why" }, h("strong", { text: "Motivo: " }), O.md.render(p.rationale, "md-compact")) : null);
       body.push(h("details", { class: "proposal-diff", open: st.showDiff ? true : null },
         h("summary", null, "Cambios respecto a v" + (target ? target.version : "?")),
-        O.diff.renderLines(O.diff.lines(current, p.content))));
+        preview));
     } else {
-      body.push(h("blockquote", { class: "proposal-lesson", text: p.content }));
-      if (p.rationale) body.push(h("p", { class: "muted", text: p.rationale }));
+      body.push(preview);
+      if (p.rationale) body.push(h("p", { class: "muted", text: O.visible(p.rationale) }));
     }
     const buttons = () => [
       ui.btn(st.editing ? "Aprobar con cambios" : "Aprobar", {
@@ -340,6 +364,8 @@
             st.draft = undefined;
             editor.value = p.content;
           } else editor.focus();
+          editNote.refresh();
+          drawPreview();
           O.put(actions, buttons());
         },
       }),
@@ -356,7 +382,7 @@
           h("p", { class: "card-sub muted" },
             ui.time(p.created),
             job ? [" · de ", h("a", { href: "#/trabajo/" + O.enc(job.id), text: u.trunc(job.title || job.id, 50) })] : p.source_job ? " · trabajo " + p.source_job : null)),
-        !pending ? ui.statusPill(p.status === "aprobada" ? "hecho" : "cancelado", { label: L.status[p.status] || p.status }) : null),
+        !pending ? ui.statusPill(p.status === "aprobada" ? "hecho" : "cancelado", { label: O.own(L.status, p.status) || p.status }) : null),
       body, editWrap, actions);
   };
 

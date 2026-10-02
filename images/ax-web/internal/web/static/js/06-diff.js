@@ -4,34 +4,46 @@
  * parse(patch) reads a git unified patch (`git diff --binary --full-index
  * -M`) into files, hunks and numbered lines; render() draws the viewer.
  * lines(a, b) is a small LCS line diff used to compare system prompts.
+ *
+ * Patches come from agents (hostile, up to several MiB): parsing is linear,
+ * with string scans instead of regexes over whole lines, and the viewer
+ * draws invisible characters as ⟦U+XXXX⟧ markers (O.visible).
  */
 (() => {
   "use strict";
   const O = window.Oficina;
 
+  const ENC = new TextEncoder(), DEC = new TextDecoder();
+  const ESCAPES = { n: "\n", t: "\t", r: "\r", a: "\x07", b: "\b", f: "\f", v: "\v", "\\": "\\", "\"": "\"" };
+
   // Git C-style quoted path: "a/caf\303\251 \"x\"" -> a/café "x".
+  // Runs of plain characters are encoded at once.
   function unquote(s) {
     if (!s || s[0] !== "\"") return s;
     const bytes = [];
-    let i = 1;
     const pushStr = (str) => {
-      for (const b of new TextEncoder().encode(str)) bytes.push(b);
+      if (str) for (const b of ENC.encode(str)) bytes.push(b);
     };
+    let from = 1, i = 1;
     for (; i < s.length; i++) {
       const ch = s[i];
-      if (ch === "\"") break;
-      if (ch !== "\\") { pushStr(ch); continue; }
-      const n = s[++i];
-      if (/[0-7]/.test(n)) {
-        const oct = s.slice(i, i + 3);
-        bytes.push(parseInt(oct, 8) & 255);
-        i += 2;
-        continue;
+      if (ch !== "\"" && ch !== "\\") continue;
+      pushStr(s.slice(from, i));
+      if (ch === "\"") {
+        from = -1;
+        break;
       }
-      const map = { n: "\n", t: "\t", r: "\r", a: "\x07", b: "\b", f: "\f", v: "\v", "\\": "\\", "\"": "\"" };
-      pushStr(map[n] !== undefined ? map[n] : n || "");
+      const n = s[++i];
+      if (n >= "0" && n <= "7") {
+        bytes.push(parseInt(s.slice(i, i + 3), 8) & 255);
+        i += 2;
+      } else {
+        pushStr(O.own(ESCAPES, n) !== undefined ? ESCAPES[n] : n || "");
+      }
+      from = i + 1;
     }
-    return new TextDecoder().decode(new Uint8Array(bytes));
+    if (from >= 0 && from < s.length) pushStr(s.slice(from)); // no closing quote
+    return DEC.decode(new Uint8Array(bytes));
   }
 
   // Takes the first (possibly quoted) token of s; returns [token, rest].
@@ -79,11 +91,16 @@
   function headerPath(v, prefix) {
     let s = v;
     if (s[0] === "\"") s = token(s)[0];
-    else s = s.replace(/\t.*$/, "");
+    else {
+      const i = s.indexOf("\t");
+      if (i >= 0) s = s.slice(0, i);
+    }
     return stripPrefix(s, prefix);
   }
 
-  const RE_HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
+  // Only the fixed head of the line: the section after "@@" is sliced off
+  // (a regex like " ?(.*)$" backtracks on lines with U+2028 or a lone CR).
+  const RE_HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
   function parse(text) {
     const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
@@ -152,7 +169,9 @@
         newNo = parseInt(hm[3], 10);
         oldLeft = hm[2] === undefined ? 1 : parseInt(hm[2], 10);
         newLeft = hm[4] === undefined ? 1 : parseInt(hm[4], 10);
-        hunk = { header: line, oldStart: oldNo, newStart: newNo, oldLines: oldLeft, newLines: newLeft, section: hm[5] || "", lines: [] };
+        let section = line.slice(hm[0].length);
+        if (section[0] === " ") section = section.slice(1);
+        hunk = { header: line, oldStart: oldNo, newStart: newNo, oldLines: oldLeft, newLines: newLeft, section, lines: [] };
         f.hunks.push(hunk);
         continue;
       }
@@ -175,7 +194,7 @@
       if (line.startsWith("copy from ")) { f.oldPath = unquote(line.slice(10)); f.status = "C"; continue; }
       if (line.startsWith("copy to ")) { f.newPath = unquote(line.slice(8)); f.status = "C"; continue; }
       if (line.startsWith("similarity index ")) { f.similarity = parseInt(line.slice(17), 10); continue; }
-      if (line.startsWith("Binary files ") && / differ$/.test(line)) { f.binary = true; continue; }
+      if (line.startsWith("Binary files ") && line.endsWith(" differ")) { f.binary = true; continue; }
       if (line === "GIT binary patch") { f.binary = true; inBinary = true; continue; }
     }
     for (const x of files) {
@@ -199,23 +218,22 @@
     const a2 = A.slice(pre, A.length - suf), b2 = B.slice(pre, B.length - suf);
     const out = [];
     for (let i = 0; i < pre; i++) out.push({ k: "ctx", t: A[i] });
-    const n = a2.length, m = b2.length;
-    if (n * m > 4e6) {
+    const n = a2.length, m = b2.length, W = m + 1;
+    if ((n + 1) * W > 4e6) {
       for (const t of a2) out.push({ k: "del", t });
       for (const t of b2) out.push({ k: "add", t });
     } else {
-      // dp[i][j] = LCS length of a2[i:] and b2[j:].
-      const dp = [];
-      for (let i = 0; i <= n; i++) dp.push(new Uint32Array(m + 1));
+      // dp[i * W + j] = LCS length of a2[i:] and b2[j:] (one flat table).
+      const dp = new Uint32Array((n + 1) * W);
       for (let i = n - 1; i >= 0; i--) {
         for (let j = m - 1; j >= 0; j--) {
-          dp[i][j] = a2[i] === b2[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+          dp[i * W + j] = a2[i] === b2[j] ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
         }
       }
       let i = 0, j = 0;
       while (i < n && j < m) {
         if (a2[i] === b2[j]) { out.push({ k: "ctx", t: a2[i] }); i++; j++; }
-        else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ k: "del", t: a2[i] }); i++; }
+        else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) { out.push({ k: "del", t: a2[i] }); i++; }
         else { out.push({ k: "add", t: b2[j] }); j++; }
       }
       for (; i < n; i++) out.push({ k: "del", t: a2[i] });
@@ -251,7 +269,7 @@
     for (const hk of file.hunks) {
       rows.push(h("tr", { class: "diff-hunk" },
         h("td", { class: "diff-ln", colspan: "2", "aria-hidden": "true", text: "⋯" }),
-        h("td", { class: "diff-code", text: hk.header })));
+        h("td", { class: "diff-code", text: O.visible(hk.header) })));
       for (const l of hk.lines) {
         rows.push(h("tr", { class: "diff-" + l.k },
           h("td", { class: "diff-ln", text: l.o === null ? "" : String(l.o) }),
@@ -259,7 +277,7 @@
           h("td", { class: "diff-code" },
             h("span", { class: "diff-sign", "aria-hidden": "true", text: l.k === "add" ? "+" : l.k === "del" ? "-" : " " }),
             h("span", { class: "sr-only", text: l.k === "add" ? "añadida: " : l.k === "del" ? "borrada: " : "" }),
-            l.t,
+            O.visible(l.t),
             l.nonl ? h("span", { class: "diff-nonl", title: "Sin salto de línea al final", text: " ⏎̸" }) : null)));
       }
     }
@@ -281,8 +299,8 @@
     const bigTotal = files.reduce((n, f) => n + f.hunks.reduce((m, hk) => m + hk.lines.length, 0), 0) > 3000;
 
     files.forEach((f) => {
-      const st = STATUS[f.status] || STATUS.M;
-      const label = f.status === "R" || f.status === "C" ? (f.oldPath || "") + " → " + (f.newPath || "") : f.path;
+      const st = O.own(STATUS, f.status) || STATUS.M;
+      const label = O.visible(f.status === "R" || f.status === "C" ? (f.oldPath || "") + " → " + (f.newPath || "") : f.path);
       const lineCount = f.hunks.reduce((m, hk) => m + hk.lines.length, 0);
       const body = h("div", { class: "diff-body" });
       const details = h("details", { class: "diff-file", open: !bigTotal && lineCount <= 600 ? true : null },
@@ -353,7 +371,7 @@
       rows.push(h("div", { class: "ldiff-" + op.k },
         h("span", { class: "diff-sign", "aria-hidden": "true", text: op.k === "add" ? "+" : op.k === "del" ? "-" : " " }),
         h("span", { class: "sr-only", text: op.k === "add" ? "añadida: " : op.k === "del" ? "borrada: " : "" }),
-        op.t || " "));
+        op.t ? O.visible(op.t) : " "));
     });
     if (skipped) rows.push(h("div", { class: "ldiff-skip", text: "⋯ " + skipped + " " + O.u.plural(skipped, "línea igual", "líneas iguales") }));
     if (!ops.some((op) => op.k !== "ctx")) rows.unshift(h("div", { class: "ldiff-skip", text: "Sin diferencias en el texto." }));

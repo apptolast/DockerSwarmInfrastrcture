@@ -110,7 +110,7 @@
     if (!projects.some((p) => p.value === st.project)) st.project = projects[0].value;
     if (!agents.some((a) => a.id === st.agent)) st.agent = agents[0].id;
     const agentOf = () => O.sel.agent(st.agent) || agents[0];
-    if (!L.kinds[st.kind] || st.kind === "retro" || st.kind === "juez") st.kind = agentOf().mode === "completo" ? "cambio" : "pregunta";
+    if (!Object.hasOwn(L.kinds, st.kind) || st.kind === "retro" || st.kind === "juez") st.kind = agentOf().mode === "completo" ? "cambio" : "pregunta";
 
     const form = h("form", { class: "form", novalidate: true });
     // project
@@ -219,7 +219,7 @@
           h("strong", { text: a.name }),
           h("span", { class: "agent-card-role", text: a.role }),
           h("span", { class: "agent-card-model mono", text: ui.modelLabel(a.harness, a.model, a.effort) })),
-        h("span", { class: ["agent-card-mode", a.mode === "completo" ? "is-full" : ""], title: (L.modes[a.mode] || {}).hint || null, text: a.mode === "completo" ? "completo" : "lectura" }),
+        h("span", { class: ["agent-card-mode", a.mode === "completo" ? "is-full" : ""], title: (O.own(L.modes, a.mode) || {}).hint || null, text: a.mode === "completo" ? "completo" : "lectura" }),
         ast.state === "working" ? h("span", { class: "agent-card-busy", text: "trabajando" }) : ast.queued.length ? h("span", { class: "agent-card-busy", text: ast.queued.length + " en cola" }) : null);
       }));
     }
@@ -346,7 +346,7 @@
       if (st.kind === "cambio" && effectiveMode() !== "completo") return err("kind", "Un trabajo de tipo cambio necesita modo completo.");
       if (mp.harness !== a.harness && !mp.model) {
         advBox.querySelector("details").open = true;
-        return err("model", "Elige un modelo de " + (L.harness[mp.harness] || mp.harness) + ": el de " + a.name + " es de otro motor.");
+        return err("model", "Elige un modelo de " + (O.own(L.harness, mp.harness) || mp.harness) + ": el de " + a.name + " es de otro motor.");
       }
       const ov = {};
       if (mp.harness !== a.harness) ov.harness = mp.harness;

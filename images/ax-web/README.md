@@ -1,4 +1,4 @@
-# Oficina de agentes (`ax-web` 1.0.0)
+# Oficina de agentes (`ax-web` 1.0.1)
 
 Código de la Oficina de agentes de AppToLast, el panel que sirve
 `https://ax.apptolast.com` (y `https://oficina.apptolast.com`) detrás de
@@ -159,6 +159,15 @@ escritura del pod): `office.json`, `jobs.json`, un directorio por trabajo
 - **CSP estricta.** `default-src 'self'`, sin código ni estilos en línea.
   La interfaz se sirve como un solo CSS y un solo JS con el sha256 en el
   nombre y caché inmutable; `index.html` nunca se cachea.
+- **La salida de los agentes es un dato hostil.** El Markdown y los diffs
+  se analizan en tiempo lineal (256 KiB de Markdown en menos de 1 s, 4 MiB
+  de diff en menos de 2 s); un texto de más de 64 KiB se muestra sin
+  formato hasta pulsar «Renderizar igualmente». Los caracteres invisibles
+  o de control (bidi, ancho cero, etiquetas) se ven como `⟦U+202E⟧` en
+  resultados, diffs, lecciones, memoria y prompts, y se eliminan de
+  resúmenes, lecciones y prompts del Coach antes de proponerlos. Los
+  enlaces no admiten credenciales, llevan su dominio como título y, si el
+  texto aparenta otra dirección, muestran el dominio real.
 - **mTLS.** El puerto de la aplicación solo acepta TLS 1.3 con el
   certificado cliente de Traefik (CN `edge-traefik`, uso `clientAuth`),
   emitido por una CA privada. El puerto de sondas no sirve la aplicación y

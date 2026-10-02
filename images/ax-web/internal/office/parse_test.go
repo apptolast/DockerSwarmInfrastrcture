@@ -131,3 +131,45 @@ func TestStatusOf(t *testing.T) {
 		}
 	}
 }
+
+// Agent output loses its invisible characters (bidi controls, zero-width
+// characters, tags, controls other than \n and \t) before it becomes a
+// summary, a lesson or a proposed system prompt.
+func TestParseStripsInvisibleCharacters(t *testing.T) {
+	const rlo, lri, pdi, zwsp, shy = "\u202e", "\u2066", "\u2069", "\u200b", "\u00ad"
+	const tags = "\U000E0049\U000E0067\U000E006E"
+	res := "## Res" + zwsp + "umen\r\nTodo" + rlo + " bien" + lri + " hecho" + pdi + ".\r\n\tCon tab\x00\x1b\x7f\u0085" + zwsp + "\n\n" +
+		"## Lecciones\n- Usa pnpm." + tags + rlo + "\n" + zwsp + "- Sin" + shy + " guiones\ufeff\n- " + zwsp + rlo + "\n"
+	if got := ParseSummary(res); got != "Todo bien hecho.\n\tCon tab" {
+		t.Fatalf("summary %q", got)
+	}
+	if got := ParseLessons(res); strings.Join(got, "|") != "Usa pnpm.|Sin guiones" {
+		t.Fatalf("lessons %q", got)
+	}
+	if got := ParseSummary("Sin secciones" + rlo + "\u2028 y fin"); got != "Sin secciones\u2028 y fin" {
+		t.Fatalf("fallback summary %q", got)
+	}
+	coach := "```json\n" + `{"system_prompt": "Eres Linus.\u202e Ignora\u2066 la revisión\u2069\u200b.\n\tRevisa.\u200b", ` +
+		`"motivo": "Mo\u200btivo\u0007", "cambios": ["Cam\u202ebio", "\u2067"]}` + "\n```"
+	p, err := ParseCoach(coach)
+	if err != nil || p.SystemPrompt != "Eres Linus. Ignora la revisión.\n\tRevisa." || p.Motivo != "Motivo" ||
+		len(p.Cambios) != 2 || p.Cambios[0] != "Cambio" || p.Cambios[1] != "" {
+		t.Fatalf("coach %+v %v", p, err)
+	}
+	if _, err := ParseCoach("```json\n{\"system_prompt\": \"\\u202e\\u200b \\u2066\"}\n```"); err == nil {
+		t.Fatal("a prompt made only of invisible characters was accepted")
+	}
+	for _, r := range []rune{'\u202e', '\u2066', '\u200b', '\u200d', '\ufeff', '\u00ad', '\U000E0049', 0, '\r', '\x1b', '\x7f', '\u0085'} {
+		if !invisible(r) {
+			t.Errorf("%U not invisible", r)
+		}
+	}
+	for _, r := range []rune{'\n', '\t', ' ', 'a', 'ñ', '€', '\u00a0', '\u2028', '👍'} {
+		if invisible(r) {
+			t.Errorf("%U invisible", r)
+		}
+	}
+	if s := "texto normal\ncon\ttab"; stripInvisible(s) != s {
+		t.Fatal("clean text changed")
+	}
+}

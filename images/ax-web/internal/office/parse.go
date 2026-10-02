@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"apptolast.com/ax-web/internal/harness"
@@ -30,6 +31,29 @@ var (
 	jsonFence   = regexp.MustCompile("(?s)```json[ \\t]*\\r?\\n(.*?)\\r?\\n[ \\t]*```")
 )
 
+// invisible reports format characters (Unicode Cf: bidi overrides and
+// isolates, zero-width characters, tags…) and control characters other
+// than "\n" and "\t".
+func invisible(r rune) bool {
+	return r != '\n' && r != '\t' && (unicode.Is(unicode.Cf, r) || unicode.IsControl(r))
+}
+
+// stripInvisible removes the invisible characters of s. Agent output goes
+// through it before it becomes a summary, a lesson or a proposed system
+// prompt: text people review and later prompts carry, where such
+// characters could hide or reorder instructions.
+func stripInvisible(s string) string {
+	if strings.IndexFunc(s, invisible) < 0 {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if invisible(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // section is the text after the last heading matched by head, up to the
 // next "#"/"##" heading.
 func section(result string, head *regexp.Regexp) (string, bool) {
@@ -52,17 +76,20 @@ func truncRunes(s string, n int) string {
 	return strings.TrimSpace(string(r[:n])) + "…"
 }
 
-// ParseSummary is the "## Resumen" section, or the start of the result.
+// ParseSummary is the "## Resumen" section, or the start of the result,
+// without invisible characters.
 func ParseSummary(result string) string {
+	result = stripInvisible(result)
 	if s, ok := section(result, summaryHead); ok && s != "" {
 		return truncRunes(s, MaxSummaryRunes)
 	}
 	return truncRunes(strings.TrimSpace(result), fallbackSummary)
 }
 
-// ParseLessons are the bullets of the last "## Lecciones" section.
+// ParseLessons are the bullets of the last "## Lecciones" section,
+// without invisible characters.
 func ParseLessons(result string) []string {
-	s, ok := section(result, lessonsHead)
+	s, ok := section(stripInvisible(result), lessonsHead)
 	if !ok {
 		return nil
 	}
@@ -118,7 +145,8 @@ type CoachProposal struct {
 	Cambios      []string `json:"cambios"`
 }
 
-// ParseCoach reads the last ```json block of a coach result.
+// ParseCoach reads the last ```json block of a coach result. Invisible
+// characters are removed from the proposal.
 func ParseCoach(result string) (CoachProposal, error) {
 	all := jsonFence.FindAllStringSubmatch(result, -1)
 	if len(all) == 0 {
@@ -128,17 +156,17 @@ func ParseCoach(result string) (CoachProposal, error) {
 	if err := json.Unmarshal([]byte(all[len(all)-1][1]), &p); err != nil {
 		return CoachProposal{}, errors.New("el bloque JSON del Coach no es válido")
 	}
-	p.SystemPrompt = strings.TrimSpace(p.SystemPrompt)
+	p.SystemPrompt = strings.TrimSpace(stripInvisible(p.SystemPrompt))
 	if p.SystemPrompt == "" || len(p.SystemPrompt) > maxCoachPromptLen ||
 		!utf8.ValidString(p.SystemPrompt) || strings.ContainsRune(p.SystemPrompt, 0) {
 		return CoachProposal{}, errors.New("el prompt que propone el Coach está vacío o supera 16 KiB")
 	}
-	p.Motivo = truncRunes(strings.TrimSpace(p.Motivo), 2000)
+	p.Motivo = truncRunes(strings.TrimSpace(stripInvisible(p.Motivo)), 2000)
 	if len(p.Cambios) > 20 {
 		p.Cambios = p.Cambios[:20]
 	}
 	for i := range p.Cambios {
-		p.Cambios[i] = truncRunes(strings.TrimSpace(p.Cambios[i]), 400)
+		p.Cambios[i] = truncRunes(strings.TrimSpace(stripInvisible(p.Cambios[i])), 400)
 	}
 	return p, nil
 }

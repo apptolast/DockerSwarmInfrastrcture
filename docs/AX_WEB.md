@@ -6,7 +6,7 @@ publica el panel y nada más del laboratorio. `ax-server`, que no tiene
 autenticación (google/ax#376), sigue sin publicarse nunca. Sin Cloudflare
 Access y sin lista de IP permitidas, también por decisión del propietario.
 
-Desde la versión 1.0.0 el panel es la Oficina de agentes: un equipo de
+Desde la versión 1.0 el panel es la Oficina de agentes: un equipo de
 agentes que reciben encargos sobre repositorios públicos de AppToLast y los
 ejecutan de uno en uno en el sandbox de AX. Qué hace y cómo se usa está en
 [OFICINA.md](OFICINA.md).
@@ -101,7 +101,7 @@ docker network create --driver overlay --opt encrypted --attachable \
 `.github/workflows/ax-web.yml` compila `images/ax-web` con ko v0.19.1 dos
 veces (la segunda con la caché vacía), exige el mismo digest y además el que
 fija `web.image.digest`:
-`sha256:ab1b4f959b53f7495f37f130b73b867b3f793d11f02fb2460202e9676f2b66ef`.
+`sha256:3ac46221e36b0b58ddf66104c4b6d2d8160cfab7fcd99047184b02f0c4dbe850`.
 Solo entonces guarda el layout OCI como artefacto `ax-web-oci-layout`. El
 host nunca compila la imagen. El propietario la siembra en la copia de
 seguridad del laboratorio, desde el artefacto descomprimido en un
@@ -116,8 +116,8 @@ sudo install -d -o root -g root -m 0700 /run/ax-web-seed
 sudo -- /usr/bin/python3 -m zipfile -e ax-web-oci-layout.zip /run/ax-web-seed
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
   --image-set web --source /run/ax-web-seed \
-  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.0 \
-  --image=ax-web=sha256:ab1b4f959b53f7495f37f130b73b867b3f793d11f02fb2460202e9676f2b66ef
+  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.1 \
+  --image=ax-web=sha256:3ac46221e36b0b58ddf66104c4b6d2d8160cfab7fcd99047184b02f0c4dbe850
 sudo rm -rf /run/ax-web-seed
 ```
 
@@ -312,7 +312,7 @@ Tras AX, en el mismo `ax-lab`:
    parado, lo arranca:
 
    ```bash
-   imagen=localhost:5001/ax-web@sha256:ab1b4f959b53f7495f37f130b73b867b3f793d11f02fb2460202e9676f2b66ef
+   imagen=localhost:5001/ax-web@sha256:3ac46221e36b0b58ddf66104c4b6d2d8160cfab7fcd99047184b02f0c4dbe850
    docker run --detach --pull never --name ax-web-edge --restart no \
      --user 65532:65532 --read-only --cap-drop ALL \
      --security-opt no-new-privileges --memory 33554432 \
@@ -389,12 +389,12 @@ marcha y desde un checkout limpio del commit fusionado:
 
 ## Ventana de la Oficina
 
-El paso del panel 0.2.0 a la Oficina 1.0.0, con las mismas condiciones que
+El paso del panel 0.2.0 a la Oficina 1.0.1, con las mismas condiciones que
 la ventana 2 y sin ejecuciones en marcha (el pod se sustituye):
 
-1. la CI compila `images/ax-web` 1.0.0 y el digest que da se fija en
+1. la CI compila `images/ax-web` 1.0.1 y el digest que da se fija en
    `web.image.digest` en un cambio revisado y fusionado;
-2. el propietario siembra la imagen con `seed-layout` y `--tag 1.0.0` (ver
+2. el propietario siembra la imagen con `seed-layout` y `--tag 1.0.1` (ver
    «Imagen»), y si quiere GitHub, crea `/etc/dockerswarm/ax/github-token`
    (`root:root 0600`);
 3. `ax-lab` con `--check` y después el apply: aplica el manifiesto (el

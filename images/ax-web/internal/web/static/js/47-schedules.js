@@ -27,7 +27,7 @@
     if (d.length === 7) return "todos los días";
     if (d.join(",") === "1,2,3,4,5") return "de lunes a viernes";
     if (d.length === 2 && d.includes(0) && d.includes(6)) return "fines de semana";
-    return d.map((x) => L.days[x].toLowerCase()).join(", ");
+    return d.map((x) => String(O.own(L.days, x) || x).toLowerCase()).join(", ");
   }
 
   function targetText(t) {
@@ -37,7 +37,7 @@
       return "Equipo " + (tpl ? tpl.icon + " " + tpl.name : t.template) + " · " + p;
     }
     const a = O.sel.agent(t.agent_id);
-    return (a ? a.emoji + " " + a.name : t.agent_id) + " · " + ((L.kinds[t.kind] || {}).label || t.kind) + " · " + p;
+    return (a ? a.emoji + " " + a.name : t.agent_id) + " · " + ((O.own(L.kinds, t.kind) || {}).label || t.kind) + " · " + p;
   }
 
   function refLink(ref) {

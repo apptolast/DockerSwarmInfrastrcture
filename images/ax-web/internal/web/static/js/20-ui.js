@@ -43,7 +43,7 @@
   };
 
   const EFFORTS = { low: "Baja", medium: "Media", high: "Alta", xhigh: "Muy alta", max: "Máxima", ultra: "Ultra" };
-  ui.effortLabel = (e) => EFFORTS[e] || e || "Predeterminado";
+  ui.effortLabel = (e) => O.own(EFFORTS, e) || e || "Predeterminado";
 
   // -------------------------------------------------------------- pills --
 
@@ -51,18 +51,18 @@
     const o = opts || {};
     return h("span", { class: ["pill", "pill-" + status, o.cls] },
       h("span", { class: "pill-dot", "aria-hidden": "true" }),
-      o.label || L.status[status] || status || "—");
+      o.label || O.own(L.status, status) || status || "—");
   };
 
   ui.kindBadge = function kindBadge(kind) {
-    const k = L.kinds[kind] || { label: kind, icon: "•" };
+    const k = O.own(L.kinds, kind) || { label: kind, icon: "•" };
     return h("span", { class: "badge badge-kind", title: k.hint || null }, h("span", { "aria-hidden": "true", text: k.icon + " " }), k.label);
   };
 
   ui.verdictBadge = function verdictBadge(v) {
     if (!v) return null;
     return h("span", { class: ["badge", v === "aprobado" ? "badge-ok" : "badge-warn"] },
-      v === "aprobado" ? "✅ " : "🔁 ", L.verdict[v] || v);
+      v === "aprobado" ? "✅ " : "🔁 ", O.own(L.verdict, v) || v);
   };
 
   ui.scoreBadge = function scoreBadge(n) {
@@ -413,18 +413,44 @@
   };
   let menuListener = false;
 
+  /**
+   * Copies text exactly as it is; when it carries invisible or control
+   * characters the toast says so instead of a plain "copied".
+   */
+  ui.copyText = async function copyText(text, okMessage) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      O.toast("El navegador no permitió copiar", { kind: "warn" });
+      return;
+    }
+    const warn = O.invisibleWarning(text);
+    if (warn) O.toast(warn + " Se han copiado tal cual: revísalo antes de pegarlo.", { kind: "warn", title: "Copiado con caracteres ocultos", timeout: 10000 });
+    else O.toast(okMessage || "Copiado al portapapeles", { kind: "ok", timeout: 1800 });
+  };
+
   ui.copyBtn = function copyBtn(getText, label) {
     return ui.btn(label || "Copiar", {
       icon: "copy", size: "sm", kind: "ghost",
-      onClick: async () => {
-        try {
-          await navigator.clipboard.writeText(typeof getText === "function" ? getText() : getText);
-          O.toast("Copiado al portapapeles", { kind: "ok", timeout: 1800 });
-        } catch (e) {
-          O.toast("El navegador no permitió copiar", { kind: "warn" });
-        }
-      },
+      onClick: () => ui.copyText(String(typeof getText === "function" ? getText() : getText)),
     });
+  };
+
+  /**
+   * A live warning for a text control: hidden while its value has no
+   * invisible or control characters, otherwise it lists them.
+   */
+  ui.invisibleNote = function invisibleNote(control) {
+    const el = h("p", { class: "notice notice-warn invisible-note", role: "status", hidden: true });
+    const update = () => {
+      const warn = O.invisibleWarning(control.value);
+      el.hidden = !warn;
+      el.textContent = warn ? "⚠️ " + warn + " Se muestran como ⟦U+…⟧ en la vista previa; revísalos antes de guardar." : "";
+    };
+    control.addEventListener("input", update);
+    update();
+    el.refresh = update;
+    return el;
   };
 
   /** A collapsible block of preformatted text. */
@@ -433,7 +459,7 @@
     return h("details", { class: "pre-block", open: opts.open || null },
       h("summary", null, h("span", { text: title }), h("span", { class: "muted", text: " · " + fmt.bytes(u.bytes(text)) })),
       h("div", { class: "pre-tools" }, ui.copyBtn(() => text)),
-      h("pre", { class: "pre mono", text: text || "(vacío)" }));
+      h("pre", { class: "pre mono", text: text ? O.visible(text) : "(vacío)" }));
   };
 
   // ------------------------------------------------------- model picker --
@@ -559,7 +585,7 @@
   ui.jobCard = function jobCard(j, o) {
     const opts = o || {};
     const a = ui.agentOf(j);
-    const k = L.kinds[j.kind] || { icon: "•", label: j.kind };
+    const k = O.own(L.kinds, j.kind) || { icon: "•", label: j.kind };
     const cost = j.usage && j.usage.cost_usd > 0 ? fmt.usd(j.usage.cost_usd) : "";
     return h("a", { class: ["jcard", "st-" + j.status, j.stalled && "is-stalled"], href: "#/trabajo/" + O.enc(j.id) },
       h("div", { class: "jcard-top" },

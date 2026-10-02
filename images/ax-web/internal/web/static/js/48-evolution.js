@@ -66,7 +66,7 @@
     return [{
       key: "model", label: "Motor · modelo", num: false,
       value: (m) => (m.harness || "") + " " + (m.model || ""),
-      render: (m) => h("span", { class: "mono" }, (L.harness[m.harness] || m.harness || "?") + " · " + (m.model || "predeterminado")),
+      render: (m) => h("span", { class: "mono" }, (O.own(L.harness, m.harness) || m.harness || "?") + " · " + (m.model || "predeterminado")),
     }].concat(COMMON);
   }
 
@@ -113,7 +113,7 @@
     const agent = ui.select(agents.map((a) => ({ value: a.id, label: a.emoji + " " + a.name + " (v" + a.version + ", " + ui.modelLabel(a.harness, a.model, a.effort) + ")" })), S.snap.settings.default_agent);
     const checks = evals.map((ev) => {
       const c = h("input", { type: "checkbox", checked: !preselect || preselect.includes(ev.id), value: ev.id });
-      return { ev, c, el: h("label", { class: "check-row" }, c, h("span", null, h("strong", { text: ev.name }), h("span", { class: "muted", text: " · " + O.sel.projectName(ev.project_id) + " · " + (L.kinds[ev.kind] || { label: ev.kind }).label })) ) };
+      return { ev, c, el: h("label", { class: "check-row" }, c, h("span", null, h("strong", { text: ev.name }), h("span", { class: "muted", text: " · " + O.sel.projectName(ev.project_id) + " · " + (O.own(L.kinds, ev.kind) || { label: ev.kind }).label })) ) };
     });
     O.dialog({
       title: "Ejecutar el banco de evaluación",
@@ -155,7 +155,7 @@
         h("span", { class: "card-icon", "aria-hidden": "true", text: "🧪" }),
         h("div", { class: "card-head-text" },
           h("h3", { class: "card-title", text: ev.name }),
-          h("p", { class: "card-sub muted", text: O.sel.projectName(ev.project_id) + " · " + (L.kinds[ev.kind] || { label: ev.kind }).label })),
+          h("p", { class: "card-sub muted", text: O.sel.projectName(ev.project_id) + " · " + (O.own(L.kinds, ev.kind) || { label: ev.kind }).label })),
         ui.btn("Ejecutar", { size: "sm", icon: "play", onClick: () => runDialog([ev.id]) }),
         ui.iconBtn("trash", "Borrar evaluación", async (e) => {
           const btn = e.currentTarget;

@@ -21,9 +21,16 @@
   // Attributes that hold a URL: only same-origin paths, fragments and
   // http(s) URLs are accepted.
   const URL_ATTRS = new Set(["href", "src", "action", "formaction", "xlink:href", "poster"]);
+  // Attributes that load or run content, or change what an element is:
+  // never set through h(), whatever the value.
+  const BANNED_ATTRS = new Set(["srcdoc", "data", "ping", "http-equiv", "is"]);
 
   function safeLink(value) {
-    const s = String(value).trim();
+    const raw = String(value);
+    // Browsers drop tabs and newlines inside URLs and read "\" as "/", so
+    // "/\t/evil.com" or "/\\evil.com" would leave the site: refuse them all.
+    if (/[\u0000-\u001f\u007f\\]/.test(raw)) return null;
+    const s = raw.trim();
     if (s === "") return null;
     if (s[0] === "#") return s;
     if (s[0] === "/" && s[1] !== "/" && s[1] !== "\\") return s;
@@ -73,6 +80,8 @@
           for (const d of Object.keys(v)) el.dataset[d] = String(v[d]);
         } else if (/^on/i.test(key)) {
           throw new Error("h: inline event attributes are not allowed: " + key);
+        } else if (BANNED_ATTRS.has(key.toLowerCase())) {
+          throw new Error("h: attribute not allowed: " + key);
         } else if (!svg && PROPS.has(key)) {
           el[key] = v;
         } else if (URL_ATTRS.has(key)) {
@@ -176,6 +185,57 @@
       const v = Date.parse(t);
       return v > 0 ? v : NaN;
     },
+  };
+
+  /** obj[key] only when it is obj's own property (never Object.prototype's). */
+  O.own = (obj, key) => (obj !== null && obj !== undefined && Object.hasOwn(obj, key) ? obj[key] : undefined);
+
+  // ------------------------------------------------- invisible characters --
+
+  // Format (Cf: bidi overrides and isolates, zero-width, tags…) and control
+  // (Cc) characters plus U+2028/U+2029, except "\n" and "\t".
+  const RE_INVISIBLE = /[\p{Cf}\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/u;
+  const RE_INVISIBLE_G = /[\p{Cf}\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/gu;
+  // A zero-width joiner inside an emoji sequence (woman + ZWJ + laptop) only draws the emoji.
+  const RE_PICT_BEFORE = /\p{Extended_Pictographic}[\uFE0F\u{1F3FB}-\u{1F3FF}]?$/u;
+  const RE_PICT_AFTER = /^\p{Extended_Pictographic}/u;
+  const joinsEmoji = (s, off) =>
+    RE_PICT_BEFORE.test(s.slice(Math.max(0, off - 4), off)) && RE_PICT_AFTER.test(s.slice(off + 1, off + 3));
+
+  const str0 = (v) => (v === null || v === undefined ? "" : String(v));
+  const mark = (ch) => "⟦U+" + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0") + "⟧";
+
+  /**
+   * visible(str) replaces every invisible or control character (bidi
+   * controls, zero-width characters, tags, C0/C1 controls, U+2028/U+2029;
+   * not "\n" nor "\t") with a visible marker like ⟦U+202E⟧, so that text a
+   * human reviews before trusting it cannot hide or reorder anything.
+   */
+  O.visible = function visible(str) {
+    const s = str0(str);
+    if (!RE_INVISIBLE.test(s)) return s;
+    return s.replace(RE_INVISIBLE_G, (ch, off) => (ch === "\u200d" && joinsEmoji(s, off) ? ch : mark(ch)));
+  };
+
+  /** The characters visible(str) marks, as "⟦U+XXXX⟧" strings in order. */
+  O.invisibles = function invisibles(str) {
+    const s = str0(str);
+    const out = [];
+    if (!RE_INVISIBLE.test(s)) return out;
+    for (const m of s.matchAll(RE_INVISIBLE_G)) {
+      if (!(m[0] === "\u200d" && joinsEmoji(s, m.index))) out.push(mark(m[0]));
+    }
+    return out;
+  };
+  O.hasInvisible = (str) => O.invisibles(str).length > 0;
+
+  /** Spanish summary of the invisible characters of str, or "". */
+  O.invisibleWarning = function invisibleWarning(str) {
+    const all = O.invisibles(str);
+    if (!all.length) return "";
+    const kinds = Array.from(new Set(all));
+    return (all.length === 1 ? "Hay 1 carácter invisible o de control" : "Hay " + all.length + " caracteres invisibles o de control") +
+      " (" + kinds.slice(0, 6).join(" ") + (kinds.length > 6 ? " …" : "") + "): pueden ocultar o reordenar el texto.";
   };
 
   // ---------------------------------------------------------- formatting --

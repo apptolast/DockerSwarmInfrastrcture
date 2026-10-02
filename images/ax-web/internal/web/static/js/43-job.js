@@ -11,7 +11,7 @@
 
   function sourceText(src) {
     if (!src || !src.type || src.type === "manual") return null;
-    const label = L.source[src.type] || src.type;
+    const label = O.own(L.source, src.type) || src.type;
     if ((src.type === "issue" || src.type === "pr") && src.number) return (src.type === "pr" ? "PR #" : "Issue #") + src.number;
     if (src.job_id) return h("span", null, label + " ", h("a", { href: "#/trabajo/" + O.enc(src.job_id), class: "mono", text: src.job_id }));
     if (src.ref) return label + " · " + src.ref;
@@ -27,11 +27,11 @@
     const items = [
       ["Agente", h("a", { href: "#/agentes/" + O.enc(j.agent_id), class: "inline-agent" }, ui.avatar(a, "xs"), " " + a.name, h("span", { class: "muted", text: " · v" + (ag.version || "?") }))],
       ["Proyecto", p ? h("span", null, h("a", { href: "#/proyectos/" + O.enc(p.id), text: p.name }), h("span", { class: "muted mono", text: " · " + (j.branch || p.branch) })) : j.project_id],
-      ["Motor", h("span", { class: "mono" }, (L.harness[ag.harness] || ag.harness || "—") + " · " + (ag.model || "predeterminado") +
+      ["Motor", h("span", { class: "mono" }, (O.own(L.harness, ag.harness) || ag.harness || "—") + " · " + (ag.model || "predeterminado") +
         (usage.model_used && usage.model_used !== ag.model ? " → " + usage.model_used : ""))],
       ["Esfuerzo", ui.effortLabel(ag.effort)],
-      ["Modo", h("span", { title: (L.modes[ag.mode] || {}).hint || null, text: (L.modes[ag.mode] || {}).label || ag.mode || "—" })],
-      ["Prioridad", L.priority[j.priority] || String(j.priority)],
+      ["Modo", h("span", { title: (O.own(L.modes, ag.mode) || {}).hint || null, text: (O.own(L.modes, ag.mode) || {}).label || ag.mode || "—" })],
+      ["Prioridad", O.own(L.priority, j.priority) || String(j.priority)],
       ["Coste", usage.cost_usd ? fmt.usd(usage.cost_usd) : "—"],
       ["Tokens", usage.in_tokens || usage.out_tokens
         ? h("span", { title: "caché leída " + fmt.tokens(usage.cache_read_tokens) + " · escrita " + fmt.tokens(usage.cache_write_tokens) }, fmt.tokens(usage.in_tokens) + " ent. · " + fmt.tokens(usage.out_tokens) + " sal.")
@@ -61,7 +61,7 @@
     if (O.isRunning(j.status)) {
       return h("div", { class: ["notice", j.stalled ? "notice-warn" : "notice-live"] },
         h("span", { class: "live-dot", "aria-hidden": "true" }),
-        h("strong", { text: (L.status[j.status] || j.status) + ": " }),
+        h("strong", { text: (O.own(L.status, j.status) || j.status) + ": " }),
         j.stalled ? "sin noticias desde hace un rato (15 min o más)." : j.activity || "trabajando…");
     }
     if (j.status === "fallido" && j.message) {
@@ -153,7 +153,7 @@
       parts.push(h("div", { class: "card" },
         h("h3", { class: "card-title", text: "💡 Lecciones" }),
         h("p", { class: "muted small", text: policy === "aprobar" ? "Entran directamente en la memoria del proyecto." : policy === "off" ? "La Oficina ignora las lecciones (Ajustes)." : "Quedan como propuestas en la Bandeja hasta que las apruebes." }),
-        h("ul", { class: "lessons" }, j.lessons.map((l) => h("li", { text: l })))));
+        h("ul", { class: "lessons" }, j.lessons.map((l) => h("li", { text: O.visible(l) })))));
     }
     if (O.isFinished(j.status) && j.status !== "cancelado") parts.push(ratingBox(j));
     if (!detail) {

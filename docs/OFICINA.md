@@ -5,7 +5,7 @@ de agentes de IA: un equipo de agentes con nombre, papel, modelo y forma de
 trabajar, que reciben encargos sobre los repositorios de AppToLast, los
 ejecutan uno a uno en un sandbox aislado de AX, entregan resultados, parches
 y pull requests, y aprenden de cada trabajo con la aprobación de una
-persona. Es la versión 1.0.0 de `images/ax-web`; este documento explica qué
+persona. Es la versión 1.0 de `images/ax-web`; este documento explica qué
 hace y cómo se usa. El despliegue está en [AX_WEB.md](AX_WEB.md) y el
 laboratorio en [AX.md](AX.md).
 

@@ -17,7 +17,7 @@
   function outcomeBadge(p) {
     if (p.score !== undefined && p.score !== null) return ui.scoreBadge(p.score);
     if (!p.outcome) return null;
-    const o = OUTCOME[p.outcome] || { icon: "•", cls: "badge-soft" };
+    const o = O.own(OUTCOME, p.outcome) || { icon: "•", cls: "badge-soft" };
     return h("span", { class: ["badge", o.cls] }, o.icon + " " + p.outcome);
   }
 
@@ -25,7 +25,7 @@
     const job = st.job_id ? O.sel.job(st.job_id) : null;
     const agent = O.sel.agent(st.agent_id) || (job ? ui.agentOf(job) : { emoji: "❔", name: st.agent_id });
     const status = (job && job.status) || st.status || "pendiente";
-    const k = L.kinds[st.kind] || { icon: "•", label: st.kind };
+    const k = O.own(L.kinds, st.kind) || { icon: "•", label: st.kind };
     const inner = [
       h("span", { class: "step-num", text: String(i + 1) }),
       ui.avatar(agent, "md", O.isRunning(status) ? "is-live" : null),
@@ -39,7 +39,7 @@
       job && O.isRunning(job.status) && job.activity ? h("span", { class: "step-activity", text: u.trunc(job.activity, 80) }) : null,
     ];
     return h("li", { class: ["step", "st-" + status] },
-      st.job_id ? h("a", { class: "step-box", href: "#/trabajo/" + O.enc(st.job_id), "aria-label": "Paso " + (i + 1) + ": " + st.name + ", " + (L.status[status] || status) }, inner)
+      st.job_id ? h("a", { class: "step-box", href: "#/trabajo/" + O.enc(st.job_id), "aria-label": "Paso " + (i + 1) + ": " + st.name + ", " + (O.own(L.status, status) || status) }, inner)
         : h("div", { class: "step-box is-pending" }, inner));
   }
 
@@ -177,7 +177,7 @@
                 h("span", { class: "step-num", text: String(i + 1) }),
                 h("div", { class: "card-head-text" },
                   h("h3", { class: "card-title" }, j ? h("a", { href: "#/trabajo/" + O.enc(j.id), text: st.name }) : st.name),
-                  h("p", { class: "card-sub muted", text: (O.sel.agent(st.agent_id) || { name: st.agent_id }).name + " · " + (L.kinds[st.kind] || { label: st.kind }).label })),
+                  h("p", { class: "card-sub muted", text: (O.sel.agent(st.agent_id) || { name: st.agent_id }).name + " · " + (O.own(L.kinds, st.kind) || { label: st.kind }).label })),
                 ui.statusPill((j && j.status) || st.status || "pendiente"), j ? ui.verdictBadge(j.verdict) : null),
               j && j.summary ? O.md.render(j.summary, "md-compact") : h("p", { class: "muted", text: j ? (O.isFinished(j.status) ? "Sin resumen." : "En marcha…") : "Aún no ha empezado." }));
           }))),

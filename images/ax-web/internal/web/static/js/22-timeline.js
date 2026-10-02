@@ -28,7 +28,7 @@
     stderr: { icon: "⚠️", label: "stderr", group: "err" },
     error: { icon: "⛔", label: "Error", group: "err" },
   };
-  const toolIcon = (t) => TOOL_ICONS[t] || (t && t.includes("/") ? "🔌" : "🔧");
+  const toolIcon = (t) => O.own(TOOL_ICONS, t) || (t && t.includes("/") ? "🔌" : "🔧");
 
   function usageChips(ev) {
     const out = [];
@@ -57,25 +57,28 @@
     return h("div", null, wrap, btn);
   }
 
+  // Agent output is shown with invisible characters as ⟦U+XXXX⟧ markers.
+  const vis = (s) => O.visible(s);
+
   // dup: the result repeats the previous assistant message word for word
   // (Claude's final "result" event does), so only its usage is shown.
   function body(ev, dup) {
     const text = ev.text || "";
     switch (ev.k) {
       case "text":
-        return foldable(text.length < 12000 ? O.md.render(text, "md-compact") : h("p", { class: "pre-wrap", text }), text.length, 900);
+        return foldable(text.length < 12000 ? O.md.render(text, "md-compact") : h("p", { class: "pre-wrap", text: vis(text) }), text.length, 900);
       case "thinking":
-        return h("details", { class: "tl-think" }, h("summary", { text: "Razonamiento" }), h("p", { class: "pre-wrap", text }));
+        return h("details", { class: "tl-think" }, h("summary", { text: "Razonamiento" }), h("p", { class: "pre-wrap", text: vis(text) }));
       case "tool":
         return h("div", { class: "tl-tool" },
           h("strong", { class: "tl-tool-name", text: ev.tool || "herramienta" }),
-          ev.input ? h("code", { class: "tl-tool-input mono", text: ev.input }) : null);
+          ev.input ? h("code", { class: "tl-tool-input mono", text: vis(ev.input) }) : null);
       case "tool_result":
         return h("details", { class: ["tl-res", ev.ok === false ? "is-bad" : "is-ok"] },
           h("summary", { text: ev.ok === false ? "Falló" : "Resultado" }),
-          h("pre", { class: "pre mono", text: text || "(sin salida)" }));
+          h("pre", { class: "pre mono", text: text ? vis(text) : "(sin salida)" }));
       case "todo":
-        return h("pre", { class: "tl-todo mono", text });
+        return h("pre", { class: "tl-todo mono", text: vis(text) });
       case "usage":
         return h("div", { class: "chips" }, usageChips(ev));
       case "result":
@@ -87,9 +90,9 @@
       case "init":
         return h("div", null, h("span", { text }), ev.model ? h("span", { class: "chip mono", text: ev.model }) : null);
       case "stderr":
-        return h("code", { class: "tl-stderr mono", text });
+        return h("code", { class: "tl-stderr mono", text: vis(text) });
       default:
-        return h("p", { class: "pre-wrap", text: text || (ev.tool ? ev.tool + " " + (ev.input || "") : "") });
+        return h("p", { class: "pre-wrap", text: vis(text || (ev.tool ? ev.tool + " " + (ev.input || "") : "")) });
     }
   }
 
@@ -165,7 +168,7 @@
     });
 
     function row(ev, dup) {
-      const k = KIND[ev.k] || { icon: "•", label: ev.k, group: "sys" };
+      const k = O.own(KIND, ev.k) || { icon: "•", label: ev.k, group: "sys" };
       const icon = ev.k === "tool" ? toolIcon(ev.tool) : ev.k === "tool_result" ? (ev.ok === false ? "❌" : "✅") : k.icon;
       return h("div", { class: ["tl-row", "k-" + ev.k, "g-" + k.group], dataset: { seq: String(ev.seq || 0) } },
         h("span", { class: "tl-icon", "aria-hidden": "true", text: icon }),

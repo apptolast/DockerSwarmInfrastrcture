@@ -206,6 +206,10 @@
 .md .md-al-c { text-align: center; }
 .md .md-al-r { text-align: right; }
 .md-nolink { text-decoration: underline dotted; }
+.md-href-host { font-family: var(--mono); font-size: .85em; color: var(--warn); text-decoration: none; }
+.md .md-big-note { margin-bottom: .5em; }
+.md .md-raw { max-height: 70vh; }
+.invisible-note { margin-top: 6px; font-size: .86rem; overflow-wrap: anywhere; }
 .md-compact { font-size: .92rem; }
 .md-compact .md-h { font-size: 1rem !important; margin-top: .6em; }
 

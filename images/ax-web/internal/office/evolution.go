@@ -50,7 +50,7 @@ func (o *Office) applyLessonsLocked(j *Job) {
 		}
 	}
 	for _, l := range j.Lessons {
-		t, err := validateMemoryText(l)
+		t, err := validateMemoryText(stripInvisible(l))
 		if err != nil || known(t) {
 			continue
 		}

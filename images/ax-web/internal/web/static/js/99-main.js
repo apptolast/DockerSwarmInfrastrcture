@@ -5,22 +5,15 @@
   "use strict";
   const O = window.Oficina;
 
-  // Fenced code blocks of rendered Markdown get a copy button.
-  O.mdCodeDecorator = (pre) => {
-    const code = pre.firstChild;
+  // Fenced code blocks of rendered Markdown get a copy button. It copies
+  // the raw code (the block shows invisible characters as ⟦U+XXXX⟧
+  // markers) and warns when that raw code carries such characters.
+  O.mdCodeDecorator = (pre, node) => {
+    const raw = node && typeof node.text === "string" ? node.text : pre.textContent;
     pre.classList.add("has-copy");
     pre.appendChild(O.h("button", {
       type: "button", class: "pre-copy", "aria-label": "Copiar el código", title: "Copiar",
-      on: {
-        click: async () => {
-          try {
-            await navigator.clipboard.writeText(code ? code.textContent : "");
-            O.toast("Código copiado", { kind: "ok", timeout: 1500 });
-          } catch (e) {
-            O.toast("El navegador no permitió copiar", { kind: "warn" });
-          }
-        },
-      },
+      on: { click: () => O.ui.copyText(raw, "Código copiado") },
     }, O.icon("copy", { size: 15 })));
   };
 
