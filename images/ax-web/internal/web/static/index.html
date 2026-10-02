@@ -2,23 +2,29 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AX</title>
-<link rel="stylesheet" href="/app.css">
-<script src="/app.js" defer></script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1117" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Oficina de agentes de AppToLast">
+<title>Oficina de agentes</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{APP_CSS}}">
+<script src="{{APP_JS}}" defer></script>
 </head>
 <body>
-<header>
-  <strong>AX</strong>
-  <nav>
-    <a href="#/tareas">Tareas</a>
-    <a href="#/nueva">Nueva ejecución</a>
-    <a href="#/ejecucion">Salida en directo</a>
-    <a href="#/gateways">Gateways</a>
-    <a href="#/workspaces">Workspaces</a>
-  </nav>
-</header>
-<div id="banners"></div>
-<main id="main"></main>
+<div class="app" id="app">
+<header class="topbar" id="topbar"></header>
+<nav class="sidenav" id="sidenav" aria-label="Secciones"></nav>
+<div class="banners" id="banners"></div>
+<main class="view" id="view" tabindex="-1">
+<div class="boot"><div class="boot-logo"></div><p>Abriendo la oficina…</p></div>
+</main>
+<nav class="tabbar" id="tabbar" aria-label="Secciones principales"></nav>
+</div>
+<div class="drawer-root" id="drawer-root"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<noscript><p class="noscript">La Oficina necesita JavaScript activado.</p></noscript>
 </body>
 </html>

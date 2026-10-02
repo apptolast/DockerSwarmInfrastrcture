@@ -8,6 +8,39 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Despliegue de la Oficina de agentes, la versión 1.0 del panel web de AX
+  (ver [`docs/AX_WEB.md`](docs/AX_WEB.md), «Oficina», y
+  [`docs/OFICINA.md`](docs/OFICINA.md)). `config/ax-lab.yml` sube
+  `web.image.tag` a `1.0.1` (el digest se fija con el que compile la CI; la
+  `1.0.0` se compiló y sembró, pero se sustituyó antes de desplegarla por
+  los arreglos de la revisión de seguridad de la interfaz),
+  `max_turns` a 150 y `max_timeout_minutes` a 90, y añade `extra_origins`
+  (`https://oficina.apptolast.com`) y `web.office`: 1 024 MiB de estado,
+  200 trabajos en cola, 3 000 de retención y seis proyectos sembrados,
+  repositorios públicos de `apptolast` en su rama por defecto, con servicio
+  y URL solo donde este repositorio prueba el vínculo.
+  `scripts/validate-ax-lab.py` valida los proyectos (forma, `id` únicos,
+  repositorios `https://github.com/<propietario>/<repositorio>`, ramas,
+  `dockerswarm-infra` presente, y `service` y `url` contra
+  `config/image-channels.yml` y los catálogos de servicios) y el manifiesto
+  nuevo: la configuración renderizada entera con `to_json`, el
+  PersistentVolumeClaim `ax-web-state` (`ReadWriteOnce`, `standard`) montado
+  en `/var/lib/ax-web` como única ruta escribible, el Secret opcional
+  `ax-web-office` (`optional: true`, `0440`) en `/var/run/ax-web/office`,
+  los recursos 50m/96 MiB → 500m/384 MiB y la salida HTTPS a direcciones
+  públicas para la API de GitHub, fuera de los rangos privados, compartidos,
+  de enlace local y de loopback. El rol lee `ax-web-office` solo por sus
+  metadatos e informa de si existe, sin detenerse nunca por él.
+  `scripts/ax-web-bootstrap.sh office [--replace]` crea ese Secret desde
+  `/etc/dockerswarm/ax/codex/auth.json` y `/etc/dockerswarm/ax/github-token`,
+  los que existan, con `--from-file`, el lock host-global y sin valores en la
+  salida ni en `argv`; solo `--replace` lo sustituye. `docs/AX.md` añade
+  `github-token` a «Credenciales». `tests/test_ax_web_deploy_contract.py`
+  fija el manifiesto, los proyectos y el arranque con tablas de mutaciones
+  negativas, y `tests/test_ax_web_contract.py` pasa a fijar el contrato de
+  la Oficina: comandos solo desde el gestor de ejecuciones, credenciales
+  solo en la Oficina y en `StartProcess`, y una interfaz estática sin código
+  en línea.
 - Despliegue del panel web de AX en el laboratorio (ver
   [`docs/AX_WEB.md`](docs/AX_WEB.md)): del laboratorio solo se publica el
   panel de `https://ax.apptolast.com`, por decisión del propietario del
@@ -559,8 +592,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   propietario del 2026-09-28, `web.blackout_utc` pasa de `22:30-00:40` a
   `""`, que la imagen `ax-web` (ahora `0.2.0`, con su nuevo digest) lee
   como «sin ventana»: no rechaza ejecuciones ni reanudaciones por la hora y
-  su vigilante no cancela nada. Las ejecuciones entre 22:30 y 00:40 UTC
-  llegan a la auditoría del Observatorio (ver [`docs/AX.md`](docs/AX.md)).
+  su vigilante no cancela nada. Tampoco `ax-tarea` espera a esa ventana: las
+  Tasks entre 22:30 y 00:40 UTC llegan a la auditoría del Observatorio (ver
+  [`docs/AX.md`](docs/AX.md)). Antes del apply hay que sembrar
+  `ax-web:0.2.0` desde el artefacto `ax-web-oci-layout` de la CI con
+  `seed-layout --tag 0.2.0` (ver [`docs/AX_WEB.md`](docs/AX_WEB.md),
+  «Imagen»).
 
 - La compuerta STOP 10 de `CLAUDE.md` ya no hace pasar todo apply de `edge`
   o `site` por «Ventana de aplicación de la ruta», cuyos pasos solo sirven

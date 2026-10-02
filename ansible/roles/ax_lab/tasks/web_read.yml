@@ -3,9 +3,10 @@
 # (docs/AX_WEB.md): in --check as the host is, and in the apply before and
 # after web.yml's changes. As with AX, the ax-web namespace is never
 # adopted: only a state file for this exact node proves this role created
-# it. The two Secrets the owner creates are read by name, type and key
-# names only; no value is ever printed or registered. The edge network is
-# only inspected: the edge playbook creates it.
+# it. The Secrets the owner creates are read by name, type and number of
+# keys only; no value is ever printed or registered. The office's optional
+# one only reports: it never stops anything. The edge network is only
+# inspected: the edge playbook creates it.
 - name: Read the pinned web panel image in the registry and the backup
   ansible.builtin.script:
     cmd: >-
@@ -193,7 +194,7 @@
 # AGE): without --output or --sort-by the API server returns each row's
 # object as metadata only (meta.k8s.io Table, includeObject=Metadata), so no
 # Secret value ever reaches this host's kubectl, let alone the log. DATA is
-# the number of keys.
+# the number of keys. A missing name is no error (--ignore-not-found).
 - name: Read the web panel Secrets by metadata only
   ansible.builtin.command:
     argv:
@@ -208,6 +209,7 @@
       - secrets
       - ax-web-tls
       - ax-web-agent
+      - ax-web-office
       - --namespace
       - "{{ ax_lab.web.namespace }}"
       - --ignore-not-found
@@ -259,6 +261,36 @@
           | map("split") | map("batch", 3) | map("first") | list
         )
         | map(attribute="key") | list
+      }}
+    # The office's optional Secret (ax-web-bootstrap.sh office): its row
+    # (name, type and number of keys) when it exists. Without it the office
+    # runs Claude only and without GitHub; nothing waits for it.
+    ax_lab_web_office_rows: >-
+      {{
+        [] if ax_lab_web_secrets_read is skipped else
+        ax_lab_web_secrets_read.stdout_lines | select("match", "ax-web-office ")
+        | map("split") | map("batch", 3) | map("first") | list
+      }}
+
+- name: Describe the optional office Secret of the web panel
+  ansible.builtin.set_fact:
+    ax_lab_web_office_report: >-
+      {{
+        "the optional Secret ax-web-office is not read: the web panel or its"
+        ~ " namespace is not there yet"
+        if ax_lab_web_secrets_read is skipped else
+        (
+          "the optional Secret ax-web-office is present ("
+          ~ ax_lab_web_office_rows[0][1] ~ ", "
+          ~ ax_lab_web_office_rows[0][2] ~ " keys): the office reads its"
+          ~ " Codex session and GitHub tokens from it"
+        )
+        if ax_lab_web_office_rows else
+        (
+          "the optional Secret ax-web-office is absent: the office runs"
+          ~ " Claude only and without GitHub until the owner runs"
+          ~ " `sudo -- ./scripts/ax-web-bootstrap.sh office`"
+        )
       }}
 
 # The forwarder is a plain container this role creates with its labels; one
@@ -479,6 +511,11 @@
               ~ ax_lab_web_secrets_missing | join(", ")
             ]
             if ax_lab_web_secrets_missing else []
+          )
+          + (
+            []
+            if ax_lab_web_secrets_read is skipped else
+            [ax_lab_web_office_report]
           )
         )
         + (

@@ -4,23 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
-var lim = Limits{RepoHosts: []string{"github.com"}, MaxTurns: 50, MaxTimeout: 45 * time.Minute}
-
-func intp(n int) *int { return &n }
-
-func TestValidateDefaults(t *testing.T) {
-	s, err := Validate(Request{Repo: "https://github.com/apptolast/demo.git", Prompt: "hola"}, lim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Repo != "https://github.com/apptolast/demo.git" || s.Branch != "main" || s.Turns != 20 ||
-		s.Timeout != 30*time.Minute || s.CPU != "1" || s.Memory != "1Gi" {
-		t.Fatalf("defaults: %+v", s)
-	}
-}
+var hosts = []string{"github.com"}
 
 func field(err error) string {
 	var fe *FieldError
@@ -31,64 +17,47 @@ func field(err error) string {
 }
 
 func TestValidateRejects(t *testing.T) {
-	ok := Request{Repo: "https://github.com/a/b", Prompt: "x"}
-	cases := []struct {
-		name  string
-		edit  func(*Request)
-		field string
-	}{
-		{"http", func(r *Request) { r.Repo = "http://github.com/a/b" }, "repo"},
-		{"ssh", func(r *Request) { r.Repo = "git@github.com:a/b.git" }, "repo"},
-		{"userinfo", func(r *Request) { r.Repo = "https://x:y@github.com/a/b" }, "repo"},
-		{"port", func(r *Request) { r.Repo = "https://github.com:443/a/b" }, "repo"},
-		{"query", func(r *Request) { r.Repo = "https://github.com/a/b?x=1" }, "repo"},
-		{"empty query", func(r *Request) { r.Repo = "https://github.com/a/b?" }, "repo"},
-		{"fragment", func(r *Request) { r.Repo = "https://github.com/a/b#x" }, "repo"},
-		{"other host", func(r *Request) { r.Repo = "https://gitlab.com/a/b" }, "repo"},
-		{"lookalike", func(r *Request) { r.Repo = "https://github.com.evil.io/a/b" }, "repo"},
-		{"upper host", func(r *Request) { r.Repo = "https://GitHub.com/a/b" }, "repo"},
-		{"escape", func(r *Request) { r.Repo = "https://github.com/a/%2e%2e" }, "repo"},
-		{"dotdot", func(r *Request) { r.Repo = "https://github.com/a/.." }, "repo"},
-		{"trailing dots", func(r *Request) { r.Repo = "https://github.com/0/0.." }, "repo"},
-		{"trailing dot", func(r *Request) { r.Repo = "https://github.com/a/b." }, "repo"},
-		{"deep", func(r *Request) { r.Repo = "https://github.com/a/b/c" }, "repo"},
-		{"short", func(r *Request) { r.Repo = "https://github.com/a" }, "repo"},
-		{"dash", func(r *Request) { r.Repo = "https://github.com/-a/b" }, "repo"},
-		{"space", func(r *Request) { r.Repo = "https://github.com/a/b c" }, "repo"},
-		{"long", func(r *Request) { r.Repo = "https://github.com/a/" + strings.Repeat("b", 300) }, "repo"},
-		{"branch option", func(r *Request) { r.Branch = "--upload-pack=x" }, "branch"},
-		{"branch dots", func(r *Request) { r.Branch = "a..b" }, "branch"},
-		{"branch space", func(r *Request) { r.Branch = "a b" }, "branch"},
-		{"branch lock", func(r *Request) { r.Branch = "a.lock" }, "branch"},
-		{"branch slash", func(r *Request) { r.Branch = "/a" }, "branch"},
-		{"branch long", func(r *Request) { r.Branch = strings.Repeat("a", 101) }, "branch"},
-		{"codex", func(r *Request) { r.Agent = "codex" }, "agent"},
-		{"empty prompt", func(r *Request) { r.Prompt = "  \n" }, "prompt"},
-		{"big prompt", func(r *Request) { r.Prompt = strings.Repeat("a", MaxPromptBytes+1) }, "prompt"},
-		{"nul prompt", func(r *Request) { r.Prompt = "a\x00b" }, "prompt"},
-		{"bad utf8", func(r *Request) { r.Prompt = "a\xffb" }, "prompt"},
-		{"turns 0", func(r *Request) { r.Turns = intp(0) }, "turns"},
-		{"turns 51", func(r *Request) { r.Turns = intp(51) }, "turns"},
-		{"timeout 4", func(r *Request) { r.TimeoutMinutes = intp(4) }, "timeout_minutes"},
-		{"timeout 46", func(r *Request) { r.TimeoutMinutes = intp(46) }, "timeout_minutes"},
-		{"cpu", func(r *Request) { r.CPU = "4" }, "cpu"},
-		{"memory", func(r *Request) { r.Memory = "8Gi" }, "memory"},
+	repos := map[string]string{
+		"http":          "http://github.com/a/b",
+		"ssh":           "git@github.com:a/b.git",
+		"userinfo":      "https://x:y@github.com/a/b",
+		"port":          "https://github.com:443/a/b",
+		"query":         "https://github.com/a/b?x=1",
+		"empty query":   "https://github.com/a/b?",
+		"fragment":      "https://github.com/a/b#x",
+		"other host":    "https://gitlab.com/a/b",
+		"lookalike":     "https://github.com.evil.io/a/b",
+		"upper host":    "https://GitHub.com/a/b",
+		"escape":        "https://github.com/a/%2e%2e",
+		"dotdot":        "https://github.com/a/..",
+		"trailing dots": "https://github.com/0/0..",
+		"trailing dot":  "https://github.com/a/b.",
+		"deep":          "https://github.com/a/b/c",
+		"short":         "https://github.com/a",
+		"dash":          "https://github.com/-a/b",
+		"space":         "https://github.com/a/b c",
+		"long":          "https://github.com/a/" + strings.Repeat("b", 300),
+		"empty":         "",
 	}
-	for _, c := range cases {
-		req := ok
-		c.edit(&req)
-		_, err := Validate(req, lim)
-		if field(err) != c.field {
-			t.Errorf("%s: got %v, want a %s error", c.name, err, c.field)
+	for name, raw := range repos {
+		if _, err := ValidateRepo(raw, hosts); field(err) != "repo" {
+			t.Errorf("%s: got %v, want a repo error", name, err)
 		}
 	}
-	arg := lim
-	arg.PromptInArg = true
-	if _, err := Validate(Request{Repo: "https://github.com/a/b", Prompt: "--help"}, arg); field(err) != "prompt" {
-		t.Error("an option-like prompt was accepted in argument mode")
+	for _, b := range []string{"--upload-pack=x", "a..b", "a b", "a.lock", "/a", "a/", "a//b", "a/.b", ".a",
+		strings.Repeat("a", 101), ""} {
+		if err := ValidateBranch(b); field(err) != "branch" {
+			t.Errorf("%q: got %v, want a branch error", b, err)
+		}
 	}
-	if _, err := Validate(Request{Repo: "https://github.com/a/b", Prompt: "--help"}, lim); err != nil {
-		t.Errorf("stdin mode must accept it: %v", err)
+	// Launch's re-check keeps the shape rules whatever the host.
+	for _, raw := range []string{"https://x@github.com/a/b", "http://github.com/a/b", "https://gitlab.com/a/b/c"} {
+		if checkRepo(raw) == nil {
+			t.Errorf("%s accepted", raw)
+		}
+	}
+	if err := checkRepo("https://gitlab.com/a/b"); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -99,7 +68,7 @@ func TestValidateAccepts(t *testing.T) {
 		}
 	}
 	for _, r := range []string{"https://github.com/apptolast/DockerSwarmInfrastrcture", "https://github.com/a-b/c.d_e.git"} {
-		if _, err := ValidateRepo(r, lim.RepoHosts); err != nil {
+		if _, err := ValidateRepo(r, hosts); err != nil {
 			t.Errorf("%s: %v", r, err)
 		}
 	}

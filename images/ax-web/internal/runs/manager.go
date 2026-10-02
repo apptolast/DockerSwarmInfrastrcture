@@ -1,6 +1,8 @@
-// Package runs holds the panel's only way to start work in AX: one run at a
-// time of the fixed Claude command on a public repository, with the same
-// safeguards as the host's ax-tarea, and its cleanup.
+// Package runs is the office's only way to start work in AX: one run at a
+// time of an agent CLI (Claude Code or Codex, see package harness) on a
+// public repository, with the same safeguards as the host's ax-tarea, the
+// capture of the checkout's changes, and the cleanup. *Manager implements
+// harness.Executor.
 package runs
 
 import (
@@ -10,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,75 +23,93 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"apptolast.com/ax-web/internal/config"
+	"apptolast.com/ax-web/internal/harness"
 )
 
-// Fixed names and the fixed command. The panel never runs anything else.
+// Fixed names and paths. The manager never runs anything but the agent
+// command of package harness and the fixed argv of this package.
 const (
 	TaskPrefix      = "web-"
 	WorkspacePrefix = "ws-"
 	HostRunPrefix   = "tarea-" // ax-tarea's tasks
-	TokenEnv        = "CLAUDE_CODE_OAUTH_TOKEN"
-	WorkspacePath   = "/workspace"
-	RepoDir         = "repo"
-	AgentWrapper    = "ax-agent"
-	nameLayout      = "20060102-150405"
-	listPage        = 100
-	maxListPages    = 100
+	// TokenEnv and CodexAuthEnv are the credentials' variables, which
+	// only ever travel in StartProcess.env.
+	TokenEnv      = "CLAUDE_CODE_OAUTH_TOKEN"
+	CodexAuthEnv  = "CODEX_AUTH_JSON_B64"
+	WorkspacePath = "/workspace"
+	RepoDir       = "repo"
+	RepoPath      = WorkspacePath + "/" + RepoDir
+	// CodexAuthPath is where ax-agent puts Codex's auth.json, which Codex
+	// may renew during a run (its refresh token is single-use).
+	CodexAuthPath = "/root/.codex/auth.json"
+	MaxCodexAuth  = 64 << 10
+	listPage      = 100
+	maxListPages  = 100
 )
 
-// AgentCommand is the only agent argv the panel starts, before the prompt
-// fallback. `claude -p` skips the workspace trust dialog, so a public
-// repository's .claude settings, hooks and .mcp.json would otherwise run
-// beside the credential: --restricted drops the tools that run commands or
-// code and WebFetch, ignores user, project and local settings and confines
-// the file tools to the working directory; --strict-mcp-config skips MCP
-// servers too (Claude Code 2.1.274 --help). stream-json, which requires
-// --verbose with -p, is the only realtime output format.
-func AgentCommand(turns int) []string {
-	return []string{AgentWrapper, AgentClaude, "-p", "--restricted", "--strict-mcp-config",
-		"--output-format", "stream-json", "--verbose", "--max-turns", strconv.Itoa(turns)}
-}
+// Task resources, recorded on the task only: AX does not enforce them
+// (google/ax#369); the worker pod and the timeout are the real caps.
+const (
+	RequestCPU    = "250m"
+	RequestMemory = "512Mi"
+	LimitCPU      = "1"
+	LimitMemory   = "1Gi"
+)
 
-// CloneCheck proves the checkout exists before the agent starts: at the
-// pinned AX a failed git fetch still reports Ready=True (google/ax f009cc8
+// Run states and outcomes, as in package harness.
+const (
+	StatePreparing     = harness.StatePreparing
+	StateWaiting       = harness.StateWaiting
+	StateRunning       = harness.StateRunning
+	StateCancelling    = harness.StateCancelling
+	StateCleaning      = harness.StateCleaning
+	StateCleanupFailed = harness.StateCleanupFailed
+	StateFinished      = harness.StateFinished
+
+	OutcomeExited    = harness.OutcomeExited
+	OutcomeCancelled = harness.OutcomeCancelled
+	OutcomeTimeout   = harness.OutcomeTimeout
+	OutcomeFailed    = harness.OutcomeFailed
+)
+
+// CloneCheck proves the checkout exists before the agent starts, and
+// prints the base commit of the capture: at the pinned AX a failed git
+// fetch still reports Ready=True (google/ax f009cc8
 // internal/workspace/setup.go:120-122). It runs with no credential.
 func CloneCheck() []string {
-	return []string{"git", "-C", WorkspacePath + "/" + RepoDir, "rev-parse", "--verify", "HEAD"}
+	return gitArgv("rev-parse", "--verify", "HEAD")
 }
 
-// Run states.
-const (
-	StatePreparing     = "preparing"
-	StateWaiting       = "waiting"
-	StateRunning       = "running"
-	StateCancelling    = "cancelling"
-	StateCleaning      = "cleaning"
-	StateCleanupFailed = "cleanup_failed"
-	StateFinished      = "finished"
-)
-
-// Outcomes.
-const (
-	OutcomeExited    = "exited"
-	OutcomeCancelled = "cancelled"
-	OutcomeTimeout   = "timeout"
-	OutcomeFailed    = "failed"
-)
-
-// Errors returned to the web layer.
+// Errors of Launch and Cancel. ErrNotReady, ErrShuttingDown and
+// ErrBlackout satisfy errors.Is(err, harness.ErrNotReady); *BusyError
+// satisfies errors.Is(err, harness.ErrBusy).
 var (
-	ErrNotReady     = errors.New("el panel aún está retirando ejecuciones anteriores")
-	ErrBlackout     = errors.New("la ejecución se cruzaría con la ventana del Observatorio")
-	ErrNotFound     = errors.New("no existe esa ejecución")
-	ErrShuttingDown = errors.New("el panel se está deteniendo")
+	ErrNotReady     error = &stateError{"el panel aún está retirando ejecuciones anteriores", harness.ErrNotReady}
+	ErrShuttingDown error = &stateError{"el panel se está deteniendo", harness.ErrNotReady}
+	// ErrBlackout is a "not now", like ErrNotReady: the office keeps the
+	// job queued and tries again after the window.
+	ErrBlackout error = &stateError{"la ejecución se cruzaría con la ventana del Observatorio", harness.ErrNotReady}
+	ErrNotFound       = errors.New("no existe esa ejecución")
 )
 
-// BusyError names what blocks a new run.
+type stateError struct {
+	msg  string
+	kind error
+}
+
+func (e *stateError) Error() string        { return e.msg }
+func (e *stateError) Is(target error) bool { return target == e.kind }
+
+// BusyError names what holds the only worker: the run in progress or a
+// task of ax-tarea.
 type BusyError struct{ Task string }
 
 func (e *BusyError) Error() string {
-	return fmt.Sprintf("ya hay una ejecución en curso (%s)", e.Task)
+	return fmt.Sprintf("el sandbox está ocupado (%s)", e.Task)
 }
+
+// Is makes a BusyError match harness.ErrBusy.
+func (e *BusyError) Is(target error) bool { return target == harness.ErrBusy }
 
 // ProcessClient is a guest ProcessService bound to one actor.
 type ProcessClient interface {
@@ -102,17 +121,24 @@ type ProcessClient interface {
 type Deps struct {
 	AX        v1alpha1.AXClient
 	DialGuest func(atespace, actor string) (ProcessClient, error)
-	ReadToken func() (string, error)
-	Now       func() time.Time
-	Audit     *slog.Logger
+	// Credentials returns the env holding the harness credential
+	// (CLAUDE_CODE_OAUTH_TOKEN or CODEX_AUTH_JSON_B64). Called once per
+	// run, right before the agent starts. Never logged.
+	Credentials func(harnessName string) (map[string]string, error)
+	// SaveCodexAuth receives /root/.codex/auth.json read back after a
+	// Codex run (≤ 64 KiB) and the task's creation time. Optional.
+	SaveCodexAuth func(data []byte, taskCreated time.Time) error
+	Now           func() time.Time
+	Audit         *slog.Logger
 }
 
 // Options are the reviewed settings and the timings, which tests shorten.
 type Options struct {
-	Atespace       string
-	AgentImage     string
-	Blackout       config.Window
-	WatchdogLead   time.Duration
+	Atespace     string
+	AgentImage   string
+	Blackout     config.Window
+	WatchdogLead time.Duration
+	// PromptInArg passes the prompt after "--" instead of on stdin.
 	PromptInArg    bool
 	ReadyTimeout   time.Duration
 	PollInterval   time.Duration
@@ -123,7 +149,9 @@ type Options struct {
 	CleanupMargin  time.Duration
 	CallTimeout    time.Duration
 	WatchdogTick   time.Duration
-	BufferBytes    int
+	// CommandTimeout bounds each command after the agent (the capture's
+	// git commands, reading Codex's auth.json); 2 minutes when zero.
+	CommandTimeout time.Duration
 }
 
 // DefaultOptions are the production timings of docs/AX_WEB.md.
@@ -138,86 +166,15 @@ func DefaultOptions() Options {
 		CleanupMargin:  2 * time.Minute,
 		CallTimeout:    15 * time.Second,
 		WatchdogTick:   30 * time.Second,
-		BufferBytes:    4 << 20,
+		CommandTimeout: 2 * time.Minute,
 	}
-}
-
-// Run is one execution. Its identity is its task's name.
-type Run struct {
-	ID        string
-	Workspace string
-	Output    *Buffer
-	done      chan struct{}
-
-	mu           sync.Mutex
-	spec         Spec
-	created      time.Time
-	finished     time.Time
-	state        string
-	outcome      string
-	message      string
-	exitCode     *int
-	cancelled    bool
-	exited       bool
-	touched      bool // the panel asked AX to create its objects
-	processID    string
-	proc         ProcessClient
-	prepCancel   context.CancelFunc
-	streamCancel context.CancelFunc
-}
-
-// View is what the browser sees of a run: never the prompt.
-type View struct {
-	ID             string `json:"id"`
-	Workspace      string `json:"workspace"`
-	Repo           string `json:"repo"`
-	Branch         string `json:"branch"`
-	Turns          int    `json:"turns"`
-	TimeoutMinutes int    `json:"timeout_minutes"`
-	CPU            string `json:"cpu"`
-	Memory         string `json:"memory"`
-	State          string `json:"state"`
-	Outcome        string `json:"outcome,omitempty"`
-	Message        string `json:"message,omitempty"`
-	ExitCode       *int   `json:"exit_code,omitempty"`
-	Created        string `json:"created"`
-	Finished       string `json:"finished,omitempty"`
-}
-
-// View snapshots r.
-func (r *Run) View() View {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	v := View{
-		ID: r.ID, Workspace: r.Workspace, Repo: r.spec.Repo, Branch: r.spec.Branch,
-		Turns: r.spec.Turns, TimeoutMinutes: int(r.spec.Timeout / time.Minute),
-		CPU: r.spec.CPU, Memory: r.spec.Memory, State: r.state, Outcome: r.outcome,
-		Message: r.message, ExitCode: r.exitCode,
-		Created: r.created.UTC().Format(time.RFC3339),
-	}
-	if !r.finished.IsZero() {
-		v.Finished = r.finished.UTC().Format(time.RFC3339)
-	}
-	return v
-}
-
-// Done is closed once the run is over and cleaned up.
-func (r *Run) Done() <-chan struct{} { return r.done }
-
-func (r *Run) setState(state, message string) {
-	r.mu.Lock()
-	r.state, r.message = state, message
-	r.mu.Unlock()
-}
-
-func (r *Run) log(format string, args ...any) {
-	r.Output.Append(StreamSystem, []byte(fmt.Sprintf(format, args...)+"\n"))
 }
 
 // Manager owns the single run slot.
 type Manager struct {
 	opt Options
 	dep Deps
+	lim limits
 
 	mu       sync.Mutex
 	ready    bool
@@ -226,9 +183,15 @@ type Manager struct {
 	active   *Run
 	last     *Run
 	wg       sync.WaitGroup
+	// quit is closed when Shutdown starts (it aborts a capture); stop
+	// once it stopped waiting (it ends cleanup and reap retries).
+	quit     chan struct{}
 	stop     chan struct{}
+	quitOnce sync.Once
 	stopOnce sync.Once
 }
+
+var _ harness.Executor = (*Manager)(nil)
 
 // NewManager builds a manager. Runs are refused until Reap succeeds.
 func NewManager(opt Options, dep Deps) *Manager {
@@ -238,29 +201,22 @@ func NewManager(opt Options, dep Deps) *Manager {
 	if dep.Audit == nil {
 		dep.Audit = slog.New(slog.DiscardHandler)
 	}
-	return &Manager{opt: opt, dep: dep, stop: make(chan struct{})}
+	return &Manager{opt: opt, dep: dep, lim: defaultLimits(),
+		quit: make(chan struct{}), stop: make(chan struct{})}
 }
 
-// Current is the active run, or else the last one, or nil.
-func (m *Manager) Current() *Run {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.active != nil {
-		return m.active
+func (m *Manager) commandTimeout() time.Duration {
+	if m.opt.CommandTimeout > 0 {
+		return m.opt.CommandTimeout
 	}
-	return m.last
+	return 2 * time.Minute
 }
 
-// Get finds the active or last run by id.
-func (m *Manager) Get(id string) *Run {
+// Ready is true once the start-up reap succeeded, until Shutdown.
+func (m *Manager) Ready() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, r := range []*Run{m.active, m.last} {
-		if r != nil && r.ID == id {
-			return r
-		}
-	}
-	return nil
+	return m.ready && !m.stopping
 }
 
 // ActiveTask is the task of the run in progress, or "".
@@ -268,12 +224,12 @@ func (m *Manager) ActiveTask() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active != nil {
-		return m.active.ID
+		return m.active.id
 	}
 	return ""
 }
 
-// Status is the panel-wide state for the banner.
+// Status is the manager's state for the office's AX banner.
 type Status struct {
 	Ready    bool   `json:"ready"`
 	ReapNote string `json:"reap_note,omitempty"`
@@ -284,21 +240,54 @@ type Status struct {
 // Status snapshots the manager.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
-	s := Status{Ready: m.ready, ReapNote: m.reapNote}
+	s := Status{Ready: m.ready && !m.stopping, ReapNote: m.reapNote}
 	r := m.active
 	m.mu.Unlock()
 	if r != nil {
-		v := r.View()
-		s.Active = v.ID
-		if v.State == StateCleanupFailed {
-			s.Cleanup = v.ID
+		s.Active = r.id
+		if r.currentState() == StateCleanupFailed {
+			s.Cleanup = r.id
 		}
 	}
 	return s
 }
 
-// Start validates the moment, reserves the slot and launches the run.
-func (m *Manager) Start(ctx context.Context, spec Spec, clientIP string) (*Run, error) {
+// agentCommand is the agent's argv, with the prompt appended in argument
+// mode.
+func (m *Manager) agentCommand(spec harness.Spec) ([]string, error) {
+	argv, err := harness.Command(spec)
+	if err != nil {
+		return nil, err
+	}
+	if m.opt.PromptInArg {
+		if spec.Harness == harness.Codex {
+			argv = argv[:len(argv)-1] // "-": stdin
+		}
+		argv = append(argv, "--", spec.Prompt)
+	}
+	return argv, nil
+}
+
+// Launch validates spec, reserves the slot and starts the run. It fails
+// with a *BusyError (errors.Is harness.ErrBusy) while a run or any
+// web-*/tarea-* task exists, and with an error matching
+// harness.ErrNotReady before the reap, while stopping, or when AX cannot
+// be asked. ctx bounds only that check: the run outlives it.
+func (m *Manager) Launch(ctx context.Context, spec harness.Spec, clientIP string,
+	hooks harness.Hooks) (harness.Run, error) {
+	command, err := m.agentCommand(spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateBranch(spec.Branch); err != nil {
+		return nil, err
+	}
+	if err := checkRepo(spec.Repo); err != nil {
+		return nil, err
+	}
+	if len(spec.ApplyPatch) > harness.MaxPatchBytes {
+		return nil, &FieldError{"apply_patch", "el parche del paso anterior supera 4 MiB"}
+	}
 	m.mu.Lock()
 	switch {
 	case m.stopping:
@@ -308,7 +297,7 @@ func (m *Manager) Start(ctx context.Context, spec Spec, clientIP string) (*Run, 
 		m.mu.Unlock()
 		return nil, ErrNotReady
 	case m.active != nil:
-		name := m.active.ID
+		name := m.active.id
 		m.mu.Unlock()
 		return nil, &BusyError{Task: name}
 	}
@@ -320,16 +309,10 @@ func (m *Manager) Start(ctx context.Context, spec Spec, clientIP string) (*Run, 
 		m.mu.Unlock()
 		return nil, ErrBlackout
 	}
-	name := TaskPrefix + now.Format(nameLayout)
-	if m.last != nil && m.last.ID == name {
-		m.mu.Unlock()
-		return nil, &BusyError{Task: name}
-	}
-	r := &Run{
-		ID: name, Workspace: WorkspacePrefix + name, Output: NewBuffer(m.opt.BufferBytes),
-		done: make(chan struct{}), spec: spec, created: now, state: StatePreparing,
-	}
+	r := newRun(spec, command, hooks, now, m.dep.Now)
 	m.active = r
+	// Counted now, so a Shutdown from here on waits for it.
+	m.wg.Add(1)
 	m.mu.Unlock()
 
 	blocking, err := m.blockingTask(ctx)
@@ -337,23 +320,33 @@ func (m *Manager) Start(ctx context.Context, spec Spec, clientIP string) (*Run, 
 		m.mu.Lock()
 		m.active = nil
 		m.mu.Unlock()
+		m.wg.Done()
 		if err != nil {
-			return nil, fmt.Errorf("no se pudo consultar AX: %w", err)
+			return nil, fmt.Errorf("no se pudo consultar AX (%s): %w",
+				status.Convert(err).Message(), harness.ErrNotReady)
 		}
 		return nil, &BusyError{Task: blocking}
 	}
 	sum := sha256.Sum256([]byte(spec.Prompt))
-	m.dep.Audit.Info("audit", "action", "run.start", "task", name,
-		"repo", spec.Repo, "branch", spec.Branch, "agent", AgentClaude,
-		"turns", spec.Turns, "timeout_minutes", int(spec.Timeout/time.Minute),
+	m.dep.Audit.Info("audit", "action", "run.start", "task", r.id,
+		"repo", spec.Repo, "branch", spec.Branch, "harness", spec.Harness,
+		"model", spec.Model, "effort", spec.Effort, "mode", spec.Mode,
+		"max_turns", spec.MaxTurns, "timeout_minutes", int(spec.Timeout/time.Minute),
+		"apply_patch_bytes", len(spec.ApplyPatch), "capture", spec.CaptureChanges,
 		"client_ip", clientIP, "prompt_bytes", len(spec.Prompt),
 		"prompt_sha256", hex.EncodeToString(sum[:]))
-	m.wg.Add(1)
-	go m.lifecycle(r)
+	m.begin(r)
 	return r, nil
 }
 
-// blockingTask finds a run of the panel or of ax-tarea that already exists.
+// begin starts a reserved run whose wg count is taken.
+func (m *Manager) begin(r *Run) {
+	go r.deliver()
+	go m.lifecycle(r)
+}
+
+// blockingTask finds a run of the manager or of ax-tarea that already
+// exists.
 func (m *Manager) blockingTask(ctx context.Context) (string, error) {
 	names, err := m.taskNames(ctx)
 	if err != nil {
@@ -390,6 +383,7 @@ func (m *Manager) taskNames(ctx context.Context) ([]string, error) {
 
 func (m *Manager) lifecycle(r *Run) {
 	defer m.wg.Done()
+	r.setState(StatePreparing)
 	prepCtx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
 	r.prepCancel = cancel
@@ -400,34 +394,55 @@ func (m *Manager) lifecycle(r *Run) {
 	}
 	outcome, message, code := m.execute(prepCtx, r)
 	cancel()
+	if message != "" {
+		r.system("%s", message)
+	}
 
 	r.mu.Lock()
-	r.outcome, r.exitCode = outcome, code
-	r.spec.Prompt = ""
-	touched := r.touched
+	spec := r.spec
+	r.spec.Prompt, r.spec.ApplyPatch, r.command = "", nil, nil
+	started, proc, touched, final := r.agentStarted, r.proc, r.touched, r.final
 	r.mu.Unlock()
-	if message != "" {
-		r.log("%s", message)
+	r.setState(StateCleaning)
+	var changes *harness.Changes
+	if proc != nil {
+		if started && outcome != OutcomeFailed {
+			changes = m.afterAgent(r, proc, spec)
+		}
+		_ = proc.Close()
 	}
-	r.setState(StateCleaning, message)
 	if touched {
-		r.log("Borrando la tarea %s y su workspace…", r.ID)
-		m.cleanupUntilGone(r, message)
+		r.system("Borrando la tarea %s y su workspace…", r.id)
+		m.cleanupUntilGone(r)
+	}
+
+	if final.Usage.ModelUsed == "" && spec.Harness == harness.Codex {
+		final.Usage.ModelUsed = spec.Model
+	}
+	result := harness.Result{
+		Outcome: outcome, Message: message, ExitCode: code, IsError: final.IsError,
+		ResultText: final.ResultText, Usage: final.Usage, Changes: changes,
 	}
 	r.mu.Lock()
-	r.state, r.finished = StateFinished, m.dep.Now()
+	r.result, r.finished = result, m.dep.Now()
 	r.mu.Unlock()
-	r.log("Ejecución terminada (%s).", outcome)
+	r.system("Ejecución terminada (%s).", outcome)
+	r.setState(StateFinished)
 	exit := -1
 	if code != nil {
 		exit = *code
 	}
-	m.dep.Audit.Info("audit", "action", "run.end", "task", r.ID,
-		"outcome", outcome, "exit_code", exit)
+	files := 0
+	if changes != nil {
+		files = len(changes.Files)
+	}
+	m.dep.Audit.Info("audit", "action", "run.end", "task", r.id, "outcome", outcome,
+		"exit_code", exit, "is_error", final.IsError, "cost_usd", final.Usage.CostUSD,
+		"changed_files", files)
 	m.mu.Lock()
 	m.active, m.last = nil, r
 	m.mu.Unlock()
-	r.Output.Close()
+	r.closeEvents()
 	close(r.done)
 }
 
@@ -435,8 +450,9 @@ func failed(format string, args ...any) (string, string, *int) {
 	return OutcomeFailed, fmt.Sprintf(format, args...), nil
 }
 
-// execute creates the workspace and task, waits for them, starts the agent
-// and follows it to its exit.
+// execute creates the workspace and task, waits for them, checks the
+// clone, applies the previous step's patch, starts the agent and follows
+// it to its exit.
 func (m *Manager) execute(ctx context.Context, r *Run) (string, string, *int) {
 	stopped := func() (string, string, *int) {
 		return OutcomeCancelled, "Cancelada antes de arrancar el agente.", nil
@@ -444,17 +460,19 @@ func (m *Manager) execute(ctx context.Context, r *Run) (string, string, *int) {
 	call := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(ctx, m.opt.CallTimeout)
 	}
-	spec := r.spec
+	r.mu.Lock()
+	spec, command := r.spec, r.command
+	r.mu.Unlock()
 	// Never overwrite something that is not ours.
 	cctx, cancel := call()
-	_, errT := m.dep.AX.GetTask(cctx, &v1alpha1.GetTaskRequest{Atespace: m.opt.Atespace, Name: r.ID})
-	_, errW := m.dep.AX.GetWorkspace(cctx, &v1alpha1.GetWorkspaceRequest{Atespace: m.opt.Atespace, Name: r.Workspace})
+	_, errT := m.dep.AX.GetTask(cctx, &v1alpha1.GetTaskRequest{Atespace: m.opt.Atespace, Name: r.id})
+	_, errW := m.dep.AX.GetWorkspace(cctx, &v1alpha1.GetWorkspaceRequest{Atespace: m.opt.Atespace, Name: r.workspace})
 	cancel()
 	if ctx.Err() != nil {
 		return stopped()
 	}
 	if status.Code(errT) != codes.NotFound || status.Code(errW) != codes.NotFound {
-		return failed("La tarea %s o su workspace ya existen, o AX no responde.", r.ID)
+		return failed("La tarea %s o su workspace ya existen, o AX no responde.", r.id)
 	}
 	r.mu.Lock()
 	r.touched = true
@@ -463,11 +481,12 @@ func (m *Manager) execute(ctx context.Context, r *Run) (string, string, *int) {
 	meta := func(name string) *v1alpha1.ObjectMeta {
 		return &v1alpha1.ObjectMeta{Name: name, Atespace: m.opt.Atespace}
 	}
+	r.system("Creando el workspace %s con %s (rama %s)…", r.workspace, spec.Repo, spec.Branch)
 	cctx, cancel = call()
 	_, err := m.dep.AX.UpdateWorkspace(cctx, &v1alpha1.UpdateWorkspaceRequest{
 		Workspace: &v1alpha1.Workspace{
 			ApiVersion: v1alpha1.APIVersion, Kind: v1alpha1.KindWorkspace,
-			Metadata: meta(r.Workspace),
+			Metadata: meta(r.workspace),
 			Spec: &v1alpha1.WorkspaceSpec{Git: []*v1alpha1.GitRepo{{
 				Name: "origin", Repo: spec.Repo, Branch: spec.Branch, Dir: RepoDir, Depth: 1,
 			}}},
@@ -481,19 +500,20 @@ func (m *Manager) execute(ctx context.Context, r *Run) (string, string, *int) {
 		return failed("AX rechazó el workspace: %s", status.Convert(err).Message())
 	}
 	// No env: the credential only ever travels in StartProcess.
+	r.system("Creando la tarea %s…", r.id)
 	cctx, cancel = call()
 	_, err = m.dep.AX.UpdateTask(cctx, &v1alpha1.UpdateTaskRequest{
 		Task: &v1alpha1.Task{
 			ApiVersion: v1alpha1.APIVersion, Kind: v1alpha1.KindTask,
-			Metadata: meta(r.ID),
+			Metadata: meta(r.id),
 			Spec: &v1alpha1.TaskSpec{
 				Debug: true,
 				Image: m.opt.AgentImage,
 				Resources: &v1alpha1.ResourceReqs{
 					Requests: &v1alpha1.ResourceList{Cpu: RequestCPU, Memory: RequestMemory},
-					Limits:   &v1alpha1.ResourceList{Cpu: spec.CPU, Memory: spec.Memory},
+					Limits:   &v1alpha1.ResourceList{Cpu: LimitCPU, Memory: LimitMemory},
 				},
-				Workspaces: []*v1alpha1.WorkspaceRef{{Name: r.Workspace, Path: WorkspacePath}},
+				Workspaces: []*v1alpha1.WorkspaceRef{{Name: r.workspace, Path: WorkspacePath}},
 			},
 		},
 	})
@@ -504,106 +524,137 @@ func (m *Manager) execute(ctx context.Context, r *Run) (string, string, *int) {
 	if err != nil {
 		return failed("AX rechazó la tarea: %s", status.Convert(err).Message())
 	}
-	r.setState(StateWaiting, "")
-	r.log("Tarea %s creada; esperando al sandbox y al workspace (hasta %s)…",
-		r.ID, m.opt.ReadyTimeout)
+	r.setState(StateWaiting)
+	r.system("Esperando al sandbox y al workspace (hasta %s)…", m.opt.ReadyTimeout)
 
-	actor, err := m.waitReady(ctx, r.ID)
+	actor, err := m.waitReady(ctx, r.id)
 	if ctx.Err() != nil {
 		return stopped()
 	}
 	if err != nil {
 		return failed("%s", err.Error())
 	}
+	r.system("Sandbox listo.")
 
 	proc, err := m.dep.DialGuest(m.opt.Atespace, actor)
 	if err != nil {
 		return failed("No se pudo conectar con el sandbox.")
 	}
-	defer proc.Close()
-	if code, detail := m.check(ctx, proc, CloneCheck()); code != 0 {
+	r.mu.Lock()
+	r.proc = proc
+	r.mu.Unlock()
+	clone, err := m.run(ctx, proc, CloneCheck(), nil, maxDetail, time.Minute)
+	if ctx.Err() != nil {
+		return stopped()
+	}
+	if err != nil || clone.code != 0 {
+		detail := strings.TrimSpace(strings.ToValidUTF8(string(clone.detail), "?"))
+		return failed("El repositorio no se clonó (¿es público y existe la rama?). %s",
+			harness.Clip(detail, 512))
+	}
+	base := strings.TrimSpace(string(clone.stdout))
+	if !objectName.MatchString(base) {
+		return failed("La comprobación del clon no devolvió un commit.")
+	}
+	r.mu.Lock()
+	r.base = base
+	r.mu.Unlock()
+	r.system("Repositorio clonado en %s.", base[:7])
+
+	if len(spec.ApplyPatch) > 0 {
+		r.system("Aplicando el parche del paso anterior (%d bytes)…", len(spec.ApplyPatch))
+		applied, err := m.run(ctx, proc, ApplyCommand(), spec.ApplyPatch, maxDetail, m.commandTimeout())
 		if ctx.Err() != nil {
 			return stopped()
 		}
-		return failed("El repositorio no se clonó (¿es público y existe la rama?). %s", detail)
-	}
-	token, err := m.dep.ReadToken()
-	if err != nil {
-		return failed("No se pudo leer la credencial del agente.")
+		if err != nil || applied.code != 0 {
+			msg := "No se pudo aplicar el parche del paso anterior"
+			if d := strings.TrimSpace(string(applied.detail)); d != "" {
+				return failed("%s: %s", msg, harness.Clip(d, 300))
+			}
+			return failed("%s.", msg)
+		}
+		r.system("Parche aplicado.")
 	}
 
-	command := AgentCommand(spec.Turns)
-	if m.opt.PromptInArg {
-		command = append(command, "--", spec.Prompt)
+	creds, err := m.dep.Credentials(spec.Harness)
+	if err != nil || len(creds) == 0 {
+		return failed("No se pudo leer la credencial del agente.")
 	}
-	cctx, cancel = call()
-	started, err := proc.StartProcess(cctx, &ateenvv1alpha.StartProcessRequest{
+	if ctx.Err() != nil {
+		return stopped()
+	}
+	env := make(map[string]string, len(creds)+1)
+	for k, v := range creds {
+		env[k] = v
+	}
+	for k, v := range harness.ExtraEnv(spec) {
+		env[k] = v
+	}
+	// Not under ctx: once asked, the agent may be running, and only a
+	// signal stops it.
+	sctx, scancel := context.WithTimeout(context.Background(), m.opt.CallTimeout)
+	started, err := proc.StartProcess(sctx, &ateenvv1alpha.StartProcessRequest{
 		Command: command,
-		Cwd:     WorkspacePath + "/" + RepoDir,
-		Env:     map[string]string{TokenEnv: token},
+		Cwd:     RepoPath,
+		Env:     env,
 		Stdin:   !m.opt.PromptInArg,
 		Timeout: durationpb.New(spec.Timeout),
 	})
-	cancel()
+	scancel()
+	clear(env)
 	if err != nil {
+		if r.isCancelled() {
+			return stopped()
+		}
 		return failed("No se pudo arrancar el agente: %s", status.Convert(err).Message())
 	}
 	pid := started.GetProcessId()
 	begin := m.dep.Now()
 	r.mu.Lock()
-	r.processID, r.proc = pid, proc
-	r.state = StateRunning
+	r.processID, r.agentStarted = pid, true
 	cancelled := r.cancelled
-	r.mu.Unlock()
-	r.log("Agente en marcha: claude, %d turnos como máximo, %s como máximo.",
-		spec.Turns, spec.Timeout)
 	if cancelled {
-		m.stopProcess(r)
+		r.setStateLocked(StateCancelling)
+	} else {
+		r.setStateLocked(StateRunning)
 	}
-	if !m.opt.PromptInArg {
-		if err := m.sendPrompt(proc, pid, spec.Prompt); err != nil {
+	r.mu.Unlock()
+	r.system("Agente en marcha: %s.", describe(spec))
+	switch {
+	case cancelled:
+		m.stopProcess(r)
+	case !m.opt.PromptInArg:
+		if err := m.writeStdin(context.Background(), proc, pid, []byte(spec.Prompt)); err != nil &&
+			!r.isCancelled() {
 			m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
+			r.mu.Lock()
+			r.exited = true
+			r.mu.Unlock()
 			return failed("No se pudo enviar la instrucción al agente.")
 		}
 	}
-	return m.follow(r, proc, pid, spec.Timeout, begin)
+	return m.followAgent(r, proc, pid, spec, begin)
 }
 
-// check runs a fixed argv with no credential and returns its exit code and
-// the start of its output, or -1 on any failure.
-func (m *Manager) check(ctx context.Context, proc ProcessClient, argv []string) (int, string) {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	p, err := proc.StartProcess(ctx, &ateenvv1alpha.StartProcessRequest{
-		Command: argv, Cwd: WorkspacePath, Timeout: durationpb.New(time.Minute),
-	})
-	if err != nil {
-		return -1, ""
-	}
-	st, err := proc.StreamProcessOutput(ctx, &ateenvv1alpha.StreamProcessOutputRequest{
-		ProcessId: p.GetProcessId(), Follow: true,
-	})
-	if err != nil {
-		return -1, ""
-	}
-	var out []byte
-	for {
-		msg, err := st.Recv()
-		if err != nil {
-			return -1, ""
+// describe is the agent line of the timeline.
+func describe(s harness.Spec) string {
+	or := func(v, def string) string {
+		if v == "" {
+			return def
 		}
-		if exit := msg.GetExit(); exit != nil {
-			detail := strings.TrimSpace(strings.ToValidUTF8(string(out), "?"))
-			return int(exit.GetExitCode()), detail
-		}
-		if len(out) < 512 {
-			out = append(out, msg.GetStdout()...)
-			out = append(out, msg.GetStderr()...)
-			if len(out) > 512 {
-				out = out[:512]
-			}
-		}
+		return v
 	}
+	text := fmt.Sprintf("%s, modelo %s, esfuerzo %s, modo %s", s.Harness,
+		or(s.Model, "por defecto"), or(s.Effort, "por defecto"), s.Mode)
+	limit := fmt.Sprintf("%d min", int(s.Timeout/time.Minute))
+	if s.Timeout%time.Minute != 0 {
+		limit = s.Timeout.String()
+	}
+	if s.Harness == harness.Claude {
+		return fmt.Sprintf("%s; %d turnos y %s como máximo", text, s.MaxTurns, limit)
+	}
+	return fmt.Sprintf("%s; %s como máximo", text, limit)
 }
 
 // waitReady polls GetTask until Ready=True (the actor runs and the
@@ -636,108 +687,52 @@ func (m *Manager) waitReady(ctx context.Context, name string) (string, error) {
 	}
 }
 
-// sendPrompt writes the prompt to stdin and closes it, so it never appears
-// in argv or in GetProcess.command.
-func (m *Manager) sendPrompt(proc ProcessClient, pid, prompt string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), m.opt.CallTimeout)
-	defer cancel()
-	st, err := proc.WriteProcessInput(ctx)
-	if err != nil {
-		return err
-	}
-	if err := st.Send(&ateenvv1alpha.WriteProcessInputRequest{
-		ProcessId: pid, Data: []byte(prompt), Close: true,
-	}); err != nil {
-		return err
-	}
-	_, err = st.CloseAndRecv()
-	return err
-}
-
-// follow streams the output into the run's buffer until the process exits.
-func (m *Manager) follow(r *Run, proc ProcessClient, pid string, timeout time.Duration,
+// followAgent turns the agent's output into events until it exits.
+func (m *Manager) followAgent(r *Run, proc ProcessClient, pid string, spec harness.Spec,
 	begin time.Time) (string, string, *int) {
 	// A backstop after the guest's own SIGKILL at the timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), spec.Timeout+time.Minute)
 	defer cancel()
 	r.mu.Lock()
 	r.streamCancel = cancel
 	r.mu.Unlock()
-	var outOff, errOff int64
-	var render Renderer
-	defer func() { r.Output.Append(StreamStdout, render.Flush()) }()
-	failures := 0
-	for {
-		st, err := proc.StreamProcessOutput(ctx, &ateenvv1alpha.StreamProcessOutputRequest{
-			ProcessId: pid, StdoutOffset: outOff, StderrOffset: errOff, Follow: true,
-		})
-		for err == nil {
-			var msg *ateenvv1alpha.ProcessOutput
-			msg, err = st.Recv()
-			if err != nil {
-				break
-			}
-			if exit := msg.GetExit(); exit != nil {
-				return m.finish(r, int(exit.GetExitCode()), timeout, begin)
-			}
-			if d := msg.GetStdout(); len(d) > 0 {
-				outOff += int64(len(d))
-				r.Output.Append(StreamStdout, render.Feed(d))
-				failures = 0
-			}
-			if d := msg.GetStderr(); len(d) > 0 {
-				errOff += int64(len(d))
-				r.Output.Append(StreamStderr, d)
-				failures = 0
-			}
+	parser := harness.NewParser(spec.Harness)
+	var stderr stderrLines
+	code, err := m.follow(ctx, proc, pid, func(out, errOut []byte) bool {
+		for _, ev := range parser.Feed(out) {
+			r.emit(ev)
 		}
-		if ctx.Err() != nil {
-			m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
-			r.mu.Lock()
-			r.exited = true
-			cancelled := r.cancelled
-			r.mu.Unlock()
-			if cancelled {
-				return OutcomeCancelled, "El agente no terminó tras la cancelación.", nil
-			}
-			return OutcomeTimeout, "Se agotó el tiempo máximo.", nil
+		stderr.feed(errOut, r.emit)
+		return true
+	})
+	for _, ev := range parser.Flush() {
+		r.emit(ev)
+	}
+	stderr.flush(r.emit)
+	final := parser.Final()
+	if final.Usage.DurationMS == 0 {
+		final.Usage.DurationMS = m.dep.Now().Sub(begin).Milliseconds()
+	}
+	r.mu.Lock()
+	r.exited, r.final = true, final
+	cancelled := r.cancelled
+	r.mu.Unlock()
+	switch {
+	case err == nil:
+		return m.finish(cancelled, code, spec.Timeout, begin)
+	case errors.Is(err, errGuestLost):
+		m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
+		return failed("Se perdió la conexión con el sandbox.")
+	default:
+		m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
+		if cancelled {
+			return OutcomeCancelled, "El agente no terminó tras la cancelación.", nil
 		}
-		// The stream ended without an exit message. atenet-router's Envoy
-		// cuts every stream at its route timeout (10 s unless the router
-		// runs with a longer --route-timeout), so a silent agent that is
-		// still thinking loses its stream too: ask the guest directly and,
-		// while the agent runs, follow it again from the offsets read.
-		// Only an unreachable guest counts towards giving up.
-		cctx, ccancel := context.WithTimeout(ctx, m.opt.CallTimeout)
-		p, gerr := proc.GetProcess(cctx, &ateenvv1alpha.GetProcessRequest{ProcessId: pid})
-		ccancel()
-		switch {
-		case gerr == nil && p.GetState() == ateenvv1alpha.ProcessState_PROCESS_STATE_EXITED:
-			return m.finish(r, int(p.GetExitCode()), timeout, begin)
-		case gerr == nil:
-			failures = 0
-		default:
-			failures++
-		}
-		if failures > 5 {
-			m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
-			r.mu.Lock()
-			r.exited = true
-			r.mu.Unlock()
-			return failed("Se perdió la conexión con el sandbox.")
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(m.opt.PollInterval):
-		}
+		return OutcomeTimeout, "Se agotó el tiempo máximo.", nil
 	}
 }
 
-func (m *Manager) finish(r *Run, code int, timeout time.Duration, begin time.Time) (string, string, *int) {
-	r.mu.Lock()
-	r.exited = true
-	cancelled := r.cancelled
-	r.mu.Unlock()
+func (m *Manager) finish(cancelled bool, code int, timeout time.Duration, begin time.Time) (string, string, *int) {
 	switch {
 	case cancelled:
 		return OutcomeCancelled, fmt.Sprintf("Cancelada; el agente salió con código %d.", code), &code
@@ -748,13 +743,83 @@ func (m *Manager) finish(r *Run, code int, timeout time.Duration, begin time.Tim
 	}
 }
 
+// afterAgent runs once the agent process ended: it hands Codex's possibly
+// renewed auth.json to the office first (its refresh token is
+// single-use, so this matters most), then captures the changes unless
+// the manager is stopping.
+func (m *Manager) afterAgent(r *Run, proc ProcessClient, spec harness.Spec) *harness.Changes {
+	if spec.Harness == harness.Codex {
+		m.readBackCodexAuth(r, proc)
+	}
+	if !spec.CaptureChanges {
+		return nil
+	}
+	r.mu.Lock()
+	base := r.base
+	r.mu.Unlock()
+	select {
+	case <-m.quit:
+		r.warn("no se recogen los cambios porque el panel se está deteniendo.")
+		return &harness.Changes{BaseSHA: base, Error: "el panel se detuvo antes de recoger los cambios"}
+	default:
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-m.quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return m.capture(ctx, r, proc)
+}
+
+// readBackCodexAuth reads /root/.codex/auth.json from the sandbox and
+// gives it to SaveCodexAuth, which validates it. Neither the value nor
+// anything derived from it is ever logged or emitted.
+func (m *Manager) readBackCodexAuth(r *Run, proc ProcessClient) {
+	if m.dep.SaveCodexAuth == nil {
+		return
+	}
+	o, err := m.run(context.Background(), proc, []string{"cat", CodexAuthPath}, nil,
+		m.lim.codexAuth, m.commandTimeout())
+	defer func() {
+		clear(o.stdout)
+		clear(o.detail)
+	}()
+	result := "saved"
+	switch {
+	case o.cut:
+		result = "too_big"
+		r.warn("la credencial de Codex del sandbox supera %d KiB; no se guarda.", m.lim.codexAuth>>10)
+	case err != nil || o.code != 0 || len(o.stdout) == 0:
+		result = "unreadable"
+		r.warn("no se pudo leer la credencial de Codex del sandbox; se mantiene la guardada.")
+	default:
+		// The office gets its own copy; this one is wiped.
+		if serr := m.dep.SaveCodexAuth(append([]byte(nil), o.stdout...), r.created); serr != nil {
+			result = "rejected"
+			r.warn("la Oficina no guardó la credencial de Codex del sandbox: %s",
+				harness.Clip(serr.Error(), 200))
+		} else {
+			r.system("Credencial de Codex del sandbox revisada por la Oficina.")
+		}
+	}
+	m.dep.Audit.Info("audit", "action", "run.codex_auth", "task", r.id, "result", result)
+}
+
 // Cancel stops the run: SIGTERM, then SIGKILL after KillGrace. Before the
-// agent starts it just abandons the preparation. It is idempotent.
+// agent starts it abandons the preparation. It is idempotent, and a no-op
+// for the run that just finished.
 func (m *Manager) Cancel(id, reason string) error {
 	m.mu.Lock()
-	r := m.active
+	r, last := m.active, m.last
 	m.mu.Unlock()
-	if r == nil || r.ID != id {
+	if r == nil || r.id != id {
+		if last != nil && last.id == id {
+			return nil
+		}
 		return ErrNotFound
 	}
 	r.mu.Lock()
@@ -765,12 +830,12 @@ func (m *Manager) Cancel(id, reason string) error {
 	}
 	r.cancelled = true
 	if r.state == StateRunning {
-		r.state = StateCancelling
+		r.setStateLocked(StateCancelling)
 	}
 	pid, prep := r.processID, r.prepCancel
 	r.mu.Unlock()
 	m.dep.Audit.Info("audit", "action", "run.cancel", "task", id, "reason", reason)
-	r.log("Cancelando: %s", reason)
+	r.system("Cancelando: %s", reason)
 	if pid == "" {
 		if prep != nil {
 			prep()
@@ -787,7 +852,7 @@ func (m *Manager) stopProcess(r *Run) {
 	r.mu.Lock()
 	proc, pid := r.proc, r.processID
 	r.mu.Unlock()
-	if proc == nil {
+	if proc == nil || pid == "" {
 		return
 	}
 	m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_TERM)
@@ -810,32 +875,26 @@ func (m *Manager) stopProcess(r *Run) {
 	})
 }
 
-func (m *Manager) signal(proc ProcessClient, pid string, sig ateenvv1alpha.Signal) {
-	ctx, cancel := context.WithTimeout(context.Background(), m.opt.CallTimeout)
-	defer cancel()
-	_, _ = proc.SignalProcess(ctx, &ateenvv1alpha.SignalProcessRequest{ProcessId: pid, Signal: sig})
-}
-
 // cleanupUntilGone deletes the run's task and workspace and waits until AX
-// no longer has them, retrying until it succeeds or the panel stops.
-func (m *Manager) cleanupUntilGone(r *Run, message string) {
+// no longer has them, retrying until it succeeds or the manager stops.
+func (m *Manager) cleanupUntilGone(r *Run) {
 	for {
-		err := m.DeleteAndWait(r.ID, r.Workspace, m.opt.CleanupTimeout)
+		err := m.DeleteAndWait(r.id, r.workspace, m.opt.CleanupTimeout)
 		if err == nil {
-			r.log("La tarea y su workspace ya no existen.")
+			r.system("La tarea y su workspace ya no existen.")
 			return
 		}
-		note := "La tarea " + r.ID + " o su workspace siguen existiendo; " +
+		note := "La tarea " + r.id + " o su workspace siguen existiendo; " +
 			"se reintenta cada " + m.opt.CleanupRetry.String() + "."
-		r.setState(StateCleanupFailed, note)
-		r.log("%s", note)
-		m.dep.Audit.Warn("audit", "action", "run.cleanup_failed", "task", r.ID)
+		r.setState(StateCleanupFailed)
+		r.system("%s", note)
+		m.dep.Audit.Warn("audit", "action", "run.cleanup_failed", "task", r.id)
 		select {
 		case <-m.stop:
 			return
 		case <-time.After(m.opt.CleanupRetry):
 		}
-		r.setState(StateCleaning, message)
+		r.setState(StateCleaning)
 	}
 }
 
@@ -967,16 +1026,18 @@ func (m *Manager) Watchdog(ctx context.Context) {
 	}
 }
 
-// Shutdown refuses new runs, cancels the active one and waits for its
-// cleanup until ctx ends.
+// Shutdown refuses new runs, cancels the active one (skipping its
+// capture, not Codex's auth read-back) and waits for its cleanup until
+// ctx ends.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.mu.Lock()
 	m.stopping = true
 	id := ""
 	if m.active != nil {
-		id = m.active.ID
+		id = m.active.id
 	}
 	m.mu.Unlock()
+	m.quitOnce.Do(func() { close(m.quit) })
 	if id != "" {
 		_ = m.Cancel(id, "el panel se detiene")
 	}

@@ -332,9 +332,9 @@ ax_lab:
   # is still never published. Traefik (playbook edge) reaches the forwarder
   # ax-web-edge over network edge_network; the forwarder pipes TCP to the
   # panel's NodePort on the kind bridge, and the panel only accepts Traefik's
-  # client certificate (mTLS). No credential is versioned: the TLS material
-  # and the agent token reach Kubernetes only through the owner-run
-  # scripts/ax-web-bootstrap.sh.
+  # client certificate (mTLS). No credential is versioned: the TLS material,
+  # the agent token and the office's optional Codex session and GitHub token
+  # reach Kubernetes only through the owner-run scripts/ax-web-bootstrap.sh.
   web:
     namespace: ax-web
     # images/ax-web, built by ko v0.19.1 and reproduced twice with the same
@@ -344,9 +344,9 @@ ax_lab:
     # registry like the AX images; never built on this host.
     image:
       name: ax-web
-      tag: "0.2.0"
+      tag: "1.0.1"
       digest: >-
-        sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf
+        sha256:3fc6d6760a9b7e7390ec42e8bca9f31a4712e9b72c1afdeb6ce3af7e61e8bc27
     # The panel's mTLS port, published by a NodePort Service on the kind
     # bridge only (the node's ports are not published on the host), and its
     # plain probe port, which no Service exposes.
@@ -358,6 +358,10 @@ ax_lab:
     # admits no connection from a pod, sandboxes included.
     pod_subnet: 10.244.0.0/16
     origin: https://ax.apptolast.com
+    # Further origins whose POSTs the panel accepts besides origin: the
+    # office's own name. Its route and DNS record are the edge playbook's
+    # (docs/EDGE.md).
+    extra_origins: ["https://oficina.apptolast.com"]
     # The TLS server name and the only client certificate subject the panel
     # accepts, as the edge serversTransport presents them.
     server_name: ax-web
@@ -376,11 +380,96 @@ ax_lab:
     repo_hosts: [github.com]
     blackout_utc: ""
     watchdog_lead_minutes: 5
-    max_turns: 50
-    max_timeout_minutes: 45
+    max_turns: 150
+    max_timeout_minutes: 90
     # The prompt goes to the agent on stdin; "argument" is the fallback if
     # the lab window shows that `claude -p` ignores it (images/ax-web).
     prompt_mode: stdin
+    # The agent office (docs/AX_WEB.md, «Oficina»): its state lives on the
+    # PersistentVolumeClaim ax-web-state, storage_mib in kind's local-path
+    # class, which does not enforce the size; at most max_queue queued jobs,
+    # and the oldest finished ones beyond retention_jobs are deleted.
+    office:
+      storage_mib: 1024
+      max_queue: 200
+      retention_jobs: 3000
+      # The repositories the office seeds as projects. Each one is public
+      # (AX clones anonymously) on its real default branch, as `gh repo
+      # view` showed on 2026-10-02. service and url are set only when this
+      # repository proves the link: service is a Swarm service of
+      # config/image-channels.yml whose image the repository builds, and url
+      # a host name its catalog entry publishes; otherwise "". The validator
+      # checks both against those files.
+      projects:
+        # The office itself lives here, in images/ax-web, and improves
+        # itself through this project.
+        - id: dockerswarm-infra
+          name: Infraestructura Docker Swarm
+          repo: https://github.com/apptolast/DockerSwarmInfrastrcture
+          branch: main
+          description: >-
+            Infraestructura como código del servidor de AppToLast: Terraform,
+            Ansible, Docker Swarm, Traefik y el laboratorio AX. La Oficina de
+            agentes vive en images/ax-web.
+          service: ""
+          url: ""
+        # Published on GitHub Pages, which nothing here proves: no url.
+        - id: dockerswarm-docs
+          name: Documentación de la infraestructura
+          repo: https://github.com/apptolast/DockerSwarmDocs
+          branch: main
+          description: >-
+            Sitio navegable (Starlight sobre Astro) con la documentación de
+            la infraestructura Docker Swarm. La fuente de verdad sigue siendo
+            DockerSwarmInfrastrcture.
+          service: ""
+          url: ""
+        - id: dockerswarm-memoria
+          name: Memoria de la infraestructura
+          repo: https://github.com/apptolast/DockerSwarmMemoria
+          branch: main
+          description: >-
+            Bot diario que lee los cambios de DockerSwarmInfrastrcture,
+            destila decisiones, patrones e incidentes y los propone como PR a
+            DockerSwarmDocs, que siempre fusiona una persona.
+          service: ""
+          url: ""
+        # config/organizationweb.yml: release is a commit of this
+        # repository, whose workflow publishes both images.
+        - id: organizationweb
+          name: OrganizationWeb
+          repo: https://github.com/apptolast/OrganizacionWeb
+          branch: main
+          description: >-
+            Organización personal por proyectos y sesiones de trabajo
+            acotadas (React y TypeScript, Java y Spring Boot). En el servidor
+            es el stack organizationweb (docs/ORGANIZATIONWEB.md).
+          service: organizationweb_web
+          url: https://organizacion.apptolast.com
+        # Its workflow publishes docker.io/apptolast/kropia-web, whose
+        # pinned image names it as org.opencontainers.image.source.
+        - id: kropia
+          name: Kropia Web
+          repo: https://github.com/apptolast/KropiaWeb
+          branch: main
+          description: >-
+            SPA de la landing de Kropia y AppToLast (React, Vite y pnpm). El
+            servidor ejecuta su imagen docker.io/apptolast/kropia-web como
+            workloads_kropia.
+          service: workloads_kropia
+          url: https://kropia.apptolast.com
+        # The pinned docker.io/apptolast/shlink-apptolast names it as
+        # org.opencontainers.image.source.
+        - id: shlink
+          name: Shlink de AppToLast
+          repo: https://github.com/apptolast/shlink-apptolast
+          branch: develop
+          description: >-
+            Copia de AppToLast de Shlink, el acortador de URL autoalojado en
+            PHP. Su imagen docker.io/apptolast/shlink-apptolast es la que el
+            servidor ejecuta como workloads_shlink.
+          service: workloads_shlink
+          url: https://generadorcodigosqr.apptolast.com
     # A plain Docker container on the kind network and on edge_network, run
     # like the lab containers: restart policy "no" and the limits of
     # host_containers.ax-lab.ax-web-edge in config/capacity-profiles.yml.

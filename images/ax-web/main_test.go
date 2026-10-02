@@ -97,13 +97,19 @@ func TestServeWiring(t *testing.T) {
 		"agent_image":           "localhost:5001/ax-agents@sha256:" + strings.Repeat("ab", 32),
 		"repo_hosts":            []string{"github.com"},
 		"origin":                "https://ax.apptolast.com",
+		"extra_origins":         []string{"https://oficina.apptolast.com"},
 		"blackout":              "22:30-00:40",
-		"watchdog_lead_minutes": 5, "max_turns": 50, "max_timeout_minutes": 45,
+		"watchdog_lead_minutes": 5, "max_turns": 150, "max_timeout_minutes": 90,
 		"prompt_mode": "stdin", "token_directory": dir, "token_key": "agent",
 		"tls_cert_file":      pemFile(t, dir, "server.crt", "CERTIFICATE", srvDER),
 		"tls_key_file":       pemFile(t, dir, "server.pem", "EC PRIVATE KEY", srvKeyDER),
 		"client_ca_file":     pemFile(t, dir, "ca.crt", "CERTIFICATE", caDER),
 		"client_common_name": "edge-traefik", "listen": listen, "health_listen": health,
+		"state_dir": filepath.Join(dir, "state"), "office_secret_dir": filepath.Join(dir, "office"),
+		"codex_auth_key": "codex-auth-json", "github_token_key": "github-token",
+		"max_queue": 50, "retention_jobs": 100,
+		"projects": []map[string]string{{"id": "web", "name": "Web", "repo": "https://github.com/apptolast/web",
+			"branch": "main", "description": "", "service": "", "url": ""}},
 	}
 	data, _ := json.Marshal(cfg)
 	cfgPath := filepath.Join(dir, "config.json")
@@ -141,7 +147,25 @@ func TestServeWiring(t *testing.T) {
 	if !strings.Contains(body, `"name":"otra"`) || proto != "HTTP/2.0" {
 		t.Fatalf("%s %s", proto, body)
 	}
-	resp, err := http.Get("http://" + health + "/readyz")
+	// The office answers with its seeded state, kept under state_dir.
+	resp, err := client.Get("https://" + listen + "/api/office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		Version  string           `json:"version"`
+		Agents   []map[string]any `json:"agents"`
+		Projects []map[string]any `json:"projects"`
+	}
+	json.NewDecoder(resp.Body).Decode(&snap)
+	resp.Body.Close()
+	if snap.Version != Version || len(snap.Agents) != 9 || len(snap.Projects) != 1 {
+		t.Fatalf("%+v", snap)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "office.json")); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.Get("http://" + health + "/readyz")
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("readyz: %v", err)
 	}
@@ -163,6 +187,26 @@ func TestServeWiring(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("serve did not stop")
+	}
+}
+
+func TestDemoFlags(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	for _, args := range [][]string{
+		{"--listen", "0.0.0.0:8090", "--state", t.TempDir()},
+		{"--listen", ":8090", "--state", t.TempDir()},
+		{"--listen", "127.0.0.1:0"},
+		{"--listen", "127.0.0.1:0", "--state", t.TempDir(), "extra"},
+		{"--listen", "127.0.0.1:0", "--state", t.TempDir(), "--speed", "0"},
+	} {
+		if err := demoCmd(context.Background(), log, args); err == nil {
+			t.Errorf("%v accepted", args)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := demoCmd(ctx, log, []string{"--listen", "127.0.0.1:0", "--state", t.TempDir(), "--samples=false"}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -194,5 +238,33 @@ func TestForwardFlags(t *testing.T) {
 	if err := forwardCmd(ctx, log, []string{"--listen", "127.0.0.1:0", "--target", "a:1",
 		"--allow-cidr", "10.0.0.0/24"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMemoryLimit(t *testing.T) {
+	env := func(v string) func(string) string { return func(string) string { return v } }
+	file := func(content string, err error) func(string) ([]byte, error) {
+		return func(p string) ([]byte, error) {
+			if p != cgroupMemoryMax {
+				t.Errorf("read %s", p)
+			}
+			return []byte(content), err
+		}
+	}
+	if n, ok := memoryLimit(env(""), file("402653184\n", nil)); !ok || n != 322122544 {
+		t.Fatalf("384 MiB: %d %v", n, ok)
+	}
+	for name, c := range map[string]struct {
+		env, content string
+		err          error
+	}{
+		"GOMEMLIMIT wins": {"300MiB", "402653184\n", nil},
+		"no limit":        {"", "max\n", nil},
+		"no cgroup v2":    {"", "", os.ErrNotExist},
+		"garbage":         {"", "-1\n", nil},
+	} {
+		if n, ok := memoryLimit(env(c.env), file(c.content, c.err)); ok {
+			t.Errorf("%s: %d", name, n)
+		}
 	}
 }

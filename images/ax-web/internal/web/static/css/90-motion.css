@@ -1,0 +1,13 @@
+/* Oficina de agentes · reduced motion: no animations, no transitions. */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .desk.is-working .mon-lines { transform: none; }
+  .desk.is-idle .steam { opacity: .5; }
+  .desk.is-sleeping .z { opacity: .8; }
+  .desk.is-attention .beacon-halo { opacity: .35; }
+}

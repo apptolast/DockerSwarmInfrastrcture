@@ -1,0 +1,235 @@
+/* Oficina de agentes · design tokens, reset and base typography. */
+
+:root {
+  color-scheme: light dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+  --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+  --emoji: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+  --marker: "Marker Felt", "Segoe Print", "Bradley Hand", "Chalkboard SE", "Comic Neue", cursive;
+
+  --bg: #f6f4ef;
+  --bg-2: #efebe3;
+  --surface: #ffffff;
+  --surface-2: #fbfaf7;
+  --surface-3: #f1eee7;
+  --line: #e5e1d7;
+  --line-strong: #d2ccbe;
+  --text: #1c2230;
+  --text-2: #475062;
+  --muted: #6a7282;
+  --accent: #5a4de0;
+  --accent-2: #7a6cf3;
+  --accent-soft: #edebfd;
+  --accent-ink: #3f33b8;
+  --on-accent: #ffffff;
+  --ok: #157a3c;
+  --ok-soft: #dcf7e6;
+  --warn: #a85407;
+  --warn-soft: #fdf0cf;
+  --bad: #c0261c;
+  --bad-soft: #fde3e1;
+  --info: #0a6aa3;
+  --info-soft: #e1f1fc;
+  --live: #16a34a;
+  --diff-add: #e6f7eb;
+  --diff-add-strong: #b7ebc6;
+  --diff-del: #fdecec;
+  --diff-del-strong: #f6c3c3;
+  --diff-hunk: #eef1fb;
+
+  --shadow-sm: 0 1px 2px rgba(22, 26, 40, .06);
+  --shadow: 0 1px 2px rgba(22, 26, 40, .05), 0 6px 18px rgba(22, 26, 40, .06);
+  --shadow-lg: 0 18px 50px rgba(22, 26, 40, .22);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-xs: 7px;
+  --focus-ring: 0 0 0 3px rgba(90, 77, 224, .45);
+  --side-w: 236px;
+  --top-h: 58px;
+  --tab-h: 64px;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+
+  /* The office illustration. */
+  --of-bg: #e8e2d4;
+  --of-wall: #3b4151;
+  --of-wood-a: #ead8ba;
+  --of-wood-b: #e3cfac;
+  --of-wood-line: #d2ba93;
+  --of-tile: #e7eaf0;
+  --of-tile-line: #d5dae3;
+  --of-carpet: #dde5f3;
+  --of-carpet-dot: #cbd5e9;
+  --of-rug: #f1e6f9;
+  --of-desk-top: #dca770;
+  --of-desk-front: #b77c4b;
+  --of-desk-leg: #8a5a35;
+  --of-chair: #4b5563;
+  --of-bezel: #1f2937;
+  --of-screen-idle: #9cc8fb;
+  --of-screen-off: #334155;
+  --of-amber: #f59e0b;
+  --of-red: #ef4444;
+  --of-green: #22c55e;
+  --of-paper: #fffdf6;
+  --of-ink: #1f2937;
+  --of-label: #353b4a;
+  --of-sub: #676c78;
+  --of-wb: #fdfdfb;
+  --of-wb-frame: #a3a9b5;
+  --of-plant: #4cae6a;
+  --of-plant-2: #2f8f4e;
+  --of-pot: #c2703d;
+  --of-rack: #1d2330;
+  --of-rack-unit: #2c3443;
+  --of-bubble: #ffffff;
+  --of-bubble-text: #1f2937;
+  --of-shadow: rgba(40, 32, 20, .25);
+  --of-key: #a2a9b4;
+  --of-counter: #cfd5de;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1016;
+    --bg-2: #11151c;
+    --surface: #161b24;
+    --surface-2: #19202a;
+    --surface-3: #212835;
+    --line: #273042;
+    --line-strong: #364256;
+    --text: #e8ebf1;
+    --text-2: #bac1cd;
+    --muted: #8d96a7;
+    --accent: #8f84ff;
+    --accent-2: #a69eff;
+    --accent-soft: #24224a;
+    --accent-ink: #c9c4ff;
+    --on-accent: #0d1016;
+    --ok: #4ade80;
+    --ok-soft: #12301f;
+    --warn: #fbbf24;
+    --warn-soft: #33270e;
+    --bad: #fb7d75;
+    --bad-soft: #3b1715;
+    --info: #7dd3fc;
+    --info-soft: #0f2a3b;
+    --live: #4ade80;
+    --diff-add: #0f2a1a;
+    --diff-add-strong: #19502f;
+    --diff-del: #2e1416;
+    --diff-del-strong: #5b2226;
+    --diff-hunk: #1b2235;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .3);
+    --shadow-lg: 0 18px 50px rgba(0, 0, 0, .6);
+    --focus-ring: 0 0 0 3px rgba(143, 132, 255, .55);
+
+    --of-bg: #151820;
+    --of-wall: #07090d;
+    --of-wood-a: #3a3128;
+    --of-wood-b: #352d25;
+    --of-wood-line: #2a231c;
+    --of-tile: #222834;
+    --of-tile-line: #1b202a;
+    --of-carpet: #1f2638;
+    --of-carpet-dot: #273049;
+    --of-rug: #2b2340;
+    --of-desk-top: #8a5d3b;
+    --of-desk-front: #6b452a;
+    --of-desk-leg: #4b2f1c;
+    --of-chair: #2b313c;
+    --of-bezel: #0b0f16;
+    --of-screen-idle: #3b5f8f;
+    --of-screen-off: #1a2230;
+    --of-paper: #ece6d5;
+    --of-label: #d6dbe5;
+    --of-sub: #98a0b0;
+    --of-wb: #e8e9e4;
+    --of-wb-frame: #5d6573;
+    --of-plant: #3f9a5b;
+    --of-plant-2: #2a7a43;
+    --of-pot: #9b552b;
+    --of-rack: #0b0e14;
+    --of-rack-unit: #1b212d;
+    --of-bubble: #f3f4f7;
+    --of-shadow: rgba(0, 0, 0, .45);
+    --of-key: #6b7280;
+    --of-counter: #3b4352;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 { line-height: 1.25; margin: 0; }
+p { margin: 0 0 .6em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0; }
+a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+@media (prefers-color-scheme: dark) { a { color: var(--accent-2); } }
+a:hover { text-decoration-thickness: 2px; }
+img, svg { max-width: 100%; }
+button, input, select, textarea { font: inherit; color: inherit; }
+code, kbd, pre, .mono { font-family: var(--mono); font-size: .92em; }
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 .4em;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
+  text-align: center;
+  font-size: .85em;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 1em 0; }
+del { color: var(--bad); }
+ins { color: var(--ok); text-decoration: none; }
+details > summary { cursor: pointer; }
+[hidden] { display: none !important; }
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection { background: var(--accent-soft); }
+
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: .86em; }
+.pre-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.spacer { flex: 1 1 auto; }
+.grow { flex: 1 1 auto; }
+.lead { font-size: 1.02em; max-width: 70ch; }
+.emoji { font-family: var(--emoji); }
+.noscript { padding: 2rem; text-align: center; }
