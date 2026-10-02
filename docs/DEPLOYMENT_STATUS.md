@@ -567,6 +567,80 @@ PR #81, desde `main` en `7795b84`. Bloquea las IP que fallan el login en
 - El panel sigue respondiendo `401` sin credenciales y `200` con ellas, y
   `/healthz` `200`.
 
+### Edge: segundo nombre de la Oficina (2026-10-02)
+
+PR #89, desde `main` en `16388e8`, por la «Ventana del segundo nombre» de
+[EDGE.md](EDGE.md). Horas en UTC:
+
+- Paso 1 (15:22): `edge_traefik` en `Version.Index` 147852 con
+  `edge-traefik-dynamic-49755ff5a89b949d` y
+  `edge-traefik-static-337ae07283336858`, los de la última ventana
+  registrada; los tres secrets de la ruta con su nombre y sus dos etiquetas.
+- `edge_probe` antes: las 19 URL del render como el 2026-09-25 (`401` en los
+  logins, `503` en OpenClaw, `404` en `/app/` y `generadorcodigosqr`,
+  `302`/`307` en Passbolt y Alberto, `200` el resto), todas con `verify=0`.
+- `--check` `ok=52 changed=2 failed=0`. Apply (15:23:30-15:26:37)
+  `ok=125 changed=7 failed=0`: la Config dinámica nueva
+  `edge-traefik-dynamic-adebe024ecc054f9`, la tarea `ul6hhev784af`, el
+  `401` con `realm="AX"` en los dos nombres y las dos sondas en el log de
+  acceso como `ax@file`.
+- `edge_probe` después: solo dos líneas nuevas,
+  `https://oficina.apptolast.com/` `401` y `/healthz` `200`, con
+  `verify=0`; el resto, idéntico. Certificado de Let's Encrypt (`YR2`) con
+  `DNS:ax.apptolast.com, DNS:oficina.apptolast.com`, válido hasta el
+  2026-12-31; una sola tarea y ninguna línea de error en sus logs.
+- Repetido: `ok=124 changed=0 failed=0`, la misma tarea. Estado final:
+  `Version.Index` 148678 con `edge-traefik-dynamic-adebe024ecc054f9` y
+  `edge-traefik-static-337ae07283336858`.
+- El registro DNS A `oficina` aún no existe: hasta que el propietario lo
+  cree en Cloudflare (DNS-only), el nombre solo responde con `--resolve`.
+
+### Oficina de agentes: ventana de la Oficina (2026-10-02)
+
+PR #86, desde `main` en `6ed7a32`. El panel pasa a la Oficina de agentes
+(`ax-web:1.0.1`, ver [OFICINA.md](OFICINA.md) y [AX_WEB.md](AX_WEB.md),
+«Ventana de la Oficina»). Horas en UTC:
+
+- Imagen `ax-web:1.0.1`, con el digest que la ejecución 37020196833 de la CI
+  compiló dos veces:
+  `sha256:3fc6d6760a9b7e7390ec42e8bca9f31a4712e9b72c1afdeb6ce3af7e61e8bc27`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.1` desde su artefacto
+  `ax-web-oci-layout`. La copia también guarda `ax-web:1.0.0`
+  (`sha256:ab1b4f95…`), compilada y sembrada pero sustituida antes de
+  desplegarla, y `0.2.0` para volver atrás.
+- `ax-lab --check` desde `6ed7a32` (14:50): `ok=146 changed=2 failed=0`
+  (los dos metadatos); el plan del panel: restaurar `ax-web` en el
+  registro, aplicar `state` y `ax-web.yaml`, avisar de que falta el Secret
+  opcional `ax-web-office` y recrear `ax-web-edge`. Substrate y AX, sin
+  cambios.
+- Apply (14:51:46-14:53:39) `ok=344 changed=10 failed=0`, sin markers: pod
+  `ax-web-6bd6bc45d6-zjstv` listo con 0 reinicios y la imagen por digest,
+  PVC `ax-web-state` (1 GiB, `standard`) montado, `ax-web-edge` recreado.
+- `ax-web-bootstrap.sh office` (14:54): Secret `ax-web/ax-web-office` con la
+  clave `codex-auth-json` (sin GitHub todavía). El kubelet la proyectó en el
+  pod ya en marcha en su resincronización, en menos de un minuto y sin
+  reiniciarlo.
+- Verificación: `https://ax.apptolast.com/healthz` `200` y `/` `401` con
+  `realm="AX"`; la API del panel, con el certificado cliente de Traefik,
+  informa de la versión `1.0.1`, 9 agentes, 6 proyectos, AX listo y ningún
+  aviso. El host tiene `OUTPUT` en `DROP` y no conecta al puente `kind`, así
+  que la llamada se hace con `curl` dentro del nodo hacia la IP del pod.
+  Tres trabajos reales, cada uno con su sandbox creado y borrado:
+  - pregunta con Claude `haiku`, esfuerzo `low`, modo lectura sobre
+    `dockerswarm-infra`: `hecho` en 14 s, 4 turnos, 0,058 US$, tres
+    lecciones propuestas;
+  - pregunta con Codex `gpt-5.5`, esfuerzo `low`, sobre `dockerswarm-docs`:
+    `hecho` en 18 s; la Oficina revisó la sesión del sandbox al terminar y,
+    como Codex no la renovó, sigue usando la del Secret;
+  - cambio con Claude `sonnet`, esfuerzo `low`, sobre `dockerswarm-docs`:
+    `hecho` en 13 s, 0,074 US$, parche de `README.md` (+3 −3) recogido con
+    el contenido completo para una PR (sin token de GitHub, no se publica).
+- Nodo `kind-control-plane` tras los trabajos: unos 2,3 GiB de los 3 584 MiB
+  del límite, `memory.events.local` con `oom 0` y `oom_kill 0`;
+  `kernel.core_pattern` sigue en `|/bin/false`. El estado de la Oficina vive
+  en el PVC con propietario `65532`, ficheros `0600` y directorios `0700`.
+- Repetido (14:56:23-14:58:09): `ok=335 changed=0 failed=0`.
+
 ### Panel web de AX sin ventana (2026-09-28)
 
 PR #84, desde `main` en `bc39fb8`. Por decisión del propietario, el panel ya
