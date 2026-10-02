@@ -8,6 +8,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Segundo nombre del panel de AX, la Oficina de agentes:
+  `https://oficina.apptolast.com` (ver [`docs/EDGE.md`](docs/EDGE.md),
+  «Ruta de AX»), por decisión del propietario del 2026-10-02. Los routers
+  `ax` y `ax-health` pasan a `Host(ax.apptolast.com) ||
+  Host(oficina.apptolast.com)` (el de salud entre paréntesis antes de
+  `Path` y `Method`), así los dos nombres comparten límites, `basicAuth` y
+  el escenario de CrowdSec, que cuenta los 401 por router (`ax@file`) sin
+  tocar `config/host-security.yml`. El certificado llega por DNS-01. La
+  sonda de 401 del deploy y la prueba del log de acceso cubren los dos
+  nombres; `scripts/validate-contract.py` fija la regla exacta y rechaza
+  un tercer nombre o la regla de salud sin paréntesis. El registro DNS A
+  `oficina` se crea a mano en Cloudflare, DNS-only, como el de `ax`.
 - Despliegue de la Oficina de agentes, la versión 1.0 del panel web de AX
   (ver [`docs/AX_WEB.md`](docs/AX_WEB.md), «Oficina», y
   [`docs/OFICINA.md`](docs/OFICINA.md)). `config/ax-lab.yml` sube

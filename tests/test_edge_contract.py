@@ -82,14 +82,17 @@ AX_LIMITS = [
 AX_ROUTE_ADDITIONS: dict[str, dict[str, Any]] = {
     "routers": {
         "ax": {
-            "rule": "Host(`ax.apptolast.com`)",
+            "rule": "Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`)",
             "entryPoints": ["websecure"],
             "middlewares": [*AX_LIMITS, "ax-auth"],
             "service": "ax",
             "tls": {"certResolver": "letsencrypt"},
         },
         "ax-health": {
-            "rule": ("Host(`ax.apptolast.com`) && Path(`/healthz`) && Method(`GET`)"),
+            "rule": (
+                "(Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`))"
+                " && Path(`/healthz`) && Method(`GET`)"
+            ),
             "entryPoints": ["websecure"],
             "middlewares": [*AX_LIMITS, "ax-strip-authorization"],
             "service": "ax",
@@ -224,8 +227,9 @@ def basicauth_probe_targets(http: dict[str, Any]) -> list[dict[str, str]]:
     """The probe entries that the rendered basicAuth routers require.
 
     The probe requests ``/`` of a hostname, so a protected router must be a
-    bare ``Host`` rule behind exactly one realm. Anything else is returned
-    as unprobeable, so the comparison fails and the probe gets reviewed.
+    bare ``Host`` rule, or a disjunction of bare ``Host`` rules (one probe
+    per name), behind exactly one realm. Anything else is returned as
+    unprobeable, so the comparison fails and the probe gets reviewed.
     """
     middlewares = http.get("middlewares", {})
     targets = []
@@ -237,10 +241,14 @@ def basicauth_probe_targets(http: dict[str, Any]) -> list[dict[str, str]]:
         ]
         if not realms:
             continue
-        match = re.fullmatch(r"Host\(`([^`]+)`\)", router["rule"])
-        if match is None or len(realms) != 1:
+        matches = [
+            re.fullmatch(r"Host\(`([^`]+)`\)", part)
+            for part in router["rule"].split(" || ")
+        ]
+        if any(match is None for match in matches) or len(realms) != 1:
             targets.append({"router": name, "unprobeable": router["rule"]})
-        else:
+            continue
+        for match in matches:
             # The router name as Traefik logs it, which the CrowdSec scenario
             # counts and the access log proof requires.
             targets.append(
@@ -1054,6 +1062,11 @@ class EdgeBasicAuthChallengeProbeTests(unittest.TestCase):
                     "router": "satisfactory-logs@file",
                 },
                 {"hostname": "ax.apptolast.com", "realm": "AX", "router": "ax@file"},
+                {
+                    "hostname": "oficina.apptolast.com",
+                    "realm": "AX",
+                    "router": "ax@file",
+                },
             ],
         )
         argv = self.task["ansible.builtin.command"]["argv"]
@@ -1479,6 +1492,11 @@ class EdgeStaticContractTests(unittest.TestCase):
             "Host(`ax.apptolast.com`) && Path(`/healthz`)",
             "Host(`ax.apptolast.com`) && PathPrefix(`/healthz`) && Method(`GET`)",
             "Host(`ax.apptolast.com`) && Path(`/api/tasks`) && Method(`GET`)",
+            # Without the parentheses the alias would match every path.
+            "Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`)"
+            " && Path(`/healthz`) && Method(`GET`)",
+            "(Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`))"
+            " && PathPrefix(`/healthz`) && Method(`GET`)",
         ):
             with self.subTest(rule=rule):
                 self.assert_contract_rejects(
@@ -1486,6 +1504,25 @@ class EdgeStaticContractTests(unittest.TestCase):
                         lambda http: http["routers"]["ax-health"].update(rule=rule)
                     ),
                     "the ax-health router differs from the reviewed AX ingress",
+                )
+
+    def test_the_ax_routers_serve_exactly_the_two_reviewed_names(self) -> None:
+        # oficina.apptolast.com is the same panel behind the same router, so
+        # it shares the limits, the login and the CrowdSec scenario.
+        for rule in (
+            "Host(`ax.apptolast.com`)",
+            "Host(`oficina.apptolast.com`)",
+            "Host(`ax.apptolast.com`) || Host(`office.apptolast.com`)",
+            "Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`)"
+            " || Host(`evil.example`)",
+            "HostRegexp(`.+`)",
+        ):
+            with self.subTest(rule=rule):
+                self.assert_contract_rejects(
+                    self.edit_dynamic(
+                        lambda http: http["routers"]["ax"].update(rule=rule)
+                    ),
+                    "the ax router differs from the reviewed AX ingress",
                 )
 
     def test_inline_users_on_the_ax_login_are_rejected(self) -> None:

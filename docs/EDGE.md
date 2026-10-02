@@ -594,14 +594,18 @@ el mismo día en `docs/DEPLOYMENT_STATUS.md` y la compuerta 10 sigue abierta.
 
 ## Ruta de AX
 
-Por decisión del propietario (2026-09-25), el panel web de AX
-(`images/ax-web`, que corre dentro del laboratorio kind) se publica en
-`https://ax.apptolast.com` detrás del `basicAuth` de Traefik, sin Cloudflare
-Access ni lista de IPs permitidas. `ax-server` sigue sin publicarse nunca
-(ver [AX.md](AX.md), «Exposición»). Este cambio solo añade la parte de
-Traefik. El panel, su reenviador `ax-web-edge` y los dos secrets mTLS llegan
-con el despliegue del panel en el laboratorio: su
-`scripts/ax-web-bootstrap.sh init` crea esos dos secrets.
+Por decisión del propietario (2026-09-25), el panel web de AX (`images/ax-web`,
+que corre dentro del laboratorio kind) se publica en `https://ax.apptolast.com`
+detrás del `basicAuth` de Traefik, sin Cloudflare Access ni lista de IPs
+permitidas. Desde el 2026-10-02 el panel es la Oficina de agentes y responde
+también en `https://oficina.apptolast.com`, por decisión del propietario: los
+mismos dos routers con una regla `Host(…) || Host(…)`, así los dos nombres
+comparten límites, contraseña y el escenario de CrowdSec, que cuenta los 401 por
+router (`ax@file`). `ax-server` sigue sin publicarse nunca (ver [AX.md](AX.md),
+«Exposición»). Este cambio solo añade la parte de Traefik. El panel, su
+reenviador `ax-web-edge` y los dos secrets mTLS llegan con el despliegue del
+panel en el laboratorio: su `scripts/ax-web-bootstrap.sh init` crea esos dos
+secrets.
 
 **Este cambio se fusiona con el despliegue del panel o después, nunca
 antes.** Desde que se fusiona, todo apply de `edge` o de `site`, que incluye
@@ -610,8 +614,9 @@ antes de mutar nada, también en `--check`, si falta uno. Por eso `edge` y
 `site` solo se aplican siguiendo «Ventana de aplicación de la ruta», después
 de `ax-web-bootstrap.sh init`. Registrada esa ventana, cada apply posterior
 de `edge` o `site` sigue la ventana que este documento da para el cambio que
-aplica (la de «Log de acceso en fichero» es «Ventana del log de acceso»), con
-las reglas comunes de la compuerta STOP 10 de `CLAUDE.md`. Dentro de la
+aplica (la de «Log de acceso en fichero» es «Ventana del log de acceso» y
+la de `oficina.apptolast.com`, «Ventana del segundo nombre»), con las reglas
+comunes de la compuerta STOP 10 de `CLAUDE.md`. Dentro de la
 ventana de la ruta, entre el apply de `edge` y el despliegue del panel, la
 ruta pide la contraseña y después responde `502`.
 
@@ -619,9 +624,9 @@ ruta pide la contraseña y después responde `502`.
 
 | Objeto | Valor |
 | --- | --- |
-| Router `ax` | `Host(ax.apptolast.com)`, `websecure`, `certResolver: letsencrypt`; middlewares `edge-security`, `ax-canonical-host`, `ax-rl-ip`, `ax-rl-host`, `ax-inflight`, `ax-auth`, en ese orden |
-| Router `ax-health` | la regla anterior `&& Path(/healthz) && Method(GET)`, los mismos middlewares con `ax-strip-authorization` en lugar de `ax-auth` |
-| `ax-canonical-host` | `headers` con `customRequestHeaders.Host: ax.apptolast.com`, para que los límites cuenten un solo Host |
+| Router `ax` | `Host(ax.apptolast.com) \|\| Host(oficina.apptolast.com)`, `websecure`, `certResolver: letsencrypt`; middlewares `edge-security`, `ax-canonical-host`, `ax-rl-ip`, `ax-rl-host`, `ax-inflight`, `ax-auth`, en ese orden |
+| Router `ax-health` | la regla anterior entre paréntesis `&& Path(/healthz) && Method(GET)`, los mismos middlewares con `ax-strip-authorization` en lugar de `ax-auth` |
+| `ax-canonical-host` | `headers` con `customRequestHeaders.Host: ax.apptolast.com`, para que los límites cuenten un solo Host también con `oficina.apptolast.com`; el panel compara `Origin`, no `Host`, y admite los dos orígenes |
 | `ax-rl-ip` | `rateLimit` con `average: 30`, `period: 1m` y `burst: 30` por IP, las IPv6 por su `/64`; tope real de unas 30 peticiones cada 2-3 s |
 | `ax-rl-host` | `rateLimit` con `average: 2`, `period: 1s` y `burst: 10` para todo el host, sea cual sea la IP; tope real de unas 10 peticiones cada 1-2 s |
 | `ax-inflight` | `inFlightReq` de 8 peticiones simultáneas por host, flujos SSE abiertos incluidos |
@@ -962,6 +967,12 @@ carga da `404`), y la de la contraseña, el primer login del propietario.
 
 ### Registro DNS
 
+`oficina.apptolast.com`, el segundo nombre del panel, es otro registro A a
+`159.195.156.57` que el propietario crea a mano en Cloudflare, DNS-only,
+con las mismas reglas que el de `ax` que sigue. El certificado no depende
+de él (DNS-01), pero el navegador sí: hasta que resuelve, solo responde
+`ax.apptolast.com`.
+
 `ax.apptolast.com` es un registro A a `159.195.156.57` que el propietario
 creó a mano en Cloudflare, DNS-only, igual que los de OrganizationWeb y
 RacingGame (ver [RACINGGAME.md](RACINGGAME.md), «Alcance y precondiciones»).
@@ -983,6 +994,66 @@ repositorio»):
   mostrará el cambio a los 300 s del contrato.
 - Sigue DNS-only: coincide con `proxied=false` del contrato, CrowdSec y el
   bouncer ven la IP real y DNS-01 no depende de él.
+
+### Ventana del segundo nombre
+
+Es la ventana de `edge` que publica `oficina.apptolast.com` en los routers
+`ax` y `ax-health`. Sigue las reglas de la compuerta STOP 10 de `CLAUDE.md`
+igual que «Ventana del log de acceso»: unos 13 s sin conexiones nuevas en
+80/443 para todos los hostnames, cortes en los WebSocket y SSE abiertos,
+una sola persona, fuera de 22:30–00:40 UTC, desde el clon operativo limpio
+en detached HEAD sobre el commit fusionado, tras `git fetch --all --prune`.
+
+Precondiciones. Si falta una, esta ventana no empieza:
+
+- La última ventana de `edge` está registrada en
+  `docs/DEPLOYMENT_STATUS.md` con su `Version.Index` y sus dos Configs tras
+  el apply repetido.
+- El panel desplegado admite el origen `https://oficina.apptolast.com`
+  (`web.extra_origins` en `config/ax-lab.yml`, ver
+  [AX_WEB.md](AX_WEB.md)); si no, el panel rechazaría cada `POST` que llegue
+  por el nombre nuevo.
+- Recomendado, no obligatorio: el registro A `oficina` ya existe (ver
+  «Registro DNS»). El certificado llega por DNS-01 sin él.
+
+Pasos:
+
+1. Igual que el paso 1 de «Ventana de aplicación de la ruta»: el
+   `Version.Index` y las dos Configs deben ser los registrados, y cada
+   secret de la ruta debe mostrar su nombre y sus dos etiquetas.
+2. `edge_probe > /tmp/edge-before-oficina.txt`.
+3. `./scripts/deploy-ansible.sh --playbook edge --check --ask-become-pass`
+   y, si está limpio, el apply con `--confirm-production`. Cambios
+   esperados: solo la Config dinámica nueva y el servicio que la monta, que
+   relanza la tarea. El apply espera hasta cinco minutos el certificado del
+   nombre nuevo, prueba el `401` con `realm="AX"` en los dos nombres y que
+   las dos sondas llegan al fichero que lee CrowdSec como `ax@file`.
+4. `edge_probe > /tmp/edge-after-oficina.txt` y
+   `diff /tmp/edge-before-oficina.txt /tmp/edge-after-oficina.txt`: sin
+   diferencias en los nombres que ya existían. Cualquier diferencia es
+   motivo de rollback.
+5. Comprobar el nombre nuevo sin credenciales:
+
+   ```bash
+   curl --silent --output /dev/null --write-out '%{http_code}\n' \
+     --resolve oficina.apptolast.com:443:159.195.156.57 \
+     https://oficina.apptolast.com/healthz
+   echo | openssl s_client -connect 159.195.156.57:443 \
+     -servername oficina.apptolast.com 2>/dev/null |
+     openssl x509 -noout -ext subjectAltName
+   ```
+
+   `200` del panel y un certificado cuyo `subjectAltName` incluye
+   `oficina.apptolast.com`.
+6. Solo si los pasos 4 y 5 salieron bien, repetir el apply: `changed=0` y el
+   mismo ID de tarea.
+7. Registrar la evidencia en `docs/DEPLOYMENT_STATUS.md`, con el
+   `Version.Index` y las dos Configs tras el apply repetido.
+
+El rollback es el de «Rollback de la ruta», con el spec del paso 1 como
+destino: `ax.apptolast.com` sigue igual y `oficina.apptolast.com` deja de
+tener router (404 de Traefik). Después del paso 6, la vuelta atrás es un PR
+revisado y otro apply de `edge`.
 
 ### Ventana de aplicación de la ruta
 

@@ -961,6 +961,11 @@
         - hostname: ax.apptolast.com
           realm: AX
           router: ax@file
+        # The same panel and router under its second name (docs/EDGE.md,
+        # «Ruta de AX»): its 401 must reach CrowdSec as ax@file too.
+        - hostname: oficina.apptolast.com
+          realm: AX
+          router: ax@file
       loop_control:
         label: "{{ item.hostname }}"
       register: edge_basicauth_challenges

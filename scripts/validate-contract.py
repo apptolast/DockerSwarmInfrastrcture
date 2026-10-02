@@ -527,9 +527,13 @@ satisfactory_services = {
 # delayed request for up to 0.5 s, which must not occupy an in-flight slot.
 # No compress middleware: it holds back the first bytes of the panel's live
 # output (SSE). Only `GET /healthz` skips the login, and it never carries
-# the browser's Authorization header to the panel.
+# the browser's Authorization header to the panel. The panel answers on two
+# names, ax.apptolast.com and oficina.apptolast.com, through the same
+# routers: they share the limits, the login and the CrowdSec scenario, which
+# counts the 401s by router (config/host-security.yml).
 ax_hostname = "ax.apptolast.com"
-ax_host = f"Host(`{ax_hostname}`)"
+ax_alias_hostname = "oficina.apptolast.com"
+ax_host = f"Host(`{ax_hostname}`) || Host(`{ax_alias_hostname}`)"
 ax_limits = [
     "edge-security",
     "ax-canonical-host",
@@ -546,7 +550,7 @@ ax_routers = {
         "tls": {"certResolver": "letsencrypt"},
     },
     "ax-health": {
-        "rule": ax_host + " && Path(`/healthz`) && Method(`GET`)",
+        "rule": f"({ax_host}) && Path(`/healthz`) && Method(`GET`)",
         "entryPoints": ["websecure"],
         "middlewares": [*ax_limits, "ax-strip-authorization"],
         "service": "ax",
