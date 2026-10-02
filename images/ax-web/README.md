@@ -92,9 +92,13 @@ escritura del pod): `office.json`, `jobs.json`, un directorio por trabajo
   frontera. Codex no puede usar su propio sandbox bajo gVisor
   (`danger-full-access`), así que su modo lectura es solo una instrucción
   del prompt.
-- **Ventana del Observatorio.** Si la configuración fija `blackout`, no
-  arranca nada cuyo intervalo previsto la toque, cancela la ejecución
-  activa con la antelación configurada y no reanuda tareas dentro de ella.
+- **Ventana sin ejecuciones (opcional).** Si la configuración fija
+  `blackout` (una ventana UTC diaria `HH:MM-HH:MM`), no arranca nada cuyo
+  intervalo previsto la toque (el trabajo espera en la cola), cancela la
+  ejecución activa con la antelación configurada y no reanuda tareas
+  dentro de ella. Con `""` no hay ventana: el laboratorio no fija ninguna
+  desde el 2026-09-28, por decisión del propietario (antes, 22:30-00:40,
+  la del Observatorio; ver `docs/AX.md`).
 - **Salida en directo.** El Envoy de atenet-router corta cada flujo a los
   10 s si no se le da otro `--route-timeout`; tras cada corte se pregunta
   al sandbox con `GetProcess` y se reanuda la salida. Solo se mata al

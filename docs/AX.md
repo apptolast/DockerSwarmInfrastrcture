@@ -1465,10 +1465,12 @@ conocidos»). Si algo no cuadra, o no se puede leer, la del host no se toca
 y se avisa. Nunca se imprime ningún valor.
 
 Los sandboxes de gVisor inundan de `ptrace` la auditoría del Observatorio.
-Hasta el 2026-09-28 el panel no lanzaba ejecuciones en su ventana de medida
-(22:30-00:40 UTC); desde entonces, por decisión del propietario, no tiene
-ventana (`web.blackout_utc: ""`) y las ejecuciones de esa franja llegan a la
-auditoría del Observatorio.
+Hasta el 2026-09-28 no se lanzaban Tasks en su ventana de medida
+(22:30-00:40 UTC), y el panel las rechazaba. Desde entonces, por decisión del
+propietario («yo no quiero esa ventana de interrupción»), AX no tiene
+ventana: se retira la regla de no lanzar Tasks en ella, también las de
+`ax-tarea`, y el panel ya no la aplica (`web.blackout_utc: ""`). Las Tasks de
+esa franja llegan a la auditoría del Observatorio.
 
 ### Ejemplos
 

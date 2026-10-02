@@ -590,8 +590,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   propietario del 2026-09-28, `web.blackout_utc` pasa de `22:30-00:40` a
   `""`, que la imagen `ax-web` (ahora `0.2.0`, con su nuevo digest) lee
   como «sin ventana»: no rechaza ejecuciones ni reanudaciones por la hora y
-  su vigilante no cancela nada. Las ejecuciones entre 22:30 y 00:40 UTC
-  llegan a la auditoría del Observatorio (ver [`docs/AX.md`](docs/AX.md)).
+  su vigilante no cancela nada. Tampoco `ax-tarea` espera a esa ventana: las
+  Tasks entre 22:30 y 00:40 UTC llegan a la auditoría del Observatorio (ver
+  [`docs/AX.md`](docs/AX.md)). Antes del apply hay que sembrar
+  `ax-web:0.2.0` desde el artefacto `ax-web-oci-layout` de la CI con
+  `seed-layout --tag 0.2.0` (ver [`docs/AX_WEB.md`](docs/AX_WEB.md),
+  «Imagen»).
 
 - La compuerta STOP 10 de `CLAUDE.md` ya no hace pasar todo apply de `edge`
   o `site` por «Ventana de aplicación de la ruta», cuyos pasos solo sirven

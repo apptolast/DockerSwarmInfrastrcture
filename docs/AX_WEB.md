@@ -103,9 +103,13 @@ veces (la segunda con la caché vacía), exige el mismo digest y además el que
 fija `web.image.digest`:
 `sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf`.
 Solo entonces guarda el layout OCI como artefacto `ax-web-oci-layout`. El
-host nunca compila la imagen. El propietario la siembra una vez en la copia
-de seguridad del laboratorio, desde el artefacto descomprimido en un
-directorio de root (el gestor no lee rutas de otros usuarios):
+host nunca compila la imagen. El propietario la siembra en la copia de
+seguridad del laboratorio, desde el artefacto descomprimido en un
+directorio de root (el gestor no lee rutas de otros usuarios), una vez por
+cada `web.image.tag` y digest nuevos y siempre antes del apply que los usa:
+sin ella, el apply se detiene en el panel y retiene el marker. Cada imagen
+nueva lleva otro tag (la copia nunca da dos digests a un mismo
+`ax-web:<tag>`), así que la anterior sigue en la copia para volver atrás:
 
 ```bash
 sudo install -d -o root -g root -m 0700 /run/ax-web-seed
