@@ -112,13 +112,23 @@ func (m *Manager) run(ctx context.Context, proc ProcessClient, argv []string, st
 	ctx, cancel := context.WithTimeout(ctx, timeout+m.opt.CallTimeout)
 	defer cancel()
 	o := output{code: -1}
-	p, err := proc.StartProcess(ctx, &ateenvv1alpha.StartProcessRequest{
+	// Not under ctx, as for the agent: once asked, the guest may have
+	// started the process, and a cancellation that lands while the call is
+	// in flight would lose its id. Ask to completion, then kill it if the
+	// run was cancelled meanwhile.
+	sctx, scancel := context.WithTimeout(context.Background(), m.opt.CallTimeout)
+	p, err := proc.StartProcess(sctx, &ateenvv1alpha.StartProcessRequest{
 		Command: argv, Cwd: WorkspacePath, Stdin: stdin != nil, Timeout: durationpb.New(timeout),
 	})
+	scancel()
 	if err != nil {
 		return o, err
 	}
 	pid := p.GetProcessId()
+	if err := ctx.Err(); err != nil {
+		m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
+		return o, err
+	}
 	if stdin != nil {
 		if err := m.writeStdin(ctx, proc, pid, stdin); err != nil {
 			m.signal(proc, pid, ateenvv1alpha.Signal_SIGNAL_KILL)
