@@ -1,9 +1,11 @@
 """Static contract of the AX web panel source (images/ax-web).
 
 The Go tests in images/ax-web check the behaviour; these checks pin what a
-reviewer must see change on purpose: the only commands the panel starts,
-that the agent credential never enters a task spec or the browser, the
-security headers, and the pinned build inputs.
+reviewer must see change on purpose: no shell and no local process, the
+only place a command reaches the sandbox from, that the credentials stay in
+the office and the run manager and never enter a task spec or the browser,
+the security headers, a static UI the CSP admits, and the pinned build
+inputs.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "images/ax-web"
+STATIC = APP / "internal/web/static"
 WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
 SHA_PIN = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
 # docker.io/library/golang:1.27.1, the AX lab's toolbox.
@@ -26,21 +29,14 @@ TOOLBOX = "docker.io/library/golang:1.27.1@sha256:" + (
 BASE = "gcr.io/distroless/static-debian13:latest@sha256:" + (
     "f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe"
 )
-AGENT_COMMAND = (
-    "[]string{AgentWrapper, AgentClaude, "
-    '"-p", "--restricted", "--strict-mcp-config",\n'
-    '\t\t"--output-format", "stream-json", "--verbose", '
-    '"--max-turns", strconv.Itoa(turns)}'
-)
-CLONE_CHECK = (
-    '[]string{"git", "-C", WorkspacePath + "/" + RepoDir, '
-    '"rev-parse", "--verify", "HEAD"}'
-)
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; "
     "connect-src 'self'; img-src 'self'; base-uri 'none'; "
     "form-action 'self'; frame-ancestors 'none'"
 )
+# The environment that carries an agent credential into StartProcess:
+# Claude's token and Codex's session.
+CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CODEX_AUTH_JSON_B64")
 
 
 def go_sources(tests: bool = False) -> dict[str, str]:
@@ -69,120 +65,145 @@ def strip_comments(source: str) -> str:
     return re.sub(r"//[^\n]*", "", source)
 
 
+def under(name: str, *packages: str) -> bool:
+    return any(name.startswith(f"internal/{package}/") for package in packages)
+
+
 class CommandContract(unittest.TestCase):
     def setUp(self) -> None:
         self.sources = go_sources()
-        self.manager = self.sources["internal/runs/manager.go"]
+        self.code = {name: strip_comments(text) for name, text in self.sources.items()}
 
     def test_no_shell_and_no_local_processes(self) -> None:
-        for name, source in self.sources.items():
-            code = strip_comments(source)
+        for name, code in self.code.items():
             with self.subTest(name=name):
                 self.assertNotIn('"os/exec"', code)
                 self.assertNotIn("syscall.Exec", code)
-                self.assertNotIn('"sh"', code)
-                self.assertNotIn('"/bin/sh"', code)
-                self.assertNotIn('"-c"', code)
+                self.assertNotIn("syscall.ForkExec", code)
+                for shell in ('"sh"', '"/bin/sh"', '"bash"', '"/bin/bash"'):
+                    self.assertNotIn(shell, code)
+                # "-c" is a flag of codex (-c key=value) and of git (-c
+                # core.hooksPath), never a shell's: only where those argv
+                # are built.
+                if '"-c"' in code:
+                    self.assertTrue(under(name, "harness", "runs", "fakeax"), name)
 
-    def test_only_two_fixed_commands_reach_the_sandbox(self) -> None:
+    def test_commands_reach_the_sandbox_only_from_the_run_manager(self) -> None:
         starts = [
-            (name, match.start())
-            for name, source in self.sources.items()
-            for match in re.finditer(r"StartProcessRequest\{", source)
+            name
+            for name, code in self.code.items()
+            if "StartProcessRequest{" in code and not under(name, "fakeax")
         ]
-        self.assertEqual([name for name, _ in starts], ["internal/runs/manager.go"] * 2)
-        self.assertIn("return " + AGENT_COMMAND, self.manager)
-        self.assertIn("return " + CLONE_CHECK, self.manager)
-        self.assertEqual(self.manager.count("Command: command,"), 1)
-        self.assertEqual(self.manager.count("Command: argv,"), 1)
-        self.assertEqual(self.manager.count("m.check(ctx, proc, CloneCheck())"), 1)
-        # The prompt fallback appends after "--" and nothing else.
-        self.assertIn('command = append(command, "--", spec.Prompt)', self.manager)
-
-    def test_the_credential_travels_only_in_start_process(self) -> None:
-        env_lines = [
-            line.strip()
-            for source in self.sources.values()
-            for line in source.splitlines()
-            if re.search(r"\bEnv:\s", line)
-        ]
+        self.assertTrue(starts)
+        for name in starts:
+            self.assertTrue(under(name, "runs"), name)
+        # The agent's argv comes only from harness.Command, built from a
+        # validated Spec; the prompt goes on stdin, never in argv.
+        callers = sorted(
+            name
+            for name, code in self.code.items()
+            if re.search(r"\bharness\.Command\(", code)
+        )
+        self.assertTrue(callers)
+        self.assertTrue(all(under(name, "runs") for name in callers), callers)
+        harness = "\n".join(
+            code for name, code in self.code.items() if under(name, "harness")
+        )
+        for literal in (
+            '"ax-agent"',
+            '"--strict-mcp-config"',
+            '"--max-turns"',
+            '"--restricted"',
+            '"stream-json"',
+            '"--json"',
+            '"--ephemeral"',
+        ):
+            self.assertIn(literal, harness)
+        for name, code in self.code.items():
+            with self.subTest(name=name):
+                self.assertNotIn("dangerously-skip-permissions", code)
+        # Every git command runs inside the ephemeral checkout.
+        runs = "\n".join(
+            code for name, code in self.code.items() if under(name, "runs")
+        )
         self.assertEqual(
-            env_lines,
-            [
-                # The only environment the panel ever sets.
-                "Env:     map[string]string{TokenEnv: token},",
-                # The browser's view of a task: names only.
-                "Env:        []EnvView{},",
-            ],
+            len(re.findall(r'\[\]string\{"git",', runs)),
+            len(re.findall(r'\[\]string\{"git", "-C", ', runs)),
         )
-        task_spec = block(self.manager, "Spec: &v1alpha1.TaskSpec{")
-        self.assertNotIn("Env", task_spec)
-        self.assertIn('TokenEnv        = "CLAUDE_CODE_OAUTH_TOKEN"', self.manager)
-        # The clone check starts before the credential is read.
-        self.assertLess(
-            self.manager.index("m.check(ctx, proc, CloneCheck())"),
-            self.manager.index("token, err := m.dep.ReadToken()"),
+        self.assertNotIn('"--upload-pack"', runs)
+        self.assertNotIn("core.sshCommand", runs)
+
+    def test_credentials_travel_only_in_start_process(self) -> None:
+        # internal/fakeax and internal/demo are test doubles: the demo's
+        # simulated executor reads the fake credential env it is handed, and
+        # its fake AX serves sample tasks to the legacy views.
+        for name, code in self.code.items():
+            if under(name, "fakeax", "demo"):
+                continue
+            for env in CREDENTIAL_ENV:
+                if f'"{env}"' in code:
+                    with self.subTest(name=name, env=env):
+                        self.assertTrue(under(name, "office", "runs"), name)
+        # Environment is set only on StartProcess and in the browser's
+        # names-only view of a task.
+        env_lines = sorted(
+            name
+            for name, code in self.code.items()
+            for line in code.splitlines()
+            if re.search(r"\bEnv:\s", line) and not under(name, "fakeax", "demo")
         )
-        for name, source in self.sources.items():
-            if name != "main.go":
-                self.assertNotIn("TokenReader(cfg", source, name)
+        self.assertTrue(env_lines)
+        for name in env_lines:
+            self.assertTrue(
+                under(name, "runs") or name == "internal/web/views.go", name
+            )
+        tasks = [
+            (name, block(code, "Spec: &v1alpha1.TaskSpec{"))
+            for name, code in self.code.items()
+            if "Spec: &v1alpha1.TaskSpec{" in code and not under(name, "fakeax", "demo")
+        ]
+        self.assertTrue(tasks)
+        for name, spec in tasks:
+            with self.subTest(name=name):
+                self.assertTrue(under(name, "runs"), name)
+                self.assertNotIn("Env", spec)
+        # The GitHub token goes to api.github.com only, from the office.
+        for name, code in self.code.items():
+            if "Authorization" in code and not under(name, "fakeax", "demo", "web"):
+                with self.subTest(name=name):
+                    self.assertTrue(under(name, "office"), name)
 
     def test_env_values_never_reach_the_browser(self) -> None:
-        for name, source in self.sources.items():
+        for name, code in self.code.items():
             if name.startswith("internal/web/"):
-                self.assertNotIn(".GetValue()", source, name)
-                self.assertNotIn("protojson", source, name)
+                self.assertNotIn(".GetValue()", code, name)
+                self.assertNotIn("protojson", code, name)
+                for env in CREDENTIAL_ENV:
+                    self.assertNotIn(env, code, name)
         views = self.sources["internal/web/views.go"]
-        self.assertIn(
-            "EnvView{Name: e.GetName(), Value: Hidden}",
-            views,
-        )
+        self.assertIn("EnvView{Name: e.GetName(), Value: Hidden}", views)
         self.assertIn('const Hidden = "[oculto]"', views)
 
-    def test_every_json_response_is_a_view(self) -> None:
-        server = self.sources["internal/web/server.go"]
-        payloads = sorted(
-            # A literal that spans lines is captured as its first line: the
-            # status and the pending-delete answers, built from strings.
-            set(re.findall(r"writeJSON\(w, [^,]+, (.*?)\)?\n", server))
-        )
-        self.assertEqual(
-            payloads,
-            sorted(
-                {
-                    "map[string]any{",
-                    'map[string]any{"cancelling": true}',
-                    'map[string]any{"deleted": true}',
-                    'map[string]any{"gateways": out}',
-                    'map[string]any{"run": nil}',
-                    'map[string]any{"run": run.View()}',
-                    'map[string]any{"workspaces": out}',
-                    'map[string]string{"error": fe.Message, "field": fe.Field}',
-                    'map[string]string{"error": msg}',
-                    "body",
-                    "run.View()",
-                    "s.taskView(t)",
-                }
-            ),
-        )
-
     def test_security_headers(self) -> None:
-        server = self.sources["internal/web/server.go"]
-        parts = re.search(r'\tCSP = "([^"]*)" \+\n\t\t"([^"]*)"\n', server)
-        self.assertIsNotNone(parts)
-        self.assertEqual(parts.group(1) + parts.group(2), CSP)
-        self.assertIn('h.Set("Content-Security-Policy", CSP)', server)
-        self.assertNotIn("Access-Control-Allow", server)
+        web = "\n".join(
+            code for name, code in self.code.items() if name.startswith("internal/web/")
+        )
+        match = re.search(r'\bCSP\s*=\s*((?:"[^"]*"\s*\+?\s*)+)', web)
+        self.assertIsNotNone(match)
+        self.assertEqual("".join(re.findall(r'"([^"]*)"', match.group(1))), CSP)
+        self.assertIn('h.Set("Content-Security-Policy", CSP)', web)
+        self.assertNotIn("Access-Control-Allow", web)
         for header in (
             '"X-Content-Type-Options", "nosniff"',
             '"Cache-Control", "no-store"',
             '"X-Frame-Options", "DENY"',
         ):
-            self.assertIn(header, server)
-        # State-changing requests: same origin, JSON and the panel header.
-        self.assertIn('CSRFHeader = "X-AX-Web"', server)
-        self.assertIn('site != "" && site != "same-origin"', server)
-        self.assertIn('mt != "application/json"', server)
+            self.assertIn(header, web)
+        # State-changing requests: same origin (or a reviewed extra one),
+        # JSON and the panel header.
+        self.assertIn('CSRFHeader = "X-AX-Web"', web)
+        self.assertIn('site != "" && site != "same-origin"', web)
+        self.assertIn('mt != "application/json"', web)
 
     def test_mutual_tls_is_mandatory(self) -> None:
         tls = self.sources["internal/web/tls.go"]
@@ -193,6 +214,35 @@ class CommandContract(unittest.TestCase):
         self.assertIn('srv.ListenAndServeTLS("", "")', main)
         self.assertEqual(main.count("ListenAndServe()"), 1)
         self.assertIn("health.ListenAndServe()", main)
+
+
+class StaticUIContract(unittest.TestCase):
+    """What the CSP admits: no inline code, nothing from another origin."""
+
+    def test_the_page_loads_only_its_own_hashed_assets(self) -> None:
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+        for token in ("{{APP_CSS}}", "{{APP_JS}}"):
+            self.assertEqual(page.count(token), 1, token)
+        self.assertNotRegex(page, r"(?is)<script\b[^>]*>\s*[^<\s]")
+        self.assertNotRegex(page, r"(?i)<style\b")
+        self.assertNotRegex(page, r"(?i)\sstyle\s*=")
+        self.assertNotRegex(page, r"(?i)\son[a-z]+\s*=")
+        self.assertNotRegex(page, r'(?i)(?:src|href)\s*=\s*"(?:https?:)?//')
+        self.assertFalse((STATIC / "app.js").exists())
+        self.assertFalse((STATIC / "app.css").exists())
+        self.assertTrue(sorted((STATIC / "js").glob("*.js")))
+        self.assertTrue(sorted((STATIC / "css").glob("*.css")))
+        self.assertTrue((STATIC / "favicon.svg").is_file())
+
+    def test_scripts_and_styles_load_nothing_from_elsewhere(self) -> None:
+        for path in sorted([*STATIC.rglob("*.js"), *STATIC.rglob("*.css")]):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=str(path.relative_to(STATIC))):
+                self.assertNotRegex(text, r"@import\s")
+                self.assertNotRegex(text, r"(?i)url\(\s*['\"]?(?:https?:)?//")
+                self.assertNotRegex(text, r"\b(?:importScripts|eval)\s*\(")
+                self.assertNotRegex(text, r"\bnew\s+Function\s*\(")
+                self.assertNotRegex(text, r"\bdocument\.write\s*\(")
 
 
 class BuildContract(unittest.TestCase):

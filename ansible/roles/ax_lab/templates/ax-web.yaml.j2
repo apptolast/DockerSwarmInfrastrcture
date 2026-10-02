@@ -1,14 +1,44 @@
 ---
-# The AX web panel (images/ax-web), applied server-side by the ax_lab role
-# only on drift, after AX (docs/AX_WEB.md). No Secret is rendered here: the
-# owner creates ax-web-tls and ax-web-agent with scripts/ax-web-bootstrap.sh,
-# and the role only checks their metadata. No RBAC and no Kubernetes API
-# token: the panel talks to ax-server and atenet-router over gRPC only.
+# The AX web panel and its agent office (images/ax-web), applied
+# server-side by the ax_lab role only on drift, after AX (docs/AX_WEB.md).
+# No Secret is rendered here: the owner creates ax-web-tls, ax-web-agent and
+# the optional ax-web-office with scripts/ax-web-bootstrap.sh, and the role
+# only reads their metadata. No RBAC and no Kubernetes API token: the panel
+# talks to ax-server and atenet-router over gRPC and to the GitHub API over
+# HTTPS only.
 {% set web = ax_lab.web %}
 {% set image = "localhost:5001/" ~ web.image.name ~ ":" ~ web.image.tag ~ "@" ~ web.image.digest %}
-{% set panel_config %}
-{"ax_server": "ax-server.ax-system.svc.cluster.local:8080", "router": "atenet-router.ate-system.svc.cluster.local:80", "atespace": "default", "agent_image": "localhost:5001/ax-agents:{{ ax_lab.ax.tag }}@{{ ax_lab.ax.images["ax-agents"] }}", "repo_hosts": [{% for host in web.repo_hosts %}"{{ host }}"{% if not loop.last %}, {% endif %}{% endfor %}], "origin": "{{ web.origin }}", "blackout": "{{ web.blackout_utc }}", "watchdog_lead_minutes": {{ web.watchdog_lead_minutes }}, "max_turns": {{ web.max_turns }}, "max_timeout_minutes": {{ web.max_timeout_minutes }}, "prompt_mode": "{{ web.prompt_mode }}", "token_directory": "/var/run/ax-web/agent", "token_key": "claude-oauth-token", "tls_cert_file": "/var/run/ax-web/tls/tls.crt", "tls_key_file": "/var/run/ax-web/tls/tls.key", "client_ca_file": "/var/run/ax-web/tls/client-ca.crt", "client_common_name": "{{ web.client_common_name }}", "listen": ":{{ web.port }}", "health_listen": ":{{ web.health_port }}"}
-{% endset %}
+# The panel's configuration goes through to_json whole, so no name,
+# description or URL of the contract can break out of its JSON string.
+{% set panel_config = {
+  "ax_server": "ax-server.ax-system.svc.cluster.local:8080",
+  "router": "atenet-router.ate-system.svc.cluster.local:80",
+  "atespace": "default",
+  "agent_image": "localhost:5001/ax-agents:" ~ ax_lab.ax.tag ~ "@" ~ ax_lab.ax.images["ax-agents"],
+  "repo_hosts": web.repo_hosts,
+  "origin": web.origin,
+  "extra_origins": web.extra_origins,
+  "blackout": web.blackout_utc,
+  "watchdog_lead_minutes": web.watchdog_lead_minutes,
+  "max_turns": web.max_turns,
+  "max_timeout_minutes": web.max_timeout_minutes,
+  "prompt_mode": web.prompt_mode,
+  "token_directory": "/var/run/ax-web/agent",
+  "token_key": "claude-oauth-token",
+  "tls_cert_file": "/var/run/ax-web/tls/tls.crt",
+  "tls_key_file": "/var/run/ax-web/tls/tls.key",
+  "client_ca_file": "/var/run/ax-web/tls/client-ca.crt",
+  "client_common_name": web.client_common_name,
+  "listen": ":" ~ web.port,
+  "health_listen": ":" ~ web.health_port,
+  "state_dir": "/var/lib/ax-web",
+  "office_secret_dir": "/var/run/ax-web/office",
+  "codex_auth_key": "codex-auth-json",
+  "github_token_key": "github-token",
+  "max_queue": web.office.max_queue,
+  "retention_jobs": web.office.retention_jobs,
+  "projects": web.office.projects,
+} | to_json %}
 # Pod Security Admission, «restricted» (kubernetes.io, Pod Security
 # Standards), pinned to the cluster's minor version.
 apiVersion: v1
@@ -40,7 +70,26 @@ metadata:
     app.kubernetes.io/part-of: ax
 data:
   config.json: |
-    {{ panel_config | trim }}
+    {{ panel_config }}
+---
+# The office's state (jobs, agents, projects, memory and the Codex session
+# it renews), in kind's local-path class like ax-redis-data: it lives in the
+# node and is lost with the cluster or the namespace.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ax-web-state
+  namespace: {{ web.namespace }}
+  labels:
+    app.kubernetes.io/name: ax-web
+    app.kubernetes.io/part-of: ax
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: {{ web.office.storage_mib }}Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -52,7 +101,8 @@ metadata:
     app.kubernetes.io/part-of: ax
 spec:
   replicas: 1
-  # One panel at a time: it holds the only active run in memory.
+  # One panel at a time: it holds the only active run in memory, and its
+  # state volume is ReadWriteOnce.
   strategy:
     type: Recreate
   selector:
@@ -64,7 +114,7 @@ spec:
         app.kubernetes.io/name: ax-web
       annotations:
         # The panel reads its configuration once: a new one rolls the pod.
-        ax.apptolast.com/config-sha256: "{{ (panel_config | trim ~ '\n') | hash('sha256') }}"
+        ax.apptolast.com/config-sha256: "{{ (panel_config ~ '\n') | hash('sha256') }}"
     spec:
       serviceAccountName: ax-web
       automountServiceAccountToken: false
@@ -93,11 +143,11 @@ spec:
               name: health
           resources:
             requests:
-              cpu: 20m
-              memory: 32Mi
+              cpu: 50m
+              memory: 96Mi
             limits:
-              cpu: 250m
-              memory: 128Mi
+              cpu: 500m
+              memory: 384Mi
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -127,6 +177,12 @@ spec:
             - mountPath: /var/run/ax-web/agent
               name: agent
               readOnly: true
+            - mountPath: /var/run/ax-web/office
+              name: office
+              readOnly: true
+            # The only writable path of the pod.
+            - mountPath: /var/lib/ax-web
+              name: state
       volumes:
         - name: config
           configMap:
@@ -139,6 +195,17 @@ spec:
           secret:
             secretName: ax-web-agent
             defaultMode: 0440
+        # Codex's seed session and the GitHub tokens: without them the
+        # office runs Claude only and without GitHub. The kubelet refreshes
+        # the files when the Secret changes; the panel reads them per use.
+        - name: office
+          secret:
+            secretName: ax-web-office
+            optional: true
+            defaultMode: 0440
+        - name: state
+          persistentVolumeClaim:
+            claimName: ax-web-state
 ---
 # One port, on the kind bridge only: the node's ports are not published on
 # the host. Local keeps the forwarder's address and never hops.
@@ -164,10 +231,11 @@ spec:
 ---
 # Defence in depth, not relied upon (the panel requires Traefik's client
 # certificate): no pod reaches the panel, and the panel reaches only DNS,
-# ax-server and the atenet router. Policies apply to pod addresses, after
-# the Service's translation (80 -> 8080 for the router). Ingress admits the
-# panel's port only: the kubelet's probes of the health port come from the
-# pod's node, which is always allowed (kubernetes.io, Network Policies).
+# ax-server, the atenet router and HTTPS on public addresses, for the GitHub
+# API. Policies apply to pod addresses, after the Service's translation
+# (80 -> 8080 for the router). Ingress admits the panel's port only: the
+# kubelet's probes of the health port come from the pod's node, which is
+# always allowed (kubernetes.io, Network Policies).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -222,6 +290,22 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # The office's GitHub broker: TCP 443 outside the private (RFC 1918),
+    # shared (RFC 6598), link-local and loopback ranges, so never the pod,
+    # service, node or Docker networks.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443
 ---
 # The one exception to «no pod reaches ax-server» (ax-system.yaml): the
 # panel, on its gRPC port. NetworkPolicies add up, so this only widens the

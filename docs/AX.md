@@ -141,7 +141,7 @@ planificación del Swarm y sin tocar sus redes overlay.
 | `images/ax-task-runner/`, `images/ax-agents/` | Las entradas con las que el laboratorio manual compiló las imágenes del runner y de agentes, como registro de su procedencia |
 | `ansible/roles/ax_lab/templates/ax-web.yaml.j2`, `tasks/web*.yml` | El panel web y su reenviador (ver [AX_WEB.md](AX_WEB.md)) |
 | `ansible/roles/ax_lab/templates/ejemplos/`, `files/ejemplos/` | Los ejemplos y los clientes remotos del propietario (ver «Ejemplos») |
-| `scripts/ax-web-bootstrap.sh` | Arranque de las credenciales del panel, que ejecuta el propietario |
+| `scripts/ax-web-bootstrap.sh` | Arranque de las credenciales del panel y de su Oficina de agentes, que ejecuta el propietario |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1306,7 +1306,9 @@ del nodo. El validador exige por eso:
   de la plataforma en 1 792 MiB, que el validador no deja bajar: el
   2026-09-25 el nodo medía 1 214 MiB de memoria anónima y 82 MiB de kernel,
   más la caché caliente de etcd, los binarios y las imágenes. Dos workers de
-  1 536 MiB, como en el laboratorio manual, se pasarían en 1 280 MiB;
+  1 536 MiB, como en el laboratorio manual, se pasarían en 1 280 MiB. Dentro
+  de esa reserva corre también el panel web, con 384 MiB de límite (ver
+  [AX_WEB.md](AX_WEB.md), «Capacidad»);
 - `réplicas × límite de CPU ≤ límite de CPU del nodo − 500m`: con el nodo
   en 2 CPU, los workers juntos nunca dejan sin CPU a etcd, la API y
   Substrate. Un worker tiene hasta 1 500m; dos, 750m cada uno.
@@ -1775,12 +1777,14 @@ compilar nada, y reinstala AX. Los ficheros `state/substrate.json` y
 `state/ax.json` del nodo anterior no se borran: se sobrescriben con los del
 nuevo.
 
-El panel web también se pierde con el clúster, junto con sus dos Secrets
-de Kubernetes. El apply siguiente crea su espacio de nombres y se detiene
-pidiendo `sudo -- ./scripts/ax-web-bootstrap.sh k8s`, que los crea de nuevo
-desde `/etc/dockerswarm/ax/web-tls` y el token; un segundo apply termina
-(ver [AX_WEB.md](AX_WEB.md), «Recrear el clúster»). El reenviador y los
-Docker Secrets de Traefik no cambian.
+El panel web también se pierde con el clúster, junto con sus Secrets de
+Kubernetes y el estado de su Oficina (`ax-web-state`). El apply siguiente
+crea su espacio de nombres y se detiene pidiendo
+`sudo -- ./scripts/ax-web-bootstrap.sh k8s`, que los crea de nuevo desde
+`/etc/dockerswarm/ax/web-tls` y el token; un segundo apply termina, y
+`ax-web-bootstrap.sh office` vuelve a crear el Secret opcional (ver
+[AX_WEB.md](AX_WEB.md), «Recrear el clúster»). El reenviador y los Docker
+Secrets de Traefik no cambian.
 
 ## Aceptación del nodo privilegiado
 
@@ -1874,7 +1878,8 @@ documento solo recoge sus metadatos:
 | `/etc/dockerswarm/ax/` | `root:root 0700` | Directorio de credenciales del laboratorio |
 | `claude-oauth-token` | `root:root 0600` | Token OAuth de Claude Code (`CLAUDE_CODE_OAUTH_TOKEN`) |
 | `codex/` | `root:root 0700` | Configuración de Codex CLI |
-| `codex/auth.json`, `codex/config.toml` | `root:root 0600` | Sesión y configuración de Codex CLI |
+| `codex/auth.json`, `codex/config.toml` | `root:root 0600` | Sesión y configuración de Codex CLI; `auth.json` es también la semilla de la sesión de Codex de la Oficina |
+| `github-token` | `root:root 0600` | Opcional: token de GitHub de la Oficina, uno o líneas `organizacion=token` (ver [AX_WEB.md](AX_WEB.md), «Oficina») |
 | `openai-api-key` | `root:root 0600` | Sin uso: la clave del proxy de OpenAI, que no se codifica |
 | `web-tls/` | `root:root 0700` | Certificado, clave y CA cliente del panel web (`tls.crt`, `tls.key`, `client-ca.crt`, `0600`), que crea `ax-web-bootstrap.sh init` |
 
@@ -1886,10 +1891,16 @@ existencia: solo `ax-tarea`, que ejecuta el propietario, lee
 cuando Codex lo renueva (ver «Herramientas del operador»), y solo
 `scripts/ax-web-bootstrap.sh`, que también ejecuta el propietario, crea
 `web-tls/` y lleva `claude-oauth-token` y `web-tls/` a los Secrets
-`ax-web/ax-web-agent` y `ax-web/ax-web-tls` con
-`kubectl create secret generic --from-file`. El panel no pone el token en
-`Task.spec.env`: lo lee del volumen del Secret al arrancar cada ejecución y
-solo viaja en `StartProcess.env`. Queda además en claro en el etcd del nodo
+`ax-web/ax-web-agent` y `ax-web/ax-web-tls`, y con `office`,
+`codex/auth.json` y `github-token`, los que existan, al Secret opcional
+`ax-web/ax-web-office`, siempre con
+`kubectl create secret generic --from-file`. El panel no pone ninguna
+credencial de agente en `Task.spec.env`: la lee del volumen del Secret al
+arrancar cada ejecución y solo viaja en `StartProcess.env`. La sesión de
+Codex que la Oficina renueva queda en su volumen `ax-web-state`, y desde
+entonces la del host deja de valer para `ax-tarea` (su refresh token es de
+un solo uso). El token de GitHub nunca entra en un sandbox: solo lo usa el
+panel contra `api.github.com`. Queda además en claro en el etcd del nodo
 (Kubernetes no cifra los Secrets en reposo por defecto), cruza el Envoy de
 atenet-router sin cifrar dentro del nodo y lo puede leer cualquier
 controlador que lea Secrets en todo el clúster: hoy `ate-controller` de
@@ -2073,8 +2084,9 @@ Se retira a mano, en una ventana exclusiva y con el mismo lock que en
    `/usr/local/sbin/ax`, `/usr/local/sbin/ax-tarea`,
    `/opt/dockerswarm/ax-lab` (con el checkout, las cachés, la CLI y los
    ficheros de estado), `/var/backups/dockerswarm/ax-lab` (con las
-   imágenes y la CLI) y `/etc/dockerswarm/ax/web-tls` (el material del
-   panel que creó `ax-web-bootstrap.sh init`), y las imágenes
+   imágenes y la CLI), `/etc/dockerswarm/ax/web-tls` (el material del
+   panel que creó `ax-web-bootstrap.sh init`) y, si nada más lo usa,
+   `/etc/dockerswarm/ax/github-token`, y las imágenes
    que Docker guardó en el host: `localhost:5001/ate-setup@<digest>`, que
    descargó para ejecutarlo, `localhost:5001/ax-web@<digest>`, que
    descargó para el reenviador, y `golang@<digest>` de `images.toolbox`.

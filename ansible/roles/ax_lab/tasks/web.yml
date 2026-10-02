@@ -3,7 +3,8 @@
 # backup into the registry, its manifest server-side only on drift, the
 # owner's two Secrets checked by metadata, the rollout, and the forwarder
 # with its exact HostConfig, recreated only when it drifts. Then everything
-# is read again and verified, and only then is the proof recorded.
+# is read again and verified, and only then is the proof recorded. The
+# office's optional Secret is only reported.
 - name: Read the web panel and its forwarder and prove their ownership
   ansible.builtin.import_tasks: web_read.yml
 
@@ -332,3 +333,8 @@
     group: root
     mode: "0600"
   when: ax_lab_web_drift | length > 0
+
+# Never a stop: the office works without it (docs/AX_WEB.md, «Oficina»).
+- name: Report the optional office Secret of the web panel
+  ansible.builtin.debug:
+    msg: "{{ ax_lab_web_office_report }}"

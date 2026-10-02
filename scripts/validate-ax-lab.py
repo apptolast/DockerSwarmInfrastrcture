@@ -16,13 +16,18 @@ workloads ate-setup deploys, and AX: the vendored #375 patch and ko manifests
 by sha256, its four images by digest, the CLI backup, the WorkerPool within
 the node's CPU and memory, and the router timeout, and the AX web panel: its
 image by digest, the NodePort, the forwarder with its edge network and
-subnet and the same limits as its host_containers.ax-lab entry. It rejects
-secret-like keys and values anywhere in the file, then renders the role's
-sysctl file, kind configuration, AX manifests and web panel manifest and
-checks them against the contract: AX is never published, never granted RBAC
-and never mounts a Kubernetes API token, and the panel is published only as
-its one NodePort on the kind bridge, runs non-root and read-only under the
-restricted Pod Security Standard, and renders no Secret.
+subnet and the same limits as its host_containers.ax-lab entry, and its
+agent office: the state volume, the queue and retention bounds and the
+seeded projects, public GitHub repositories whose Swarm service and public
+host name, when set, are the ones config/image-channels.yml and the service
+catalogs declare. It rejects secret-like keys and values anywhere in the
+file, then renders the role's sysctl file, kind configuration, AX manifests
+and web panel manifest and checks them against the contract: AX is never
+published, never granted RBAC and never mounts a Kubernetes API token, and
+the panel is published only as its one NodePort on the kind bridge, runs
+non-root and read-only (but for its state volume) under the restricted Pod
+Security Standard, reaches the Internet only on HTTPS, and renders no
+Secret.
 It reads nothing outside this repository, so CI runs it without a production
 host.
 """
@@ -55,6 +60,18 @@ AX_MANIFEST_TEMPLATES = ("ax-system.yaml", "ax-workers.yaml")
 # The web panel's manifest, applied after AX (docs/AX_WEB.md).
 WEB_MANIFEST_TEMPLATE = "ax-web.yaml"
 CAPACITY_CONTRACT = ROOT / "config/capacity.yml"
+# What proves a seeded project's Swarm service and public host name: the
+# services this repository runs and the catalogs their images come from.
+IMAGE_CHANNELS = ROOT / "config/image-channels.yml"
+SERVICE_CATALOG = ROOT / "config/services.yml"
+# Catalogs of their own stack, with one public host name each.
+STACK_CATALOGS = {
+    "organizationweb": ROOT / "config/organizationweb.yml",
+    "racinggame": ROOT / "config/racinggame.yml",
+}
+# The catalog components Traefik routes a catalog's host names to: a
+# database, cache, browser or API behind them publishes none.
+FRONT_COMPONENTS = {"app", "web"}
 CAPACITY_PROFILES = ROOT / "config/capacity-profiles.yml"
 # The host_containers group of config/capacity-profiles.yml that budgets the
 # node and the registry.
@@ -375,15 +392,20 @@ WEB_KEYS = {
     "server_name",
     "client_common_name",
     "tls_directory",
+    "extra_origins",
     "repo_hosts",
     "blackout_utc",
     "watchdog_lead_minutes",
     "max_turns",
     "max_timeout_minutes",
     "prompt_mode",
+    "office",
     "forwarder",
 }
 WEB_IMAGE_KEYS = {"name", "tag", "digest"}
+OFFICE_KEYS = {"storage_mib", "max_queue", "retention_jobs", "projects"}
+# images/ax-web/internal/config.Project, key for key.
+PROJECT_KEYS = {"id", "name", "repo", "branch", "description", "service", "url"}
 FORWARDER_KEYS = {
     "container",
     "port",
@@ -395,6 +417,9 @@ FORWARDER_KEYS = {
 WEB_NAMESPACE = "ax-web"
 WEB_IMAGE_NAME = "ax-web"
 WEB_ORIGIN = "https://ax.apptolast.com"
+# The office's own name, accepted as a further origin of the panel's POSTs.
+# Its route is the edge playbook's (docs/EDGE.md).
+WEB_EXTRA_ORIGINS = ["https://oficina.apptolast.com"]
 WEB_SERVER_NAME = "ax-web"
 WEB_CLIENT_COMMON_NAME = "edge-traefik"
 WEB_FORWARDER = "ax-web-edge"
@@ -412,9 +437,33 @@ KIND_POD_SUBNET = "10.244.0.0/16"
 KIND_SERVICE_SUBNET = "10.96.0.0/16"
 NODE_PORT_RANGE = range(30000, 32768)
 # The panel's own bounds (images/ax-web/internal/config/config.go).
-WEB_TURNS_RANGE = range(1, 51)
-WEB_TIMEOUT_RANGE = range(5, 46)
+WEB_TURNS_RANGE = range(1, 501)
+WEB_TIMEOUT_RANGE = range(5, 181)
 WEB_WATCHDOG_RANGE = range(1, 61)
+OFFICE_QUEUE_RANGE = range(1, 1001)
+OFFICE_RETENTION_RANGE = range(100, 20001)
+OFFICE_PROJECTS_RANGE = range(1, 101)
+# Like ax-redis-data: local-path does not enforce it either.
+OFFICE_STORAGE_RANGE = range(256, 4097)
+# The office's bounds for a seeded project; text is counted in UTF-8 bytes,
+# which is never fewer than the runes the panel may count.
+PROJECT_ID_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
+PROJECT_NAME_MAX_BYTES = 60
+PROJECT_DESCRIPTION_MAX_BYTES = 300
+PROJECT_SERVICE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,79}")
+# runs.ValidateRepo and runs.ValidateBranch (images/ax-web/internal/runs),
+# with GitHub's rule for an owner, as internal/config checks it.
+REPO_OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
+REPO_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+BRANCH_RE = re.compile(r"[A-Za-z0-9._/-]{1,100}")
+PROJECT_REPO_HOST = "github.com"
+# The office improves itself through this project: its source lives in
+# images/ax-web of this repository.
+OFFICE_SELF_PROJECT = {
+    "id": "dockerswarm-infra",
+    "repo": "https://github.com/apptolast/DockerSwarmInfrastrcture",
+    "branch": "main",
+}
 WEB_PROMPT_MODES = {"stdin", "argument"}
 WEB_TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 HOST_NAME_RE = re.compile(
@@ -426,6 +475,7 @@ WEB_INVENTORY = [
     ("Namespace", None, WEB_NAMESPACE),
     ("ServiceAccount", WEB_NAMESPACE, "ax-web"),
     ("ConfigMap", WEB_NAMESPACE, "ax-web"),
+    ("PersistentVolumeClaim", WEB_NAMESPACE, "ax-web-state"),
     ("Deployment", WEB_NAMESPACE, "ax-web"),
     ("Service", WEB_NAMESPACE, "ax-web"),
     ("NetworkPolicy", WEB_NAMESPACE, "ax-web"),
@@ -442,6 +492,31 @@ WEB_CONFIG_PATH = "/etc/ax-web/config.json"
 WEB_TLS_MOUNT = "/var/run/ax-web/tls"
 WEB_AGENT_MOUNT = "/var/run/ax-web/agent"
 WEB_AGENT_KEY = "claude-oauth-token"
+# The office: its state volume, the only writable path of the pod, and the
+# optional Secret scripts/ax-web-bootstrap.sh office creates, with its keys.
+WEB_STATE_CLAIM = "ax-web-state"
+WEB_STATE_MOUNT = "/var/lib/ax-web"
+WEB_OFFICE_SECRET = "ax-web-office"
+WEB_OFFICE_MOUNT = "/var/run/ax-web/office"
+WEB_CODEX_AUTH_KEY = "codex-auth-json"
+WEB_GITHUB_TOKEN_KEY = "github-token"
+# The panel reads at most this much configuration (internal/config).
+WEB_CONFIG_MAX_BYTES = 64 << 10
+WEB_RESOURCES = {
+    "requests": {"cpu": "50m", "memory": "96Mi"},
+    "limits": {"cpu": "500m", "memory": "384Mi"},
+}
+# The GitHub API for the office's broker: TCP 443 anywhere but the private
+# (RFC 1918), shared (RFC 6598), link-local and loopback ranges, which hold
+# every pod, service, node and Docker network of this host.
+WEB_EGRESS_EXCEPT = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "169.254.0.0/16",
+    "127.0.0.0/8",
+]
 
 # Names and shapes of credentials. This public file holds paths and public
 # pins only, so any match is refused before the schema is even read.
@@ -1178,8 +1253,169 @@ def bounded_int(value: Any, allowed: range, context: str) -> int:
     return value
 
 
-def validate_web(web: Any, lab: dict[str, Any], ratio: Decimal) -> dict[str, Any]:
-    """The web panel: fixed names, its image by digest, ports and forwarder."""
+def load_published_services() -> dict[str, frozenset[str]]:
+    """Every Swarm service config/image-channels.yml runs, by its full name.
+
+    Each front service maps to the public host names of the catalog entry
+    its image comes from (config/services.yml, or its own stack's catalog);
+    any other, such as a database, maps to no name.
+    """
+    try:
+        hosts: dict[str, list[Any]] = {
+            entry["id"]: entry.get("hostnames") or []
+            for entry in load_yaml(SERVICE_CATALOG)["approved_services"]
+        }
+        for catalog, path in STACK_CATALOGS.items():
+            hosts[catalog] = [load_yaml(path)[catalog]["hostname"]]
+        published: dict[str, frozenset[str]] = {}
+        for entry in load_yaml(IMAGE_CHANNELS)["image_channel_services"]:
+            name = f"{entry['stack']}_{entry['service']}"
+            names = (
+                hosts.get(entry["baseline"]["catalog"], [])
+                if entry["baseline"]["component"] in FRONT_COMPONENTS
+                else []
+            )
+            if name in published or not all(isinstance(h, str) for h in names):
+                raise AxLabError("the published services are ambiguous")
+            published[name] = frozenset(names)
+    except (AttributeError, KeyError, TypeError) as error:
+        raise AxLabError("cannot read the published services") from error
+    return published
+
+
+def plain_text(value: Any, max_bytes: int, context: str) -> str:
+    """One line of printable text, trimmed, within max_bytes of UTF-8."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > max_bytes
+        or not value.isprintable()
+    ):
+        raise AxLabError(
+            f"{context} must be one trimmed line of at most {max_bytes} bytes"
+        )
+    return value
+
+
+def validate_project_repo(value: Any, hosts: list[str], context: str) -> str:
+    """runs.ValidateRepo's canonical https://github.com/<owner>/<repo>."""
+    match = (
+        re.fullmatch(r"https://([^/]+)/([^/]+)/([^/]+)", value)
+        if isinstance(value, str) and value.isascii()
+        else None
+    )
+    if (
+        match is None
+        or match[1] != PROJECT_REPO_HOST
+        or match[1] not in hosts
+        or not REPO_OWNER_RE.fullmatch(match[2])
+        or any(
+            not REPO_SEGMENT_RE.fullmatch(segment)
+            or ".." in segment
+            or segment.startswith(("-", "."))
+            or segment.endswith(".")
+            for segment in match.groups()[1:]
+        )
+        or match[3].endswith(".git")
+    ):
+        raise AxLabError(
+            f"{context} must be a public https://{PROJECT_REPO_HOST}/<owner>/<repo>"
+        )
+    return value
+
+
+def validate_project_branch(value: Any, context: str) -> str:
+    """runs.ValidateBranch: the safe subset of git check-ref-format."""
+    if (
+        not isinstance(value, str)
+        or not BRANCH_RE.fullmatch(value)
+        or value.startswith(("-", "/", "."))
+        or value.endswith(("/", ".", ".lock"))
+        or any(part in value for part in ("..", "//", "/."))
+    ):
+        raise AxLabError(f"{context} must be a valid branch name")
+    return value
+
+
+def validate_office(
+    office: Any, web: dict[str, Any], published: dict[str, frozenset[str]]
+) -> dict[str, Any]:
+    """The office's bounds and its seeded projects, each proven when linked."""
+    exact_keys(office, OFFICE_KEYS, "web office")
+    bounded_int(office["storage_mib"], OFFICE_STORAGE_RANGE, "web office storage_mib")
+    bounded_int(office["max_queue"], OFFICE_QUEUE_RANGE, "web office max_queue")
+    bounded_int(
+        office["retention_jobs"], OFFICE_RETENTION_RANGE, "web office retention_jobs"
+    )
+    projects = office["projects"]
+    if not isinstance(projects, list) or len(projects) not in OFFICE_PROJECTS_RANGE:
+        raise AxLabError(
+            "web office projects must list 1 to "
+            f"{OFFICE_PROJECTS_RANGE.stop - 1} projects"
+        )
+    ids: set[str] = set()
+    sources: set[tuple[str, str]] = set()
+    for index, project in enumerate(projects):
+        context = f"web office project {index}"
+        exact_keys(project, PROJECT_KEYS, context)
+        if not isinstance(project["id"], str) or not PROJECT_ID_RE.fullmatch(
+            project["id"]
+        ):
+            raise AxLabError(f"{context} id must match {PROJECT_ID_RE.pattern}")
+        context = f"web office project {project['id']}"
+        plain_text(project["name"], PROJECT_NAME_MAX_BYTES, f"{context} name")
+        plain_text(
+            project["description"],
+            PROJECT_DESCRIPTION_MAX_BYTES,
+            f"{context} description",
+        )
+        repo = validate_project_repo(project["repo"], web["repo_hosts"], context)
+        branch = validate_project_branch(project["branch"], f"{context} branch")
+        if project["id"] in ids or (repo, branch) in sources:
+            raise AxLabError(f"{context} repeats another project")
+        ids.add(project["id"])
+        sources.add((repo, branch))
+        service, url = project["service"], project["url"]
+        if not isinstance(service, str) or (
+            service and not PROJECT_SERVICE_RE.fullmatch(service)
+        ):
+            raise AxLabError(f"{context} service must be a Swarm service name or ''")
+        if service and service not in published:
+            raise AxLabError(
+                f"{context} service is not a service config/image-channels.yml runs"
+            )
+        if not isinstance(url, str) or (
+            url
+            and not (
+                service
+                and url.startswith("https://")
+                and url.removeprefix("https://") in published[service]
+            )
+        ):
+            raise AxLabError(
+                f"{context} url must be https://<a host name its service's "
+                "catalog publishes>, or ''"
+            )
+    if not any(
+        all(project[key] == value for key, value in OFFICE_SELF_PROJECT.items())
+        for project in projects
+    ):
+        raise AxLabError(
+            f"web office projects must hold {OFFICE_SELF_PROJECT['id']}: "
+            f"{OFFICE_SELF_PROJECT['repo']} on {OFFICE_SELF_PROJECT['branch']}"
+        )
+    return office
+
+
+def validate_web(
+    web: Any,
+    lab: dict[str, Any],
+    ratio: Decimal,
+    published: dict[str, frozenset[str]] | None = None,
+) -> dict[str, Any]:
+    """The web panel: fixed names, its image by digest, ports, the office and
+    the forwarder."""
     exact_keys(web, WEB_KEYS, "web")
     fixed = {
         "namespace": WEB_NAMESPACE,
@@ -1225,6 +1461,17 @@ def validate_web(web: Any, lab: dict[str, Any], ratio: Decimal) -> dict[str, Any
     bounded_int(web["max_timeout_minutes"], WEB_TIMEOUT_RANGE, "web max_timeout")
     if web["prompt_mode"] not in WEB_PROMPT_MODES:
         raise AxLabError("web prompt_mode must be stdin or argument")
+    if (
+        not isinstance(web["extra_origins"], list)
+        or web["extra_origins"] != WEB_EXTRA_ORIGINS
+        or not all(type(origin) is str for origin in web["extra_origins"])
+    ):
+        raise AxLabError(f"web extra_origins must be {WEB_EXTRA_ORIGINS}")
+    validate_office(
+        web["office"],
+        web,
+        load_published_services() if published is None else published,
+    )
     forwarder = exact_keys(web["forwarder"], FORWARDER_KEYS, "web forwarder")
     if forwarder["container"] != WEB_FORWARDER:
         raise AxLabError(f"web forwarder container must be {WEB_FORWARDER}")
@@ -1266,6 +1513,7 @@ def validate_catalog(
     capacity: tuple[Decimal, Any] | None = None,
     headroom: int | None = None,
     free: tuple[int, int] | None = None,
+    published: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, Any]:
     """Validate the whole file and return the `ax_lab` mapping."""
     reject_secret_like(document)
@@ -1293,7 +1541,7 @@ def validate_catalog(
     ratio, group = capacity if capacity is not None else load_capacity_declaration()
     cluster = validate_cluster(lab["cluster"], ratio)
     validate_registry(lab["registry"], cluster, ratio)
-    validate_web(lab["web"], lab, ratio)
+    validate_web(lab["web"], lab, ratio, published)
     validate_capacity_group(lab, group)
     substrate = validate_substrate(
         lab["substrate"],
@@ -1468,8 +1716,8 @@ def validate_ax_pod(
     one each: only ax-controller's, for Substrate, never one the Kubernetes
     API accepts. `secrets` are the Secrets the pod may mount as plain
     `secret` volumes, exactly those and in that order: only the web panel's
-    own TLS and agent Secrets (docs/AX_WEB.md, «Arranque»); never a
-    projected one.
+    own TLS, agent and optional office Secrets (docs/AX_WEB.md, «Arranque»);
+    never a projected one.
     """
     if spec.get("automountServiceAccountToken") is not False:
         raise AxLabError(f"{context} must not mount a Kubernetes API token")
@@ -1693,6 +1941,15 @@ def ansible_hash(data: str, hashtype: str = "sha1") -> str:
     return hashlib.new(hashtype, data.encode("utf-8")).hexdigest()
 
 
+def ansible_to_json(data: Any) -> str:
+    """Ansible's `to_json` filter without arguments: json.dumps with the
+    standard library's defaults (ASCII output, ", " and ": " separators,
+    keys in their order), which its default encoder keeps for plain data.
+    tests/test_ax_web_deploy_contract.py renders the manifest with Ansible
+    and compares."""
+    return json.dumps(data)
+
+
 def render_web_manifest(lab: dict[str, Any]) -> str:
     """Render the web panel manifest as Ansible's template lookup would."""
     environment = jinja2.Environment(
@@ -1702,6 +1959,7 @@ def render_web_manifest(lab: dict[str, Any]) -> str:
         keep_trailing_newline=True,
     )
     environment.filters["hash"] = ansible_hash
+    environment.filters["to_json"] = ansible_to_json
     return environment.get_template(WEB_MANIFEST_TEMPLATE + ".j2").render(ax_lab=lab)
 
 
@@ -1720,6 +1978,7 @@ def web_panel_config(lab: dict[str, Any]) -> dict[str, Any]:
         "agent_image": registry_image(lab, "ax-agents"),
         "repo_hosts": web["repo_hosts"],
         "origin": web["origin"],
+        "extra_origins": web["extra_origins"],
         "blackout": web["blackout_utc"],
         "watchdog_lead_minutes": web["watchdog_lead_minutes"],
         "max_turns": web["max_turns"],
@@ -1733,6 +1992,13 @@ def web_panel_config(lab: dict[str, Any]) -> dict[str, Any]:
         "client_common_name": web["client_common_name"],
         "listen": f":{web['port']}",
         "health_listen": f":{web['health_port']}",
+        "state_dir": WEB_STATE_MOUNT,
+        "office_secret_dir": WEB_OFFICE_MOUNT,
+        "codex_auth_key": WEB_CODEX_AUTH_KEY,
+        "github_token_key": WEB_GITHUB_TOKEN_KEY,
+        "max_queue": web["office"]["max_queue"],
+        "retention_jobs": web["office"]["retention_jobs"],
+        "projects": web["office"]["projects"],
     }
 
 
@@ -1791,6 +2057,19 @@ def web_expected_network_policies(lab: dict[str, Any]) -> dict[str, Any]:
                         [{"protocol": "TCP", "port": 8080}],
                     ),
                 )
+            ]
+            + [
+                {
+                    "to": [
+                        {
+                            "ipBlock": {
+                                "cidr": "0.0.0.0/0",
+                                "except": WEB_EGRESS_EXCEPT,
+                            }
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 443}],
+                }
             ],
         },
         (AX_SYSTEM_NAMESPACE, "ax-web-to-ax-server"): {
@@ -1818,14 +2097,18 @@ def web_expected_network_policies(lab: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
-    """Non-root, read-only, no capability, the pinned image, mounted Secrets."""
+    """Non-root, read-only but for its state volume, no capability, the
+    pinned image, the mounted Secrets."""
     web = lab["web"]
     spec = deployment.get("spec") or {}
     if spec.get("replicas") != 1 or spec.get("strategy") != {"type": "Recreate"}:
         raise AxLabError("the ax-web Deployment must run one pod, replaced")
     pod = pod_spec(deployment, "ax-web")
     validate_ax_pod(
-        pod, [web_image(lab)], "ax-web", secrets=("ax-web-tls", "ax-web-agent")
+        pod,
+        [web_image(lab)],
+        "ax-web",
+        secrets=("ax-web-tls", "ax-web-agent", WEB_OFFICE_SECRET),
     )
     if pod.get("serviceAccountName") != "ax-web":
         raise AxLabError("ax-web must run as its own service account")
@@ -1855,10 +2138,7 @@ def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
         for port in container.get("ports") or []
     ] != [(web["port"], "https"), (web["health_port"], "health")]:
         raise AxLabError("ax-web must expose exactly its mTLS and probe ports")
-    if container.get("resources") != {
-        "requests": {"cpu": "20m", "memory": "32Mi"},
-        "limits": {"cpu": "250m", "memory": "128Mi"},
-    }:
+    if container.get("resources") != WEB_RESOURCES:
         raise AxLabError("ax-web resources differ from the reviewed ones")
     for probe, path in (("readinessProbe", "/readyz"), ("livenessProbe", "/healthz")):
         if (container.get(probe) or {}).get("httpGet") != {
@@ -1870,12 +2150,22 @@ def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
         (mount.get("name"), mount.get("mountPath"), mount.get("readOnly"))
         for mount in container.get("volumeMounts") or []
     ]
+    # Read-only but for the state volume, which leaves readOnly unset.
     if mounts != [
         ("config", WEB_CONFIG_PATH.rsplit("/", 1)[0], True),
         ("tls", WEB_TLS_MOUNT, True),
         ("agent", WEB_AGENT_MOUNT, True),
+        ("office", WEB_OFFICE_MOUNT, True),
+        ("state", WEB_STATE_MOUNT, None),
     ]:
-        raise AxLabError("ax-web must mount exactly its configuration and Secrets")
+        raise AxLabError(
+            "ax-web must mount exactly its configuration, Secrets and state"
+        )
+    if any(
+        set(mount) - {"name", "mountPath", "readOnly"}
+        for mount in container["volumeMounts"]
+    ):
+        raise AxLabError("ax-web mounts must not use subPath or propagation")
     if pod.get("volumes") != [
         {"name": "config", "configMap": {"name": "ax-web"}},
         {"name": "tls", "secret": {"secretName": "ax-web-tls", "defaultMode": 0o440}},
@@ -1883,6 +2173,16 @@ def validate_web_pod(deployment: dict[str, Any], lab: dict[str, Any]) -> None:
             "name": "agent",
             "secret": {"secretName": "ax-web-agent", "defaultMode": 0o440},
         },
+        # Optional: without it the office runs Claude only, without GitHub.
+        {
+            "name": "office",
+            "secret": {
+                "secretName": WEB_OFFICE_SECRET,
+                "optional": True,
+                "defaultMode": 0o440,
+            },
+        },
+        {"name": "state", "persistentVolumeClaim": {"claimName": WEB_STATE_CLAIM}},
     ]:
         raise AxLabError("ax-web volumes differ from the reviewed ones")
 
@@ -1930,6 +2230,21 @@ def validate_web_manifest(rendered: str, lab: dict[str, Any]) -> None:
         raise AxLabError("the ax-web config.json is not JSON") from error
     if panel != web_panel_config(lab) or not data["config.json"].endswith("}\n"):
         raise AxLabError("the ax-web config.json differs from config/ax-lab.yml")
+    if len(data["config.json"].encode("utf-8")) > WEB_CONFIG_MAX_BYTES:
+        raise AxLabError("the ax-web config.json is larger than the panel reads")
+    claim = objects[("PersistentVolumeClaim", WEB_NAMESPACE, WEB_STATE_CLAIM)]
+    if claim["metadata"].get("labels") != {
+        "app.kubernetes.io/name": "ax-web",
+        "app.kubernetes.io/part-of": "ax",
+    } or claim.get("spec") != {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "standard",
+        "resources": {"requests": {"storage": f"{web['office']['storage_mib']}Mi"}},
+    }:
+        raise AxLabError(
+            "ax-web-state must claim office storage_mib, ReadWriteOnce, in the "
+            "standard class"
+        )
     deployment = objects[("Deployment", WEB_NAMESPACE, "ax-web")]
     annotations = (
         ((deployment.get("spec") or {}).get("template") or {}).get("metadata") or {}

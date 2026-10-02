@@ -18,8 +18,17 @@
 #         files, in the namespace the ax-lab playbook created. Existing
 #         Secrets are never overwritten. Run it again after a cluster
 #         recreation.
+#   office [--replace]
+#         Create the agent office's optional Kubernetes Secret
+#         ax-web/ax-web-office with `kubectl create secret generic
+#         --from-file`, from whichever of the root-only files exists (at
+#         least one): /etc/dockerswarm/ax/codex/auth.json as codex-auth-json
+#         (Codex's seed session) and /etc/dockerswarm/ax/github-token as
+#         github-token (one token, or owner=token lines). An existing Secret
+#         is never overwritten unless --replace is given: then it is deleted
+#         and created again. The panel reads it without restarting.
 #
-# Both run as root under the host-global lock (host_global_operation_lock.py
+# All run as root under the host-global lock (host_global_operation_lock.py
 # run), as every direct host mutation does.
 
 set -Eeuo pipefail
@@ -38,6 +47,10 @@ readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
 readonly CREDENTIAL_DIRECTORY=/etc/dockerswarm/ax
 readonly TLS_DIRECTORY=/etc/dockerswarm/ax/web-tls
 readonly AGENT_FILE=/etc/dockerswarm/ax/claude-oauth-token
+readonly CODEX_DIRECTORY=/etc/dockerswarm/ax/codex
+readonly CODEX_AUTH_FILE=/etc/dockerswarm/ax/codex/auth.json
+readonly GITHUB_TOKEN_FILE=/etc/dockerswarm/ax/github-token
+readonly OFFICE_SECRET=ax-web-office
 readonly SERVER_NAME=ax-web
 readonly CLIENT_COMMON_NAME=edge-traefik
 readonly VALIDITY_DAYS=1095
@@ -59,10 +72,15 @@ usage() {
 Usage:
   sudo -- ./scripts/ax-web-bootstrap.sh init
   sudo -- ./scripts/ax-web-bootstrap.sh k8s
+  sudo -- ./scripts/ax-web-bootstrap.sh office [--replace]
 
 init: the private CA, the panel and Traefik certificates, the two Docker
 secrets and /etc/dockerswarm/ax/web-tls. k8s: the Kubernetes Secrets
-ax-web-tls and ax-web-agent. Nothing existing is ever overwritten.
+ax-web-tls and ax-web-agent. office: the optional Kubernetes Secret
+ax-web-office, from /etc/dockerswarm/ax/codex/auth.json and
+/etc/dockerswarm/ax/github-token, whichever exist. Nothing existing is ever
+overwritten, but for office --replace, which deletes and creates
+ax-web-office again.
 EOF
 }
 
@@ -217,6 +235,21 @@ kubectl_lab() {
     --context "${KUBE_CONTEXT}" --request-timeout 10s "$@"
 }
 
+# The lab's kubectl and kubeconfig, and the namespace the ax-lab playbook
+# created and owns; this script never creates it.
+require_lab_namespace() {
+  require_private "${KUBECONFIG_PATH}" file 600
+  [[ -x "${KUBECTL}" && ! -L "${KUBECTL}" ]] || fail "${KUBECTL} is missing"
+  [[ "$(kubectl_lab get namespace "${NAMESPACE}" --ignore-not-found \
+    --output 'jsonpath={.metadata.labels.com\.apptolast\.managed-by}')" == ansible ]] ||
+    fail "namespace ${NAMESPACE} is missing: apply the ax-lab playbook first"
+}
+
+secret_in_namespace() {
+  [[ -n "$(kubectl_lab get secret "$1" --namespace "${NAMESPACE}" \
+    --ignore-not-found --output name)" ]]
+}
+
 bootstrap_k8s() {
   local name
   require_private "${TLS_DIRECTORY}" directory 700
@@ -224,17 +257,11 @@ bootstrap_k8s() {
     require_private "${TLS_DIRECTORY}/${name}" file 600
   done
   require_private "${AGENT_FILE}" file 600
-  require_private "${KUBECONFIG_PATH}" file 600
-  [[ -x "${KUBECTL}" && ! -L "${KUBECTL}" ]] || fail "${KUBECTL} is missing"
 
-  # The ax-lab playbook creates and owns the namespace; this script never
-  # does. It stops there until these Secrets exist.
-  [[ "$(kubectl_lab get namespace "${NAMESPACE}" --ignore-not-found \
-    --output 'jsonpath={.metadata.labels.com\.apptolast\.managed-by}')" == ansible ]] ||
-    fail "namespace ${NAMESPACE} is missing: apply the ax-lab playbook first"
+  # The ax-lab playbook stops until these Secrets exist.
+  require_lab_namespace
   for name in ax-web-tls ax-web-agent; do
-    [[ -z "$(kubectl_lab get secret "${name}" --namespace "${NAMESPACE}" \
-      --ignore-not-found --output name)" ]] ||
+    ! secret_in_namespace "${name}" ||
       fail "Secret ${NAMESPACE}/${name} already exists: it is never replaced"
   done
 
@@ -252,12 +279,60 @@ bootstrap_k8s() {
     "${NAMESPACE}" "${NAMESPACE}"
 }
 
-(($# == 1)) || {
+# The office's optional Secret. Each source is used only when it exists,
+# and then only as a root-only regular file; nothing ever reads it here:
+# kubectl takes it by path.
+bootstrap_office() {
+  local replace=$1
+  local sources=() keys=()
+  require_private "${CREDENTIAL_DIRECTORY}" directory 700
+  if [[ -e "${CODEX_AUTH_FILE}" || -L "${CODEX_AUTH_FILE}" ]]; then
+    require_private "${CODEX_DIRECTORY}" directory 700
+    require_private "${CODEX_AUTH_FILE}" file 600
+    sources+=("--from-file=codex-auth-json=${CODEX_AUTH_FILE}")
+    keys+=(codex-auth-json)
+  fi
+  if [[ -e "${GITHUB_TOKEN_FILE}" || -L "${GITHUB_TOKEN_FILE}" ]]; then
+    require_private "${GITHUB_TOKEN_FILE}" file 600
+    sources+=("--from-file=github-token=${GITHUB_TOKEN_FILE}")
+    keys+=(github-token)
+  fi
+  ((${#sources[@]} > 0)) ||
+    fail "neither ${CODEX_AUTH_FILE} nor ${GITHUB_TOKEN_FILE} exists"
+
+  require_lab_namespace
+  if secret_in_namespace "${OFFICE_SECRET}"; then
+    [[ "${replace}" == true ]] ||
+      fail "Secret ${NAMESPACE}/${OFFICE_SECRET} already exists: only office --replace replaces it"
+    kubectl_lab delete secret "${OFFICE_SECRET}" --namespace "${NAMESPACE}" \
+      --wait=true >/dev/null
+    printf 'Secret %s/%s deleted.\n' "${NAMESPACE}" "${OFFICE_SECRET}"
+  fi
+  kubectl_lab create secret generic "${OFFICE_SECRET}" \
+    --namespace "${NAMESPACE}" "${sources[@]}" >/dev/null ||
+    fail "Secret ${NAMESPACE}/${OFFICE_SECRET} was not created: run office again"
+  kubectl_lab label secret "${OFFICE_SECRET}" --namespace "${NAMESPACE}" \
+    com.apptolast.managed-by=manual-bootstrap >/dev/null
+  printf 'Secret %s/%s created with the keys:' "${NAMESPACE}" "${OFFICE_SECRET}"
+  printf ' %s' "${keys[@]}"
+  printf '.\n'
+  printf '%s\n' \
+    'The panel picks it up without restarting once the kubelet refreshes the' \
+    'mounted Secret: it reads the GitHub tokens on each use and the Codex' \
+    'session on each run, and keeps using a Codex session it renewed itself' \
+    'while that one is newer (docs/AX_WEB.md, «Oficina»).'
+}
+
+# One subcommand, and --replace only after office.
+replace=false
+if (($# == 2)) && [[ "$1" == office && "$2" == --replace ]]; then
+  replace=true
+elif (($# != 1)); then
   usage >&2
   exit 64
-}
+fi
 case "$1" in
-  init | k8s) ;;
+  init | k8s | office) ;;
   -h | --help)
     usage
     exit 0
@@ -267,7 +342,8 @@ case "$1" in
     exit 64
     ;;
 esac
-((EUID == 0)) || fail "run it as root: sudo -- ./scripts/ax-web-bootstrap.sh $1"
+((EUID == 0)) ||
+  fail "run it as root: sudo -- ./scripts/ax-web-bootstrap.sh $1${2:+ $2}"
 ensure_host_global_lock "ax-web-bootstrap-$1"
 
 for command_name in docker install mktemp openssl stat; do
@@ -275,8 +351,8 @@ for command_name in docker install mktemp openssl stat; do
     fail "required command not found: ${command_name}"
 done
 
-if [[ "$1" == init ]]; then
-  bootstrap_init
-else
-  bootstrap_k8s
-fi
+case "$1" in
+  init) bootstrap_init ;;
+  k8s) bootstrap_k8s ;;
+  office) bootstrap_office "${replace}" ;;
+esac

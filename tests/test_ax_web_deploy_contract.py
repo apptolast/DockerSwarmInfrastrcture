@@ -57,6 +57,38 @@ WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
 PINNED_DIGEST = (
     "sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf"
 )
+# The office's release (SPEC: ax-web 1.0.0).
+TAG = "1.0.0"
+IMAGE = f"localhost:5001/ax-web:{TAG}@{PINNED_DIGEST}"
+# The projects the office seeds, each verified on 2026-10-02 as a public
+# repository on its default branch (`gh repo view`); service and url only
+# where this repository proves the link (see test_projects_are_proven).
+PROJECTS = [
+    ("dockerswarm-infra", "https://github.com/apptolast/DockerSwarmInfrastrcture", "main", "", ""),
+    ("dockerswarm-docs", "https://github.com/apptolast/DockerSwarmDocs", "main", "", ""),
+    ("dockerswarm-memoria", "https://github.com/apptolast/DockerSwarmMemoria", "main", "", ""),
+    ("organizationweb", "https://github.com/apptolast/OrganizacionWeb", "main", "organizationweb_web", "https://organizacion.apptolast.com"),
+    ("kropia", "https://github.com/apptolast/KropiaWeb", "main", "workloads_kropia", "https://kropia.apptolast.com"),
+    ("shlink", "https://github.com/apptolast/shlink-apptolast", "develop", "workloads_shlink", "https://generadorcodigosqr.apptolast.com"),
+]  # fmt: skip
+EGRESS_EXCEPT = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "169.254.0.0/16",
+    "127.0.0.0/8",
+]
+# What web_read.yml reports for the office's optional Secret.
+OFFICE_PRESENT = (
+    "the optional Secret ax-web-office is present (Opaque, 2 keys): the office"
+    " reads its Codex session and GitHub tokens from it"
+)
+OFFICE_ABSENT = (
+    "the optional Secret ax-web-office is absent: the office runs Claude only"
+    " and without GitHub until the owner runs"
+    " `sudo -- ./scripts/ax-web-bootstrap.sh office`"
+)
 NODE_ID = "b" * 64
 EDGE_ID = "d" * 64
 NAMESPACE_UID = "uid-web"
@@ -86,6 +118,29 @@ def rendered(lab_: dict[str, Any] | None = None) -> str:
 
 def objects(text: str) -> list[dict[str, Any]]:
     return [item for item in yaml.safe_load_all(text) if item is not None]
+
+
+def find(
+    items: list[dict[str, Any]],
+    kind: str,
+    name: str = "ax-web",
+    namespace: str | None = "ax-web",
+) -> dict[str, Any]:
+    """The one object of that kind, name and namespace."""
+    (item,) = [
+        item
+        for item in items
+        if (item["kind"], item["metadata"]["name"], item["metadata"].get("namespace"))
+        == (kind, name, namespace)
+    ]
+    return item
+
+
+def struct_tags(source: str, name: str) -> set[str]:
+    """The JSON tags of one Go struct, from its brace-balanced body."""
+    start = source.index(f"type {name} struct {{")
+    end = source.index("\n}\n", start)
+    return set(re.findall(r'`json:"([a-z_]+)[,"]', source[start:end]))
 
 
 def walk(value: Any):
@@ -259,8 +314,9 @@ def web_reads(
                 "rc": 0,
                 "stdout_lines": (
                     [
-                        "ax-web-tls     Opaque   3      2m",
-                        "ax-web-agent   Opaque   1      2m",
+                        "ax-web-tls      Opaque   3      2m",
+                        "ax-web-agent    Opaque   1      2m",
+                        "ax-web-office   Opaque   2      2m",
                     ]
                     if secrets is None
                     else secrets
@@ -319,6 +375,21 @@ class WebValidatorTests(unittest.TestCase):
         self.assertEqual(web["tls_directory"], "/etc/dockerswarm/ax/web-tls")
         self.assertEqual(web["repo_hosts"], ["github.com"])
         self.assertEqual(web["blackout_utc"], "")
+        self.assertEqual(web["image"]["tag"], TAG)
+        self.assertEqual(web["extra_origins"], ["https://oficina.apptolast.com"])
+        self.assertEqual((web["max_turns"], web["max_timeout_minutes"]), (150, 90))
+        office = web["office"]
+        self.assertEqual(
+            (office["storage_mib"], office["max_queue"], office["retention_jobs"]),
+            (1024, 200, 3000),
+        )
+        self.assertEqual(
+            [
+                (p["id"], p["repo"], p["branch"], p["service"], p["url"])
+                for p in office["projects"]
+            ],
+            PROJECTS,
+        )
         forwarder = web["forwarder"]
         self.assertEqual(forwarder["container"], "ax-web-edge")
         self.assertEqual(forwarder["edge_network"], "apptolast-edge-ax")
@@ -339,6 +410,39 @@ class WebValidatorTests(unittest.TestCase):
         for taken in ("10.0.0.0/19", "172.16.0.0/12", "10.244.0.0/16", "10.96.0.0/16"):
             self.assertFalse(subnet.overlaps(ipaddress.ip_network(taken)), taken)
         VALIDATOR.validate_catalog(self.document)
+
+    def test_projects_are_proven_by_this_repository(self) -> None:
+        """A project's service is one config/image-channels.yml runs, and its
+        url a host name of that service's catalog entry."""
+        published = VALIDATOR.load_published_services()
+        self.assertEqual(
+            published["workloads_kropia"], frozenset({"kropia.apptolast.com"})
+        )
+        self.assertEqual(
+            published["organizationweb_web"],
+            frozenset({"organizacion.apptolast.com"}),
+        )
+        # Only the front component publishes its catalog's host names.
+        for backend in ("workloads_shlink-db", "organizationweb_backend"):
+            self.assertEqual(published[backend], frozenset())
+        for project in self.lab["web"]["office"]["projects"]:
+            with self.subTest(project=project["id"]):
+                self.assertTrue(
+                    project["repo"].startswith("https://github.com/apptolast/")
+                )
+                self.assertFalse(project["repo"].endswith(".git"))
+                if project["url"]:
+                    self.assertIn(
+                        project["url"].removeprefix("https://"),
+                        published[project["service"]],
+                    )
+                else:
+                    self.assertTrue(project["service"] in ("", *published))
+                text = project["name"] + project["description"]
+                self.assertNotIn("\n", text)
+                self.assertLessEqual(len(project["description"].encode()), 300)
+        infra = self.lab["web"]["office"]["projects"][0]
+        self.assertIn("images/ax-web", infra["description"])
 
     def test_manifest_is_exactly_the_reviewed_objects(self) -> None:
         self.assertEqual(
@@ -387,9 +491,7 @@ class WebValidatorTests(unittest.TestCase):
             },
         )
         (container,) = pod["containers"]
-        self.assertEqual(
-            container["image"], f"localhost:5001/ax-web:0.2.0@{PINNED_DIGEST}"
-        )
+        self.assertEqual(container["image"], IMAGE)
         self.assertEqual(
             container["securityContext"],
             {
@@ -401,8 +503,8 @@ class WebValidatorTests(unittest.TestCase):
         self.assertEqual(
             container["resources"],
             {
-                "requests": {"cpu": "20m", "memory": "32Mi"},
-                "limits": {"cpu": "250m", "memory": "128Mi"},
+                "requests": {"cpu": "50m", "memory": "96Mi"},
+                "limits": {"cpu": "500m", "memory": "384Mi"},
             },
         )
         for probe_name in ("readinessProbe", "livenessProbe"):
@@ -413,21 +515,90 @@ class WebValidatorTests(unittest.TestCase):
                 (volume["name"], (volume.get("secret") or {}).get("secretName"))
                 for volume in pod["volumes"]
             ],
-            [("config", None), ("tls", "ax-web-tls"), ("agent", "ax-web-agent")],
+            [
+                ("config", None),
+                ("tls", "ax-web-tls"),
+                ("agent", "ax-web-agent"),
+                ("office", "ax-web-office"),
+                ("state", None),
+            ],
         )
-        self.assertTrue(all(mount["readOnly"] for mount in container["volumeMounts"]))
+        # Every mount is read-only but the state volume's.
+        self.assertEqual(
+            [
+                (mount["mountPath"], mount.get("readOnly"))
+                for mount in container["volumeMounts"]
+            ],
+            [
+                ("/etc/ax-web", True),
+                ("/var/run/ax-web/tls", True),
+                ("/var/run/ax-web/agent", True),
+                ("/var/run/ax-web/office", True),
+                ("/var/lib/ax-web", None),
+            ],
+        )
+
+    def test_the_office_has_its_volume_and_an_optional_secret(self) -> None:
+        pod = self.by_key[("Deployment", "ax-web", "ax-web")]["spec"]["template"][
+            "spec"
+        ]
+        volumes = {volume["name"]: volume for volume in pod["volumes"]}
+        # Optional: the pod starts, and the office runs Claude only, without it.
+        self.assertEqual(
+            volumes["office"]["secret"],
+            {"secretName": "ax-web-office", "optional": True, "defaultMode": 0o440},
+        )
+        for name in ("tls", "agent"):
+            self.assertNotIn("optional", volumes[name]["secret"])
+        self.assertEqual(
+            volumes["state"], {"name": "state", "persistentVolumeClaim": {"claimName": "ax-web-state"}}
+        )  # fmt: skip
+        claim = self.by_key[("PersistentVolumeClaim", "ax-web", "ax-web-state")]
+        self.assertEqual(
+            claim["spec"],
+            {
+                "accessModes": ["ReadWriteOnce"],
+                "storageClassName": "standard",
+                "resources": {"requests": {"storage": "1024Mi"}},
+            },
+        )
 
     def test_the_configuration_is_the_panels_schema(self) -> None:
         config_map = self.by_key[("ConfigMap", "ax-web", "ax-web")]
         panel = json.loads(config_map["data"]["config.json"])
         # Every field of images/ax-web/internal/config.Config, and no other:
-        # the panel decodes it with DisallowUnknownFields.
+        # the panel decodes it with DisallowUnknownFields. The same for each
+        # project and config.Project.
         source = (ROOT / "images/ax-web/internal/config/config.go").read_text(
             encoding="utf-8"
         )
-        fields = set(re.findall(r'`json:"([a-z_]+)"`', source))
-        self.assertEqual(set(panel), fields)
+        self.assertEqual(set(panel), struct_tags(source, "Config"))
+        for project in panel["projects"]:
+            self.assertEqual(set(project), struct_tags(source, "Project"))
+        self.assertEqual(panel["projects"], self.lab["web"]["office"]["projects"])
         self.assertEqual(panel["origin"], "https://ax.apptolast.com")
+        self.assertEqual(panel["extra_origins"], ["https://oficina.apptolast.com"])
+        self.assertEqual((panel["max_turns"], panel["max_timeout_minutes"]), (150, 90))
+        self.assertEqual(
+            (
+                panel["state_dir"],
+                panel["office_secret_dir"],
+                panel["codex_auth_key"],
+                panel["github_token_key"],
+                panel["max_queue"],
+                panel["retention_jobs"],
+            ),
+            (
+                "/var/lib/ax-web",
+                "/var/run/ax-web/office",
+                "codex-auth-json",
+                "github-token",
+                200,
+                3000,
+            ),
+        )
+        # to_json escapes: a description cannot break out of its string.
+        self.assertTrue(config_map["data"]["config.json"].isascii())
         self.assertEqual(
             panel["agent_image"],
             "localhost:5001/ax-agents:f009cc8-issue375@"
@@ -480,7 +651,7 @@ class WebValidatorTests(unittest.TestCase):
                     rule["to"][0]["podSelector"]["matchLabels"],
                     [(port["protocol"], port["port"]) for port in rule["ports"]],
                 )
-                for rule in policy["egress"]
+                for rule in policy["egress"][:3]
             ],
             [
                 ("kube-system", {"k8s-app": "kube-dns"}, [("UDP", 53), ("TCP", 53)]),
@@ -488,6 +659,29 @@ class WebValidatorTests(unittest.TestCase):
                 ("ate-system", {"app": "atenet-router"}, [("TCP", 8080)]),
             ],
         )  # fmt: skip
+        # The GitHub API: HTTPS to public addresses only. Every pod, service,
+        # node and Docker network of this host is in an excepted range.
+        self.assertEqual(
+            policy["egress"][3:],
+            [
+                {
+                    "to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": EGRESS_EXCEPT}}],
+                    "ports": [{"protocol": "TCP", "port": 443}],
+                }
+            ],
+        )  # fmt: skip
+        excepted = [ipaddress.ip_network(cidr) for cidr in EGRESS_EXCEPT]
+        for private in (
+            "10.244.0.0/16",
+            "10.96.0.0/16",
+            "10.0.250.0/24",
+            "172.23.0.0/16",
+            "172.17.0.0/16",
+            "127.0.0.1/32",
+        ):
+            with self.subTest(network=private):
+                network = ipaddress.ip_network(private)
+                self.assertTrue(any(network.subnet_of(cidr) for cidr in excepted))  # fmt: skip
         widened = self.by_key[("NetworkPolicy", "ax-system", "ax-web-to-ax-server")]
         self.assertEqual(
             widened["spec"]["ingress"][0]["from"],
@@ -522,7 +716,7 @@ class WebValidatorTests(unittest.TestCase):
 
     @staticmethod
     def pod(items: list[dict[str, Any]]) -> dict[str, Any]:
-        return items[3]["spec"]["template"]["spec"]
+        return find(items, "Deployment")["spec"]["template"]["spec"]
 
     def test_manifest_mutations_are_rejected(self) -> None:
         # The unmutated round trip passes.
@@ -574,7 +768,7 @@ class WebValidatorTests(unittest.TestCase):
             ),
             (
                 "image by tag",
-                lambda o: container(o).update(image="localhost:5001/ax-web:0.2.0"),
+                lambda o: container(o).update(image=f"localhost:5001/ax-web:{TAG}"),
                 "pinned images",
             ),
             (
@@ -605,50 +799,52 @@ class WebValidatorTests(unittest.TestCase):
             ),
             (
                 "LoadBalancer",
-                lambda o: o[4]["spec"].update(type="LoadBalancer"),
+                lambda o: find(o, "Service")["spec"].update(type="LoadBalancer"),
                 "one NodePort",
             ),
             (
                 "Cluster traffic policy",
-                lambda o: o[4]["spec"].update(externalTrafficPolicy="Cluster"),
+                lambda o: find(o, "Service")["spec"].update(
+                    externalTrafficPolicy="Cluster"
+                ),
                 "one NodePort",
             ),
             (
                 "the probe port published",
-                lambda o: o[4]["spec"]["ports"].append(
+                lambda o: find(o, "Service")["spec"]["ports"].append(
                     {"name": "health", "port": 8081, "nodePort": 30844}
                 ),
                 "one NodePort",
             ),
             (
                 "another node port",
-                lambda o: o[4]["spec"]["ports"][0].update(nodePort=30000),
+                lambda o: find(o, "Service")["spec"]["ports"][0].update(nodePort=30000),
                 "one NodePort",
             ),
             (
                 "egress anywhere",
-                lambda o: o[5]["spec"]["egress"].append({"to": []}),
+                lambda o: find(o, "NetworkPolicy")["spec"]["egress"].append({"to": []}),
                 "NetworkPolicy ax-web differs",
             ),
             (
                 "ingress from pods",
-                lambda o: o[5]["spec"]["ingress"][0]["from"][0]["ipBlock"].pop(
-                    "except"
-                ),
+                lambda o: find(o, "NetworkPolicy")["spec"]["ingress"][0]["from"][0][
+                    "ipBlock"
+                ].pop("except"),
                 "NetworkPolicy ax-web differs",
             ),
             (
                 "the probe port open beyond the node",
-                lambda o: o[5]["spec"]["ingress"][0]["ports"].append(
-                    {"protocol": "TCP", "port": 8081}
-                ),
+                lambda o: find(o, "NetworkPolicy")["spec"]["ingress"][0][
+                    "ports"
+                ].append({"protocol": "TCP", "port": 8081}),
                 "NetworkPolicy ax-web differs",
             ),
             (
                 "ax-server open to every namespace",
-                lambda o: o[6]["spec"]["ingress"][0]["from"][0].pop(
-                    "namespaceSelector"
-                ),
+                lambda o: find(o, "NetworkPolicy", "ax-web-to-ax-server", "ax-system")[
+                    "spec"
+                ]["ingress"][0]["from"][0].pop("namespaceSelector"),
                 "ax-web-to-ax-server differs",
             ),
             (
@@ -676,20 +872,20 @@ class WebValidatorTests(unittest.TestCase):
             ),
             (
                 "another origin",
-                lambda o: o[2]["data"].update(
+                lambda o: find(o, "ConfigMap")["data"].update(
                     {
-                        "config.json": o[2]["data"]["config.json"].replace(
-                            "https://ax.apptolast.com", "https://evil.example"
-                        )
+                        "config.json": find(o, "ConfigMap")["data"][
+                            "config.json"
+                        ].replace("https://ax.apptolast.com", "https://evil.example")
                     }
                 ),
                 "config.json differs",
             ),
             (
                 "stale configuration annotation",
-                lambda o: o[3]["spec"]["template"]["metadata"]["annotations"].update(
-                    {"ax.apptolast.com/config-sha256": "0" * 64}
-                ),
+                lambda o: find(o, "Deployment")["spec"]["template"]["metadata"][
+                    "annotations"
+                ].update({"ax.apptolast.com/config-sha256": "0" * 64}),
                 "roll with its configuration",
             ),
             (
@@ -704,13 +900,103 @@ class WebValidatorTests(unittest.TestCase):
             ),
             (
                 "second replica",
-                lambda o: o[3]["spec"].update(replicas=2),
+                lambda o: find(o, "Deployment")["spec"].update(replicas=2),
                 "one pod",
             ),
             (
                 "short grace period",
                 lambda o: pod(o).update(terminationGracePeriodSeconds=30),
                 "120 s",
+            ),
+            (
+                "the office Secret required",
+                lambda o: pod(o)["volumes"][3]["secret"].update(optional=False),
+                "volumes differ",
+            ),
+            (
+                "the office Secret world-readable",
+                lambda o: pod(o)["volumes"][3]["secret"].update(defaultMode=0o444),
+                "volumes differ",
+            ),
+            (
+                "writable office Secret mount",
+                lambda o: container(o)["volumeMounts"][3].update(readOnly=False),
+                "mount exactly",
+            ),
+            (
+                "the state volume read through a subPath",
+                lambda o: container(o)["volumeMounts"][4].update(subPath="x"),
+                "subPath",
+            ),
+            (
+                "another claim",
+                lambda o: pod(o)["volumes"][4]["persistentVolumeClaim"].update(
+                    claimName="ax-redis-data"
+                ),
+                "volumes differ",
+            ),
+            (
+                "an emptyDir for state",
+                lambda o: pod(o)["volumes"].__setitem__(
+                    4, {"name": "state", "emptyDir": {}}
+                ),
+                "volumes differ",
+            ),
+            (
+                "state in another class",
+                lambda o: find(o, "PersistentVolumeClaim", "ax-web-state")[
+                    "spec"
+                ].update(storageClassName="fast"),
+                "ax-web-state must claim",
+            ),
+            (
+                "state shared",
+                lambda o: find(o, "PersistentVolumeClaim", "ax-web-state")[
+                    "spec"
+                ].update(accessModes=["ReadWriteMany"]),
+                "ax-web-state must claim",
+            ),
+            (
+                "state of another size",
+                lambda o: find(o, "PersistentVolumeClaim", "ax-web-state")["spec"][
+                    "resources"
+                ]["requests"].update(storage="10Gi"),
+                "ax-web-state must claim",
+            ),
+            (
+                "no state claim",
+                lambda o: o.remove(find(o, "PersistentVolumeClaim", "ax-web-state")),
+                "other objects",
+            ),
+            (
+                "more memory",
+                lambda o: container(o)["resources"]["limits"].update(memory="1Gi"),
+                "resources differ",
+            ),
+            (
+                "HTTPS to private addresses",
+                lambda o: find(o, "NetworkPolicy")["spec"]["egress"][3]["to"][0][
+                    "ipBlock"
+                ]["except"].remove("10.0.0.0/8"),
+                "NetworkPolicy ax-web differs",
+            ),
+            (
+                "egress beyond HTTPS",
+                lambda o: find(o, "NetworkPolicy")["spec"]["egress"][3]["ports"].append(
+                    {"protocol": "TCP", "port": 22}
+                ),
+                "NetworkPolicy ax-web differs",
+            ),
+            (
+                "another project in config.json",
+                lambda o: find(o, "ConfigMap")["data"].update(
+                    {
+                        "config.json": find(o, "ConfigMap")["data"][
+                            "config.json"
+                        ].replace("KropiaWeb", "KropiaWebFork")
+                    }
+                ),
+                "config.json differs",
             ),
         ]
         self.assertGreaterEqual(len(cases), 10)
@@ -725,13 +1011,156 @@ class WebValidatorTests(unittest.TestCase):
         def web(**values):
             return lambda lab_: lab_["web"].update(values)
 
+        def office(**values):
+            return lambda lab_: lab_["web"]["office"].update(values)
+
+        def project(index, **values):
+            return lambda lab_: lab_["web"]["office"]["projects"][index].update(values)
+
         cases = [
             ("node port outside the range", web(node_port=8443), "node_port"),
             ("another namespace", web(namespace="default"), "namespace"),
             ("another origin", web(origin="https://ax.example.com"), "origin"),
             ("a blackout window", web(blackout_utc="22:30-00:40"), "blackout"),
-            ("too many turns", web(max_turns=51), "max_turns"),
-            ("too long", web(max_timeout_minutes=60), "max_timeout"),
+            ("too many turns", web(max_turns=501), "max_turns"),
+            ("too long", web(max_timeout_minutes=181), "max_timeout"),
+            ("too short", web(max_timeout_minutes=4), "max_timeout"),
+            (
+                "another extra origin",
+                web(extra_origins=["https://evil.example"]),
+                "extra_origins",
+            ),
+            (
+                "extra origins as a string",
+                web(extra_origins="https://oficina.apptolast.com"),
+                "extra_origins",
+            ),
+            (
+                "no office",
+                lambda lab_: lab_["web"].pop("office"),
+                "unexpected or missing keys",
+            ),
+            ("unbounded queue", office(max_queue=1001), "max_queue"),
+            ("no queue", office(max_queue=0), "max_queue"),
+            ("short retention", office(retention_jobs=99), "retention_jobs"),
+            ("huge state", office(storage_mib=8192), "storage_mib"),
+            ("state as text", office(storage_mib="1024"), "storage_mib"),
+            ("no projects", office(projects=[]), "projects must list"),
+            (
+                "an unknown project key",
+                project(0, notes="x"),
+                "unexpected or missing keys",
+            ),
+            ("an uppercase id", project(1, id="Docs"), "id must match"),
+            ("a repeated id", project(1, id="dockerswarm-infra"), "repeats"),
+            (
+                "a repeated repository",
+                project(
+                    1, repo="https://github.com/apptolast/DockerSwarmInfrastrcture"
+                ),
+                "repeats",
+            ),
+            (
+                "plain http",
+                project(1, repo="http://github.com/apptolast/DockerSwarmDocs"),
+                "public https",
+            ),
+            (
+                "another forge",
+                project(1, repo="https://gitlab.com/apptolast/DockerSwarmDocs"),
+                "public https",
+            ),
+            (
+                "a .git suffix",
+                project(1, repo="https://github.com/apptolast/DockerSwarmDocs.git"),
+                "public https",
+            ),
+            (
+                "a dot segment",
+                project(1, repo="https://github.com/apptolast/.."),
+                "public https",
+            ),
+            (
+                "an owner GitHub refuses",
+                project(1, repo="https://github.com/app_to_last/DockerSwarmDocs"),
+                "public https",
+            ),
+            (
+                "credentials in the URL",
+                project(1, repo="https://x@github.com/apptolast/DockerSwarmDocs"),
+                "secret-like value",
+            ),
+            (
+                "a path too deep",
+                project(
+                    1, repo="https://github.com/apptolast/DockerSwarmDocs/tree/main"
+                ),
+                "public https",
+            ),
+            ("a branch with ..", project(1, branch="main..x"), "branch"),
+            ("a branch starting with -", project(1, branch="-main"), "branch"),
+            ("a lock branch", project(1, branch="main.lock"), "branch"),
+            ("an empty name", project(1, name=""), "name must be"),
+            (
+                "a multi-line description",
+                project(1, description="a\nb"),
+                "description must be",
+            ),
+            (
+                "a long description",
+                project(1, description="ó" * 151),
+                "description must be",
+            ),
+            (
+                "an unknown service",
+                project(1, service="workloads_docs"),
+                "service is not",
+            ),
+            (
+                "a url through a backend",
+                project(5, service="workloads_shlink-db"),
+                "url must be",
+            ),
+            (
+                "a service name with spaces",
+                project(1, service="my docs"),
+                "service must be",
+            ),
+            (
+                "a url without a service",
+                project(1, url="https://kropia.apptolast.com"),
+                "url must be",
+            ),
+            (
+                "another service's url",
+                project(4, url="https://organizacion.apptolast.com"),
+                "url must be",
+            ),
+            (
+                "a url over http",
+                project(4, url="http://kropia.apptolast.com"),
+                "url must be",
+            ),
+            (
+                "a url with a path",
+                project(4, url="https://kropia.apptolast.com/x"),
+                "url must be",
+            ),
+            (
+                "no dockerswarm-infra",
+                lambda lab_: lab_["web"]["office"]["projects"].pop(0),
+                "must hold dockerswarm-infra",
+            ),
+            (
+                "dockerswarm-infra on another branch",
+                project(0, branch="develop"),
+                "must hold dockerswarm-infra",
+            ),
+            (
+                "a credential-shaped project key",
+                project(0, github_token="x"),
+                "secret-like key",
+            ),
             ("an IP as repo host", web(repo_hosts=["10.0.0.1"]), "repo_hosts"),
             ("no repo host", web(repo_hosts=[]), "repo_hosts"),
             ("an unknown prompt mode", web(prompt_mode="shell"), "prompt_mode"),
@@ -855,7 +1284,12 @@ class WebRoleTests(unittest.TestCase):
         ]
 
     def run_reads(self, *probes: str, check: bool = False, **reads: Any):
-        variables = {**self.variables, **web_reads(**reads)}
+        variables = {
+            **self.variables,
+            **web_reads(**reads),
+            "office_present": OFFICE_PRESENT,
+            "office_absent": OFFICE_ABSENT,
+        }
         tasks = self.decisions() + [probe(condition) for condition in probes]
         return run_tasks(tasks, variables, check=check)
 
@@ -989,7 +1423,7 @@ class WebRoleTests(unittest.TestCase):
                     "ax_lab_web_network_ready",
                     "ax_lab_web_in_backup and ax_lab_web_in_registry",
                     "ax_lab_web_plan == ['the web panel matches its pinned install',"
-                    " 'ax-web-edge runs as reviewed']",
+                    " office_present, 'ax-web-edge runs as reviewed']",
                     check=check,
                 )
 
@@ -1032,6 +1466,7 @@ class WebRoleTests(unittest.TestCase):
                 "secrets",
                 "ax-web-tls",
                 "ax-web-agent",
+                "ax-web-office",
                 "--namespace",
                 "{{ ax_lab.web.namespace }}",
                 "--ignore-not-found",
@@ -1063,6 +1498,58 @@ class WebRoleTests(unittest.TestCase):
             secrets=[],
         )
 
+    def test_the_office_secret_is_only_reported(self) -> None:
+        """Present or not, the optional Secret never stops the role."""
+        rows = [
+            "ax-web-tls      Opaque   3      2m",
+            "ax-web-agent    Opaque   1      2m",
+        ]
+        for label, secrets, report in (
+            ("present", None, "office_present"),
+            ("absent", rows, "office_absent"),
+            # Its keys are the owner's choice: one file or both.
+            ("one key", [*rows, "ax-web-office   Opaque   1   5s"], None),
+        ):
+            for check in (False, True):
+                with self.subTest(office=label, check=check):
+                    self.assert_reads(
+                        "ax_lab_web_secrets_missing == []",
+                        "ax_lab_web_drift == []",
+                        *(
+                            [
+                                f"ax_lab_web_office_report == {report}",
+                                f"{report} in ax_lab_web_plan",
+                            ]
+                            if report
+                            else [
+                                "ax_lab_web_office_report"
+                                " is search('present .Opaque, 1 keys.')"
+                            ]
+                        ),
+                        secrets=secrets,
+                        check=check,
+                    )
+        # Nothing to report before the namespace exists.
+        self.assert_reads(
+            "ax_lab_web_plan | select('search', 'ax-web-office') | list == []",
+            "ax_lab_web_office_report is search('is not read')",
+            namespace=None,
+        )
+        # The office's Secret is never one the apply waits for.
+        gate = self.apply["Stop until the owner creates the web panel Secrets"]
+        completed = run_tasks(
+            self.decisions() + [gate], {**self.variables, **web_reads(secrets=rows)}
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        report = self.apply["Report the optional office Secret of the web panel"]
+        self.assertEqual(
+            report, {
+                "name": "Report the optional office Secret of the web panel",
+                "ansible.builtin.debug": {"msg": "{{ ax_lab_web_office_report }}"},
+            },
+        )  # fmt: skip
+        self.assertEqual(list(self.apply)[-1], report["name"])
+
     def test_forwarder_drift_is_every_reviewed_setting(self) -> None:
         cases = {
             "root user": {"user": "0"},
@@ -1077,7 +1564,7 @@ class WebRoleTests(unittest.TestCase):
             "CPU": {"nano_cpus": 0},
             "PIDs": {"pids_limit": None},
             "restart always": {"restart_policy": {"Name": "always", "MaximumRetryCount": 0}},
-            "another image": {"image": "localhost:5001/ax-web:0.2.0"},
+            "another image": {"image": f"localhost:5001/ax-web:{TAG}"},
             "any peer": {"cmd": forwarder_argv(lab())[:-1] + ["0.0.0.0/1"]},
             "another entrypoint": {"entrypoint": ["/bin/sh"]},
             "host network": {"network_mode": "host"},
@@ -1820,8 +2307,137 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("is never replaced", completed.stderr)
 
+    def office_files(self, *, codex: bool = True, github: bool = True) -> None:
+        """The owner's root-only sources of the office's Secret."""
+        if codex:
+            directory = self.credentials / "codex"
+            directory.mkdir(mode=0o700)
+            (directory / "auth.json").write_text('{"sentinel": "codex-not-real"}\n')
+            (directory / "auth.json").chmod(0o600)
+        if github:
+            (self.credentials / "github-token").write_text(
+                "apptolast=github-not-real\n"
+            )
+            (self.credentials / "github-token").chmod(0o600)
+
+    def office_creates(self) -> list[list[str]]:
+        return [
+            c["kubectl"]
+            for c in self.calls()
+            if "create" in c.get("kubectl", []) and "ax-web-office" in c["kubectl"]
+        ]
+
+    def test_office_creates_the_optional_secret_from_the_files_that_exist(
+        self,
+    ) -> None:
+        for codex, github, keys in (
+            (True, True, ["codex-auth-json", "github-token"]),
+            (True, False, ["codex-auth-json"]),
+            (False, True, ["github-token"]),
+        ):
+            with self.subTest(codex=codex, github=github):
+                shutil.rmtree(self.credentials)
+                self.credentials.mkdir(mode=0o700)
+                self.log.unlink(missing_ok=True)
+                self.office_files(codex=codex, github=github)
+                completed = self.run_script("office", FAKE_NAMESPACE_LABEL="ansible")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                (create,) = self.office_creates()
+                self.assertEqual(create[:6], ["--kubeconfig", str(self.lab_home / "config"), "--context", "kind-kind", "--request-timeout", "10s"])  # fmt: skip
+                sources = {
+                    "codex-auth-json": self.credentials / "codex/auth.json",
+                    "github-token": self.credentials / "github-token",
+                }
+                self.assertEqual(
+                    [a for a in create if a.startswith("--from-file=")],
+                    [f"--from-file={key}={sources[key]}" for key in keys],
+                )
+                output = completed.stdout + completed.stderr
+                for value in ("not-real", "sentinel"):
+                    self.assertNotIn(value, output + json.dumps(self.calls()))
+                self.assertIn(" ".join(keys), output)
+                self.assertFalse(
+                    [c for c in self.calls() if "delete" in c.get("kubectl", [])]
+                )
+                labels = [
+                    c["kubectl"]
+                    for c in self.calls()
+                    if "label" in c.get("kubectl", [])
+                ]
+                self.assertEqual(
+                    [argv[6:] for argv in labels],
+                    [["label", "secret", "ax-web-office", "--namespace", "ax-web", "com.apptolast.managed-by=manual-bootstrap"]],
+                )  # fmt: skip
+
+    def test_office_refuses_without_sources_or_with_unsafe_ones(self) -> None:
+        completed = self.run_script("office", FAKE_NAMESPACE_LABEL="ansible")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("nor", completed.stderr)
+        self.office_files(codex=False)
+        (self.credentials / "github-token").chmod(0o644)
+        completed = self.run_script("office", FAKE_NAMESPACE_LABEL="ansible")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("is not", completed.stderr)
+        (self.credentials / "github-token").unlink()
+        (self.credentials / "github-token").symlink_to(self.temporary / "elsewhere")
+        completed = self.run_script("office", FAKE_NAMESPACE_LABEL="ansible")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("symbolic link", completed.stderr)
+        (self.credentials / "github-token").unlink()
+        self.office_files(github=False)
+        (self.credentials / "codex").chmod(0o755)
+        completed = self.run_script("office", FAKE_NAMESPACE_LABEL="ansible")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("codex is not", completed.stderr)
+        (self.credentials / "codex").chmod(0o700)
+        # The namespace is the playbook's: never created here.
+        completed = self.run_script("office")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("apply the ax-lab playbook first", completed.stderr)
+        self.assertEqual(self.office_creates(), [])
+
+    def test_office_replaces_only_with_replace(self) -> None:
+        self.office_files()
+        completed = self.run_script(
+            "office", FAKE_NAMESPACE_LABEL="ansible", FAKE_EXISTING="ax-web-office"
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("only office --replace replaces it", completed.stderr)
+        self.assertEqual(self.office_creates(), [])
+        completed = self.run_script(
+            "office",
+            "--replace",
+            FAKE_NAMESPACE_LABEL="ansible",
+            FAKE_EXISTING="ax-web-office",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = [c["kubectl"] for c in self.calls() if "kubectl" in c]
+        deletes = [i for i, argv in enumerate(calls) if "delete" in argv]
+        creates = [i for i, argv in enumerate(calls) if "create" in argv]
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(calls[deletes[0]][6:9], ["delete", "secret", "ax-web-office"])
+        self.assertLess(deletes[0], creates[0])
+        self.assertIn("without restarting", completed.stdout)
+        # --replace of a Secret that is not there just creates it.
+        self.log.unlink()
+        completed = self.run_script(
+            "office", "--replace", FAKE_NAMESPACE_LABEL="ansible"
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(self.office_creates()), 1)
+        self.assertFalse([c for c in self.calls() if "delete" in c.get("kubectl", [])])
+
     def test_usage_and_root(self) -> None:
-        for argv in ((), ("init", "k8s"), ("rotate",)):
+        for argv in (
+            (),
+            ("init", "k8s"),
+            ("rotate",),
+            ("office", "--force"),
+            ("init", "--replace"),
+            ("k8s", "--replace"),
+            ("--replace", "office"),
+            ("office", "--replace", "--replace"),
+        ):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_script(*argv).returncode, 64)
 
@@ -1830,6 +2446,9 @@ class BootstrapTests(unittest.TestCase):
         web = lab()["web"]
         for constant, value in (
             ("CREDENTIAL_DIRECTORY", lab()["credential_directory"]),
+            ("CODEX_AUTH_FILE", lab()["credential_directory"] + "/codex/auth.json"),
+            ("GITHUB_TOKEN_FILE", lab()["credential_directory"] + "/github-token"),
+            ("OFFICE_SECRET", "ax-web-office"),
             ("TLS_DIRECTORY", web["tls_directory"]),
             ("SERVER_NAME", web["server_name"]),
             ("CLIENT_COMMON_NAME", web["client_common_name"]),
@@ -1841,6 +2460,12 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(constant=constant):
                 self.assertIn(f"\nreadonly {constant}={value}\n", text)
         self.assertIn('run --operation "${operation}"', text)
+        # The office's keys are the ones the panel's configuration names.
+        config = json.loads(
+            find(objects(rendered()), "ConfigMap")["data"]["config.json"]
+        )
+        for key in (config["codex_auth_key"], config["github_token_key"]):
+            self.assertIn(f'"--from-file={key}=', text)
         self.assertIn("/usr/bin/python3", text)
         self.assertTrue(os.access(BOOTSTRAP, os.X_OK))
 
@@ -1906,14 +2531,29 @@ class DocsTests(unittest.TestCase):
             "alert certificate required",
             "30843",
             "ax-web-edge",
+            "sudo -- ./scripts/ax-web-bootstrap.sh office",
+            "office --replace",
+            "ax-web-office",
+            "ax-web-state",
+            "/etc/dockerswarm/ax/github-token",
+            "--tag " + TAG,
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
         ax = (ROOT / "docs/AX.md").read_text(encoding="utf-8")
         self.assertIn("docs/AX_WEB.md", ax.replace("(AX_WEB.md)", "docs/AX_WEB.md"))
         self.assertNotIn("Nada del laboratorio se publica a\nInternet", ax)
+        for fragment in ("`github-token`", "ax-web/ax-web-office"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, ax)
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        for fragment in ("ax-web-bootstrap.sh", "seed-layout", "ax-web-edge"):
+        for fragment in (
+            "ax-web-bootstrap.sh",
+            "seed-layout",
+            "ax-web-edge",
+            "ax-web-office",
+            "ax-web-state",
+        ):
             self.assertIn(fragment, changelog)
 
     def test_the_rollback_and_the_teardown_leave_nothing_of_the_panel(self) -> None:

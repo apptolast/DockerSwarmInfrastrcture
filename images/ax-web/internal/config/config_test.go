@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,11 @@ const template = `{
   "agent_image": "localhost:5001/ax-agents@sha256:DIGEST",
   "repo_hosts": ["github.com"],
   "origin": "https://ax.apptolast.com",
+  "extra_origins": ["https://oficina.apptolast.com"],
   "blackout": "22:30-00:40",
   "watchdog_lead_minutes": 5,
-  "max_turns": 50,
-  "max_timeout_minutes": 45,
+  "max_turns": 150,
+  "max_timeout_minutes": 90,
   "prompt_mode": "stdin",
   "token_directory": "/var/run/ax-web/agent",
   "token_key": "claude-oauth-token",
@@ -29,7 +31,19 @@ const template = `{
   "client_ca_file": "/var/run/ax-web/tls/client-ca.crt",
   "client_common_name": "edge-traefik",
   "listen": ":8443",
-  "health_listen": ":8081"
+  "health_listen": ":8081",
+  "state_dir": "/var/lib/ax-web",
+  "office_secret_dir": "/var/run/ax-web/office",
+  "codex_auth_key": "codex-auth-json",
+  "github_token_key": "github-token",
+  "max_queue": 200,
+  "retention_jobs": 3000,
+  "projects": [
+    {"id": "dockerswarm-infra", "name": "Infraestructura", "repo": "https://github.com/apptolast/DockerSwarmInfrastrcture",
+     "branch": "main", "description": "El servidor; la Oficina vive en images/ax-web.", "service": "", "url": ""},
+    {"id": "web", "name": "Web", "repo": "https://github.com/apptolast/web", "branch": "release/1.x",
+     "description": "La web pública.", "service": "apptolast_web", "url": "https://apptolast.com"}
+  ]
 }`
 
 func TestParseValid(t *testing.T) {
@@ -37,7 +51,8 @@ func TestParseValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MaxTimeout() != 45*time.Minute || c.Origin != "https://ax.apptolast.com" {
+	if c.MaxTimeout() != 90*time.Minute || c.Origin != "https://ax.apptolast.com" || len(c.ExtraOrigins) != 1 ||
+		c.StateDir != "/var/lib/ax-web" || c.MaxQueue != 200 || len(c.Projects) != 2 || c.Projects[1].Branch != "release/1.x" {
 		t.Fatalf("unexpected %+v", c)
 	}
 }
@@ -65,8 +80,35 @@ func TestParseRejects(t *testing.T) {
 		"no hosts":         {`["github.com"]`, `[]`},
 		"bad window":       {`"22:30-00:40"`, `"22:30-24:00"`},
 		"empty window":     {`"22:30-00:40"`, `"22:30-22:30"`},
-		"turns":            {`"max_turns": 50`, `"max_turns": 51`},
-		"timeout":          {`"max_timeout_minutes": 45`, `"max_timeout_minutes": 60`},
+		"turns":            {`"max_turns": 150`, `"max_turns": 501`},
+		"zero turns":       {`"max_turns": 150`, `"max_turns": 0`},
+		"timeout":          {`"max_timeout_minutes": 90`, `"max_timeout_minutes": 181`},
+		"short timeout":    {`"max_timeout_minutes": 90`, `"max_timeout_minutes": 4`},
+		"extra http":       {`["https://oficina.apptolast.com"]`, `["http://oficina.apptolast.com"]`},
+		"extra with path":  {`["https://oficina.apptolast.com"]`, `["https://oficina.apptolast.com/"]`},
+		"extra is origin":  {`["https://oficina.apptolast.com"]`, `["https://ax.apptolast.com"]`},
+		"relative state":   {`"/var/lib/ax-web"`, `"var/lib/ax-web"`},
+		"dotdot state":     {`"/var/lib/ax-web"`, `"/var/lib/../ax-web"`},
+		"relative secrets": {`"/var/run/ax-web/office"`, `"office"`},
+		"codex key":        {`"codex-auth-json"`, `"../codex"`},
+		"same keys":        {`"github-token"`, `"codex-auth-json"`},
+		"queue":            {`"max_queue": 200`, `"max_queue": 0`},
+		"big queue":        {`"max_queue": 200`, `"max_queue": 1001`},
+		"retention":        {`"retention_jobs": 3000`, `"retention_jobs": 99`},
+		"big retention":    {`"retention_jobs": 3000`, `"retention_jobs": 20001`},
+		"project id":       {`"id": "web"`, `"id": "Web"`},
+		"duplicate id":     {`"id": "web"`, `"id": "dockerswarm-infra"`},
+		"project name":     {`"name": "Web"`, `"name": ""`},
+		"gitlab repo":      {`"https://github.com/apptolast/web"`, `"https://gitlab.com/apptolast/web"`},
+		"repo .git":        {`"https://github.com/apptolast/web"`, `"https://github.com/apptolast/web.git"`},
+		"repo path":        {`"https://github.com/apptolast/web"`, `"https://github.com/apptolast/web/tree"`},
+		"repo userinfo":    {`"https://github.com/apptolast/web"`, `"https://x@github.com/apptolast/web"`},
+		"branch":           {`"release/1.x"`, `"release/../x"`},
+		"branch lock":      {`"release/1.x"`, `"x.lock"`},
+		"description":      {`"La web pública."`, `"` + strings.Repeat("d", 301) + `"`},
+		"service":          {`"apptolast_web"`, `"Apptolast Web"`},
+		"url":              {`"https://apptolast.com"`, `"http://apptolast.com"`},
+		"unknown project":  {`"service": "apptolast_web"`, `"service": "apptolast_web", "owner": "x"`},
 		"prompt mode":      {`"stdin"`, `"shell"`},
 		"token key":        {`"claude-oauth-token"`, `"../x"`},
 		"relative tls":     {`"/var/run/ax-web/tls/tls.key"`, `"tls.key"`},
@@ -84,6 +126,31 @@ func TestParseRejects(t *testing.T) {
 	}
 	if _, err := Parse([]byte(valid + "{}")); err == nil {
 		t.Error("trailing data accepted")
+	}
+	// A repository host list without github.com takes no projects.
+	if _, err := Parse([]byte(strings.Replace(valid, `["github.com"]`, `["gitlab.com"]`, 1))); err == nil {
+		t.Error("projects without github.com as a repo host")
+	}
+}
+
+// The office keys may be empty lists.
+func TestEmptyOfficeLists(t *testing.T) {
+	v := strings.Replace(valid, `"extra_origins": ["https://oficina.apptolast.com"],`, `"extra_origins": [],`, 1)
+	i := strings.Index(v, `"projects": [`)
+	v = v[:i] + `"projects": []}`
+	c, err := Parse([]byte(v))
+	if err != nil || len(c.ExtraOrigins) != 0 || len(c.Projects) != 0 {
+		t.Fatalf("%v %+v", err, c)
+	}
+	many := `"projects": [`
+	for n := range MaxProjects + 1 {
+		if n > 0 {
+			many += ","
+		}
+		many += fmt.Sprintf(`{"id":"p%03d","name":"P","repo":"https://github.com/a/b","branch":"main","description":"","service":"","url":""}`, n)
+	}
+	if _, err := Parse([]byte(v[:i] + many + "]}")); err == nil {
+		t.Fatal("more than 100 projects accepted")
 	}
 }
 

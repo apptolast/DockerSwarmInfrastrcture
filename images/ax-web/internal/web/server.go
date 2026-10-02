@@ -1,20 +1,21 @@
-// Package web serves the panel: a few JSON endpoints, one SSE stream and
-// three embedded static files, behind Traefik's basicAuth and mTLS.
+// Package web serves the Oficina de agentes: the JSON API, one SSE stream
+// and the static UI bundle, behind Traefik's basicAuth and mTLS. It also
+// keeps the raw AX views (tasks, workspaces, gateways).
 package web
 
 import (
 	"bytes"
 	"context"
-	"embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,15 +25,12 @@ import (
 	"google.golang.org/grpc/status"
 
 	"apptolast.com/ax-web/internal/config"
-	"apptolast.com/ax-web/internal/runs"
+	"apptolast.com/ax-web/internal/office"
 )
-
-//go:embed static
-var static embed.FS
 
 // Limits of the HTTP layer.
 const (
-	MaxBodyBytes = 32 << 10
+	MaxBodyBytes = 128 << 10
 	TaskPage     = 50
 	maxOffset    = 100000
 	// CSP: no inline code, nothing from other origins, no framing.
@@ -40,24 +38,49 @@ const (
 		"img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 	// CSRFHeader must accompany every POST; a cross-site form cannot set it.
 	CSRFHeader = "X-AX-Web"
+	// DefaultStreamMax ends an event stream so the browser reconnects
+	// well within Traefik's 3600 s readTimeout.
+	DefaultStreamMax = 30 * time.Minute
+	// StreamReplay is how many stored events a job stream starts with.
+	StreamReplay = 1500
+)
+
+// Names of the tasks the panel and ax-tarea create.
+const (
+	taskPrefix      = "web-"
+	hostRunPrefix   = "tarea-"
+	workspacePrefix = "ws-"
 )
 
 var taskName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
+// TaskRunner is what the raw AX views need from the run manager.
+type TaskRunner interface {
+	// ActiveTask is the task of the run in progress, or "".
+	ActiveTask() string
+	// DeleteAndWait deletes a task and a workspace (either may be "")
+	// until AX no longer has them.
+	DeleteAndWait(task, workspace string, timeout time.Duration) error
+}
+
 // Server holds the handlers' dependencies.
 type Server struct {
-	AX           v1alpha1.AXClient
-	Runs         *runs.Manager
-	Atespace     string
+	AX       v1alpha1.AXClient
+	Tasks    TaskRunner
+	Office   *office.Office
+	Atespace string
+	// Origin and ExtraOrigins are the only origins a POST may come from.
 	Origin       string
-	Limits       runs.Limits
+	ExtraOrigins []string
 	Blackout     config.Window
 	WatchdogLead time.Duration
 	Certs        *CertWatch
 	Now          func() time.Time
 	Audit        *slog.Logger
 	PingInterval time.Duration
-	CallTimeout  time.Duration
+	// StreamMax bounds one event stream (DefaultStreamMax when zero).
+	StreamMax   time.Duration
+	CallTimeout time.Duration
 	// DeleteWait is how long a delete request waits for AX before it
 	// answers 202; DeleteTimeout bounds the background wait after that.
 	// Traefik gives the panel 60 s to send response headers.
@@ -65,8 +88,12 @@ type Server struct {
 	DeleteTimeout time.Duration
 	// Stop ends open SSE streams when the panel shuts down.
 	Stop <-chan struct{}
+	// Static is the UI (StaticFS when nil).
+	Static  fs.FS
+	Version string
 
 	deletes chan struct{}
+	assets  *bundle
 }
 
 // maxDeletes bounds background deletions.
@@ -76,14 +103,31 @@ const maxDeletes = 4
 // every response.
 func (s *Server) Handler() http.Handler {
 	s.deletes = make(chan struct{}, maxDeletes)
+	if s.Static == nil {
+		s.Static = StaticFS()
+	}
+	s.assets = buildBundle(s.Static)
+	if s.assets.err != nil && s.Audit != nil {
+		s.Audit.Error("ui.bundle", "error", s.assets.err.Error())
+	}
+	if s.Certs == nil {
+		s.Certs = &CertWatch{}
+	}
+	if s.Now == nil {
+		s.Now = time.Now
+	}
+	if s.Audit == nil {
+		s.Audit = slog.New(slog.DiscardHandler)
+	}
 	mux := http.NewServeMux()
 	// For an end-to-end probe through Traefik and mTLS; it reveals nothing.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
 	})
-	mux.HandleFunc("GET /{$}", s.file("static/index.html", "text/html; charset=utf-8"))
-	mux.HandleFunc("GET /app.js", s.file("static/app.js", "text/javascript; charset=utf-8"))
-	mux.HandleFunc("GET /app.css", s.file("static/app.css", "text/css; charset=utf-8"))
+	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /assets/{name}", s.asset)
+	mux.HandleFunc("GET /favicon.svg", s.favicon)
+	// Raw AX views.
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("GET /api/tasks/{name}", s.getTask)
@@ -92,10 +136,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{name}/delete", s.deleteTask)
 	mux.HandleFunc("GET /api/gateways", s.gateways)
 	mux.HandleFunc("GET /api/workspaces", s.workspaces)
-	mux.HandleFunc("POST /api/runs", s.startRun)
-	mux.HandleFunc("GET /api/runs/current", s.currentRun)
-	mux.HandleFunc("GET /api/runs/{id}/events", s.events)
-	mux.HandleFunc("POST /api/runs/{id}/cancel", s.cancelRun)
+	s.officeRoutes(mux)
 	return s.secure(s.csrf(mux))
 }
 
@@ -149,7 +190,7 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 
 func (s *Server) sameOrigin(r *http.Request) bool {
 	origin, site := r.Header.Get("Origin"), r.Header.Get("Sec-Fetch-Site")
-	if origin != "" && origin != s.Origin {
+	if origin != "" && origin != s.Origin && !slices.Contains(s.ExtraOrigins, origin) {
 		return false
 	}
 	if site != "" && site != "same-origin" {
@@ -158,33 +199,34 @@ func (s *Server) sameOrigin(r *http.Request) bool {
 	return origin != "" || site != ""
 }
 
-func (s *Server) file(path, contentType string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		data, err := static.ReadFile(path)
-		if err != nil {
-			http.NotFound(w, nil)
-			return
-		}
-		w.Header().Set("Content-Type", contentType)
-		_, _ = w.Write(data)
-	}
-}
-
+// writeJSON answers v as JSON. It is encoded before anything is sent: a
+// value that cannot be (a NaN, say) is a 500 with an error, never an
+// empty 200.
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		code, data = http.StatusInternalServerError, []byte(`{"error":"no se pudo serializar la respuesta"}`)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// decode reads exactly one JSON object with only known fields.
-func decode(r *http.Request, v any) error {
+var errBody = errors.New("el cuerpo supera 128 KiB")
+
+// decode reads exactly one JSON object with only known fields. An empty
+// body counts as {} when empty is true.
+func decode(r *http.Request, v any, empty bool) error {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return errors.New("el cuerpo supera 32 KiB")
+		return errBody
+	}
+	if empty && len(bytes.TrimSpace(data)) == 0 {
+		return nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -228,17 +270,28 @@ func (s *Server) inBlackout() bool {
 	return s.Blackout.Overlaps(now, now.Add(s.WatchdogLead))
 }
 
+func (s *Server) activeTask() string {
+	if s.Tasks == nil {
+		return ""
+	}
+	return s.Tasks.ActiveTask()
+}
+
 func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"manager":     s.Runs.Status(),
+		"version":     s.Version,
+		"active":      s.activeTask(),
 		"blackout":    s.Blackout.String(),
 		"in_blackout": s.inBlackout(),
-		"warnings":    s.Certs.Warnings(s.Now()),
-		"limits": map[string]any{
-			"max_turns": s.Limits.MaxTurns, "max_timeout_minutes": int(s.Limits.MaxTimeout / time.Minute),
-			"repo_hosts": s.Limits.RepoHosts, "cpu": runs.CPUChoices, "memory": runs.MemoryChoices,
-		},
+		"warnings":    nonNil(s.Certs.Warnings(s.Now())),
 	})
+}
+
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +313,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		axError(w, err)
 		return
 	}
-	active := s.Runs.ActiveTask()
+	active := s.activeTask()
 	out := []TaskView{}
 	for _, t := range resp.GetTasks() {
 		v := NewTaskView(t)
@@ -285,7 +338,7 @@ func (s *Server) name(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 func (s *Server) taskView(t *v1alpha1.Task) TaskView {
 	v := NewTaskView(t)
-	v.PanelRun = v.Name == s.Runs.ActiveTask()
+	v.PanelRun = v.Name == s.activeTask()
 	v.CanSuspend = !v.Suspend && suspendRefusal(t, v.PanelRun) == ""
 	v.CanResume = v.Suspend && !s.inBlackout()
 	return v
@@ -299,8 +352,8 @@ func suspendRefusal(t *v1alpha1.Task, panelRun bool) string {
 	switch {
 	case panelRun:
 		return "Suspender está desactivado mientras el panel ejecuta el agente en esta tarea"
-	case len(t.GetSpec().GetEnv()) > 0 || strings.HasPrefix(name, runs.HostRunPrefix) ||
-		strings.HasPrefix(name, runs.TaskPrefix):
+	case len(t.GetSpec().GetEnv()) > 0 || strings.HasPrefix(name, hostRunPrefix) ||
+		strings.HasPrefix(name, taskPrefix):
 		return "Suspender está desactivado en tareas que llevan la credencial de un agente"
 	}
 	return ""
@@ -323,10 +376,11 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) suspend(w http.ResponseWriter, r *http.Request) {
 	n, ok := s.name(w, r)
-	if !ok || decode(r, &struct{}{}) != nil {
-		if ok {
-			writeError(w, http.StatusBadRequest, "JSON no válido")
-		}
+	if !ok {
+		return
+	}
+	if err := decode(r, &struct{}{}, true); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx, cancel := s.call(r)
@@ -336,7 +390,7 @@ func (s *Server) suspend(w http.ResponseWriter, r *http.Request) {
 		axError(w, err)
 		return
 	}
-	if why := suspendRefusal(current, n == s.Runs.ActiveTask()); why != "" {
+	if why := suspendRefusal(current, n == s.activeTask()); why != "" {
 		writeError(w, http.StatusConflict, why)
 		return
 	}
@@ -351,10 +405,11 @@ func (s *Server) suspend(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	n, ok := s.name(w, r)
-	if !ok || decode(r, &struct{}{}) != nil {
-		if ok {
-			writeError(w, http.StatusBadRequest, "JSON no válido")
-		}
+	if !ok {
+		return
+	}
+	if err := decode(r, &struct{}{}, true); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if s.inBlackout() {
@@ -376,8 +431,8 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 // deleteTask removes a task only when the body repeats its exact name and,
 // like ax-tarea, keeps deleting until AX no longer has it. That wait runs
 // in the background: the answer is 200 if the task is gone within
-// DeleteWait and 202 otherwise, and the page polls the task. A run's or
-// ax-tarea's paired ws-<name> workspace goes with it.
+// DeleteWait and 202 otherwise, and the page checks the task again. A
+// run's or ax-tarea's paired ws-<name> workspace goes with it.
 func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	n, ok := s.name(w, r)
 	if !ok {
@@ -386,7 +441,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Confirm string `json:"confirm"`
 	}
-	if err := decode(r, &body); err != nil {
+	if err := decode(r, &body, false); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -394,8 +449,12 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "escribe el nombre exacto de la tarea para confirmar")
 		return
 	}
-	if n == s.Runs.ActiveTask() {
-		writeError(w, http.StatusConflict, "es la ejecución en curso: usa Cancelar")
+	if n == s.activeTask() {
+		writeError(w, http.StatusConflict, "es la ejecución en curso: cancela su trabajo en la Oficina")
+		return
+	}
+	if s.Tasks == nil {
+		writeError(w, http.StatusServiceUnavailable, "el gestor de ejecuciones no está disponible")
 		return
 	}
 	ctx, cancel := s.call(r)
@@ -406,8 +465,8 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspace := ""
-	if strings.HasPrefix(n, runs.TaskPrefix) || strings.HasPrefix(n, runs.HostRunPrefix) {
-		workspace = runs.WorkspacePrefix + n
+	if strings.HasPrefix(n, taskPrefix) || strings.HasPrefix(n, hostRunPrefix) {
+		workspace = workspacePrefix + n
 	}
 	select {
 	case s.deletes <- struct{}{}:
@@ -419,7 +478,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	done := make(chan error, 1)
 	go func() {
 		defer func() { <-s.deletes }()
-		err := s.Runs.DeleteAndWait(n, workspace, s.DeleteTimeout)
+		err := s.Tasks.DeleteAndWait(n, workspace, s.DeleteTimeout)
 		s.Audit.Info("audit", "action", "task.delete", "task", n, "workspace", workspace,
 			"client_ip", client, "gone", err == nil)
 		done <- err
@@ -466,149 +525,4 @@ func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {
 		out = append(out, NewWorkspaceView(ws))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": out})
-}
-
-func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
-	var req runs.Request
-	if err := decode(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	spec, err := runs.Validate(req, s.Limits)
-	if err != nil {
-		var fe *runs.FieldError
-		if errors.As(err, &fe) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fe.Message, "field": fe.Field})
-			return
-		}
-		writeError(w, http.StatusBadRequest, "petición no válida")
-		return
-	}
-	run, err := s.Runs.Start(r.Context(), spec, ClientIP(r))
-	var busy *runs.BusyError
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusAccepted, run.View())
-	case errors.As(err, &busy):
-		writeError(w, http.StatusConflict, busy.Error())
-	case errors.Is(err, runs.ErrBlackout):
-		writeError(w, http.StatusConflict, fmt.Sprintf("%s (%s UTC)", err, s.Blackout))
-	case errors.Is(err, runs.ErrNotReady), errors.Is(err, runs.ErrShuttingDown):
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-	default:
-		writeError(w, http.StatusBadGateway, "AX no respondió correctamente")
-	}
-}
-
-func (s *Server) currentRun(w http.ResponseWriter, _ *http.Request) {
-	if run := s.Runs.Current(); run != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"run": run.View()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": nil})
-}
-
-func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
-	if decode(r, &struct{}{}) != nil {
-		writeError(w, http.StatusBadRequest, "JSON no válido")
-		return
-	}
-	id := r.PathValue("id")
-	if err := s.Runs.Cancel(id, "cancelada desde el panel por "+ClientIP(r)); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"cancelling": true})
-}
-
-type outEvent struct {
-	S string `json:"s"`
-	D string `json:"d"`
-}
-
-// events streams the run's log as Server-Sent Events. The headers and a
-// comment go out at once (Traefik's responseHeaderTimeout is 60 s), a
-// comment every PingInterval keeps idle proxies from closing it, and each
-// event's id is the log offset after it, so a reconnecting EventSource
-// resumes from Last-Event-ID.
-func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	run := s.Runs.Get(r.PathValue("id"))
-	if run == nil {
-		writeError(w, http.StatusNotFound, runs.ErrNotFound.Error())
-		return
-	}
-	from := int64(0)
-	last := r.Header.Get("Last-Event-ID")
-	if last != "" {
-		n, err := strconv.ParseInt(last, 10, 64)
-		if err != nil || n < 0 {
-			writeError(w, http.StatusBadRequest, "Last-Event-ID no válido")
-			return
-		}
-		from = n
-	}
-	// A browser that already saw the end of a finished run gets 204, which
-	// stops EventSource from reconnecting.
-	if last != "" {
-		if chunks, _, closed, _ := run.Output.Read(from); closed && len(chunks) == 0 {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-	rc := http.NewResponseController(w)
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream; charset=utf-8")
-	h.Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.WriteString(w, "retry: 5000\n: ok\n\n"); err != nil {
-		return
-	}
-	if rc.Flush() != nil {
-		return
-	}
-	ping := time.NewTicker(s.PingInterval)
-	defer ping.Stop()
-	state := ""
-	for {
-		chunks, truncated, closed, wait := run.Output.Read(from)
-		var buf bytes.Buffer
-		if truncated {
-			buf.WriteString("event: truncated\ndata: {}\n\n")
-		}
-		for _, c := range chunks {
-			data, _ := json.Marshal(outEvent{S: c.Stream, D: c.Text})
-			fmt.Fprintf(&buf, "id: %d\nevent: out\ndata: %s\n\n", c.End, data)
-			from = c.End
-		}
-		// Every state change is logged, so it is noticed here; the page
-		// needs no polling.
-		if v := run.View(); v.State != state && !closed {
-			state = v.State
-			data, _ := json.Marshal(v)
-			fmt.Fprintf(&buf, "event: state\ndata: %s\n\n", data)
-		}
-		if closed {
-			data, _ := json.Marshal(run.View())
-			fmt.Fprintf(&buf, "event: end\ndata: %s\n\n", data)
-		}
-		if buf.Len() > 0 {
-			if _, err := w.Write(buf.Bytes()); err != nil || rc.Flush() != nil {
-				return
-			}
-		}
-		if closed {
-			return
-		}
-		select {
-		case <-wait:
-		case <-ping.C:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
-				return
-			}
-		case <-r.Context().Done():
-			return
-		case <-s.Stop:
-			return
-		}
-	}
 }

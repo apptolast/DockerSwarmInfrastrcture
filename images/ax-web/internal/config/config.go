@@ -10,16 +10,29 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-// maxFileBytes bounds the configuration file.
-const maxFileBytes = 64 << 10
+// maxFileBytes bounds the configuration file (it lists up to 100
+// projects).
+const maxFileBytes = 256 << 10
 
-// Config is the panel's whole configuration. Every field is required.
+// Bounds of the office keys.
+const (
+	MaxProjects       = 100
+	maxProjectName    = 60
+	maxProjectDesc    = 300
+	maxProjectService = 80
+)
+
+// Config is the panel's whole configuration. Every field is required
+// unless its comment says otherwise.
 type Config struct {
 	// AXServer is ax-server's in-cluster host:port (plain HTTP/2, gRPC).
 	AXServer string `json:"ax_server"`
@@ -35,6 +48,9 @@ type Config struct {
 	// Origin is the public origin the browser uses; POSTs from any other
 	// origin are refused.
 	Origin string `json:"origin"`
+	// ExtraOrigins are other public https origins of the same panel (the
+	// office's own host name); may be empty.
+	ExtraOrigins []string `json:"extra_origins"`
 	// Blackout is the daily UTC window with no runs, "HH:MM-HH:MM", or ""
 	// for none.
 	Blackout string `json:"blackout"`
@@ -60,6 +76,31 @@ type Config struct {
 	// Listen is the mTLS address; HealthListen the plain probe address.
 	Listen       string `json:"listen"`
 	HealthListen string `json:"health_listen"`
+	// StateDir is the office's persistent volume (JSON files).
+	StateDir string `json:"state_dir"`
+	// OfficeSecretDir is the optional Secret volume with the office's
+	// credentials: CodexAuthKey (a ChatGPT auth.json for Codex) and
+	// GitHubTokenKey (GitHub tokens, read per use). It may not exist.
+	OfficeSecretDir string `json:"office_secret_dir"`
+	CodexAuthKey    string `json:"codex_auth_key"`
+	GitHubTokenKey  string `json:"github_token_key"`
+	// MaxQueue bounds the queued jobs; RetentionJobs the stored ones.
+	MaxQueue      int `json:"max_queue"`
+	RetentionJobs int `json:"retention_jobs"`
+	// Projects are the reviewed repositories the office is seeded with;
+	// may be empty.
+	Projects []Project `json:"projects"`
+}
+
+// Project is a reviewed repository of the office.
+type Project struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Repo        string `json:"repo"`
+	Branch      string `json:"branch"`
+	Description string `json:"description"`
+	Service     string `json:"service"`
+	URL         string `json:"url"`
 }
 
 var (
@@ -69,6 +110,10 @@ var (
 	dnsLabel  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	fileKey   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 	blackoutF = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$`)
+	projectID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
+	githubRe  = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]{1,100}$`)
+	serviceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]*$`)
+	branchRe  = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,100}$`)
 )
 
 // Load reads and validates the file at path.
@@ -143,9 +188,13 @@ func (c *Config) validate() error {
 			return fmt.Errorf("repo_hosts: %q is not a lower-case host name", h)
 		}
 	}
-	if !strings.HasPrefix(c.Origin, "https://") ||
-		!hostName.MatchString(strings.TrimPrefix(c.Origin, "https://")) {
+	if !httpsOrigin(c.Origin) {
 		return errors.New("origin must be https://<host> with no path or port")
+	}
+	for _, o := range c.ExtraOrigins {
+		if !httpsOrigin(o) || o == c.Origin {
+			return fmt.Errorf("extra_origins: %q must be another https://<host> with no path or port", o)
+		}
 	}
 	if _, err := c.Window(); err != nil {
 		return err
@@ -153,13 +202,14 @@ func (c *Config) validate() error {
 	if c.WatchdogLeadMinutes < 1 || c.WatchdogLeadMinutes > 60 {
 		return errors.New("watchdog_lead_minutes must be 1-60")
 	}
-	if c.MaxTurns < 1 || c.MaxTurns > 50 {
-		return errors.New("max_turns must be 1-50")
+	if c.MaxTurns < 1 || c.MaxTurns > 500 {
+		return errors.New("max_turns must be 1-500")
 	}
-	// The guest SIGKILLs at the timeout, and SSE streams must end well
-	// within Traefik's 3600 s entryPoint readTimeout.
-	if c.MaxTimeoutMinutes < 5 || c.MaxTimeoutMinutes > 45 {
-		return errors.New("max_timeout_minutes must be 5-45")
+	// The guest SIGKILLs at the timeout. The browser's event stream does
+	// not follow a run's length: the panel ends it every 30 minutes and
+	// EventSource reconnects, well within Traefik's 3600 s readTimeout.
+	if c.MaxTimeoutMinutes < 5 || c.MaxTimeoutMinutes > 180 {
+		return errors.New("max_timeout_minutes must be 5-180")
 	}
 	if c.PromptMode != "stdin" && c.PromptMode != "argument" {
 		return errors.New(`prompt_mode must be "stdin" or "argument"`)
@@ -178,7 +228,100 @@ func (c *Config) validate() error {
 	if c.ClientCommonName == "" {
 		return errors.New("client_common_name is required")
 	}
+	return c.validateOffice()
+}
+
+func (c *Config) validateOffice() error {
+	for name, p := range map[string]string{
+		"state_dir": c.StateDir, "office_secret_dir": c.OfficeSecretDir,
+	} {
+		if !strings.HasPrefix(p, "/") || strings.Contains(p, "..") {
+			return fmt.Errorf("%s must be an absolute path", name)
+		}
+	}
+	if !fileKey.MatchString(c.CodexAuthKey) || !fileKey.MatchString(c.GitHubTokenKey) ||
+		c.CodexAuthKey == c.GitHubTokenKey {
+		return errors.New("codex_auth_key and github_token_key must be two different file names")
+	}
+	if c.MaxQueue < 1 || c.MaxQueue > 1000 {
+		return errors.New("max_queue must be 1-1000")
+	}
+	if c.RetentionJobs < 100 || c.RetentionJobs > 20000 {
+		return errors.New("retention_jobs must be 100-20000")
+	}
+	if len(c.Projects) > MaxProjects {
+		return fmt.Errorf("projects: at most %d", MaxProjects)
+	}
+	github := false
+	for _, h := range c.RepoHosts {
+		github = github || h == "github.com"
+	}
+	seen := map[string]bool{}
+	for i, p := range c.Projects {
+		if err := p.validate(github); err != nil {
+			return fmt.Errorf("projects[%d]: %w", i, err)
+		}
+		if seen[p.ID] {
+			return fmt.Errorf("projects[%d]: duplicate id %q", i, p.ID)
+		}
+		seen[p.ID] = true
+	}
 	return nil
+}
+
+func (p Project) validate(githubAllowed bool) error {
+	if !projectID.MatchString(p.ID) {
+		return errors.New("id must match ^[a-z][a-z0-9-]{1,31}$")
+	}
+	if strings.TrimSpace(p.Name) == "" || utf8.RuneCountInString(p.Name) > maxProjectName || hasControl(p.Name) {
+		return fmt.Errorf("name must be 1-%d characters on one line", maxProjectName)
+	}
+	if !githubAllowed || !githubRe.MatchString(p.Repo) || strings.Contains(p.Repo, "..") ||
+		strings.HasSuffix(p.Repo, ".") || strings.HasSuffix(p.Repo, ".git") {
+		return errors.New("repo must be https://github.com/<owner>/<repo> (and github.com a repo host)")
+	}
+	if !validBranch(p.Branch) {
+		return errors.New("branch is not a valid branch name")
+	}
+	if utf8.RuneCountInString(p.Description) > maxProjectDesc || hasControl(p.Description) {
+		return fmt.Errorf("description must be at most %d characters on one line", maxProjectDesc)
+	}
+	if p.Service != "" && (len(p.Service) > maxProjectService || !serviceRe.MatchString(p.Service)) {
+		return errors.New("service must match ^[a-z0-9][a-z0-9_.-]*$ (at most 80) or be empty")
+	}
+	if p.URL != "" {
+		u, err := url.Parse(p.URL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
+			len(p.URL) > 300 || strings.ContainsAny(p.URL, " <>\"'") {
+			return errors.New("url must be an https URL or empty")
+		}
+	}
+	return nil
+}
+
+// validBranch mirrors runs.ValidateBranch (the safe subset of git
+// check-ref-format); runs imports this package, so it cannot be reused.
+func validBranch(b string) bool {
+	return branchRe.MatchString(b) &&
+		!strings.HasPrefix(b, "-") && !strings.HasPrefix(b, "/") && !strings.HasPrefix(b, ".") &&
+		!strings.HasSuffix(b, "/") && !strings.HasSuffix(b, ".") && !strings.HasSuffix(b, ".lock") &&
+		!strings.Contains(b, "..") && !strings.Contains(b, "//") && !strings.Contains(b, "/.")
+}
+
+func hasControl(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func httpsOrigin(o string) bool {
+	return strings.HasPrefix(o, "https://") && hostName.MatchString(strings.TrimPrefix(o, "https://"))
 }
 
 // Window parses Blackout.
