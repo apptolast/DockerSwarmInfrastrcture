@@ -337,6 +337,13 @@ La política de reinicio `no` es la del laboratorio: tras reiniciar el host,
 
 ## Verificación
 
+El host tiene la política `OUTPUT` en `DROP` (UFW) y sus procesos no abren
+conexiones hacia el puente `kind`: el 2026-10-02 la orden de abajo agotaba
+el tiempo. Mientras sea así, se ejecuta dentro del nodo (`docker exec
+kind-control-plane …`, que trae `openssl` y `curl`) contra la IP del pod en
+el 8443: el tráfico del propio nodo se admite antes de cualquier
+NetworkPolicy, y el mTLS se comprueba igual.
+
 Desde el host, contra el NodePort y sin certificado cliente, TLS 1.3 tiene
 que acabar con la alerta 116 `certificate_required`. En TLS 1.3 el servidor
 la envía después del handshake, así que hay que leerla en la salida, no
@@ -466,15 +473,16 @@ del nodo lo impone: el kubelet ve toda la memoria del host.
 
 ## Pendiente de comprobar en la ventana
 
-- Que `claude -p --restricted` lee la instrucción por la entrada estándar
-  y emite `stream-json` (si no, `prompt_mode: argument`).
+Comprobado en la ventana de la Oficina del 2026-10-02 (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)): `claude -p` lee la
+instrucción por la entrada estándar y emite `stream-json`, también con
+`--restricted`; el panel, uid 65532, escribe en el volumen `local-path` de
+`ax-web-state`; y el kubelet proyecta `ax-web-office` creado con el pod ya en
+marcha, en menos de un minuto y sin reiniciarlo. Sigue pendiente:
+
 - Que kindnet aplica la NetworkPolicy de salida del panel, también su regla
   de HTTPS por `ipBlock`, y la de `ax-web-to-ax-server`, y si un sandbox
   llega al NodePort (el mTLS lo rechaza igualmente).
-- Que el panel, uid 65532, escribe en el volumen `local-path` de
-  `ax-web-state`.
-- Que el kubelet actualiza el volumen de `ax-web-office` cuando `office` lo
-  crea o lo sustituye con el pod ya en marcha.
 - Que el Envoy de atenet-router no acumula flujos largos. Con
   `max_timeout_minutes: 90`, una ejecución puede durar más que el
   `--route-timeout=1h` del laboratorio (ver [AX.md](AX.md), «Router»):
