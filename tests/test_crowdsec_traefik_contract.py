@@ -1482,6 +1482,12 @@ class AllowlistSourceTests(unittest.TestCase):
             json.loads(stdout.getvalue()), {"entries": [], "present": False}
         )
         self.write("1.1.1.1\n")
+        if os.geteuid() == 0:
+            # Under root (validate-iac.sh on the host) the temporary files are
+            # root's own and would pass the root-only rule: hand them to
+            # another owner so main() still has an owner to reject.
+            os.chown(self.directory, 65534, 65534)
+            os.chown(self.source, 65534, 65534)
         stderr = StringIO()
         with redirect_stderr(stderr):
             code = allowlist_source.main([str(self.source)])
