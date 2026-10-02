@@ -380,9 +380,11 @@ class EdgeAccessLogProofTests(unittest.TestCase):
         ]
 
     def test_the_probed_routers_are_the_ones_crowdsec_counts(self) -> None:
+        # A router serving two names (ax: ax.apptolast.com and
+        # oficina.apptolast.com) is probed once per name, so compare the set.
         contract = yaml.safe_load(HOST_SECURITY.read_text(encoding="utf-8"))
         self.assertEqual(
-            sorted(item["router"] for item in self.challenges["loop"]),
+            sorted({item["router"] for item in self.challenges["loop"]}),
             sorted(contract["host_security_crowdsec_basicauth_routers"]),
         )
 
@@ -421,6 +423,7 @@ class EdgeAccessLogProofTests(unittest.TestCase):
                 "4096",
                 "logs-satisfactory.apptolast.com=satisfactory-logs@file",
                 "ax.apptolast.com=ax@file",
+                "oficina.apptolast.com=ax@file",
             ],
         )
 

@@ -176,14 +176,18 @@ http:
       service: satisfactory-logs
       tls:
         certResolver: letsencrypt
-    # Panel web de AX (laboratorio kind, fuera de Swarm). `ax-server` no se
-    # publica nunca. `ax-canonical-host` va primero para que los limites
-    # agrupen por un unico Host, y los limites van antes del basicAuth, que
-    # cuesta un bcrypt por peticion con credenciales. Sin `edge-compress` ni
-    # `edge-default`: compress retiene los primeros bytes de la salida en
-    # directo (SSE) del panel.
+    # Panel web de AX, la Oficina de agentes (laboratorio kind, fuera de
+    # Swarm), en sus dos nombres: `ax.apptolast.com` y
+    # `oficina.apptolast.com`. Un solo router para los dos, asi comparten
+    # limites, basicAuth y el escenario de CrowdSec, que cuenta los 401 por
+    # router (`ax@file`). `ax-server` no se publica nunca.
+    # `ax-canonical-host` va primero para que los limites agrupen por un
+    # unico Host, y los limites van antes del basicAuth, que cuesta un bcrypt
+    # por peticion con credenciales. Sin `edge-compress` ni `edge-default`:
+    # compress retiene los primeros bytes de la salida en directo (SSE) del
+    # panel.
     ax:
-      rule: "Host(`ax.apptolast.com`)"
+      rule: "Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`)"
       entryPoints:
         - websecure
       middlewares:
@@ -202,7 +206,7 @@ http:
     # router `ax` y su basicAuth. Sin basicAuth que la quite, la cabecera
     # Authorization que el navegador reenvia por su cuenta se borra aqui.
     ax-health:
-      rule: "Host(`ax.apptolast.com`) && Path(`/healthz`) && Method(`GET`)"
+      rule: "(Host(`ax.apptolast.com`) || Host(`oficina.apptolast.com`)) && Path(`/healthz`) && Method(`GET`)"
       entryPoints:
         - websecure
       middlewares:
