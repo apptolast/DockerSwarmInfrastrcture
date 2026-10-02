@@ -346,7 +346,7 @@ ax_lab:
       name: ax-web
       tag: "1.0.0"
       digest: >-
-        sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf
+        sha256:ab1b4f959b53f7495f37f130b73b867b3f793d11f02fb2460202e9676f2b66ef
     # The panel's mTLS port, published by a NodePort Service on the kind
     # bridge only (the node's ports are not published on the host), and its
     # plain probe port, which no Service exposes.

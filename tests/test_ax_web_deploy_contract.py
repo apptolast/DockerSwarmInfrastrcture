@@ -52,10 +52,10 @@ WEB_APPLY = "ansible/roles/ax_lab/tasks/web.yml"
 EXAMPLES = "ansible/roles/ax_lab/tasks/examples.yml"
 BOOTSTRAP = ROOT / "scripts/ax-web-bootstrap.sh"
 WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
-# The two ko builds of images/ax-web at 55e4865 (0.2.0, no blackout)
-# produced this manifest digest; CI rebuilds it and compares.
+# The ko build of images/ax-web 1.0.0 (the Oficina) with Go 1.27.1 and ko
+# v0.19.1 produced this manifest digest; CI rebuilds it twice and compares.
 PINNED_DIGEST = (
-    "sha256:572493d5941d55051acd68edeb06a560890b07b257dd58cfa7e92f69b7e75fdf"
+    "sha256:ab1b4f959b53f7495f37f130b73b867b3f793d11f02fb2460202e9676f2b66ef"
 )
 # The office's release (SPEC: ax-web 1.0.0).
 TAG = "1.0.0"

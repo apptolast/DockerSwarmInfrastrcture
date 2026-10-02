@@ -84,7 +84,10 @@ de autonomía dentro del sandbox.
 ## Encargos
 
 Un encargo (un «trabajo») es un agente, un proyecto, un tipo, una
-instrucción y, opcionalmente, ajustes que solo valen para él.
+instrucción y, opcionalmente, ajustes que solo valen para él. Con token de
+GitHub se puede partir de una issue o PR del proyecto: su título, su texto
+(y el diff de una PR) llegan al agente como datos no confiables, nunca como
+parte de la instrucción.
 
 | Tipo | Qué entrega |
 | --- | --- |
@@ -117,8 +120,22 @@ el trabajo se puede:
 - pedir a otro agente que lo revise o lo corrija (el siguiente trabajo
   arranca con el parche aplicado);
 - **crear una pull request en borrador**, si hay token de GitHub: la Oficina
-  crea la rama `oficina/<trabajo>`, el commit y la PR con la API de GitHub.
-  El token **nunca entra en el sandbox**.
+  enseña antes el título y el texto exactos (editables), y después crea la
+  rama `oficina/<trabajo>`, el commit y la PR con la API de GitHub. El token
+  **nunca entra en el sandbox**. Las menciones `@usuario` del texto del
+  agente se neutralizan, y no se publica nada que toque `.github/` (la CI,
+  que corre con los secretos del repositorio) ni `.gitmodules`: esos
+  cambios se aplican a mano tras revisarlos;
+- comentar el resumen en una issue o PR, también con vista previa.
+
+## Proyectos
+
+La configuración revisada siembra los proyectos con vínculo demostrado entre
+repositorio, servicio y dominio (`config/ax-lab.yml`, `web.office.projects`).
+Desde «Proyectos → Importar desde GitHub» se añaden más repositorios
+públicos de una organización o usuario; los privados no, porque AX los
+clona sin credenciales. Cada proyecto tiene notas y su memoria de
+lecciones.
 
 ## Equipos
 
@@ -177,8 +194,11 @@ panel como Secrets de Kubernetes. Nunca se muestran ni se registran.
 - El token de GitHub es un token por línea (`token`) o una línea por
   organización (`organizacion=token`). Se lee en cada uso.
 - La sesión de Codex usa un refresh token de un solo uso: cuando Codex la
-  renueva, la Oficina guarda la nueva en su volumen y la usa desde entonces.
-  No conviene usar además `ax-tarea … codex` en el host con la misma sesión.
+  renueva, la Oficina guarda la nueva en su volumen y la usa desde entonces,
+  solo si es de la misma cuenta (mismo `sub` y cuenta en los JWT) y con un
+  formato válido. No conviene usar además `ax-tarea … codex` en el host con
+  la misma sesión. «Ajustes → Olvidar la sesión de Codex guardada» vuelve a
+  la del Secret.
 
 ## Seguridad
 
@@ -202,7 +222,11 @@ panel como Secrets de Kubernetes. Nunca se muestran ni se registran.
   inmutables, sin controlador, sin salida a Internet por defecto) y
   actualizarlo es otro cambio.
 - El estado de la Oficina vive en un volumen del nodo kind: recrear el
-  clúster lo borra. «Ajustes → Exportar» descarga una copia.
+  clúster lo borra. «Ajustes → Exportar» descarga una copia. Los trabajos
+  terminados más antiguos se borran pasados 3 000 trabajos o 768 MiB.
+- Un paso de equipo sigue con el parche del anterior aplicado sobre la punta
+  de la rama: si la rama cambió entretanto y el parche ya no aplica, el
+  paso falla de forma visible.
 
 ## Investigación
 

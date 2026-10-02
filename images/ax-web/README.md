@@ -57,6 +57,8 @@ de uno en uno, con una cola persistente:
 
 ## Arquitectura
 
+<!-- markdownlint-disable MD013 -->
+
 | Paquete | Qué hace |
 | --- | --- |
 | `internal/office` | Estado (JSON en el PVC), cola y despachador, composición de prompts, lectura de resultados, equipos, turnos, evolución, métricas, credenciales y el broker de GitHub. Solo conoce `harness.Executor`. |
@@ -65,6 +67,8 @@ de uno en uno, con una cola persistente:
 | `internal/web` | API JSON, un flujo SSE y la interfaz estática (`static/`). |
 | `internal/config` | La configuración revisada, JSON estricto. |
 | `internal/demo` | La demo local sin AX (ver abajo). |
+
+<!-- markdownlint-enable MD013 -->
 
 El estado vive en `state_dir` (`/var/lib/ax-web`, el único sitio con
 escritura del pod): `office.json`, `jobs.json`, un directorio por trabajo
@@ -205,6 +209,8 @@ escritura del pod): `office.json`, `jobs.json`, un directorio por trabajo
 Todo es JSON en español; los errores son `{"error": "…"}` y, si señalan un
 campo, `{"error": "…", "field": "…"}` con 400.
 
+<!-- markdownlint-disable MD013 -->
+
 | Ruta | Qué hace |
 | --- | --- |
 | `GET /api/office` | Instantánea completa (agentes, proyectos, trabajos, equipos, plantillas, turnos, propuestas, evaluaciones, métricas, catálogo de modelos, estado de AX y de las credenciales, límites, avisos) |
@@ -224,6 +230,8 @@ campo, `{"error": "…", "field": "…"}` con 400.
 | `GET /api/github/repos?owner=<propietario>` | `{"owner", "authenticated", "repos": [{"name", "full_name", "html_url", "description", "default_branch", "private", "archived", "fork", "pushed_at", "language"}]}`: hasta 300 repositorios de una organización (o de un usuario), con el token del propietario si lo hay y si no los públicos; caché de 5 minutos. Se importan con `POST /api/projects` |
 | `GET /api/export` | Descarga de `office.json` y `jobs.json` (sin credenciales) |
 | `GET /api/status`, `/api/tasks…`, `/api/gateways`, `/api/workspaces` | Vista AX |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Demo local
 
