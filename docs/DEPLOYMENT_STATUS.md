@@ -567,6 +567,34 @@ PR #81, desde `main` en `7795b84`. Bloquea las IP que fallan el login en
 - El panel sigue respondiendo `401` sin credenciales y `200` con ellas, y
   `/healthz` `200`.
 
+### Edge: segundo nombre de la Oficina (2026-10-02)
+
+PR #89, desde `main` en `16388e8`, por la «Ventana del segundo nombre» de
+[EDGE.md](EDGE.md). Horas en UTC:
+
+- Paso 1 (15:22): `edge_traefik` en `Version.Index` 147852 con
+  `edge-traefik-dynamic-49755ff5a89b949d` y
+  `edge-traefik-static-337ae07283336858`, los de la última ventana
+  registrada; los tres secrets de la ruta con su nombre y sus dos etiquetas.
+- `edge_probe` antes: las 19 URL del render como el 2026-09-25 (`401` en los
+  logins, `503` en OpenClaw, `404` en `/app/` y `generadorcodigosqr`,
+  `302`/`307` en Passbolt y Alberto, `200` el resto), todas con `verify=0`.
+- `--check` `ok=52 changed=2 failed=0`. Apply (15:23:30-15:26:37)
+  `ok=125 changed=7 failed=0`: la Config dinámica nueva
+  `edge-traefik-dynamic-adebe024ecc054f9`, la tarea `ul6hhev784af`, el
+  `401` con `realm="AX"` en los dos nombres y las dos sondas en el log de
+  acceso como `ax@file`.
+- `edge_probe` después: solo dos líneas nuevas,
+  `https://oficina.apptolast.com/` `401` y `/healthz` `200`, con
+  `verify=0`; el resto, idéntico. Certificado de Let's Encrypt (`YR2`) con
+  `DNS:ax.apptolast.com, DNS:oficina.apptolast.com`, válido hasta el
+  2026-12-31; una sola tarea y ninguna línea de error en sus logs.
+- Repetido: `ok=124 changed=0 failed=0`, la misma tarea. Estado final:
+  `Version.Index` 148678 con `edge-traefik-dynamic-adebe024ecc054f9` y
+  `edge-traefik-static-337ae07283336858`.
+- El registro DNS A `oficina` aún no existe: hasta que el propietario lo
+  cree en Cloudflare (DNS-only), el nombre solo responde con `--resolve`.
+
 ### Oficina de agentes: ventana de la Oficina (2026-10-02)
 
 PR #86, desde `main` en `6ed7a32`. El panel pasa a la Oficina de agentes
