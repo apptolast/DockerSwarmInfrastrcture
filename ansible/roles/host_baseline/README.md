@@ -71,10 +71,15 @@ public key material is read for this check.
 - UFW is read-only in this role. IPv4 and IPv6 must already use DROP for
   INPUT, FORWARD, and OUTPUT. The existing host-egress allowlist and edge
   ports are asserted; `ufw reset` and `default allow outgoing` are forbidden.
-- Unattended upgrades are limited to Ubuntu security and ESM security
-  origins. Every legacy override is copied once to the root-only
-  `/var/backups/dockerswarm` directory before removal, inherited origin lists
-  are cleared, and automatic reboot is disabled because this is a
+- Periodic APT activity is disabled: `20auto-upgrades` sets
+  `APT::Periodic::Enable`, `Update-Package-Lists` and `Unattended-Upgrade`
+  to `"0"`, `apt-daily.timer` and `apt-daily-upgrade.timer` are masked, and
+  packages move only with the promoted snapshot. Every legacy
+  unattended-upgrade override is copied once to the root-only
+  `/var/backups/dockerswarm` directory before removal.
+  Unpinned packages are upgraded only by the manual window in
+  [`docs/OPERATIONS.md`](../../../docs/OPERATIONS.md) («Parcheo del sistema
+  operativo»), which ends with a planned reboot because this is a
   single-manager Swarm.
 - Chrony must already be installed, enabled, active, and synchronized.
   `systemd-timesyncd` must remain absent.
