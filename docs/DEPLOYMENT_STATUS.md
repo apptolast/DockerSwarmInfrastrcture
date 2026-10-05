@@ -220,6 +220,18 @@ durante el relevo. La reserva solo cuenta para la planificación de Swarm.
 Desde el apply de `edge` del 2026-09-26 el servicio vivo es el del
 repositorio.
 
+El 2026-10-05, por autorización del propietario, se limitó NetBird Cloud a
+TCP/22 del único PC en `owner-ssh-clients` al único VPS en
+`apptolast-vps-ssh`, con `owner-ssh-to-apptolast-vps` habilitada y no
+bidireccional. Se creó y verificó esa política antes de deshabilitar
+`Default`; no quedaron otras políticas habilitadas. Lecturas posteriores de
+la API y nftables IPv4/IPv6 comprobaron la restricción y el descarte restante,
+con gestión/señalización conectadas y el SSH propio de NetBird apagado.
+No se modificaron UFW, CrowdSec, `DOCKER-USER` ni `sshd`. El cliente sigue
+fuera de Ansible; una conexión SSH nueva desde el PC permanece pendiente.
+[NETBIRD_ACCESS.md](NETBIRD_ACCESS.md) recoge reconstrucción, evidencias
+privadas y recuperación por la vía de reserva, sin direcciones ni tokens.
+
 Inventario de lo que se cambió a mano en el host el 2026-10-04, sobre todo
 para el acceso SSH del propietario. Las direcciones se leyeron sin mostrarlas
 aquí:
@@ -843,10 +855,12 @@ Sin bloquear ningún apply quedan:
 - codificar el cliente NetBird en `host_security`: repositorio, huella,
   versión fijada, servicio, una preferencia APT que limite ese origen al
   paquete `netbird` como `99-dockerswarm-docker`, la comprobación del orden
-  de `INPUT` y la neutralización de `99-netbird.conf`;
-- limitar en el panel de NetBird la política a `TCP 22` desde los
-  dispositivos del propietario (ver [OPERATIONS.md](OPERATIONS.md), «SSH
-  por NetBird»).
+  de `INPUT` y la neutralización de `99-netbird.conf`.
+
+La restricción a TCP/22 en NetBird Cloud quedó aplicada el 2026-10-05.
+Falta verificar una conexión SSH nueva desde el PC del propietario, como
+indica [NETBIRD_ACCESS.md](NETBIRD_ACCESS.md); conservar una sesión
+establecida no sustituye esa prueba.
 
 ## Advertencia sobre Terraform y DNS
 

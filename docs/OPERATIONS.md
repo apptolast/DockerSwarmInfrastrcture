@@ -71,17 +71,20 @@ Efecto sobre la frontera del host:
 - El único filtro propio de `wt0` son las tablas nftables `ip netbird` e
   `ip6 netbird`, con el mismo esquema en IPv4 e IPv6: en el hook `input`
   aceptan lo establecido y lo que permiten las políticas del panel de
-  NetBird, y descartan el resto. Con la política `Default` (todo a todo)
-  cualquier peer de la cuenta alcanza todos los puertos del host, también
-  los de Swarm. La política debe limitarse a `TCP 22` desde los dispositivos
-  del propietario hacia el host (ver
-  [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Pendiente»).
+  NetBird, y descartan el resto. Desde el 2026-10-05 sólo está habilitada
+  `owner-ssh-to-apptolast-vps`: TCP/22, no bidireccional, del único PC en
+  `owner-ssh-clients` al único VPS en `apptolast-vps-ssh`. `Default` está
+  deshabilitada; no hay otra política habilitada en la lectura posterior.
+  Se verificaron la API y las reglas efectivas IPv4/IPv6, pero falta una
+  conexión SSH nueva desde el PC. Configuración, reconstrucción y rollback
+  en [NETBIRD_ACCESS.md](NETBIRD_ACCESS.md).
 - NetBird también añade `-A FORWARD -i wt0 -j ACCEPT` antes de `DOCKER-USER`.
   Lo que llegue por `wt0` a un puerto publicado por Docker no pasaría por
-  `CROWDSEC_CHAIN` ni por `DOCKERSWARM-INGRESS`; hoy lo descarta el hook
-  `forward` de NetBird, que solo acepta lo establecido mientras el panel no
-  defina rutas de red. Una ruta de red o un exit node en el panel abriría ese
-  camino.
+  `CROWDSEC_CHAIN` ni por `DOCKERSWARM-INGRESS`; el hook `forward` de
+  NetBird descarta las conexiones nuevas sin permiso. Acepta lo establecido
+  y una marca que sólo se asigna al TCP/22 autorizado con destino local;
+  esa marca no habilita puertos publicados de aplicación. Una ruta de red
+  o un exit node en el panel requiere revisar esa frontera de nuevo.
 - El servidor SSH propio de NetBird está apagado (`SSH Server: Disabled` en
   `sudo -- netbird status`): `netbird up` nunca lleva `--allow-server-ssh`.
 - `DOCKER-USER` no cambia: NetBird no la toca y conserva el orden

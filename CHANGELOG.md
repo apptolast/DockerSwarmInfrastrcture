@@ -908,6 +908,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Restricción de NetBird Cloud aplicada el 2026-10-05 y documentada en
+  [`docs/NETBIRD_ACCESS.md`](docs/NETBIRD_ACCESS.md): un PC autorizado hacia
+  el VPS, TCP/22, regla no bidireccional, `Default` deshabilitada y ninguna
+  otra política habilitada. API y reglas efectivas IPv4/IPv6 comprobadas;
+  conexión SSH nueva desde el PC pendiente. `OPERATIONS.md` y
+  `DEPLOYMENT_STATUS.md` dejan de anunciar esa restricción como pendiente y
+  conservan la deriva del cliente, la vía de reserva y el rollback. No se
+  publican IDs, direcciones, inventarios privados ni tokens.
+  `KNOWN_ISSUES.md` documenta los permisos del checkout que bloquearon
+  las primeras validaciones y la recuperación formal de sus marcadores.
 - La vía NetBird no pasa por UFW, Fail2ban ni CrowdSec mientras su regla
   `-A INPUT -i wt0 -j ACCEPT` quede la primera de `INPUT`, como el
   2026-10-04. Ese orden depende del arranque de cada unidad, así que la
