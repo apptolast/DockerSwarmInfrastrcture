@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
+import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +56,164 @@ deployment_validator = load_script(
     "validate_swarm_deployment_observability",
     "scripts/validate-swarm-deployment.py",
 )
+
+
+class ObservabilitySmokeLogGateTests(unittest.TestCase):
+    """Exercise the smoke's real log gate with no Docker daemon or containers."""
+
+    SCRIPT = REPOSITORY_ROOT / "scripts/smoke-observability-runtime.sh"
+    PASS = "restricted Alloy proxy smoke passed."
+
+    def run_log_gate(
+        self,
+        proxy_text: str = "proxy ready\n",
+        alloy_text: str = "Alloy ready\n",
+        docker_status: int = 0,
+        missing_proxy_log: bool = False,
+        grep_status: int | None = None,
+        grep_error_on: int = 1,
+    ) -> subprocess.CompletedProcess[str]:
+        source = self.SCRIPT.read_text(encoding="utf-8")
+        functions = source.split('[[ -x "${VENV_PYTHON}" ]]', 1)[0]
+        functions = functions[functions.index("fail() {"):]
+        # Run the unchanged production tail after readiness; only docker logs
+        # is a shell fixture. No daemon command can reach the host.
+        tail = source.rsplit("sleep 3\n", 1)[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            if not missing_proxy_log:
+                (root / "proxy.log").write_text(proxy_text, encoding="utf-8")
+            environment = dict(
+                os.environ,
+                SMOKE_TMP=str(root),
+                DOCKER_LOG_TEXT=alloy_text,
+                DOCKER_LOG_STATUS=str(docker_status),
+            )
+            fixture = """
+proxy_root="$SMOKE_TMP"
+proxy_log="${proxy_root}/proxy.log"
+alloy_name=fixture-alloy
+docker() {
+  [[ "$1" == logs && "$2" == fixture-alloy ]] || return 99
+  printf '%s' "$DOCKER_LOG_TEXT"
+  return "$DOCKER_LOG_STATUS"
+}
+"""
+            if grep_status is not None:
+                fixture += (
+                    "grep_calls=0\n"
+                    "grep() {\n"
+                    "  ((grep_calls += 1))\n"
+                    f"  if ((grep_calls == {grep_error_on})); then\n"
+                    f"    return {grep_status}\n"
+                    "  fi\n"
+                    '  command grep "$@"\n'
+                    "}\n"
+                )
+            return subprocess.run(
+                ["/usr/bin/bash", "-c", "set -Eeuo pipefail\n" + functions
+                 + fixture + tail],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+
+    def assert_rejected(
+        self, completed: subprocess.CompletedProcess[str], message: str
+    ) -> None:
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(message, completed.stderr)
+        self.assertNotIn(self.PASS, completed.stdout)
+
+    def test_clean_logs_pass_without_ripgrep(self) -> None:
+        completed = self.run_log_gate()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(self.PASS, completed.stdout)
+
+    def test_forbidden_proxy_requests_and_proxy_failures_are_rejected(self) -> None:
+        for line in ("denied Docker API request", "Docker API proxy failure"):
+            with self.subTest(line=line):
+                self.assert_rejected(
+                    self.run_log_gate(proxy_text=line),
+                    "outside the read-only allowlist",
+                )
+
+    def test_alloy_docker_errors_are_rejected_case_insensitively(self) -> None:
+        for line in ("PERMISSION DENIED", "Cannot connect to Docker", "ERROR Docker"):
+            with self.subTest(line=line):
+                self.assert_rejected(
+                    self.run_log_gate(alloy_text=line),
+                    "could not use the restricted Docker API proxy",
+                )
+
+    def test_unreadable_proxy_log_cannot_pass(self) -> None:
+        self.assert_rejected(
+            self.run_log_gate(missing_proxy_log=True),
+            "could not inspect runtime logs",
+        )
+
+    def test_grep_execution_error_cannot_pass(self) -> None:
+        for status in (2, 127):
+            with self.subTest(status=status):
+                self.assert_rejected(
+                    self.run_log_gate(grep_status=status),
+                    f"grep exit {status}",
+                )
+
+    def test_failed_docker_log_read_cannot_pass_even_with_clean_output(self) -> None:
+        self.assert_rejected(
+            self.run_log_gate(docker_status=1),
+            "could not read the Alloy container logs",
+        )
+
+    def test_alloy_log_search_error_cannot_pass(self) -> None:
+        for status in (2, 127):
+            with self.subTest(status=status):
+                self.assert_rejected(
+                    self.run_log_gate(grep_status=status, grep_error_on=2),
+                    f"grep exit {status}",
+                )
+
+    def test_missing_grep_stops_before_any_docker_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / self.SCRIPT.name
+            shutil.copyfile(self.SCRIPT, script)
+            (scripts / "host-global-docker-validation-lock.sh").write_text(
+                "# No lock needed: the tool preflight must stop first.\n",
+                encoding="utf-8",
+            )
+            python = root / ".venv/bin/python"
+            python.parent.mkdir(parents=True)
+            python.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            python.chmod(0o700)
+            config = root / ".build/observability/config/prometheus.yml"
+            config.parent.mkdir(parents=True)
+            config.write_text("fixture\n", encoding="utf-8")
+            tools = root / "tools"
+            tools.mkdir()
+            (tools / "dirname").symlink_to(shutil.which("dirname"))
+            docker = tools / "docker"
+            docker.write_text(
+                '#!/bin/sh\nprintf invoked >"$DOCKER_CALLED"\nexit 99\n',
+                encoding="utf-8",
+            )
+            docker.chmod(0o700)
+            called = root / "docker-called"
+            completed = subprocess.run(
+                ["/usr/bin/bash", str(script)],
+                env=dict(os.environ, PATH=str(tools), DOCKER_CALLED=str(called)),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            self.assert_rejected(completed, "required command not found: grep")
+            self.assertFalse(called.exists())
 
 
 class ObservabilityStackContractTests(unittest.TestCase):

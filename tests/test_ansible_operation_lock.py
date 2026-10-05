@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ast
+import ctypes
 import importlib.util
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -581,32 +583,84 @@ class AnsibleOperationLockTests(unittest.TestCase):
             watcher.wait(timeout=5)
 
     def test_post_fork_relay_failure_reaps_the_guarded_group(self) -> None:
-        watcher = subprocess.Popen(["sleep", "30"])
+        def supervision_settings() -> tuple[int, int]:
+            libc = ctypes.CDLL(None, use_errno=True)
+            values = []
+            for option in (2, 37):  # PR_GET_PDEATHSIG, PR_GET_CHILD_SUBREAPER
+                value = ctypes.c_int()
+                result = libc.prctl(option, ctypes.byref(value), 0, 0, 0)
+                self.assertEqual(result, 0, os.strerror(ctypes.get_errno()))
+                values.append(value.value)
+            return tuple(values)
 
-        class FailingSelector:
-            def __init__(self) -> None:
-                self.registrations = 0
+        before = supervision_settings()
+        # run() arms process-wide parent-death and subreaper state. Never
+        # apply that state or its descendant cleanup to the unittest runner.
+        program = textwrap.dedent("""
+            import importlib.util
+            import os
+            import subprocess
+            import sys
+            import time
+            from unittest import mock
 
-            def register(self, *_args: object) -> None:
-                self.registrations += 1
-                if self.registrations == 1:
+            spec = importlib.util.spec_from_file_location("runner", sys.argv[1])
+            runner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(runner)
+
+            class FailingSelector:
+                def register(self, *_args):
                     time.sleep(0.2)
                     raise OSError("synthetic selector failure")
+                def close(self):
+                    pass
 
-            def close(self) -> None:
-                return
+            fork = runner.pty.fork
+            children = []
+            def recording_fork():
+                pid, descriptor = fork()
+                if pid:
+                    children.append(pid)
+                return pid, descriptor
 
-        try:
-            with mock.patch.object(
-                runner.selectors,
-                "DefaultSelector",
-                FailingSelector,
-            ):
-                with self.assertRaises(OSError):
-                    runner.run(["sleep", "30"], watcher.pid)
-        finally:
-            watcher.terminate()
-            watcher.wait(timeout=5)
+            watcher = subprocess.Popen(["sleep", "30"])
+            try:
+                with (
+                    mock.patch.object(runner.selectors, "DefaultSelector",
+                                      FailingSelector),
+                    mock.patch.object(runner.pty, "fork", recording_fork),
+                ):
+                    try:
+                        runner.run(["sleep", "30"], watcher.pid)
+                    except OSError as error:
+                        assert str(error) == "synthetic selector failure"
+                    else:
+                        raise AssertionError("relay failure was not raised")
+                assert len(children) == 1
+                try:
+                    os.waitpid(children[0], os.WNOHANG)
+                except ChildProcessError:
+                    pass
+                else:
+                    raise AssertionError("guarded child was not reaped")
+                print("RELAY_FAILURE_REAPED")
+            finally:
+                if watcher.poll() is None:
+                    watcher.terminate()
+                watcher.wait(timeout=5)
+        """)
+        completed = subprocess.run(
+            [sys.executable, "-c", program, os.fspath(LOCKED_RUNNER)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            start_new_session=True,
+        )
+        self.assertEqual(supervision_settings(), before)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("RELAY_FAILURE_REAPED", completed.stdout)
 
     def test_successful_root_cannot_leave_an_escaped_descendant(self) -> None:
         watcher = subprocess.Popen(["sleep", "30"])

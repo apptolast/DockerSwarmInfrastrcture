@@ -20,10 +20,28 @@ fail() {
   exit 1
 }
 
+reject_log_matches() {
+  local pattern="$1"
+  local message="$2"
+  local log_file="$3"
+  shift 3
+  local grep_status
+  if grep -En "$@" -- "${pattern}" "${log_file}"; then
+    fail "${message}"
+  else
+    grep_status="$?"
+    [[ "${grep_status}" == 1 ]] ||
+      fail "could not inspect runtime logs (grep exit ${grep_status})"
+  fi
+}
+
 [[ -x "${VENV_PYTHON}" ]] || fail "the locked Python environment is absent"
 [[ -f "${BUILD_DIR}/config/prometheus.yml" ]] ||
   fail "rendered observability configuration is absent"
-command -v docker >/dev/null || fail "docker is required"
+for command_name in docker grep; do
+  command -v "${command_name}" >/dev/null ||
+    fail "required command not found: ${command_name}"
+done
 
 ensure_docker_validation_lock \
   observability-runtime-smoke \
@@ -63,6 +81,7 @@ smoke_containers=()
 proxy_root=""
 proxy_socket=""
 proxy_log=""
+alloy_log=""
 proxy_pid=""
 
 cleanup() {
@@ -79,6 +98,9 @@ cleanup() {
   fi
   if [[ -n "${proxy_log}" && -e "${proxy_log}" ]]; then
     unlink "${proxy_log}"
+  fi
+  if [[ -n "${alloy_log}" && -e "${alloy_log}" ]]; then
+    unlink "${alloy_log}"
   fi
   if [[ -n "${proxy_root}" && -d "${proxy_root}" ]]; then
     rmdir "${proxy_root}"
@@ -356,15 +378,18 @@ wait_exec \
   -ec \
   "${ALLOY_READY_COMMAND}"
 sleep 3
-if rg -n \
+reject_log_matches \
   "denied Docker API request|Docker API proxy failure" \
-  "${proxy_log}"; then
-  fail "Alloy requested a Docker API operation outside the read-only allowlist"
+  "Alloy requested a Docker API operation outside the read-only allowlist" \
+  "${proxy_log}"
+alloy_log="${proxy_root}/alloy.log"
+if ! docker logs "${alloy_name}" >"${alloy_log}" 2>&1; then
+  fail "could not read the Alloy container logs"
 fi
-if docker logs "${alloy_name}" 2>&1 |
-  rg -i "permission denied|cannot connect.*docker|error.*docker"; then
-  fail "Alloy could not use the restricted Docker API proxy"
-fi
+reject_log_matches \
+  "permission denied|cannot connect.*docker|error.*docker" \
+  "Alloy could not use the restricted Docker API proxy" \
+  "${alloy_log}" -i
 
 printf '%s\n' \
   'Prometheus, Loki, Grafana and restricted Alloy proxy smoke passed.'

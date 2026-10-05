@@ -1146,6 +1146,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `scripts/smoke-observability-runtime.sh` comprueba que `grep` esté
+  disponible antes de crear contenedores y usa `grep -E` en lugar de un
+  `rg` que faltaba en el runner de GitHub. Las búsquedas de logs distinguen
+  coincidencias, ausencia de coincidencias y errores de lectura o ejecución;
+  un error de `docker logs` también detiene la prueba. Antes esos fallos
+  podían acabar anunciando un smoke correcto. Ocho pruebas offline en
+  `tests/test_observability_contract.py`, con Docker simulado, cubren los
+  logs limpios, las líneas prohibidas, la herramienta ausente y los errores
+  de lectura, de búsqueda y de `docker logs`.
+- La prueba de fallo del relay en `tests/test_ansible_operation_lock.py`
+  ejecuta el supervisor en un subproceso desechable con sesión propia,
+  verifica que recoge al hijo y conserva el estado `prctl` del proceso de
+  tests. La regresión offline pasa sin modificar el supervisor de
+  producción ni sus garantías de limpieza. El emisor del SIGTERM observado
+  en GitHub Actions sigue sin demostrarse; esta corrección no certifica la
+  resolución de aquel fallo ni una ejecución de CI correcta.
+
 - [`host_baseline/README.md`](ansible/roles/host_baseline/README.md) decía
   que las actualizaciones desatendidas quedaban limitadas a los orígenes de
   seguridad; el rol las desactiva por completo y enmascara los timers
