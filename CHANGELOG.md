@@ -912,7 +912,8 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   [`docs/NETBIRD_ACCESS.md`](docs/NETBIRD_ACCESS.md): un PC autorizado hacia
   el VPS, TCP/22, regla no bidireccional, `Default` deshabilitada y ninguna
   otra política habilitada. API y reglas efectivas IPv4/IPv6 comprobadas;
-  conexión SSH nueva desde el PC pendiente. `OPERATIONS.md` y
+  conexión SSH nueva desde el PC verificada el 2026-10-05 con comprobación
+  estricta de la clave pública del host. `OPERATIONS.md` y
   `DEPLOYMENT_STATUS.md` dejan de anunciar esa restricción como pendiente y
   conservan la deriva del cliente, la vía de reserva y el rollback. No se
   publican IDs, direcciones, inventarios privados ni tokens.

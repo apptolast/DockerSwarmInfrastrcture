@@ -24,10 +24,15 @@ establecido/relacionado y descarte del resto por `wt0`. La gestión y la
 señalización permanecían conectadas; el servidor SSH integrado de NetBird
 seguía deshabilitado. El SSH usa el `sshd` del host y sus claves existentes.
 
-La comprobación del host **no acredita una conexión SSH nueva desde el PC**.
-Una conexión ya establecida puede seguir funcionando por seguimiento de
-conexiones. Esa prueba desde el cliente queda pendiente; no se declara
-cerrada por conservar la sesión administrativa actual.
+La prueba desde Windows abrió una conexión SSH nueva el 2026-10-05 a las
+21:19:52 UTC. Usó la clave existente, `BatchMode=yes`,
+`IdentitiesOnly=yes`, `StrictHostKeyChecking=yes`, ED25519 y
+`ControlMaster=no`/`ControlPath=none`; no reutilizó un canal multiplexado.
+El host respondió con el usuario y nombre esperados. La huella guardada por
+el cliente coincide con la clave pública ED25519 leída en la VPS.
+El [informe publicado](https://github.com/PabloHurtadoGonzalo86/satisfactory-server/blob/8913fc384a2f86f96f066e017790e6bfcff92ac5/docs/companions/windows-manual-20261005/README.md)
+conserva el resultado y sus límites. No acredita una prueba de conexión
+rechazada a otro puerto; esa restricción se comprobó mediante API y nftables.
 
 Las lecturas completas de peers, grupos, políticas y nftables, con las copias
 anteriores, quedan en el directorio privado del operador. Ni sus direcciones
