@@ -8,6 +8,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Procedimiento «Parcheo del sistema operativo» en
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md): nada actualiza los paquetes
+  Ubuntu que no tienen pin, así que el host acumulaba actualizaciones del
+  snapshot ya promovido. La ventana simula, retiene los paquetes de
+  repositorios externos que el snapshot no congela, actualiza con
+  `needrestart` suspendido para no reiniciar Docker a mitad, libera las
+  retenciones (el módulo `apt` de Ansible no cambia un paquete retenido) y
+  termina con «Reinicios». Comprueba además la alternativa de `sudo` y que la
+  memoria siga cubriendo `minimum_memory_mib`, que hoy coincide exactamente
+  con la del host. «Mantenimiento» fija la cadencia en 14 días como máximo,
+  la del SLO del snapshot.
+- Acceso SSH del propietario por NetBird documentado en
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md), «SSH por NetBird», y el cambio
+  manual del 2026-10-04 inventariado en
+  [`docs/DEPLOYMENT_STATUS.md`](docs/DEPLOYMENT_STATUS.md), «Deriva fuera
+  del repositorio». El cliente aún no lo gestiona Ansible.
+
 - Segundo nombre del panel de AX, la Oficina de agentes:
   `https://oficina.apptolast.com` (ver [`docs/EDGE.md`](docs/EDGE.md),
   «Ruta de AX»), por decisión del propietario del 2026-10-02. Los routers
@@ -891,6 +908,19 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- La vía NetBird no pasa por UFW, Fail2ban ni CrowdSec mientras su regla
+  `-A INPUT -i wt0 -j ACCEPT` quede la primera de `INPUT`, como el
+  2026-10-04. Ese orden depende del arranque de cada unidad, así que la
+  ventana de parcheo lo anota antes y después del reinicio. Su único filtro
+  propio es la tabla nftables `ip netbird`, que aplica la política del panel
+  de NetBird; se documenta que debe limitarse a `TCP 22` desde los
+  dispositivos del propietario, porque con la política por defecto
+  cualquier peer de la cuenta alcanza todos los puertos del host. Las
+  listas de direcciones del propietario que se crearon a mano en Fail2ban y
+  CrowdSec quedan inventariadas sin publicar ninguna dirección, y el parser
+  manual de CrowdSec, que detendría el siguiente apply en el inventario
+  exacto del Hub, queda como paso previo de la ventana de parcheo.
+
 - El log de acceso de Traefik descarta `ClientUsername`
   (`accessLog.fields.names`): `basicAuth` guarda ahí lo que se escriba como
   usuario, también si el login falla, y una contraseña tecleada en ese campo
@@ -1105,6 +1135,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
 ### Fixed
+
+- [`host_baseline/README.md`](ansible/roles/host_baseline/README.md) decía
+  que las actualizaciones desatendidas quedaban limitadas a los orígenes de
+  seguridad; el rol las desactiva por completo y enmascara los timers
+  `apt-daily*`. Ahora lo dice y remite al parcheo manual.
 
 - El rol `edge` espera a que Swarm termine el relevo de Traefik (estado de
   actualización distinto de `updating` y `rollback_started`, hasta 4 minutos)

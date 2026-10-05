@@ -42,6 +42,77 @@ al que los validadores permiten el socket, su contrato está fijado en
 `--playbook autoupdater`; `docker service scale` a mano solo en emergencia y
 codificado el mismo día. Ver [AUTOUPDATE.md](AUTOUPDATE.md).
 
+### SSH por NetBird
+
+Desde el 2026-10-04 el propietario entra por SSH a través de NetBird Cloud
+(plan gratuito), una red WireGuard gestionada: la dirección privada del host
+no cambia aunque cambie la IP pública del propietario. El SSH público del
+puerto 22 sigue igual (solo clave, `AllowUsers admin`, `22/tcp LIMIT`) y es,
+con la consola de Netcup, la vía de reserva. El cliente NetBird del host se
+instaló a mano y este repositorio todavía no lo gestiona (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Deriva fuera del
+repositorio»).
+
+Efecto sobre la frontera del host:
+
+- NetBird inserta `-A INPUT -i wt0 -j ACCEPT` en la primera posición de
+  `INPUT` al arrancar. El 2026-10-04 quedaba antes de `CROWDSEC_CHAIN`,
+  `PSAD_BLOCK_INPUT` y las cadenas de UFW, así que lo que entraba por `wt0`
+  no pasaba por UFW, por el límite de `22/tcp`, por Fail2ban (que banea con
+  UFW) ni por CrowdSec. Ese orden depende de quién se insertó el último: el
+  bouncer de CrowdSec también se coloca el primero cada vez que arranca y
+  nada ordena las unidades entre sí. Tras un reinicio del host, del bouncer o
+  de UFW, otra cadena puede quedar delante, y entonces un baneo de CrowdSec o
+  de Fail2ban sí corta `wt0`. La red NetBird no cabe en
+  `/etc/dockerswarm/crowdsec/trusted-ips`, que solo admite direcciones
+  públicas de `/24` o más estrechas; ese baneo se retira como en «Si el
+  propietario queda baneado», por SSH público o por la consola de Netcup.
+  `sudo -- iptables -S INPUT | head -n 4` muestra el orden vigente.
+- El único filtro propio de `wt0` son las tablas nftables `ip netbird` e
+  `ip6 netbird`, con el mismo esquema en IPv4 e IPv6: en el hook `input`
+  aceptan lo establecido y lo que permiten las políticas del panel de
+  NetBird, y descartan el resto. Con la política `Default` (todo a todo)
+  cualquier peer de la cuenta alcanza todos los puertos del host, también
+  los de Swarm. La política debe limitarse a `TCP 22` desde los dispositivos
+  del propietario hacia el host (ver
+  [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Pendiente»).
+- NetBird también añade `-A FORWARD -i wt0 -j ACCEPT` antes de `DOCKER-USER`.
+  Lo que llegue por `wt0` a un puerto publicado por Docker no pasaría por
+  `CROWDSEC_CHAIN` ni por `DOCKERSWARM-INGRESS`; hoy lo descarta el hook
+  `forward` de NetBird, que solo acepta lo establecido mientras el panel no
+  defina rutas de red. Una ruta de red o un exit node en el panel abriría ese
+  camino.
+- El servidor SSH propio de NetBird está apagado (`SSH Server: Disabled` en
+  `sudo -- netbird status`): `netbird up` nunca lleva `--allow-server-ssh`.
+- `DOCKER-USER` no cambia: NetBird no la toca y conserva el orden
+  `CROWDSEC_CHAIN`, `DOCKERSWARM-INGRESS`.
+- La salida sigue siendo la del contrato `host_security_required_host_egress`.
+  NetBird usa TCP/443 para gestión, señalización y relay, y UDP/443 para
+  STUN. Sin UDP de salida para WireGuard la conexión va por relay, que basta
+  para SSH; una conexión directa exige ampliar ese contrato con un cambio
+  revisado.
+- `PerSourcePenalties` de `sshd` también se aplica dentro de NetBird en
+  cuanto `host-baseline` retire la exención manual del 2026-10-04. Una
+  conexión que aborta antes de autenticarse, como un cliente que rechaza una
+  huella de host nueva, suma penalización a su dirección NetBird.
+
+La caducidad de sesión de los peers registrados con SSO está desactivada en
+toda la cuenta (Settings, Authentication, «Peer Session Expiration»), también
+para los dispositivos del propietario. Con ella activa, el host sale de la
+red cada 24 horas hasta un nuevo inicio de sesión. Registrar el host con una
+setup key de un solo uso, que nunca entra en este repositorio, permitiría
+reactivarla para los demás peers.
+
+En un host reconstruido: instalar `netbird=0.80.0` desde
+`https://pkgs.netbird.io/debian` con la clave de huella
+`EFE37DF047DF7CCDF1FC54FA83F79AD029778355`, ejecutar `sudo -- netbird up` y
+completar el inicio de sesión en el navegador con la cuenta del propietario.
+Ninguna setup key ni token entra en este repositorio. El host reconstruido es
+un peer nuevo con otra dirección NetBird: se borra el peer anterior en el
+panel, el nuevo entra en el grupo de la política `TCP 22` y los clientes
+cambian su dirección. Esos clientes aceptan una vez la huella SSH del host,
+que es la misma que la de la IP pública si se conservan las claves de host.
+
 ## Bloqueo de cambios Ansible
 
 El bootstrap fresco y todos los targets de `deploy-ansible.sh` usan el mismo
@@ -505,6 +576,120 @@ la API central de CrowdSec (`share_custom: true` en
    el paso 3 se confirma, sin esperar los 30 minutos. El paso 3 vuelve a dar
    `401`.
 
+## Parcheo del sistema operativo
+
+Ningún apply ni temporizador actualiza el sistema: `host-baseline` desactiva
+`APT::Periodic` y los timers `apt-daily*`, y `host_security` solo instala sus
+pins exactos. El resto de paquetes Ubuntu se queda en la versión instalada
+aunque el snapshot promovido traiga otra más nueva. Este procedimiento
+instala lo que ofrece el snapshot ya promovido y aplicado, en una ventana que
+termina con un reinicio.
+
+Antes:
+
+1. el snapshot del host es el de `config/host-security.yml` y está dentro del
+   SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`); si no, primero
+   se promueve otro con su propio cambio revisado, como en
+   [SNAPSHOT_20260924.md](SNAPSHOT_20260924.md);
+2. no hay markers en `/run/lock/dockerswarm-*.marker` ni procesos `apt` o
+   `dpkg` en curso;
+3. ninguna deriva registrada detiene el siguiente apply (ver
+   [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Pendiente»);
+4. los pasos «Antes» de «Reinicios»;
+5. anotar `update-alternatives --query sudo | grep -E '^(Status|Value):'`
+   (el 2026-10-04, `auto` y `/usr/lib/cargo/bin/sudo`),
+   `sudo -- apt-mark showhold` (vacío el 2026-10-04),
+   `sudo -- iptables -S INPUT | head -n 4`,
+   `sudo -- iptables -S DOCKER-USER`, `sudo -- ip6tables -S DOCKER-USER` y
+   `sudo -- iptables -S DOCKERSWARM-INGRESS`;
+6. abrir la sesión de la ventana dentro de `tmux`, preferiblemente por el
+   SSH público: si la conexión se corta a mitad de `dpkg`, la actualización
+   sigue y no quedan PAM, `libc` o systemd a medio configurar con la consola
+   de Netcup como única entrada.
+
+Simular y localizar lo que el snapshot no congela:
+
+```bash
+sudo -- apt-get update
+sudo -- apt-get -s full-upgrade | grep -E '^(Inst|Remv) |upgraded,'
+sudo -- apt-get -s full-upgrade | awk '/^Inst / && !/Ubuntu:/ {print $2}'
+```
+
+La simulación no debe retirar paquetes (`Remv`) ni mover ningún pin de
+`config/host-security.yml`: dentro de un snapshot promovido sus pins Ubuntu
+ya son la versión candidata. La última orden lista los paquetes de
+repositorios externos, que el snapshot no cubre: CrowdSec, su bouncer y
+`docker-ce-rootless-extras` el 2026-10-04. Los paquetes Docker que fija
+`/etc/apt/preferences.d/99-dockerswarm-docker` no aparecen. Esos externos se
+retienen mientras dura la actualización, porque nada los congela: CrowdSec y
+su bouncer subirían a 1.8.1 y 0.0.36 y romperían los pins exactos que
+comprueba `host_security`.
+
+```bash
+sudo -- apt-mark hold PAQUETES_EXTERNOS
+sudo -- apt-get -s full-upgrade | grep -E '^(Inst|Remv) |upgraded,'
+sudo -- env NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
+  apt-get -o Dpkg::Options::=--force-confdef \
+  -o Dpkg::Options::=--force-confold full-upgrade
+sudo -- apt-mark unhold PAQUETES_EXTERNOS
+```
+
+- La segunda simulación, ya con las retenciones, es la que se instala: sin
+  `Remv` y sin ningún paquete externo. `apt-get` pide confirmación y se
+  compara su resumen con esa simulación; nunca se usa `-y`.
+- `NEEDRESTART_SUSPEND=1` impide que `needrestart` reinicie servicios al
+  terminar. Su configuración ya excluye Docker, pero no `containerd`, del
+  que depende cada contenedor, ni `netbird.service`, que puede llevar la
+  propia sesión. `needrestart` es un paquete legacy preservado: su
+  configuración no se toca.
+- `--force-confold` conserva los ficheros de configuración locales, muchos de
+  ellos gestionados por Ansible.
+  `sudo -- find /etc \( -name '*.dpkg-dist' -o -name '*.ucf-dist' \)`
+  muestra después las versiones que propone cada paquete, para revisarlas en
+  un cambio aparte.
+- `apt-mark unhold` es obligatorio, también si la actualización falla: el
+  módulo `apt` de Ansible no cambia un paquete retenido, y la siguiente
+  subida de un pin fallaría. `sudo -- apt-mark showhold` vuelve a quedar como
+  se anotó.
+
+Antes de reiniciar:
+
+- `sudo -- apt-get -s full-upgrade` solo ofrece los externos;
+- la alternativa `sudo` es la anotada y `/usr/bin/sudo.ws` sigue existiendo
+  (ver [KNOWN_ISSUES.md](KNOWN_ISSUES.md), «`Timeout waiting for privilege
+  escalation prompt` con sudo-rs»);
+- `sudo -- needrestart -b -r l` lista los servicios que siguen con librerías
+  antiguas, y existe `/run/reboot-required` si cambió el kernel.
+
+El reinicio sigue «Reinicios» y, además de sus pasos «Después»:
+
+1. `uname -r` muestra el kernel nuevo;
+2. la memoria sigue cubriendo `minimum_memory_mib` de `config/capacity.yml`
+   (`awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo`). El 2026-10-04
+   coincidían exactamente, 15 981 MiB: si un kernel nuevo reserva más
+   memoria, todo playbook con `capacity_preflight` se detiene hasta revisar
+   ese contrato;
+3. `sudo -- iptables -S DOCKERSWARM-INGRESS` coincide con lo anotado: las
+   reglas de SFTP y Satisfactory que añaden los drop-ins manuales vuelven
+   con el arranque (compuerta STOP 10 de `CLAUDE.md`);
+4. se anota de nuevo `sudo -- iptables -S INPUT | head -n 4` y
+   `sudo -- netbird status`: el orden de `wt0` y `CROWDSEC_CHAIN` decide si un
+   baneo de CrowdSec corta NetBird (ver «SSH por NetBird»);
+5. `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
+   `DOCKERSWARM-INGRESS`, como lo anotado;
+6. `--playbook host-baseline --check` no propone más cambios que los
+   metadatos de un commit nuevo y, mientras siga en el host, la retirada de
+   la línea manual `PerSourcePenaltyExemptList` de `/etc/ssh/sshd_config`.
+   Confirma pins, SSH y el inventario del Hub de CrowdSec; las comprobaciones
+   del cortafuegos solo corren en un apply, por eso se miran a mano en los
+   pasos 3 a 5;
+7. se registran en [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md) los paquetes
+   movidos, el kernel, la hora del reinicio y las comprobaciones.
+
+Vuelta atrás: el kernel anterior sigue instalado y se elige en el menú de
+GRUB desde la consola de Netcup. Los paquetes no se degradan; un fallo se
+corrige con un cambio revisado aparte.
+
 ## Reinicios
 
 Antes:
@@ -571,6 +756,8 @@ daemon. El detalle está en
 ## Mantenimiento
 
 - semanal: disco/inodos, unidades, certificados, backups y markers;
+- cada 14 días como máximo: promover el snapshot Ubuntu dentro de su SLO y
+  aplicar «Parcheo del sistema operativo» con su reinicio;
 - mensual: drift Terraform, usuarios/claves, rotación y restore de aplicación;
 - trimestral: recuperación de state, ACME y Raft en un host aislado;
 - antes de ampliar el Swarm: red privada, quorum impar, capacidad, backup y

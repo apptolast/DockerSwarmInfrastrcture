@@ -220,6 +220,52 @@ durante el relevo. La reserva solo cuenta para la planificación de Swarm.
 Desde el apply de `edge` del 2026-09-26 el servicio vivo es el del
 repositorio.
 
+Inventario de lo que se cambió a mano en el host el 2026-10-04, sobre todo
+para el acceso SSH del propietario. Las direcciones se leyeron sin mostrarlas
+aquí:
+
+- Cliente NetBird `0.80.0` desde `https://pkgs.netbird.io/debian`
+  (`/etc/apt/sources.list.d/netbird.list` y
+  `/usr/share/keyrings/netbird-archive-keyring.gpg`, huella
+  `EFE37DF047DF7CCDF1FC54FA83F79AD029778355`), con `netbird.service`
+  habilitado y el host registrado en la cuenta NetBird Cloud del
+  propietario. Añade la interfaz `wt0`, `-A INPUT -i wt0 -j ACCEPT` y dos
+  reglas `FORWARD` de `wt0`, la tabla nftables `ip netbird` y una escucha en
+  UDP/51820; da a systemd-resolved los dominios de `netbird.cloud` y escribe
+  `/etc/ssh/ssh_config.d/99-netbird.conf`, que solo casa con los peers de
+  NetBird y, para ellos, desactiva la comprobación de huella
+  (`StrictHostKeyChecking no`, `UserKnownHostsFile /dev/null`) y admite
+  contraseña en el SSH saliente. Ninguna comprobación de Ansible lo rechaza:
+  las de UFW leen solo
+  sus propias cadenas y `DOCKER-USER` no cambia. Efecto sobre la frontera y
+  reconstrucción en [OPERATIONS.md](OPERATIONS.md), «SSH por NetBird».
+- `/etc/ssh/sshd_config` tiene una línea `PerSourcePenaltyExemptList`
+  añadida a mano, con la red NetBird y dos direcciones del propietario
+  (copia previa `/etc/ssh/sshd_config.bak-20261004-140202`). No se
+  codifica: `host-baseline` reescribe el fichero desde su plantilla y el
+  siguiente apply la retira. Con una clave válida no hace falta.
+- Fail2ban carga dos ficheros que este repositorio no gestiona, con
+  direcciones del propietario: `jail.d/00-ignore-trusted.conf`, del
+  2026-09-20 y ampliado el 2026-10-04 con otra dirección y la red NetBird,
+  que fija `ignoreip` en `[DEFAULT]` y en `[sshd]`; y
+  `jail.d/zz-whitelist-pablo.local`, del 2026-10-04, que fija `ignoreip` en
+  `[DEFAULT]` y, como se carga después de `jail.local`, sustituye el valor de
+  la plantilla. En `jail.d` quedan además dos copias que Fail2ban no carga,
+  `00-ignore-trusted.conf.bak` y `00-ignore-trusted.conf.bak-20261004-135127`,
+  también con direcciones.
+- CrowdSec tiene un parser local creado a mano el 2026-10-04 a las 11:18 UTC,
+  `crowdsecurity/whitelists-pablo`
+  (`/etc/crowdsec/parsers/s02-enrich/mywhitelist.yaml`), con direcciones del
+  propietario y la red NetBird. Por él, el inventario exacto del Hub
+  («Reject every unreviewed installed CrowdSec Hub item») detiene el
+  siguiente apply o `--check` que ejecute `host_security` (ver
+  «Pendiente»).
+- El crontab de `admin` ejecuta cada 6 horas
+  `~/.local/bin/ai-cli-auto-update` (salida en
+  `journalctl -t ai-cli-auto-update`), que actualiza los CLI de Codex y de
+  Claude Code de ese usuario y reinicia el app-server de Codex solo tras 30
+  minutos sin actividad.
+
 ## Estado temporal fuera del repositorio
 
 - Laboratorio AX (Google Agent Executor sobre Kubernetes kind y Agent
@@ -769,6 +815,38 @@ host no tiene copias fuera de sí mismo.
 
 Minecraft espera un flag explícito que registre la aceptación de publicar con
 `online-mode=false`, en lugar de eliminar el assert que hoy acopla ambas cosas.
+
+### Parcheo del sistema y listas manuales
+
+El 2026-10-04 el host tenía actualizaciones de seguridad pendientes dentro
+del snapshot `20260924T000000Z`, kernel incluido. Se aplican con «Parcheo
+del sistema operativo» ([OPERATIONS.md](OPERATIONS.md)). Ese
+snapshot sale del SLO el 2026-10-08 a las 00:00 UTC: desde entonces
+`validate-iac.sh` falla en cualquier rama, y antes de la ventana hay que
+promover otro.
+
+Antes de cualquier apply o `--check` que ejecute `host_security`, incluido
+el de esa ventana, hay que retirar el parser
+`crowdsecurity/whitelists-pablo` con
+`sudo -- rm /etc/crowdsec/parsers/s02-enrich/mywhitelist.yaml` y
+`sudo -- systemctl reload crowdsec`. Una dirección pública que deba seguir
+sin banearse va a `/etc/dockerswarm/crowdsec/trusted-ips`
+([OPERATIONS.md](OPERATIONS.md), «Direcciones que nunca se banean»).
+
+Sin bloquear ningún apply quedan:
+
+- retirar los ficheros manuales de Fail2ban y sus copias, salvo que se
+  codifique su lista. Fijan direcciones residenciales dinámicas en
+  `[DEFAULT]`, que también hereda la jail de SFTP: cuando el proveedor
+  reasigne una, la exención pasa a otra persona. El tráfico de NetBird no los
+  necesita;
+- codificar el cliente NetBird en `host_security`: repositorio, huella,
+  versión fijada, servicio, una preferencia APT que limite ese origen al
+  paquete `netbird` como `99-dockerswarm-docker`, la comprobación del orden
+  de `INPUT` y la neutralización de `99-netbird.conf`;
+- limitar en el panel de NetBird la política a `TCP 22` desde los
+  dispositivos del propietario (ver [OPERATIONS.md](OPERATIONS.md), «SSH
+  por NetBird»).
 
 ## Advertencia sobre Terraform y DNS
 
