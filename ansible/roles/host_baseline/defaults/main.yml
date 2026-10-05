@@ -20,6 +20,14 @@ host_baseline_ssh_host_key_algorithms: >-
 host_baseline_ssh_pubkey_algorithms: >-
   {{ host_security_ssh_pubkey_algorithms }}
 
+host_baseline_boot_cmdline_linux: "{{ host_security_boot_cmdline_linux }}"
+host_baseline_boot_cmdline_linux_default: >-
+  {{ host_security_boot_cmdline_linux_default }}
+# The zz- prefix sorts it after kdump-tools.cfg, whose crashkernel= append it
+# discards: grub-mkconfig sources /etc/default/grub.d/*.cfg in glob order.
+host_baseline_boot_cmdline_dropin: >-
+  /etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg
+
 host_baseline_public_interface: >-
   {{ platform_public_interface | default('eth0') }}
 host_baseline_public_ipv4: "{{ platform_public_ipv4 | default('') }}"

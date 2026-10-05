@@ -246,7 +246,10 @@ privadas y recuperación por la vía de reserva, sin direcciones ni tokens.
 
 Inventario de lo que se cambió a mano en el host el 2026-10-04, sobre todo
 para el acceso SSH del propietario. Las direcciones se leyeron sin mostrarlas
-aquí:
+aquí. La ventana de parcheo del 2026-10-05 retiró la línea de `sshd`, el
+parser de CrowdSec y los ficheros de Fail2ban (ver «Parcheo del sistema
+operativo (2026-10-05)»); sus copias, con direcciones, quedan en
+`/var/backups/dockerswarm/os-patch-20261005/`, que solo lee root:
 
 - Cliente NetBird `0.80.0` desde `https://pkgs.netbird.io/debian`
   (`/etc/apt/sources.list.d/netbird.list` y
@@ -260,35 +263,47 @@ aquí:
   NetBird y, para ellos, desactiva la comprobación de huella
   (`StrictHostKeyChecking no`, `UserKnownHostsFile /dev/null`) y admite
   contraseña en el SSH saliente. Ninguna comprobación de Ansible lo rechaza:
-  las de UFW leen solo
-  sus propias cadenas y `DOCKER-USER` no cambia. Efecto sobre la frontera y
-  reconstrucción en [OPERATIONS.md](OPERATIONS.md), «SSH por NetBird».
-- `/etc/ssh/sshd_config` tiene una línea `PerSourcePenaltyExemptList`
-  añadida a mano, con la red NetBird y dos direcciones del propietario
-  (copia previa `/etc/ssh/sshd_config.bak-20261004-140202`). No se
-  codifica: `host-baseline` reescribe el fichero desde su plantilla y el
-  siguiente apply la retira. Con una clave válida no hace falta.
-- Fail2ban carga dos ficheros que este repositorio no gestiona, con
-  direcciones del propietario: `jail.d/00-ignore-trusted.conf`, del
-  2026-09-20 y ampliado el 2026-10-04 con otra dirección y la red NetBird,
-  que fija `ignoreip` en `[DEFAULT]` y en `[sshd]`; y
-  `jail.d/zz-whitelist-pablo.local`, del 2026-10-04, que fija `ignoreip` en
-  `[DEFAULT]` y, como se carga después de `jail.local`, sustituye el valor de
-  la plantilla. En `jail.d` quedan además dos copias que Fail2ban no carga,
-  `00-ignore-trusted.conf.bak` y `00-ignore-trusted.conf.bak-20261004-135127`,
-  también con direcciones.
-- CrowdSec tiene un parser local creado a mano el 2026-10-04 a las 11:18 UTC,
-  `crowdsecurity/whitelists-pablo`
-  (`/etc/crowdsec/parsers/s02-enrich/mywhitelist.yaml`), con direcciones del
-  propietario y la red NetBird. Por él, el inventario exacto del Hub
-  («Reject every unreviewed installed CrowdSec Hub item») detiene el
-  siguiente apply o `--check` que ejecute `host_security` (ver
-  «Pendiente»).
+  las de UFW leen solo sus propias cadenas y `DOCKER-USER` no cambia. Efecto
+  sobre la frontera y reconstrucción en [OPERATIONS.md](OPERATIONS.md), «SSH
+  por NetBird».
+- `/etc/ssh/sshd_config` tuvo del 2026-10-04 al 2026-10-05 una línea
+  `PerSourcePenaltyExemptList` añadida a mano, con la red NetBird y dos
+  direcciones del propietario. Desde el 2026-10-05 ya no es deriva: el
+  fichero vuelve a ser, byte a byte, el render de
+  `ansible/templates/ssh-hardening.conf.j2`, y la copia
+  `sshd_config.bak-20261004-140202` ya no está en `/etc/ssh`.
+- Fail2ban cargó del 2026-09-20 al 2026-10-05 ficheros que este
+  repositorio no gestiona, con direcciones del propietario en `ignoreip`:
+  `jail.d/00-ignore-trusted.conf` y, desde el 2026-10-04,
+  `jail.d/zz-whitelist-pablo.local`, más dos copias que no cargaba. Desde el
+  2026-10-05 ya no es deriva: en `jail.d` solo quedan `95-sftp-swarm.local`
+  (la jail manual de SFTP, ver arriba), `99-dockerswarm-sshd.local`, que
+  gestiona `host_security`, y `defaults-debian.conf`, del paquete.
+- CrowdSec tuvo del 2026-10-04 a las 11:18 UTC al 2026-10-05 el parser
+  local `crowdsecurity/whitelists-pablo`
+  (`/etc/crowdsec/parsers/s02-enrich/mywhitelist.yaml`). Desde el
+  2026-10-05 ya no es deriva, y el inventario exacto del Hub («Reject every
+  unreviewed installed CrowdSec Hub item») ya no detiene `host_security`.
 - El crontab de `admin` ejecuta cada 6 horas
   `~/.local/bin/ai-cli-auto-update` (salida en
   `journalctl -t ai-cli-auto-update`), que actualiza los CLI de Codex y de
   Claude Code de ese usuario y reinicia el app-server de Codex solo tras 30
   minutos sin actividad.
+
+Cambiado a mano el 2026-10-05, en la ventana de parcheo:
+
+- `/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg` (`root:root 0644`)
+  fija la línea de comandos con la que arrancaba el host hasta ese día:
+  `GRUB_CMDLINE_LINUX="net.ifnames=0 console=tty0 video=1024x768"` y
+  `GRUB_CMDLINE_LINUX_DEFAULT="autoinstall ds=nocloud-net"`. Hace falta
+  porque `/etc/default/grub` no existe: sin el drop-in, el `update-grub` de
+  cada kernel nuevo genera la entrada por defecto con el `crashkernel=` de
+  `kdump-tools.cfg` (paquete `kdump-tools`) y sin `net.ifnames=0`, y la
+  interfaz pública deja de llamarse `eth0`. El drop-in se lee después de
+  `kdump-tools.cfg` y descarta ese `crashkernel=`. Desde este cambio lo
+  gestiona `host_baseline`; deja de ser deriva con el siguiente apply, que
+  reescribe el fichero y ejecuta `update-grub` una vez (ver
+  [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
 
 ## Estado temporal fuera del repositorio
 
@@ -902,6 +917,111 @@ PR #86, desde `main` en `6ed7a32`. El panel pasa a la Oficina de agentes
   en el PVC con propietario `65532`, ficheros `0600` y directorios `0700`.
 - Repetido (14:56:23-14:58:09): `ok=335 changed=0 failed=0`.
 
+### Parcheo del sistema operativo (2026-10-05)
+
+«Parcheo del sistema operativo» de [OPERATIONS.md](OPERATIONS.md), desde
+`main` en `47eada9` (#90), con el snapshot `20260924T000000Z` dentro de su
+SLO. El propietario eligió la ventana sabiendo que el host no tiene copia
+externa (compuerta STOP 5 de `CLAUDE.md`) y que era el primer reinicio
+completo desde el despliegue. Horas en UTC:
+
+- Antes (19:08:48): alternativa `sudo` `auto` en `/usr/lib/cargo/bin/sudo`,
+  `/usr/bin/sudo.ws` presente, `apt-mark showhold` vacío, sin markers ni
+  procesos `apt` o `dpkg`, `dockerd --validate` correcto, nodo `Ready`,
+  `Active` y `Leader`, 26 servicios en `1/1` y los dos aparcados en `0/0`,
+  sin Tasks del laboratorio AX. `INPUT`, `DOCKER-USER` en IPv4 e IPv6 y
+  `DOCKERSWARM-INGRESS` quedaron anotados en
+  `/var/backups/dockerswarm/os-patch-20261005/`, sin publicar direcciones.
+  La única unidad fallida era `satisfactory-presence-play.service`, fallida
+  desde el 2026-09-28.
+- Deriva del 2026-10-04 retirada antes de actualizar (ver «Deriva fuera del
+  repositorio»):
+  - 19:09:48: `/etc/ssh/sshd_config` vuelve a la copia previa a la línea
+    manual, idéntica byte a byte al render de
+    `ansible/templates/ssh-hardening.conf.j2` desde `main`; `sshd -t`
+    correcto y `ssh` recargado, con
+    `persourcepenaltyexemptlist none` en `sshd -T`;
+  - 19:10:02: parser `crowdsecurity/whitelists-pablo` retirado; la prueba
+    de configuración de CrowdSec pasa, `crowdsec` se recarga, no queda
+    ningún parser local y la allowlist `apptolast-trusted` sigue presente;
+  - acto seguido, los ficheros manuales de Fail2ban y sus copias salen de
+    `jail.d`; `fail2ban-client --test` pasa y, tras recargar, `ignoreip` de
+    la jail `sshd` es `127.0.0.0/8` y `::1`.
+- Simulación: 163 paquetes actualizados, 7 nuevos y ninguno retirado, más
+  `rust-coreutils`, aplazado por fases. Los paquetes externos retenidos con
+  `apt-mark hold` fueron `crowdsec`, `crowdsec-firewall-bouncer-iptables` y
+  `docker-ce-rootless-extras`. Con la retención, la segunda simulación dio
+  160, 7, 0 y 4 sin actualizar, y el resumen de `apt-get` fue idéntico
+  antes de confirmar.
+- `full-upgrade` (19:13:15-19:15:31), dentro de `tmux` y con
+  `NEEDRESTART_SUSPEND=1`: 160 paquetes actualizados, 7 instalados y ninguno
+  retirado. Los instalados son el kernel `7.0.0-34-generic` (imagen,
+  módulos, módulos ZFS, cabeceras y herramientas). Entre los actualizados:
+  `libc6` a `2.43-2ubuntu2.4`, `systemd` y `udev` a `259.5-0ubuntu3.4`,
+  `libpam-modules` a `1.7.0-5ubuntu3.2`, `openssl` a `3.5.5-1ubuntu3.5`,
+  `sudo-rs` a `0.2.13-0ubuntu1.2` y `grub2-common` a `2.14-2ubuntu2.1`.
+  Salida 0; los únicos avisos fueron los de `os-prober` de GRUB.
+- Después de liberar las retenciones: `apt-mark showhold` vacío,
+  `dpkg --audit` limpio, los veinte pins de `config/host-security.yml` y
+  `ansible/group_vars/all.yml` con su versión exacta, la alternativa `sudo`
+  igual y `/usr/bin/sudo.ws` presente. Nuevos `*.dist`: solo
+  `/etc/issue.dpkg-dist` y `/etc/issue.net.dpkg-dist`, que se revisan
+  aparte. `needrestart -b -r l` listó 16 servicios con librerías antiguas,
+  Docker y containerd incluidos, y existía `/run/reboot-required`.
+- Primer reinicio (programado a las 19:17:09 para las 19:19:09; el arranque
+  empieza a las 19:20:47). El `update-grub` del kernel nuevo había
+  regenerado `/boot/grub/grub.cfg` sin `/etc/default/grub`, que no existe:
+  la entrada por defecto perdió `net.ifnames=0 console=tty0 video=1024x768`
+  y ganó el `crashkernel=` de `/etc/default/grub.d/kdump-tools.cfg`. La
+  interfaz pública arrancó como `ens3` y el kernel reservó 512 MB:
+  `MemTotal` bajó a 15 469 MiB, por debajo de `minimum_memory_mib`. Desde
+  las 19:20:59, `dockerswarm-docker-firewall` falló en el `ExecStartPost` de
+  Docker (`expected default interface eth0, found ens3`) y
+  `docker.service` entró en bucle. Ningún servicio de Swarm arrancó y las
+  rutas públicas cayeron; SSH y NetBird siguieron funcionando (ver
+  [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
+- Corrección (19:30:40): drop-in
+  `/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg` con la línea de
+  comandos de los arranques anteriores, leída de `/var/log/dmesg.*.gz`, y
+  `update-grub`. Las entradas por defecto y de recuperación de los kernels
+  `7.0.0-34` y `7.0.0-28` quedaron con `net.ifnames=0 console=tty0
+  video=1024x768` y sin `crashkernel=`. Segundo reinicio programado a las
+  19:30:50; el arranque empieza a las 19:33:40.
+- Después (19:33:40-19:47, con la auditoría de solo lectura):
+  - `uname -r` `7.0.0-34-generic`; `/proc/cmdline` igual que antes de la
+    ventana salvo el kernel y sin `crashkernel=`; `eth0` en `UP` con
+    todas las rutas por defecto; `MemTotal` 15 981 MiB, exactamente
+    `minimum_memory_mib`; sin `/run/reboot-required` y sin servicios
+    pendientes en `needrestart`;
+  - `systemctl is-system-running` `running`, sin unidades fallidas;
+    `docker.service` activo sin reinicios; nodo `Ready`, `Active` y
+    `Leader`; a las 19:35:39, 27 de 28 servicios convergidos;
+  - `autoupdater_shepherd` espera su `RestartPolicy` de 3 600 s. La Task
+    preparada durante el arranque fallido perdió su contenedor y falló
+    hacia las 20:30 con `No such container`; la siguiente espera otra hora.
+    No se fuerza: el contrato solo permite tocarlo a mano en emergencia;
+  - `workloads_shlink` tuvo una Task fallida a las 19:33:55, antes de que
+    su base de datos arrancase; la siguiente quedó en marcha;
+  - fuera de este repositorio, `satisfactory-game` (Compose) no arrancó
+    solo, porque su red overlay no existía aún, y se arrancó a mano a las
+    19:40:25; `monitor-production-prometheus-1` terminó
+    limpio a las 19:19:11 y no volvió a arrancar hasta las 20:39:04, cuando
+    se arrancó a mano;
+  - `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
+    `DOCKERSWARM-INGRESS`. En `INPUT`, `CROWDSEC_CHAIN` queda ahora antes que
+    `-i wt0 -j ACCEPT` en las dos familias (ver «SSH por NetBird»).
+    `DOCKERSWARM-INGRESS` coincide con lo anotado salvo los tres saltos a
+    `SATISFACTORY-PLAY` (17777 y 18888) del laboratorio privado de
+    Satisfactory: la unidad que los crea,
+    `satisfactory-presence-play.service`, no corre al arrancar. Las cadenas
+    `PSAD_BLOCK_*` y los cuatro bloqueos automáticos permanentes de psad de
+    antes de la ventana no están tras el arranque; psad sigue activo;
+  - quince de los dieciséis nombres públicos responden lo esperado;
+    `oficina.apptolast.com` no tiene registro DNS;
+  - n8n reactivó sus ocho flujos publicados; las ejecuciones programadas
+    durante el corte no se recuperan;
+  - `--playbook host-baseline --check` queda para el propietario.
+
 ### Panel web de AX sin ventana (2026-09-28)
 
 PR #84, desde `main` en `bc39fb8`. Por decisión del propietario, el panel ya
@@ -1037,29 +1157,34 @@ Minecraft espera un flag explícito que registre la aceptación de publicar con
 
 ### Parcheo del sistema y listas manuales
 
-El 2026-10-04 el host tenía actualizaciones de seguridad pendientes dentro
-del snapshot `20260924T000000Z`, kernel incluido. Se aplican con «Parcheo
-del sistema operativo» ([OPERATIONS.md](OPERATIONS.md)). Ese
-snapshot salía del SLO el 2026-10-08 a las 00:00 UTC; el repositorio
-promueve `20261005T000000Z`
+La ventana del 2026-10-05 instaló lo que ofrecía el snapshot
+`20260924T000000Z` y retiró el parser manual de CrowdSec y los ficheros
+manuales de Fail2ban (ver «Parcheo del sistema operativo (2026-10-05)»). El
+repositorio promueve `20261005T000000Z`
 ([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md)), que el host adopta con el
 siguiente apply de `host-baseline`.
 
-Antes de cualquier apply o `--check` que ejecute `host_security`, incluido
-el de esa ventana, hay que retirar el parser
-`crowdsecurity/whitelists-pablo` con
-`sudo -- rm /etc/crowdsec/parsers/s02-enrich/mywhitelist.yaml` y
-`sudo -- systemctl reload crowdsec`. Una dirección pública que deba seguir
-sin banearse va a `/etc/dockerswarm/crowdsec/trusted-ips`
-([OPERATIONS.md](OPERATIONS.md), «Direcciones que nunca se banean»).
-
 Sin bloquear ningún apply quedan:
 
-- retirar los ficheros manuales de Fail2ban y sus copias, salvo que se
-  codifique su lista. Fijan direcciones residenciales dinámicas en
-  `[DEFAULT]`, que también hereda la jail de SFTP: cuando el proveedor
-  reasigne una, la exención pasa a otra persona. El tráfico de NetBird no los
-  necesita;
+- aplicar `host-baseline`, empezando por su `--check` revisado: adopta el
+  drop-in de GRUB que gestiona `host_baseline`, el snapshot nuevo y el pin
+  de `curl`. El primer apply reescribe el drop-in y ejecuta `update-grub`
+  una vez; uno repetido debe informar `changed=0`;
+- decidir kdump: `kdump-tools` sigue instalado y activo con `USE_KDUMP=0` y
+  sin memoria reservada. `scripts/validate-host-security.py` rechaza
+  `crashkernel=`, porque el host tiene exactamente `minimum_memory_mib`;
+  activarlo exige revisar antes ese contrato;
+- `scripts/validate-daemon-journal.sh`, que ejecuta `scripts/validate.sh`
+  como root, no pasa tras un reinicio completo: el 2026-10-05 encontró un
+  `MAC address changed` por red overlay (47), cuando
+  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lo da como uno por arranque, y trata
+  como inesperadas las Tasks anteriores al reinicio (`No such container`) y
+  las imágenes locales que Swarm intenta descargar. Necesita un cambio
+  revisado, no una excepción a mano;
+- el repositorio de CrowdSec está dos veces en APT: `crowdsec.sources`, que
+  gestiona `host_security`, y `crowdsec_crowdsec.list`, que dejó el
+  instalador el 2026-07-21. `apt-get update` avisa de ello en cada
+  ejecución;
 - codificar el cliente NetBird en `host_security`: repositorio, huella,
   versión fijada, servicio, una preferencia APT que limite ese origen al
   paquete `netbird` como `99-dockerswarm-docker`, la comprobación del orden
@@ -1070,6 +1195,24 @@ La conexión SSH nueva desde Windows quedó verificada a las 21:19:52 UTC,
 sin multiplexación y con huella ED25519 contrastada en la VPS, como recoge
 [NETBIRD_ACCESS.md](NETBIRD_ACCESS.md). No se ensayó desde el PC el rechazo
 de otro puerto; API y nftables sí comprobaron el contrato restringido.
+
+Fuera de este repositorio, sin bloquear nada:
+
+- el contenedor Compose `satisfactory-game` no arranca solo tras un reinicio
+  porque su red overlay de Swarm aún no existe, y
+  `satisfactory-presence-play.service`, que crea `SATISFACTORY-PLAY`, no corre
+  al arrancar. Ese cambio tiene que llegar a su repositorio de origen;
+- `monitor-production-prometheus-1` no volvió a arrancar solo tras los
+  reinicios del 2026-10-05;
+- `oficina.apptolast.com` resuelve desde el 2026-10-09: su registro A lo
+  creó el propietario a mano en Cloudflare, DNS-only, con TTL servido de
+  300 s y sin AAAA. El Secret opcional `ax-web-office` lleva la sesión de
+  Codex, pero el host no tiene `/etc/dockerswarm/ax/github-token`: sin ese
+  token la Oficina no abre PR. Lo añade el propietario con
+  `ax-web-bootstrap.sh office` cuando lo decida;
+- en n8n, «Family Error Workflow» no está publicado, así que los fallos de
+  los siete flujos que lo usan como flujo de error no avisan. Publicarlo es
+  decisión del propietario (compuerta STOP 6 de `CLAUDE.md`).
 
 ## Advertencia sobre Terraform y DNS
 

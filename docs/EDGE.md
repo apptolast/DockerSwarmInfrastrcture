@@ -971,7 +971,8 @@ carga da `404`), y la de la contraseña, el primer login del propietario.
 `159.195.156.57` que el propietario crea a mano en Cloudflare, DNS-only,
 con las mismas reglas que el de `ax` que sigue. El certificado no depende
 de él (DNS-01), pero el navegador sí: hasta que resuelve, solo responde
-`ax.apptolast.com`.
+`ax.apptolast.com`. Resuelve desde el 2026-10-09, con TTL servido de 300 s y
+sin AAAA.
 
 `ax.apptolast.com` es un registro A a `159.195.156.57` que el propietario
 creó a mano en Cloudflare, DNS-only, igual que los de OrganizationWeb,

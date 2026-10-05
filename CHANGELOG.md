@@ -34,6 +34,32 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   [`docs/N8N_WORKFLOW_MONITORING.md`](docs/N8N_WORKFLOW_MONITORING.md).
   No publica workflows ni cierra su aceptación OAuth o de negocio, y no
   instala vigilancia continua.
+
+- `host_baseline` fija la línea de órdenes del kernel en
+  `/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg` con los parámetros
+  revisados de `config/host-security.yml`: `net.ifnames=0`, `console=tty0`
+  y `video=1024x768` para todas las entradas, y `autoinstall` y
+  `ds=nocloud-net` para las normales. Así un kernel nuevo ya no puede quitar
+  `net.ifnames=0` ni dejar el `crashkernel=` de `kdump-tools`. Un handler
+  ejecuta `update-grub` solo cuando cambia el fichero, y después el rol
+  exige que la entrada por defecto de `/boot/grub/grub.cfg` lleve esos
+  parámetros, ningún otro valor de `net.ifnames` y ningún `crashkernel=`,
+  que no haya más asignaciones de `default` que `set default="0"` y la de
+  `grub-reboot`, y que `/proc/cmdline` lleve `net.ifnames=0` como único
+  valor de `net.ifnames` y ningún `crashkernel=`. Nunca reinicia.
+  `scripts/validate-host-security.py` rechaza una clave ausente o que no sea
+  una lista, una `host_security_boot_cmdline_linux` vacía, un parámetro que
+  no sea una palabra segura para el shell, uno repetido, `net.ifnames=0`
+  fuera de `GRUB_CMDLINE_LINUX`, otro valor de `net.ifnames` y cualquier
+  `crashkernel=`; el rol repite esas reglas, porque
+  `scripts/deploy-ansible.sh` no ejecuta el validador.
+  `tests/test_boot_cmdline_contract.py` prueba cada rechazo del validador y
+  de las tareas, el orden de las tareas, el handler y que el drop-in,
+  cargado después de `kdump-tools.cfg`, descarta su `crashkernel=`. Los
+  valores son los que ya arrancan en el host, así que no hace falta
+  reiniciar; el primer apply reescribe el fichero manual y ejecuta
+  `update-grub` una vez.
+
 - Procedimiento «Parcheo del sistema operativo» en
   [`docs/OPERATIONS.md`](docs/OPERATIONS.md): nada actualiza los paquetes
   Ubuntu que no tienen pin, así que el host acumulaba actualizaciones del
@@ -1235,6 +1261,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   producción ni sus garantías de limpieza. El emisor del SIGTERM observado
   en GitHub Actions sigue sin demostrarse; esta corrección no certifica la
   resolución de aquel fallo ni una ejecución de CI correcta.
+
+- «Parcheo del sistema operativo» comprueba antes de reiniciar que la
+  entrada por defecto de `/boot/grub/grub.cfg` lleva los mismos parámetros
+  que `/proc/cmdline`, o exactamente los revisados cuando el reinicio activa
+  un cambio ya aplicado, y después del reinicio que la interfaz pública sigue
+  siendo `eth0` y que `/proc/cmdline` lleva `net.ifnames=0` y ningún
+  `crashkernel=`. El 2026-10-05 el kernel `7.0.0-34-generic` regeneró
+  `grub.cfg` sin `/etc/default/grub`, que no existe en el host: la entrada
+  perdió `net.ifnames=0`, la interfaz pública arrancó como `ens3`, el
+  `ExecStartPost` de `docker.service` (`dockerswarm-docker-firewall`) falló
+  y `docker.service` se reiniciaba en bucle, y apareció el `crashkernel=` de
+  `kdump-tools`. Un drop-in manual en `/etc/default/grub.d/`, `update-grub`
+  y un reinicio restauraron la línea anterior; lo explica
+  [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md).
 
 - [`host_baseline/README.md`](ansible/roles/host_baseline/README.md) decía
   que las actualizaciones desatendidas quedaban limitadas a los orígenes de

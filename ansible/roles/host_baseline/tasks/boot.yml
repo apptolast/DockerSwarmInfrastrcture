@@ -1,0 +1,199 @@
+---
+# En este host no existe /etc/default/grub, y grub-mkconfig solo lee entonces
+# /etc/default/grub.d/*.cfg. Cada paquete de kernel ejecuta update-grub
+# (/etc/kernel/postinst.d/zz-update-grub): el 2026-10-05 el menu regenerado
+# perdio net.ifnames=0, la interfaz publica arranco como ens3 y aparecio el
+# crashkernel= que kdump-tools.cfg anade a GRUB_CMDLINE_LINUX_DEFAULT. Este
+# drop-in se carga despues de kdump-tools.cfg y asigna las dos variables sin
+# su valor anterior. El rol nunca reinicia el host.
+- name: Render the GRUB command-line candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_boot_cmdline_candidate: >-
+      {{ lookup("ansible.builtin.template", "grub-boot-cmdline.cfg.j2") }}
+
+# grub-mkconfig carga el fichero como shell: cada parametro debe ser una
+# palabra sin comillas, `$`, acentos graves ni `;`, igual que exige
+# scripts/validate-host-security.py. Tambien sus otras reglas: ningun
+# parametro repetido y net.ifnames=0 como unico valor de net.ifnames.
+# deploy-ansible.sh no ejecuta el validador, asi que el rol las repite.
+- name: Verify the GRUB command-line candidate
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_boot_cmdline_candidate.splitlines()
+        | reject("match", "#")
+        | list
+        == [
+          'GRUB_CMDLINE_LINUX="'
+          ~ host_baseline_boot_cmdline_linux | join(" ") ~ '"',
+          'GRUB_CMDLINE_LINUX_DEFAULT="'
+          ~ host_baseline_boot_cmdline_linux_default | join(" ") ~ '"'
+        ]
+      - '"$" not in host_baseline_boot_cmdline_candidate'
+      - '"`" not in host_baseline_boot_cmdline_candidate'
+      - >-
+        (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default)
+        | reject("match", "[A-Za-z0-9][A-Za-z0-9._,:=+-]*$")
+        | list | length == 0
+      - >-
+        (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default)
+        | unique | list | length
+        == (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default) | length
+      - '"net.ifnames=0" in host_baseline_boot_cmdline_linux'
+      - >-
+        (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default)
+        | select("match", "net[.]ifnames(=|$)")
+        | list == ["net.ifnames=0"]
+      - >-
+        (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default)
+        | select("match", "crashkernel")
+        | list | length == 0
+    fail_msg: >-
+      The rendered GRUB command-line candidate is not exactly the two reviewed
+      assignments of distinct shell-safe parameters, with net.ifnames=0 in
+      GRUB_CMDLINE_LINUX as the only net.ifnames value and no crashkernel=.
+    quiet: true
+
+- name: Parse the GRUB command-line candidate as POSIX shell
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -n
+      - /dev/stdin
+    stdin: "{{ host_baseline_boot_cmdline_candidate }}"
+    stdin_add_newline: true
+  changed_when: false
+  check_mode: false
+
+- name: Create the GRUB defaults drop-in directory
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Sin `when`, para que `--check --diff` muestre el cambio. Sin `backup`: el
+# contenido anterior era el mismo par de asignaciones (docs/KNOWN_ISSUES.md).
+# Solo el handler ejecuta update-grub, asi que un host convergido no cambia.
+- name: Install the reviewed kernel command line for GRUB
+  ansible.builtin.template:
+    src: grub-boot-cmdline.cfg.j2
+    dest: "{{ host_baseline_boot_cmdline_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /bin/sh -n %s
+  notify: Host baseline regenerate GRUB configuration
+
+- name: Regenerate the GRUB menu before verification
+  ansible.builtin.meta: flush_handlers
+
+# grub-mkconfig escribe el menu con umask 077 (/usr/sbin/grub-mkconfig), asi
+# que solo root lo lee; `no_log` evita que `-v` lo imprima entero.
+- name: Read the generated GRUB menu
+  ansible.builtin.slurp:
+    src: /boot/grub/grub.cfg
+  register: host_baseline_grub_cfg
+  no_log: true
+
+- name: Parse the generated GRUB menu
+  ansible.builtin.set_fact:
+    host_baseline_grub_menu_lines: >-
+      {{
+        (host_baseline_grub_cfg.content | b64decode).splitlines()
+        | map("trim")
+        | list
+      }}
+  no_log: true
+
+# La primera linea `linux` es la entrada por defecto: 10_linux escribe antes
+# la entrada simple y 00_header deja `set default="0"` cuando nada fija
+# GRUB_DEFAULT. La otra forma admitida es la de grub-reboot, que arranca una
+# sola vez la entrada que se le indique. Cualquier otra asignacion de
+# `default`, tambien `saved` o sin `set`, podria arrancar otra entrada. Un
+# drop-in posterior que anada otro valor de net.ifnames tambien se rechaza:
+# no se puede probar cual aplicaria systemd-udevd.
+- name: Verify the default GRUB entry boots the reviewed command line
+  ansible.builtin.assert:
+    that:
+      - host_baseline_grub_default_entry[:1] == ["linux"]
+      - >-
+        (host_baseline_boot_cmdline_linux
+        + host_baseline_boot_cmdline_linux_default)
+        | difference(host_baseline_grub_default_entry[2:])
+        | length == 0
+      - >-
+        host_baseline_grub_default_entry[2:]
+        | select("match", "net[.]ifnames(=|$)")
+        | unique | list == ["net.ifnames=0"]
+      - >-
+        host_baseline_grub_default_entry
+        | select("match", "crashkernel")
+        | list | length == 0
+      - >-
+        'set default="0"' in host_baseline_grub_menu_lines
+      - >-
+        host_baseline_grub_menu_lines
+        | select("match", "(set[ \t]+)?default=")
+        | difference(['set default="0"', 'set default="${next_entry}"'])
+        | length == 0
+    fail_msg: >-
+      The default entry of /boot/grub/grub.cfg does not boot every reviewed
+      kernel parameter, boots crashkernel= or another net.ifnames value, or
+      GRUB may choose another default entry. The drop-in already holds the
+      reviewed command line: if an earlier update-grub failed, run
+      sudo -- update-grub and apply again; otherwise another GRUB setting
+      overrides it. Do not reboot until this check passes.
+    quiet: true
+  # Una sola barra en `linux\s` y en `[ \t]`: Ansible no procesa los escapes
+  # de las cadenas dentro de una expresion, y `\s` y `\t` llegan tal cual a
+  # la expresion regular.
+  vars:
+    host_baseline_grub_default_entry: >-
+      {{
+        (
+          host_baseline_grub_menu_lines
+          | select("match", "linux\s")
+          | first
+          | default("")
+        ).split()
+      }}
+  # En --check el handler no regenera grub.cfg, que puede no reflejar aun el
+  # drop-in.
+  when: not ansible_check_mode
+
+- name: Read the running kernel command line
+  ansible.builtin.slurp:
+    src: /proc/cmdline
+  register: host_baseline_running_cmdline
+
+# Solo las dos invariantes que el arranque actual ya debe cumplir:
+# net.ifnames=0 como unico valor de net.ifnames y ningun crashkernel=. El
+# resto de parametros cambia con el siguiente reinicio, que el rol nunca hace.
+- name: Verify the running kernel keeps eth0 and reserves no crash memory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (host_baseline_running_cmdline.content | b64decode).split()
+        | select("match", "net[.]ifnames(=|$)")
+        | unique | list == ["net.ifnames=0"]
+      - >-
+        (host_baseline_running_cmdline.content | b64decode).split()
+        | select("match", "crashkernel")
+        | list | length == 0
+    fail_msg: >-
+      The running kernel booted without net.ifnames=0, with another
+      net.ifnames value or with crashkernel=.
+      GRUB already holds the reviewed command line: a reboot in the manual
+      window of docs/OPERATIONS.md is pending.
+    quiet: true
+  # --check solo muestra cambios. Despues de cada reinicio, los pasos 2 y 3
+  # de "Parcheo del sistema operativo" (docs/OPERATIONS.md) comprueban eth0
+  # y /proc/cmdline.
+  when: not ansible_check_mode
