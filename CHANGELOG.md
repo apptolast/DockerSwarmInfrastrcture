@@ -908,6 +908,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Restricción de NetBird Cloud aplicada el 2026-10-05 y documentada en
+  [`docs/NETBIRD_ACCESS.md`](docs/NETBIRD_ACCESS.md): un PC autorizado hacia
+  el VPS, TCP/22, regla no bidireccional, `Default` deshabilitada y ninguna
+  otra política habilitada. API y reglas efectivas IPv4/IPv6 comprobadas;
+  conexión SSH nueva desde el PC verificada el 2026-10-05 con comprobación
+  estricta de la clave pública del host. `OPERATIONS.md` y
+  `DEPLOYMENT_STATUS.md` dejan de anunciar esa restricción como pendiente y
+  conservan la deriva del cliente, la vía de reserva y el rollback. No se
+  publican IDs, direcciones, inventarios privados ni tokens.
+  `KNOWN_ISSUES.md` documenta los permisos del checkout que bloquearon
+  las primeras validaciones y la recuperación formal de sus marcadores.
 - La vía NetBird no pasa por UFW, Fail2ban ni CrowdSec mientras su regla
   `-A INPUT -i wt0 -j ACCEPT` quede la primera de `INPUT`, como el
   2026-10-04. Ese orden depende del arranque de cada unidad, así que la
@@ -1135,6 +1146,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Tokens, claves, passwords, states y backups permanecen fuera de Git.
 
 ### Fixed
+
+- `scripts/smoke-observability-runtime.sh` comprueba que `grep` esté
+  disponible antes de crear contenedores y usa `grep -E` en lugar de un
+  `rg` que faltaba en el runner de GitHub. Las búsquedas de logs distinguen
+  coincidencias, ausencia de coincidencias y errores de lectura o ejecución;
+  un error de `docker logs` también detiene la prueba. Antes esos fallos
+  podían acabar anunciando un smoke correcto. Ocho pruebas offline en
+  `tests/test_observability_contract.py`, con Docker simulado, cubren los
+  logs limpios, las líneas prohibidas, la herramienta ausente y los errores
+  de lectura, de búsqueda y de `docker logs`.
+- La prueba de fallo del relay en `tests/test_ansible_operation_lock.py`
+  ejecuta el supervisor en un subproceso desechable con sesión propia,
+  verifica que recoge al hijo y conserva el estado `prctl` del proceso de
+  tests. La regresión offline pasa sin modificar el supervisor de
+  producción ni sus garantías de limpieza. El emisor del SIGTERM observado
+  en GitHub Actions sigue sin demostrarse; esta corrección no certifica la
+  resolución de aquel fallo ni una ejecución de CI correcta.
 
 - [`host_baseline/README.md`](ansible/roles/host_baseline/README.md) decía
   que las actualizaciones desatendidas quedaban limitadas a los orígenes de

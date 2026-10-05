@@ -101,3 +101,33 @@ almacena ninguna contraseña: el cambio se limita a Ansible.
 cualquier reconstrucción disponga del binario.
 
 - [Alternativas de sudo en Ubuntu 26.04](https://manpages.ubuntu.com/manpages/resolute/en/man8/update-alternatives.8.html)
+
+## Permisos del checkout durante la validación del 2026-10-05
+
+Un checkout creado con `umask 0007` dejó ficheros públicos con modo 0660.
+Dos guardas rechazaron correctamente los scripts Python escribibles por el
+grupo. Se quitó únicamente ese permiso a
+`scripts/validate-crowdsec-allowlist.py` y
+`scripts/traefik-access-log-probes.py`, dejándolos en 0640. La suite de 935
+pruebas pasó después de esa corrección, con dos pruebas omitidas.
+
+La siguiente ejecución completa pasó también las 96 pruebas de migración,
+las autopruebas de backup y las cuatro raíces Terraform, pero terminó con
+un fallo en la comprobación de salud de Traefik. Su contenedor usa UID
+65532 y no podía leer el fixture público
+`tests/fixtures/traefik-empty-dynamic.yml`, que seguía en 0660. Se cambió
+únicamente ese fixture a 0644 y la validación específica de Traefik pasó.
+La ejecución completa posterior de `validate-iac.sh` y `lint.sh` también
+pasó antes de editar esta documentación.
+
+Antes de repetir una validación, comprobar los permisos de los ficheros
+concretos: los scripts que ejecuta root no admiten escritura de grupo; un
+fixture público montado en un contenedor sin privilegios debe ser legible
+por su UID. No hacer `chmod` recursivo, abrir ficheros privados ni relajar
+las guardas para resolver este desajuste. Los cambios anteriores afectan
+al checkout local y no producen diferencias de contenido en Git.
+
+Un fallo conserva su marcador global. La recuperación requiere probar que
+su proceso terminó y usar `recover` con la confirmación exacta emitida por
+el helper, según [CLAUDE.md](../CLAUDE.md). No borrar el lock o marcador ni
+considerar que una prueba específica sustituye la validación completa.
