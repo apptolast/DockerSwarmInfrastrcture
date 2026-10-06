@@ -389,6 +389,32 @@ resolución DNS pública ni conservación histórica del contenido de los PVCs.
 
 [office-moby-stat]: https://raw.githubusercontent.com/moby/moby/3d80467/daemon/containerfs_linux.go
 
+### Metadatos del volumen de Office (2026-10-06)
+
+A las 09:24:45 UTC, una única sonda privada revisada completó la lectura de
+metadatos: el PV usa `hostPath` y la raíz montada es un directorio
+`root:root` con modo `0777`, sin bits especiales. Se verificaron las
+identidades de recursos, proceso, montajes y mapas UID/GID antes y después.
+Esta observación no satisface la política de propietario `65532:65532` y
+modo `0700`; no se cambiaron permisos ni propietario.
+
+El último intento anterior agotó el presupuesto acumulado de 64 KiB en la
+segunda consulta del PV. La nueva sonda limita exclusivamente esa lectura
+de metadatos a 256 KiB; mantiene 64 KiB por recurso y los límites de tiempo
+de 90 segundos y 10 segundos por fase. El observador general y la sonda
+HTTPS conservan su presupuesto original. Las tres revisiones ejecutaron
+121 pruebas cada una; el contador de la sonda registró 23 comandos CLI
+completados. Las comprobaciones `prove` y del guard usan otros caminos y
+no entran en ese contador.
+Se conservaron los fallos, recuperaciones, directorios y cachés anteriores.
+
+La reparación queda pendiente de una ventana revisada que excluya los
+escritores de Office. Los GET anteriores y posteriores y el lock del host
+no bloquean escrituras de la aplicación; pausar la cola tampoco las excluye.
+No se abrió el índice ni los archivos de trabajos, no se emitió un recibo
+de aceptación funcional y no se ejecutaron proveedores. La identidad del
+PVC y esta lectura no prueban conservación histórica ni restauración.
+
 ### Runners de n8n y memoria de `portfolio-alberto` (2026-09-25)
 
 `--playbook workloads --local` desde `main` en `1fa9c10` (#62 y #63):
