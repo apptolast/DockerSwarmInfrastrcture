@@ -1159,6 +1159,23 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Sonda de terminación de hijos propios en los tests de n8n: reconoce
+  `ESRCH` cuando el proceso desaparece durante la lectura de `/proc`, además
+  de `ENOENT`. Los errores de permisos y de E/S siguen fallando; se conserva
+  el límite de limpieza de 250 ms y el tratamiento de zombis.
+- El rol `ax_lab` protege el nodo kind existente antes de arrancarlo: una
+  máscara sysctl del mismo basename conserva `kernel.core_pattern=|/bin/false`
+  en el host sin desactivar los ajustes de red del nodo. El helper comprueba
+  identidad completa, imagen/configuración fijadas, metadatos y aislamiento
+  de montajes, y prueba la operación Ansible justo antes de su única escritura.
+- La creación de un clúster AX se rechaza antes de las escrituras del rol
+  hasta tener protección anterior al arranque de systemd. La recuperación
+  conserva la ruta normal de reconciliación y las comprobaciones posteriores;
+  no ordena recrear nodo ni PVCs. Procedimiento y límites en
+  [`docs/AX_CORE_PATTERN_RECOVERY.md`](docs/AX_CORE_PATTERN_RECOVERY.md).
+- 72 pruebas offline cubren rechazo de montajes sobre el destino, variantes
+  sysctl/globs/escapes, cambios durante la observación, límites de archivos,
+  socket Docker, proof del lock y orden/check mode de las tareas Ansible.
 - `scripts/smoke-observability-runtime.sh` comprueba que `grep` esté
   disponible antes de crear contenedores y usa `grep -E` en lugar de un
   `rg` que faltaba en el runner de GitHub. Las búsquedas de logs distinguen

@@ -350,6 +350,9 @@
 - name: Read the lab cluster and registry and prove their ownership
   ansible.builtin.import_tasks: inspect.yml
 
+- name: Read and plan the existing AX node preboot sysctl guard
+  ansible.builtin.import_tasks: node_core_pattern_read.yml
+
 # Unlike an application deploy, these tasks also run under --check: every
 # read is check-safe, every write only reports, and the runtime checks wait
 # for a real apply. Nothing here starts a container or touches Swarm.
