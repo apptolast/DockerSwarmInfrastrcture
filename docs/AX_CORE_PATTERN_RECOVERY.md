@@ -156,6 +156,12 @@ La lectura previa al apply corregido de los cuatro PVCs fue posterior al
 primer intento fallido: misma identidad y estado Bound después no prueban
 contenido histórico ni el estado anterior al arranque inicial.
 
+Una sonda posterior acreditó la lectura interna autenticada de la Oficina;
+véase [la aceptación y sus límites][office-read-window]. El fallo previo de
+metadatos del Secret, su comprobación `stat` y las recuperaciones formales
+se conservaron como evidencia aparte. Esa lectura no prueba proveedores,
+trabajos nuevos ni conservación histórica del contenido de los PVCs.
+
 Ante un fallo, el helper puede haber instalado la máscara y el apply puede
 haber avanzado: observar el estado exacto y conservar el marker. Su recuperación
 sigue el procedimiento de
@@ -166,3 +172,4 @@ revisado que preserve la protección del nodo antes de cualquier arranque.
 
 [docker-cp]: https://docs.docker.com/reference/cli/docker/container/cp/
 [ax-recovery-window]: DEPLOYMENT_STATUS.md#recuperación-ax-tras-el-reinicio-2026-10-06
+[office-read-window]: DEPLOYMENT_STATUS.md#lectura-autenticada-de-la-oficina-2026-10-06
