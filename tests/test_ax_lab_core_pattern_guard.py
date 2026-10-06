@@ -661,6 +661,71 @@ class TransportTests(unittest.TestCase):
         self.assertNotIn('fixture-private-source', json.dumps(result))
         self.assertEqual(result['mounts'], [dict(destination='/var', type='volume', readonly=False)])
 
+    def mount_document(self, mounts):
+        return dict(Id=CID, Name='/kind-control-plane',
+                    Config=dict(Image=m.IMAGE,
+                                Labels={'io.x-k8s.kind.cluster':'kind',
+                                        'io.x-k8s.kind.role':'control-plane'}),
+                    State=dict(Status='running'), HostConfig=dict(RestartPolicy=dict(Name='no')),
+                    Mounts=mounts)
+
+    def mount_fixture(self):
+        return [dict(Destination='/var', Type='volume', RW=True),
+                dict(Destination='/lib/modules', Type='bind', RW=False)]
+
+    def mount_guard(self, sequences):
+        docker = FakeDocker(protected=True)
+        docker.inspect = m.Docker().inspect
+        FakeConnection.responses = [FakeResponse(body=json.dumps(self.mount_document(mounts)).encode())
+                                    for mounts in sequences]
+        with patch.object(m, 'core_pattern'):
+            result = m.guard(docker, FakeProof(), verify_only=True)
+        self.assertEqual(docker.puts, [])
+        return result
+
+    def test_inspect_mount_order_is_canonical_without_discarding_entries(self):
+        mounts = self.mount_fixture()
+        FakeConnection.responses = [FakeResponse(body=json.dumps(self.mount_document(value)).encode())
+                                    for value in (mounts, list(reversed(mounts)))]
+        first, second = m.Docker().inspect(CID), m.Docker().inspect(CID)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first['mounts']), len(mounts))
+        self.assertEqual(first['mounts'], [dict(destination='/lib/modules', type='bind', readonly=True),
+                                         dict(destination='/var', type='volume', readonly=False)])
+
+    def test_guard_accepts_api_mount_order_variation_only(self):
+        mounts = self.mount_fixture()
+        result = self.mount_guard((mounts, list(reversed(mounts)), mounts))
+        self.assertTrue(result['protected'])
+        self.assertFalse(result['changed'])
+
+    def test_guard_still_rejects_mount_semantic_and_cardinality_changes(self):
+        mounts = self.mount_fixture()
+        variants = []
+        for key, value in (('RW', False), ('Type', 'bind'), ('Destination', '/other')):
+            changed = copy.deepcopy(mounts)
+            changed[0][key] = value
+            variants.append(changed)
+        variants.extend((mounts + [dict(Destination='/data', Type='volume', RW=True)], mounts[1:]))
+        for changed in variants:
+            with self.subTest(changed=changed):
+                docker = FakeDocker(protected=True)
+                docker.inspect = m.Docker().inspect
+                FakeConnection.responses = [FakeResponse(body=json.dumps(self.mount_document(value)).encode())
+                                            for value in (mounts, changed)]
+                with patch.object(m, 'core_pattern'):
+                    with self.assertRaisesRegex(m.GuardError, '^node_changed_during_observation$'):
+                        m.guard(docker, FakeProof(), verify_only=True)
+                self.assertEqual(docker.puts, [])
+
+    def test_duplicate_mount_destination_is_ambiguous_even_if_identical(self):
+        mount = self.mount_fixture()[0]
+        for second in (copy.deepcopy(mount), dict(mount, RW=False), dict(mount, Type='bind')):
+            with self.subTest(second=second):
+                FakeConnection.responses = [FakeResponse(body=json.dumps(self.mount_document([mount, second])).encode())]
+                with self.assertRaisesRegex(m.GuardError, '^unsafe_container_mounts$'):
+                    m.Docker().inspect(CID)
+
     def test_inspect_mount_shape_is_not_silently_coerced(self):
         for mounts in (None, {}, [None], [dict(Destination='/var', Type='volume')],
                        [dict(Destination='/var', Type='volume', RW=0)],

@@ -1159,6 +1159,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- El guard del nodo AX compara los montajes Docker en orden canónico:
+  una variación del orden en `inspect` ya no se confunde con un cambio del
+  nodo. Conserva cada destino, tipo y permiso, rechaza destinos duplicados
+  y mantiene el rechazo de cambios reales y las comprobaciones del lock.
+  Cuatro regresiones nuevas elevan a 76 las pruebas offline del guard;
+  no acreditan por sí solas un apply ni la conservación histórica de PVCs.
 - Sonda de terminación de hijos propios en los tests de n8n: reconoce
   `ESRCH` cuando el proceso desaparece durante la lectura de `/proc`, además
   de `ENOENT`. Los errores de permisos y de E/S siguen fallando; se conserva

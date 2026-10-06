@@ -1,8 +1,9 @@
 # Recuperación de AX preservando core_pattern
 
-Runbook del 2026-10-06. La revisión independiente y las 72 pruebas offline
-cubren el helper y su conexión al rol. Los resultados de gates, check/apply
-y recuperación deben conservarse aparte con el commit y la hora de ejecución;
+Runbook del 2026-10-06. La revisión independiente inicial y las 72 pruebas
+offline cubren el helper y su conexión al rol. Los resultados de gates,
+check/apply y recuperación deben conservarse aparte con el commit y la hora
+de ejecución;
 las pruebas offline no acreditan la recuperación del laboratorio.
 
 ## Problema y alcance
@@ -27,7 +28,9 @@ metadatos del nodo. Exige la configuración vendor exacta y el valor endurecido
 del host, y rechaza enlaces, propietarios/permisos distintos, configuraciones
 ambiguas y montajes iguales, anteriores o interiores a `/etc/sysctl.d`.
 Los datos de montajes conservados son destino, tipo y lectura/escritura;
-no se imprimen orígenes, variables de entorno ni contenidos del daemon.
+se comparan en orden canónico y los destinos duplicados se rechazan,
+sin descartar entradas ni cambios reales de esos campos.
+No se imprimen orígenes, variables de entorno ni contenidos del daemon.
 
 Sobre el nodo probado y parado, el apply añade un único fichero regular
 `/etc/sysctl.d/10-coredump-debian.conf`, root:root 0644, con comentarios.
@@ -130,6 +133,22 @@ Seguir [AX_WEB.md](AX_WEB.md#verificación) para esa aceptación aparte.
 
 Repetir check y apply según la disciplina del repositorio e investigar cada
 cambio inesperado; no declarar idempotencia sin recap y evidencias actuales.
+El primer apply del 2026-10-06 llegó a API/Node Ready y falló después con
+`node_changed_during_observation`; el hardening del host siguió en
+`|/bin/false`. Doce lecturas posteriores de la API Docker local observaron
+el nodo running, dos órdenes distintos de la lista Mounts y una sola
+proyección normalizada. Esa evidencia y la reproducción offline sustentan
+la sensibilidad al orden; las dos proyecciones exactas del instante del
+fallo no se conservaron y no se atribuye retrospectivamente cada campo.
+La corrección ordena destino/tipo/readonly sin perder cardinalidad y
+rechaza destinos duplicados. Las regresiones también rechazan cambios
+reales de permisos, tipo, destino, adición o eliminación de montajes.
+No se sortea el guard ni se reinicia el nodo para ocultar este fallo:
+conservar el marker, probar la muerte del holder y recuperarlo formalmente
+antes de una nueva operación desde código revisado y sus gates.
+Esta corrección offline todavía no acredita un apply completado ni
+idempotencia de la recuperación.
+
 Ante un fallo, el helper puede haber instalado la máscara y el apply puede
 haber avanzado: observar el estado exacto y conservar el marker. Su recuperación
 sigue el procedimiento de

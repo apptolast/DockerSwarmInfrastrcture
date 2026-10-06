@@ -273,12 +273,19 @@ class Docker:
         document = strict_json(raw)
         require(type(document.get('Mounts')) is list, 'unsafe_container_mounts')
         mounts = []
+        destinations = set()
         for member in document['Mounts']:
             require(type(member) is dict and type(member.get('RW')) is bool and
                     type(member.get('Destination')) is str and
                     type(member.get('Type')) is str, 'unsafe_container_mounts')
+            require(member['Destination'] not in destinations, 'unsafe_container_mounts')
+            destinations.add(member['Destination'])
             mounts.append(dict(destination=member['Destination'],
                                type=member['Type'], readonly=not member['RW']))
+        # Docker's inspect Mounts order is not an identity property. Preserve
+        # every entry while comparing its destination/type/read-only semantics.
+        mounts.sort(key=lambda member: (member['destination'], member['type'],
+                                       member['readonly']))
         return {'id': document['Id'], 'name': document['Name'],
                 'image': document['Config']['Image'],
                 'state': document['State']['Status'],
