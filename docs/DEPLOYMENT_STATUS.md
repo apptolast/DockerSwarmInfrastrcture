@@ -421,9 +421,34 @@ La integración sigue pendiente de admitir el sistema de archivos y sus
 mapas de identidad, componer los límites del guard y verificar el registro
 duradero y la recuperación de fallos parciales. No hay aceptación runtime.
 
+La composición directa de los prototipos requiere 13 comprobaciones del
+contexto frente al máximo actual de ocho; agotaría ese límite después de
+transferir el propietario. La integración debe reservar las comprobaciones
+y la salida antes de cualquier cambio de permisos, y rechazar si no caben.
+No se aumentaron ni reiniciaron los límites y la reparación real no se
+ejecutó. Es un hallazgo de revisión de fuentes, no una nueva lectura del PV.
+
 No se abrió el índice ni los archivos de trabajos, no se emitió un recibo
 de aceptación funcional y no se ejecutaron proveedores. La identidad del
 PVC y esta lectura no prueban conservación histórica ni restauración.
+
+### Baseline inicial de workflows de n8n (2026-10-06)
+
+A las 12:00:47 UTC se creó de forma exclusiva el baseline privado, como
+root:root `0600` dentro de un nuevo directorio `0700`. Conserva la captura
+SQL de las 11:55:43 UTC: ocho activos observados, ocho bajas deliberadas y
+dos ausencias confirmadas. Una revisión independiente aprobó el candidato
+exacto y otra consulta comprobó sus cuatro campos en las 42 filas antes de
+guardar la referencia. No se reconstruyó la captura histórica perdida ni
+se resolvieron los tres alias de nombres pendientes.
+
+La lectura posterior del observador de `5c1d390`, a las 12:01:33 UTC,
+devolvió `ok` y código 0: sin deriva ni bajas reactivadas. Contó 433
+ejecuciones en 24 horas, 432 correctas y una cancelada, sin errores ni
+crashes. No se activaron workflows ni se publicaron versiones.
+El [contrato de observación](N8N_WORKFLOW_MONITORING.md) distingue estos
+metadatos de la aceptación OAuth, los resultados de negocio y la vigilancia
+continua, que esta comprobación manual no acredita.
 
 ### Runners de n8n y memoria de `portfolio-alberto` (2026-09-25)
 

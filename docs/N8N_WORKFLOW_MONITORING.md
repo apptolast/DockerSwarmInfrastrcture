@@ -44,6 +44,30 @@ adoptar una deriva. Cualquier cambio del baseline necesita revisión explícita
 del inventario y de la intención del propietario; el CLI no aprende ni
 captura automáticamente un nuevo estado esperado.
 
+### Captura inicial verificada (2026-10-06)
+
+A las 12:00:47 UTC se creó el archivo privado de forma exclusiva, como
+root:root `0600`, dentro del nuevo directorio root:root `0700`.
+El candidato conservó la instantánea SQL de las 11:55:43 UTC: ocho activos
+observados, ocho bajas deliberadas y dos ausencias confirmadas.
+Una revisión independiente aprobó sus bytes exactos; antes de escribir,
+otra consulta confirmó igualdad de identidad, actividad, archivo y versión
+publicada en las 42 filas. Se conservó el instante de origen del candidato.
+
+La clasificación inicial usa los IDs actuales del inventario histórico
+privado de 13 entradas: tres siguen activos, ocho están inactivos y dos
+están ausentes. La confirmación del propietario se aplica a esos grupos.
+No reconstruye la instantánea antigua perdida ni resuelve los tres alias
+de nombres históricos que quedaron sin correspondencia.
+
+El observador de `5c1d390`, sin cambios de código desde su incorporación,
+completó otra lectura a las 12:01:33 UTC con código 0 y estado `ok`.
+No detectó deriva ni reactivaciones. En su ventana de 24 horas contó
+433 ejecuciones: 432 correctas, una cancelada y cero errores o crashes.
+El baseline y los recibos permanecen privados; no se activaron workflows,
+publicaron versiones ni cambiaron credenciales. Este corte no acredita
+aceptación OAuth, resultados de negocio ni vigilancia continua.
+
 ## Consulta y límites de confianza
 
 La lectura utiliza el Docker local mediante socket Unix, sin contexto remoto,
