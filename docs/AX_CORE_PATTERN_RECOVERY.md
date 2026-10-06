@@ -146,8 +146,15 @@ reales de permisos, tipo, destino, adición o eliminación de montajes.
 No se sortea el guard ni se reinicia el nodo para ocultar este fallo:
 conservar el marker, probar la muerte del holder y recuperarlo formalmente
 antes de una nueva operación desde código revisado y sus gates.
-Esta corrección offline todavía no acredita un apply completado ni
-idempotencia de la recuperación.
+La recuperación desde el commit fusionado `c158708` completó después un
+apply `ok=344 changed=6 failed=0`, seguido de dos checks `changed=0` y dos
+applies consecutivos `ok=339 changed=0 failed=0`, el último completado antes
+de las 05:17:40.345527 UTC del 2026-10-06. Se acreditan convergencia e
+idempotencia de esta ventana; véase el detalle y los límites de PVC,
+Oficina y DNS en [DEPLOYMENT_STATUS.md][ax-recovery-window].
+La lectura previa al apply corregido de los cuatro PVCs fue posterior al
+primer intento fallido: misma identidad y estado Bound después no prueban
+contenido histórico ni el estado anterior al arranque inicial.
 
 Ante un fallo, el helper puede haber instalado la máscara y el apply puede
 haber avanzado: observar el estado exacto y conservar el marker. Su recuperación
@@ -158,3 +165,4 @@ stores para desbloquearse. Un rollback de código también requiere un cambio
 revisado que preserve la protección del nodo antes de cualquier arranque.
 
 [docker-cp]: https://docs.docker.com/reference/cli/docker/container/cp/
+[ax-recovery-window]: DEPLOYMENT_STATUS.md#recuperación-ax-tras-el-reinicio-2026-10-06

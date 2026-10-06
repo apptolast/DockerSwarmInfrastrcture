@@ -314,6 +314,51 @@ las nueve redes overlay aisladas, UFW mantiene exactamente trece reglas de
 egress más `80/tcp` y `443/tcp` de ingress, y `22/tcp` conservó su límite de
 tasa durante todo el proceso.
 
+### Recuperación AX tras el reinicio (2026-10-06)
+
+PR #97 añadió la protección del nodo existente antes de arrancarlo; PR #98
+corrigió la comparación de Mounts, que dependía del orden de la respuesta de
+Docker. La ventana terminó desde el commit fusionado `c158708` (árbol
+`b54e390`), con checkout limpio, exclusión host-global y exclusión cooperativa
+con el mantenimiento de Satisfactory. Horas en UTC:
+
+- El primer intento llegó a API/Node Ready y falló en
+  `node_changed_during_observation`. Se conservó el fallo y se recuperó el
+  marker formalmente; la reproducción y el límite de esa atribución constan
+  en [AX_CORE_PATTERN_RECOVERY.md][ax-recovery-failures].
+- Desde el commit corregido, check `ok=149 changed=2 failed=0`; apply
+  `ok=344 changed=6 failed=0 unreachable=0`: proxy_arp, proxy_ndp, un worker
+  anterior al arranque del nodo, arranque del reenviador y dos metadatos.
+  La espera del worker reintentó una vez y acabó correctamente.
+- Los siguientes dos checks dieron `ok=149 changed=0 failed=0`; ambos applies
+  consecutivos dieron `ok=339 changed=0 failed=0 unreachable=0`, sin avisos,
+  errores ni reintentos en sus logs completos. El segundo terminó antes de
+  la observación de las 05:17:40.345527. Se cumple así la verificación de
+  dos applies sin cambios de [AX_WEB.md](AX_WEB.md#verificación).
+- El guard comprobó la máscara del nodo y `kernel.core_pattern=|/bin/false`.
+  El nodo, el registro y el dedicado mantuvieron las identidades y los
+  tiempos de arranque de la lectura previa al apply del commit corregido.
+  El reenviador existente arrancó a las 05:02:08, sin recrearlo. El dedicado
+  siguió healthy y no se reinició durante esta ventana.
+- Los cuatro PVCs conservaron UID, PV y estado Bound respecto a la lectura
+  de las 04:59:56, anterior al apply corregido. Esa referencia es posterior
+  al primer intento fallido: no acredita los UID previos al arranque inicial
+  ni la conservación histórica del contenido de los volúmenes.
+- La [CI posterior a la fusión][ax-recovery-main-ci]
+  pasó sobre `c158708`; el job terminó a las 05:15:37 y no dejó anotaciones.
+
+La sonda HTTPS contra la IP conocida con el SNI de la Oficina dio `/healthz`
+200 y `/` 401 con verificación TLS. El alias DNS `oficina` seguía ausente:
+esta sonda no prueba resolución pública. La lectura autenticada de la API
+interna de la Oficina no está acreditada en esta ventana: su preparación
+privada falló antes de la lectura, sin reintento automático. Tampoco se han
+validado aquí navegador, proveedores, nuevos trabajos ni persistencia de
+contenido histórico. Los logs y los dictámenes completos se conservan en
+recibos privados; el resumen público no incluye valores de credenciales.
+
+[ax-recovery-failures]: AX_CORE_PATTERN_RECOVERY.md#verificación-y-fallos
+[ax-recovery-main-ci]: https://github.com/apptolast/DockerSwarmInfrastrcture/actions/runs/37416094209
+
 ### Runners de n8n y memoria de `portfolio-alberto` (2026-09-25)
 
 `--playbook workloads --local` desde `main` en `1fa9c10` (#62 y #63):
@@ -787,8 +832,12 @@ El nodo kind del laboratorio AX es privilegiado y, al arrancar, su
 `systemd-sysctl` aplica su propio `10-coredump-debian.conf`
 (`kernel.core_pattern=core`). Ese ajuste no está aislado por contenedor, así
 que cambia el del host. `host-baseline` lo devolvió el 2026-09-26 al valor
-endurecido `|/bin/false`, y no vuelve a cambiar mientras el nodo no se
-reinicie. Falta un cambio en `ax_lab` que evite que el nodo lo toque.
+endurecido `|/bin/false`. Las PR #97 y #98 incorporaron y verificaron en
+la recuperación del 2026-10-06 la máscara del nodo existente y su lectura
+antes de arrancarlo: véase «Recuperación AX tras el reinicio» y
+[AX_CORE_PATTERN_RECOVERY.md](AX_CORE_PATTERN_RECOVERY.md).
+La creación de nodos nuevos sigue rechazándose hasta disponer de protección
+preboot revisada para esa ruta; esta recuperación no certifica esa creación.
 
 ### Servicios que no convergen
 
