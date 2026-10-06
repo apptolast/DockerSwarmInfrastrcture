@@ -8,6 +8,18 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Observador manual de metadatos de workflows de n8n en
+  `scripts/observe-n8n-workflows.py`, con baseline privado y consulta
+  PostgreSQL de solo lectura. Distingue activos observados de bajas
+  deliberadas, detecta deriva de publicación y cuenta estados de ejecución
+  de las últimas 24 horas sin leer nodos, credenciales ni payloads.
+  La salida pública contiene solo agregados y motivos permitidos; un estado
+  ambiguo impide un resultado sano. Los tests offline cubren entradas
+  inseguras, sustituciones de identidad y fallos de consulta. Alcance,
+  límites y operación en
+  [`docs/N8N_WORKFLOW_MONITORING.md`](docs/N8N_WORKFLOW_MONITORING.md).
+  No publica workflows ni cierra su aceptación OAuth o de negocio, y no
+  instala vigilancia continua.
 - Procedimiento «Parcheo del sistema operativo» en
   [`docs/OPERATIONS.md`](docs/OPERATIONS.md): nada actualiza los paquetes
   Ubuntu que no tienen pin, así que el host acumulaba actualizaciones del
