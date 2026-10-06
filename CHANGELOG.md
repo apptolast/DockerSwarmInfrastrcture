@@ -1159,6 +1159,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- Sonda de terminación de hijos propios en los tests de n8n: reconoce
+  `ESRCH` cuando el proceso desaparece durante la lectura de `/proc`, además
+  de `ENOENT`. Los errores de permisos y de E/S siguen fallando; se conserva
+  el límite de limpieza de 250 ms y el tratamiento de zombis.
 - `scripts/smoke-observability-runtime.sh` comprueba que `grep` esté
   disponible antes de crear contenedores y usa `grep -E` en lugar de un
   `rg` que faltaba en el runner de GitHub. Las búsquedas de logs distinguen

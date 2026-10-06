@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import copy
+import errno
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
@@ -530,7 +531,8 @@ class OwnedProcessTests(unittest.TestCase):
         while True:
             try:
                 content = path.read_text()
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
+                # A dead /proc FD can fail with ESRCH after open succeeds.
                 return
             state = content.rsplit(")", 1)[1].split()[0]
             if state == "Z":
@@ -538,6 +540,35 @@ class OwnedProcessTests(unittest.TestCase):
             if time.monotonic() >= deadline:
                 self.fail("owned synthetic helper did not terminate within cleanup grace")
             time.sleep(0.005)
+
+    def test_not_live_probe_accepts_missing_path_and_disappearance_during_read(self):
+        with mock.patch.object(Path, "open", side_effect=FileNotFoundError(errno.ENOENT, "synthetic missing process")):
+            self.assert_not_live(123456789)
+        opened = mock.MagicMock()
+        stream = opened.__enter__.return_value
+        stream.read.side_effect = ProcessLookupError(errno.ESRCH, "synthetic process disappeared during read")
+        with mock.patch.object(Path, "open", return_value=opened) as opening:
+            self.assert_not_live(123456789)
+        opening.assert_called_once()
+        stream.read.assert_called_once_with()
+        opened.__exit__.assert_called_once()
+
+    def test_not_live_probe_keeps_permission_and_unexpected_io_errors_fatal(self):
+        for error in (PermissionError(errno.EACCES, "synthetic permission denied"),
+                      OSError(errno.EIO, "synthetic read failure")):
+            with self.subTest(errno=error.errno), mock.patch.object(Path, "read_text", side_effect=error):
+                with self.assertRaises(type(error)) as caught:
+                    self.assert_not_live(123456789)
+                self.assertIs(caught.exception, error)
+
+    def test_not_live_probe_keeps_zombie_and_live_deadline_rules(self):
+        with mock.patch.object(Path, "read_text", return_value="123 (synthetic helper) Z"), mock.patch.object(time, "sleep") as sleeping:
+            self.assert_not_live(123456789)
+            sleeping.assert_not_called()
+        with mock.patch.object(Path, "read_text", return_value="123 (synthetic helper) S"), mock.patch.object(time, "monotonic", side_effect=(0.0, 0.25)), mock.patch.object(time, "sleep") as sleeping:
+            with self.assertRaisesRegex(AssertionError, "owned synthetic helper did not terminate"):
+                self.assert_not_live(123456789)
+            sleeping.assert_not_called()
 
     def test_selector_failure_happens_before_spawn_and_signal_mask_changes(self):
         before = signal.pthread_sigmask(signal.SIG_BLOCK, set())
