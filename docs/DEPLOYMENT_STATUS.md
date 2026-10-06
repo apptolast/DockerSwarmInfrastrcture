@@ -359,6 +359,36 @@ recibos privados; el resumen público no incluye valores de credenciales.
 [ax-recovery-failures]: AX_CORE_PATTERN_RECOVERY.md#verificación-y-fallos
 [ax-recovery-main-ci]: https://github.com/apptolast/DockerSwarmInfrastrcture/actions/runs/37416094209
 
+### Lectura autenticada de la Oficina (2026-10-06)
+
+Después de la recuperación de AX, una sonda privada revisada acreditó la
+lectura de `/api/office` a las 06:28:20 UTC. La conexión usó TLS 1.3,
+verificó el certificado y el nombre del servidor y obtuvo HTTP 200 con
+certificado cliente. La comprobación sin certificado cliente fue rechazada.
+La sonda retiró su propio port-forward. En el corte posterior de las
+06:52 UTC, el puerto temporal no tenía listener, el dedicado estaba healthy
+y ambos contenedores conservaban el arranque.
+
+El intento anterior había fallado antes de leer el certificado cliente:
+los metadatos de Docker HEAD para el archivo del Secret indicaban tamaño
+cero y no acreditaban modo 0400.
+El [código de Moby del commit reportado por el servidor][office-moby-stat]
+explica una posible vista de metadatos con un archivo provisional;
+esa explicación es una inferencia, no una medición de su modo real. Una única
+comprobación `stat` dentro del contenedor acreditó
+archivo regular 0400, propietario y grupo 65532, un enlace y tamaño positivo.
+La sonda posterior comprobó esa identidad antes y después de leer el
+certificado en memoria y de consultar la API.
+
+Los intentos fallidos, los logs y las recuperaciones formales de sus markers
+se conservaron. Las sondas nuevas usaron directorios y cachés nuevos;
+no se reutilizaron ni borraron los anteriores para eludir las comprobaciones.
+La evidencia acredita esta lectura interna autenticada y su limpieza.
+No acredita navegador, autenticación del proveedor, ejecución de trabajos,
+resolución DNS pública ni conservación histórica del contenido de los PVCs.
+
+[office-moby-stat]: https://raw.githubusercontent.com/moby/moby/3d80467/daemon/containerfs_linux.go
+
 ### Runners de n8n y memoria de `portfolio-alberto` (2026-09-25)
 
 `--playbook workloads --local` desde `main` en `1fa9c10` (#62 y #63):
