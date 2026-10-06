@@ -6,9 +6,12 @@
 # Docker restart. Then, only where they differ,
 # the settings inside the node, which a restart resets or which kind's local
 # registry guide adds.
+- name: Install the existing AX node preboot sysctl guard
+  ansible.builtin.import_tasks: node_core_pattern_apply.yml
+
 - name: Start the lab node when it is stopped
   ansible.builtin.command:
-    argv: [/usr/bin/docker, start, "{{ ax_lab.cluster.node_container }}"]
+    argv: [/usr/bin/docker, start, "{{ ax_lab_node.id }}"]
   when: ax_lab_node.status in ["created", "exited"]
   changed_when: true
 
@@ -113,6 +116,19 @@
   until: ax_lab_node_ready.rc == 0 and ax_lab_node_ready.stdout == "True"
   retries: 30
   delay: 10
+  changed_when: false
+
+- name: Verify host hardening and the AX node mask after startup
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          role_path + "/files/node_core_pattern_guard.py",
+          "verify", "--node-id", ax_lab_node.id,
+          "--kind-config-sha256", ax_lab_kind_config_digest.stdout
+        ] | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
   changed_when: false
 
 # Substrate enables proxy ARP and proxy NDP on every kind node for gVisor's

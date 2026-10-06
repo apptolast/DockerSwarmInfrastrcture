@@ -1,0 +1,38 @@
+---
+# Read before any AX write, even under --check. kind create cluster boots
+# systemd before node.yml could guard it, so creation is deliberately refused
+# until a separate reviewed preboot solution exists. Never recreate PVCs here.
+- name: Refuse fresh AX node creation without preboot sysctl protection
+  ansible.builtin.assert:
+    that:
+      - ax_lab_node is not none
+    fail_msg: >-
+      This guard only recovers an existing owned AX node. Creating a node
+      requires a reviewed preboot solution before kind create cluster; no
+      existing node or PVC is deleted or recreated by this recovery.
+
+- name: Read the owned AX node preboot core-pattern protection
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          role_path + "/files/node_core_pattern_guard.py",
+          "plan", "--node-id", ax_lab_node.id,
+          "--kind-config-sha256", ax_lab_kind_config_digest.stdout
+        ] | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_node_core_pattern_plan
+  changed_when: false
+  check_mode: false
+
+- name: Report the AX node preboot protection plan
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        ["install the reviewed same-basename sysctl mask before starting "
+         ~ "the existing owned node; Kubernetes drift is read after startup"]
+        if (ax_lab_node_core_pattern_plan.stdout | from_json).change_required
+        else ["the existing node has its reviewed preboot sysctl mask"]
+      }}
+  when: ansible_check_mode

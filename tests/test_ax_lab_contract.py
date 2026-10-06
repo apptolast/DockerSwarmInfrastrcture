@@ -1921,6 +1921,7 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             "Reject unsafe types ownership and permissions in lab paths",
             # Ownership is proven before the host prerequisites write anything.
             "Read the lab cluster and registry and prove their ownership",
+            "Read and plan the existing AX node preboot sysctl guard",
             "Reconcile the lab host prerequisites",
             "Report what an apply would change in the lab cluster",
             "Reconcile the lab cluster and its local registry outside check mode",
@@ -1937,21 +1938,33 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
             {"name": order[4], "ansible.builtin.import_tasks": "inspect.yml"},
         )
         self.assertEqual(
-            self.main[order[6]],
+            self.main[order[7]],
             {
-                "name": order[6],
+                "name": order[7],
                 "ansible.builtin.debug": {"msg": "{{ ax_lab_cluster_plan }}"},
                 "when": "ansible_check_mode",
             },
         )
         self.assertEqual(
-            self.main[order[7]],
+            self.main[order[8]],
             {
-                "name": order[7],
+                "name": order[8],
                 "ansible.builtin.import_tasks": "cluster.yml",
                 "when": "not ansible_check_mode",
             },
         )
+        self.assertEqual(
+            self.main[order[5]],
+            {
+                "name": order[5],
+                "ansible.builtin.import_tasks": "node_core_pattern_read.yml",
+            },
+        )
+        node_import = self.main[
+            "Start and prepare the lab node outside check mode"
+        ]
+        self.assertEqual(node_import["ansible.builtin.import_tasks"], "node.yml")
+        self.assertEqual(node_import["when"], "not ansible_check_mode")
         digest = self.main[order[1]]
         self.assertEqual(
             digest["ansible.builtin.command"]["argv"],
@@ -1977,6 +1990,30 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
                     {"ax_lab_kind_config_digest": {"stdout": stdout}},
                     "did not print the kind configuration digest",
                 )
+
+    def test_preboot_plan_refuses_a_fresh_node_before_any_write(self) -> None:
+        relative_path = "ansible/roles/ax_lab/tasks/node_core_pattern_read.yml"
+        tasks = load_tasks(relative_path)
+        refusal = "Refuse fresh AX node creation without preboot sysctl protection"
+        self.assertEqual(next(iter(tasks)), refusal)
+        self.assertNotIn("when", tasks[refusal])
+        self.assert_task_accepts(
+            relative_path, refusal, {"ax_lab_node": {"id": "b" * 64}}
+        )
+        self.assert_task_rejects(
+            relative_path,
+            refusal,
+            {"ax_lab_node": None},
+            "Creating a node requires a reviewed preboot solution",
+        )
+        plan = tasks["Read the owned AX node preboot core-pattern protection"]
+        self.assertIs(plan["check_mode"], False)
+        self.assertIs(plan["changed_when"], False)
+        self.assertIn(
+            '"plan", "--node-id", ax_lab_node.id',
+            plan["ansible.builtin.script"]["cmd"],
+        )
+        self.assertNotIn('"apply"', plan["ansible.builtin.script"]["cmd"])
 
     def test_inspection_imports_read_then_ownership(self) -> None:
         names = list(self.inspect)
@@ -2836,12 +2873,13 @@ class AxLabClusterTests(AnsibleTaskAssertions, unittest.TestCase):
         )
         self.assertEqual(
             node_start["ansible.builtin.command"]["argv"],
-            ["/usr/bin/docker", "start", "{{ ax_lab.cluster.node_container }}"],
+            ["/usr/bin/docker", "start", "{{ ax_lab_node.id }}"],
         )
         self.assertIs(node_start["changed_when"], True)
         self.assertEqual(
-            list(self.node)[:3],
+            list(self.node)[:4],
             [
+                "Install the existing AX node preboot sysctl guard",
                 self.NODE_START,
                 "Read the lab registry and node after starting the node",
                 self.NODE_VERIFY,

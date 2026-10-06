@@ -1,0 +1,20 @@
+---
+# Wrapper/operation_lock_guard are mandatory. The helper independently proves
+# that exact ax-lab apply before its only PUT; plan and verify never PUT.
+- name: Guard the owned AX node before starting it
+  ansible.builtin.script:
+    cmd: >-
+      {{
+        [
+          role_path + "/files/node_core_pattern_guard.py",
+          "apply", "--node-id", ax_lab_node.id,
+          "--kind-config-sha256", ax_lab_kind_config_digest.stdout,
+          "--operation-id", operation_lock_guard_operation_id,
+          "--source-revision", deployment_metadata_source_revision,
+          "--contract-sha256", deployment_metadata_contract_sha256,
+          "--controller", operation_lock_guard_controller
+        ] | map("quote") | join(" ")
+      }}
+    executable: /usr/bin/python3
+  register: ax_lab_node_core_pattern_apply
+  changed_when: (ax_lab_node_core_pattern_apply.stdout | from_json).changed
