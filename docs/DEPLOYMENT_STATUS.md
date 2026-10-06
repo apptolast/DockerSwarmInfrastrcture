@@ -408,9 +408,19 @@ completados. Las comprobaciones `prove` y del guard usan otros caminos y
 no entran en ese contador.
 Se conservaron los fallos, recuperaciones, directorios y cachés anteriores.
 
-La reparación queda pendiente de una ventana revisada que excluya los
+Una reparación con parada exige una ventana revisada que excluya los
 escritores de Office. Los GET anteriores y posteriores y el lock del host
 no bloquean escrituras de la aplicación; pausar la cola tampoco las excluye.
+
+Se revisó además un protocolo limitado a los metadatos de la raíz: transferir
+primero su propietario y después restringir el modo, usando el mismo FD.
+Esta ruta no necesita detener a los escritores de archivos hijos y no
+acredita preservación de contenido. Los prototipos privados pasaron pruebas
+con directorios desechables y propiedad simulada; no cambiaron el PV real.
+La integración sigue pendiente de admitir el sistema de archivos y sus
+mapas de identidad, componer los límites del guard y verificar el registro
+duradero y la recuperación de fallos parciales. No hay aceptación runtime.
+
 No se abrió el índice ni los archivos de trabajos, no se emitió un recibo
 de aceptación funcional y no se ejecutaron proveedores. La identidad del
 PVC y esta lectura no prueban conservación histórica ni restauración.
