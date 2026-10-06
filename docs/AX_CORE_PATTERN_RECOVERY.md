@@ -162,6 +162,14 @@ metadatos del Secret, su comprobación `stat` y las recuperaciones formales
 se conservaron como evidencia aparte. Esa lectura no prueba proveedores,
 trabajos nuevos ni conservación histórica del contenido de los PVCs.
 
+La [lectura posterior de metadatos del volumen][office-volume-window]
+acreditó `hostPath` y raíz `root:root` con modo `0777`. Los fallos por el
+presupuesto acumulado y sus recuperaciones formales permanecen conservados.
+Se amplió sólo el presupuesto de esa sonda de metadatos; no se relajaron
+los guards de identidad ni el observador general. La política de propietario
+y permisos sigue sin satisfacerse, y la reparación requiere excluir los
+escritores de Office antes de modificar el directorio retenido por FD.
+
 Ante un fallo, el helper puede haber instalado la máscara y el apply puede
 haber avanzado: observar el estado exacto y conservar el marker. Su recuperación
 sigue el procedimiento de
@@ -173,3 +181,4 @@ revisado que preserve la protección del nodo antes de cualquier arranque.
 [docker-cp]: https://docs.docker.com/reference/cli/docker/container/cp/
 [ax-recovery-window]: DEPLOYMENT_STATUS.md#recuperación-ax-tras-el-reinicio-2026-10-06
 [office-read-window]: DEPLOYMENT_STATUS.md#lectura-autenticada-de-la-oficina-2026-10-06
+[office-volume-window]: DEPLOYMENT_STATUS.md#metadatos-del-volumen-de-office-2026-10-06
