@@ -2009,6 +2009,90 @@ class EdgeTraefikRenderBootPreparationTests(unittest.TestCase):
         self.assertEqual(script.count("\nboot_traefik \\\n"), 2)
 
 
+class EdgeTraefikKnownNoticeTests(unittest.TestCase):
+    """How often each Traefik version logs the encoded-characters notice.
+
+    v3.7.14 stopped logging it when an entry point denies an encoded
+    character, which every entry point of the render does; the validators
+    must expect it once before that version and never from it on.
+    """
+
+    SCRIPTS = ("scripts/validate-traefik-config.sh", "scripts/validate-edge.sh")
+
+    def count(self, script: str, version: str) -> subprocess.CompletedProcess[str]:
+        source = (REPOSITORY_ROOT / script).read_text(encoding="utf-8")
+        function = re.search(
+            r"^expected_known_warning_count\(\) \{\n.*?^\}\n",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(function, script)
+        assert function is not None
+        program = (
+            "set -Eeuo pipefail\n"
+            "fail() { printf 'ERROR: %s\\n' \"$*\" >&2; exit 1; }\n"
+            + function.group(0)
+            + 'expected="$(expected_known_warning_count "$1")"\n'
+            + 'printf "%s" "${expected}"\n'
+        )
+        return subprocess.run(
+            ["bash", "-c", program, "test", version],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_both_validators_share_the_same_expectation(self) -> None:
+        bodies = {
+            re.search(
+                r"^expected_known_warning_count\(\) \{\n.*?^\}\n",
+                (REPOSITORY_ROOT / script).read_text(encoding="utf-8"),
+                re.MULTILINE | re.DOTALL,
+            ).group(0)
+            for script in self.SCRIPTS
+        }
+        self.assertEqual(len(bodies), 1)
+
+    def test_the_notice_is_expected_once_only_before_v3_7_14(self) -> None:
+        for script in self.SCRIPTS:
+            for version, expected in (
+                ("v3.7.9", "1"),
+                ("v3.7.13", "1"),
+                ("v3.6.20", "1"),
+                ("v3.7.14", "0"),
+                ("v3.7.15", "0"),
+                ("v3.8.0", "0"),
+                ("v3.10.1", "0"),
+            ):
+                with self.subTest(script=script, version=version):
+                    completed = self.count(script, version)
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(completed.stdout, expected)
+
+    def test_an_unexpected_version_fails_closed(self) -> None:
+        for script in self.SCRIPTS:
+            for version in ("", "3.7.14", "v2.11.58", "v3.7", "latest", "v3.7.14-rc1"):
+                with self.subTest(script=script, version=version):
+                    completed = self.count(script, version)
+                    self.assertEqual(completed.returncode, 1)
+                    self.assertIn("unexpected Traefik image version", completed.stderr)
+                    self.assertEqual(completed.stdout, "")
+
+    def test_the_count_comes_from_the_running_image(self) -> None:
+        for script in self.SCRIPTS:
+            with self.subTest(script=script):
+                source = (REPOSITORY_ROOT / script).read_text(encoding="utf-8")
+                self.assertIn(
+                    '{{index .Config.Labels "org.opencontainers.image.version"}}',
+                    source,
+                )
+                self.assertIn(
+                    'expected_count="$(expected_known_warning_count '
+                    '"${traefik_version}")"',
+                    source,
+                )
+
+
 class EdgeAxLoginSecretCommandTests(unittest.TestCase):
     """The documented creation of the AX users file (docs/EDGE.md).
 
