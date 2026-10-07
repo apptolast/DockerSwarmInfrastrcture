@@ -133,6 +133,7 @@ yamllint \
   config/autoupdater.yml \
   config/organizationweb.yml \
   config/racinggame.yml \
+  config/winnest.yml \
   config/ax-lab.yml \
   config/host-security.yml \
   config/minecraft.yml \
@@ -188,6 +189,8 @@ scripts/validate-capacity.sh --reuse-rendered
   --output .build/organizationweb/stack.yml
 "${VENV_DIR}/bin/python" scripts/validate-racinggame.py \
   --output .build/racinggame/stack.yml
+"${VENV_DIR}/bin/python" scripts/validate-winnest.py \
+  --output .build/winnest/stack.yml
 "${VENV_DIR}/bin/python" scripts/validate-ax-lab.py \
   --output .build/ax-lab/99-z-dockerswarm-ax-lab.conf
 "${VENV_DIR}/bin/python" scripts/validate-image-channels.py validate \

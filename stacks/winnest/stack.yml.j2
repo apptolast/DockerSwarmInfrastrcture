@@ -1,0 +1,83 @@
+---
+version: "3.8"
+
+x-defaults: &defaults
+  init: true
+  logging:
+    driver: local
+    options:
+      max-file: "5"
+      max-size: 20m
+
+x-deploy: &deploy
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.labels.platform.workloads == true
+  restart_policy:
+    condition: any
+    delay: 5s
+    window: 60s
+  update_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: rollback
+    monitor: 120s
+    max_failure_ratio: 0
+  rollback_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: pause
+    monitor: 120s
+    max_failure_ratio: 0
+
+services:
+  web:
+    <<: *defaults
+    image: "{{ image_channels_map.winnest['web'].reference }}"
+    # The unprivileged NGINX base image already runs as 101:101; declaring
+    # it keeps the runtime identity a property of the reviewed stack.
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    # nginx writes only its PID file and temporary request bodies, all of
+    # them under /tmp (the image's nginx.conf points every path there).
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 16777216}
+    # Silences the base image's entrypoint scripts: none of them has
+    # anything to configure on a read-only root filesystem.
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    networks: [edge]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      <<: *deploy
+      labels:
+        apptolast.autoupdate: >-
+          {{ image_channels_map.winnest['web'].label }}
+      # Measured 2026-10-07 on this host: 3000 requests, 64 at a time, at a
+      # 0.1 CPU and 32 MiB cap, peaked at 7 MiB with no OOM. Sized small so
+      # ate-setup keeps room beside the AX node (docs/WINNEST.md).
+      resources:
+        reservations: {cpus: "0.05", memory: 16M}
+        limits: {cpus: "0.10", memory: 32M}
+
+networks:
+  edge:
+    external: true
+    name: "{{ winnest.edge_network }}"
+
+configs: {}
+
+# Declared and empty on purpose: scripts/validate-swarm-deployment.py
+# compares the rendered mapping against what the live stack references,
+# so the key has to exist even when the website consumes neither.
+secrets: {}

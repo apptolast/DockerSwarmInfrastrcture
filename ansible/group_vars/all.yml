@@ -16,6 +16,7 @@ edge_networks: "{{ platform_edge_networks }}"
 edge_application_networks:
   organizationweb: apptolast-edge-organizationweb
   racinggame: apptolast-edge-racinggame
+  winnest: apptolast-edge-winnest
   # The monitoring dashboard runs outside this repository; only its
   # ingress is codified here, on the network it already uses.
   observatorio: apptolast-edge-observatorio

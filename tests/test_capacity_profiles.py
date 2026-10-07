@@ -250,20 +250,20 @@ class CapacityProfileTests(unittest.TestCase):
 
     def test_application_profile_preserves_the_legacy_plan_and_reserves(self):
         totals = self.module.validate_profiles(self.base, self.profiles, self.stacks)
-        # The active plan now carries the game and the AX lab (host container
-        # group ax-lab: 560m/1936 MiB reserved, 2750m/3872 MiB limited, with
-        # the web forwarder) as well; both plans leave out Minecraft and
-        # OpenClaw while config/platform.yml parks them and count the
-        # external stacks (16/896 MiB, 50m/2050m).
+        # The active plan now carries the game, the WinNest website and the AX
+        # lab (host container group ax-lab: 560m/1936 MiB reserved,
+        # 2750m/3872 MiB limited, with the web forwarder) as well; both plans
+        # leave out Minecraft and OpenClaw while config/platform.yml parks
+        # them and count the external stacks (16/896 MiB, 50m/2050m).
         self.assertEqual(
             totals["organizationweb"],
             {
-                "reservations": {"cpu_millicores": 3110, "memory_mib": 5682},
-                "limits": {"cpu_millicores": 16900, "memory_mib": 12173},
+                "reservations": {"cpu_millicores": 3160, "memory_mib": 5698},
+                "limits": {"cpu_millicores": 17000, "memory_mib": 12205},
             },
         )
-        # 224 MiB under the 15981 - 3072 - 512 = 12397 MiB memory limit budget.
-        self.assertEqual(15981 - 3072 - 512 - 12173, 224)
+        # 192 MiB under the 15981 - 3072 - 512 = 12397 MiB memory limit budget.
+        self.assertEqual(15981 - 3072 - 512 - 12205, 192)
         self.assertEqual(totals["observability"]["limits"]["memory_mib"], 8941)
         self.assertEqual(totals["observability"]["limits"]["cpu_millicores"], 16000)
         # Without the lab, the active plan is what it was before it.
@@ -273,8 +273,8 @@ class CapacityProfileTests(unittest.TestCase):
         self.assertEqual(
             before["organizationweb"],
             {
-                "reservations": {"cpu_millicores": 2550, "memory_mib": 3746},
-                "limits": {"cpu_millicores": 14150, "memory_mib": 8301},
+                "reservations": {"cpu_millicores": 2600, "memory_mib": 3762},
+                "limits": {"cpu_millicores": 14250, "memory_mib": 8333},
             },
         )
         self.assertEqual(before["observability"], totals["observability"])
@@ -356,6 +356,7 @@ class CapacityProfileTests(unittest.TestCase):
             {"name": "edge_traefik", "stack": "edge"},
             {"name": "organizationweb_web", "stack": "organizationweb"},
             {"name": "racinggame_web", "stack": "racinggame"},
+            {"name": "winnest_web", "stack": "winnest"},
             {"name": "autoupdater_shepherd", "stack": "autoupdater"},
             *external_live(self.profiles),
         ]
@@ -363,6 +364,7 @@ class CapacityProfileTests(unittest.TestCase):
             "autoupdater",
             "organizationweb",
             "racinggame",
+            "winnest",
             "edge",
             "workloads",
         ):
@@ -680,7 +682,13 @@ class CapacityProfileTests(unittest.TestCase):
                     parked=parked,
                     live_containers=live_host_containers(profiles),
                 )
-        for requested in ("edge", "autoupdater", "organizationweb", "racinggame"):
+        for requested in (
+            "edge",
+            "autoupdater",
+            "organizationweb",
+            "racinggame",
+            "winnest",
+        ):
             with self.subTest(requested=requested, state="running"):
                 with self.assertRaisesRegex(
                     self.module.capacity.CapacityError,
@@ -768,6 +776,7 @@ class CapacityProfileTests(unittest.TestCase):
             "observability",
             "autoupdater",
             "racinggame",
+            "winnest",
             "ax-lab",
             "site",
         ):

@@ -64,6 +64,7 @@
         edge_application_networks == {
           'organizationweb': 'apptolast-edge-organizationweb',
           'racinggame': 'apptolast-edge-racinggame',
+          'winnest': 'apptolast-edge-winnest',
           'observatorio': 'apptolast-edge-observatorio',
           'satisfactory': 'apptolast-edge-satisfactory',
           'ax': 'apptolast-edge-ax'
@@ -75,6 +76,8 @@
       - organizationweb.edge_network == 'apptolast-edge-organizationweb'
       - racinggame.hostname == 'racinggame.apptolast.com'
       - racinggame.edge_network == 'apptolast-edge-racinggame'
+      - winnest.hostname == 'winnest.apptolast.com'
+      - winnest.edge_network == 'apptolast-edge-winnest'
       - >-
         edge_adopted_attachable_networks
         == [

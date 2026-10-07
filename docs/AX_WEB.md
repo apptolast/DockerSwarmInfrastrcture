@@ -255,8 +255,8 @@ base de datos. Cada repositorio es público y su rama la de por defecto, según
 
 No están, por no cumplir esas reglas: los repositorios privados (entre
 ellos `MigracionNetCup`), los servicios cuyas imágenes no salen de un
-repositorio de `apptolast` (los dos portfolios, `minecraft-stats` y
-`racinggame`), los de los servicios que la migración denegó
+repositorio de `apptolast` (los dos portfolios, `minecraft-stats`,
+`racinggame` y `winnest`), los de los servicios que la migración denegó
 (`denied_services` de `config/services.yml`) y `TemplateSSDUncleBob`,
 porque [adopcion-templatessd.md](adopcion-templatessd.md) adopta la
 plantilla de Cénit Digital y nada prueba que sea esta copia.
@@ -460,14 +460,16 @@ La ruta de Traefik se revierte con el playbook `edge` (ver
 
 ## Capacidad
 
-El reenviador entra en el grupo `ax-lab` del plan activo: el plan queda en
-3 110m y 5 682 MiB reservados y 16 900m y 12 173 MiB de límite, 224 MiB bajo
-los 12 397 MiB del presupuesto. Como `ate-setup` corre junto al nodo y sus
-límites tienen que caber en lo que el plan deja libre, baja de 256 a
-224 MiB (112 MiB reservados) y el techo de CPU libre pasa de 850m a 600m
-(ver [AX.md](AX.md), «Capacidad»). El panel corre dentro del nodo: pide
-50m y 96 MiB y tiene 500m y 384 MiB de límite. Sus 384 MiB caben en los
-1 792 MiB que el validador reserva a todo lo que no son workers (ver
+El reenviador entró en el grupo `ax-lab` del plan activo: el plan quedaba
+en 3 110m y 5 682 MiB reservados y 16 900m y 12 173 MiB de límite, 224 MiB
+bajo los 12 397 MiB del presupuesto. Como `ate-setup` corre junto al nodo y
+sus límites tienen que caber en lo que el plan deja libre, bajó de 256 a
+224 MiB (112 MiB reservados) y el techo de CPU libre pasó de 850m a 600m
+(ver [AX.md](AX.md), «Capacidad»). Desde que entró la web de WinNest el
+techo es de 192 MiB y 500m (ver [WINNEST.md](WINNEST.md), «Capacidad»).
+El panel corre dentro del nodo: pide 50m y 96 MiB y tiene 500m y 384 MiB
+de límite. Sus 384 MiB caben en los 1 792 MiB que el validador reserva a
+todo lo que no son workers (ver
 [AX.md](AX.md), «WorkerPool y capacidad dentro del nodo»), pero nada dentro
 del nodo lo impone: el kubelet ve toda la memoria del host.
 

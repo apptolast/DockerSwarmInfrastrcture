@@ -7,8 +7,9 @@ topología mononodo actual. Une los recursos de los cuatro stacks (`edge`,
 `workloads`, `observability` y `autoupdater`) con el tamaño mínimo del
 servidor y evita que un cambio aparentemente local produzca un plan global
 imposible. `config/capacity-profiles.yml` define el perfil activo
-`organizationweb`, que sustituye `observability` por `organizationweb`, y el
-perfil `observability`; ambos perfiles incluyen `autoupdater`.
+`organizationweb`, que sustituye `observability` por las aplicaciones
+`organizationweb`, `racinggame` y `winnest`, y el perfil `observability`;
+ambos perfiles incluyen `autoupdater`.
 
 Docker advierte que agotar la memoria puede activar el OOM killer contra un
 contenedor, el daemon u otros procesos importantes del host. También distingue
@@ -72,11 +73,11 @@ en `config/capacity.yml` y `config/capacity-profiles.yml` dentro del mismo
 cambio revisado, y el validador exige que siga cabiendo en el presupuesto.
 Con los stacks externos declarados (ver «Stacks externos») ya no cabe sin
 más: Minecraft llevaría el plan `observability` a 13 037 MiB de límite. En el
-activo, con el laboratorio AX (ver «Contenedores del host»), no cabe ninguno
-de los dos: OpenClaw lo llevaría a 12 653 MiB, Minecraft a 16 237 y los dos
-juntos a 16 749, por encima de 12 397; sin el laboratorio, los dos juntos
-serían 12 909. Volver a arrancarlos exige antes una decisión de capacidad
-del propietario.
+activo, con el laboratorio AX (ver «Contenedores del host») y la web de
+WinNest, no cabe ninguno de los dos: OpenClaw lo llevaría a 12 717 MiB,
+Minecraft a 16 301 y los dos juntos a 16 813, por encima de 12 397; sin el
+laboratorio, los dos juntos serían 12 941. Volver a arrancarlos exige antes
+una decisión de capacidad del propietario.
 Con los dos en marcha, `workloads` suma 5 984/9 856 MiB y 2 300m/11 600m, y el
 total de la plataforma completa llegaría a 12 653 MiB de límite, 256 MiB por
 encima del techo.
@@ -99,10 +100,12 @@ capacidad para desaparcarlos. Fuera de eso, cualquier aumento de un límite
 exige reducir otro en la misma revisión. El vigilante `autoupdater` es
 distinto: su interruptor `enabled: false` renderiza `replicas: 0` sin liberar
 el presupuesto (`SUSPENDABLE_SERVICES`). En el perfil activo
-`organizationweb`, con los stacks externos y el laboratorio AX, las sumas
-son 5 682 MiB reservados y 12 173 MiB de límite, con 3 110m y 16 900m de
-CPU: 224 MiB por debajo del techo de memoria. Sin el laboratorio serían
-3 746 y 8 301 MiB, con 2 550m y 14 150m.
+`organizationweb`, con los stacks externos, el laboratorio AX y la web de
+WinNest, las sumas son 5 698 MiB reservados y 12 205 MiB de límite, con
+3 160m y 17 000m de CPU: 192 MiB y 500m por debajo de los techos. Sin el
+laboratorio serían 3 762 y 8 333 MiB, con 2 600m y 14 250m. La web solo
+pide 16/32 MiB y 50m/100m: NGINX estático llegó a 7 MiB con 3 000
+peticiones, 64 a la vez (ver [WINNEST.md](WINNEST.md), «Capacidad»).
 
 El límite de Minecraft es 4 096 MiB y su heap inicial/máximo es 3 GiB; el
 validador exige al menos 1 GiB para metaspace, stacks, buffers directos y
@@ -250,12 +253,12 @@ mientras exista (ver [AX.md](AX.md), «Contenedores transitorios»). La
 compilación de reserva de una imagen de Substrate (3 072 MiB sin swap,
 1 536 MiB reservados, 2 CPU, 1 024 PIDs) solo corre con el nodo parado o
 ausente, así que usa su presupuesto: registro y compilación suman
-3 328 MiB, por debajo de los 3 872 MiB del grupo. `ate-setup` (224 MiB sin
-swap, 112 MiB reservados, 0,5 CPU, 256 PIDs) corre junto al nodo y cabe en
-los 224 MiB y 600m de límites que el plan activo deja libres bajo el
-presupuesto (12 397 MiB y 17 500m) desde que el reenviador del panel web
-entró en el grupo; el margen operativo de 512 MiB sigue
-aparte. `scripts/validate-ax-lab.py` calcula ese margen libre de cada plan
+3 328 MiB, por debajo de los 3 872 MiB del grupo. `ate-setup` (192 MiB sin
+swap, 96 MiB reservados, 0,5 CPU, 256 PIDs) corre junto al nodo y cabe en
+los 192 MiB y 500m de límites que el plan activo deja libres bajo el
+presupuesto (12 397 MiB y 17 500m) desde que la web de WinNest entró en el
+plan; el margen operativo de 512 MiB sigue aparte.
+`scripts/validate-ax-lab.py` calcula ese margen libre de cada plan
 que ejecuta el grupo `ax-lab` y lo exige como techo de sus límites. Los dos
 se niegan a arrancar sin su `MemAvailable` mínimo y se matan si baja del
 margen operativo. Ninguna cifra de los planes cambia.
@@ -376,7 +379,7 @@ El validador:
   swap inesperada y presupuesto excedido.
 
 Los playbooks `site`, `edge`, `workloads`, `observability`,
-`organizationweb`, `racinggame`, `autoupdater` y `ax-lab` ejecutan
+`organizationweb`, `racinggame`, `winnest`, `autoupdater` y `ax-lab` ejecutan
 `capacity_preflight` antes de cualquier rol que muta el servidor. El preflight
 recopila los facts de hardware aunque el playbook parcial desactive el
 gathering general y detiene la ejecución si el host o el plan global no

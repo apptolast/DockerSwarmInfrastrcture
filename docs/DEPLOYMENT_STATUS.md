@@ -164,6 +164,17 @@ aquí:
   DNS (ver [EDGE.md](EDGE.md), «Registro DNS»). Hasta que se aplique la ruta
   de AX (EDGE.md, «Ruta de AX»), Traefik no tiene certificado para ese nombre
   y, con `sniStrict`, rechaza su TLS.
+- El registro DNS `winnest.apptolast.com` (A a `159.195.156.57`, DNS-only,
+  sin AAAA) lo creó el propietario a mano en Cloudflare para la web de
+  WinNest, con las mismas reglas que el de `ax`. Resolvía a esa IP el
+  2026-10-07. Tampoco está en Terraform (ver [WINNEST.md](WINNEST.md),
+  «Alcance y precondiciones»).
+- root tiene en `/root/.docker/config.json` un login de Docker Hub de la
+  cuenta `ocholoko888`, con permiso de escritura en toda la cuenta, desde el
+  2026-09-11. No lo crea ni lo usa ningún rol de este repositorio (el
+  vigilante usa su propio secret). El 2026-10-07 se usó para publicar la
+  imagen baseline de WinNest (ver [WINNEST.md](WINNEST.md), «La imagen»).
+  Retirarlo con `docker logout` es decisión del propietario.
 - `fs.suid_dumpable` vale `2` en vivo (leído el 2026-09-25), frente al `0`
   que declaran `ansible/roles/host_baseline/defaults/main.yml` y
   `/etc/sysctl.d/99-z-dockerswarm-host-hardening.conf`. Los otros 24 valores

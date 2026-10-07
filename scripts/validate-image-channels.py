@@ -43,6 +43,7 @@ ALLOWED_STACKS = (
     "workloads",
     "organizationweb",
     "racinggame",
+    "winnest",
     "observability",
     "autoupdater",
 )
@@ -51,6 +52,7 @@ RENDERED_STACKS = (
     "workloads",
     "organizationweb",
     "racinggame",
+    "winnest",
     "observability",
     "autoupdater",
 )
@@ -305,6 +307,7 @@ def load_baselines(
     services: dict[str, Any] | None = None,
     organizationweb: dict[str, Any] | None = None,
     racinggame: dict[str, Any] | None = None,
+    winnest: dict[str, Any] | None = None,
     group_vars: dict[str, Any] | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Index every reviewed baseline image by (catalog, component)."""
@@ -314,6 +317,8 @@ def load_baselines(
         organizationweb = load_unique_yaml(root / "config/organizationweb.yml")
     if racinggame is None:
         racinggame = load_unique_yaml(root / "config/racinggame.yml")
+    if winnest is None:
+        winnest = load_unique_yaml(root / "config/winnest.yml")
     if group_vars is None:
         group_vars = load_unique_yaml(root / "ansible/group_vars/all.yml")
     baselines: dict[tuple[str, str], dict[str, Any]] = {}
@@ -335,6 +340,7 @@ def load_baselines(
             "organizationweb",
             "observability",
             "racinggame",
+            "winnest",
         }:
             raise ChannelError("service catalog shadows a reserved baseline")
         for image in service.get("images", []):
@@ -360,6 +366,14 @@ def load_baselines(
         raise ChannelError("RacingGame catalog has no images")
     for name, reference in game["images"].items():
         add(("racinggame", str(name)), reference, None)
+
+    website = winnest.get("winnest")
+    if not isinstance(website, dict) or not isinstance(
+        website.get("images"), dict
+    ):
+        raise ChannelError("WinNest catalog has no images")
+    for name, reference in website["images"].items():
+        add(("winnest", str(name)), reference, None)
 
     components = (
         services.get("internal_platform", {})

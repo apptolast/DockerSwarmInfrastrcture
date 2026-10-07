@@ -45,6 +45,7 @@
           "observability",
           "organizationweb",
           "racinggame",
+          "winnest",
           "workloads"
         ])
         | length == 0

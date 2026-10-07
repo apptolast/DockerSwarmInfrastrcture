@@ -1250,12 +1250,13 @@ class WebValidatorTests(unittest.TestCase):
                 "pids_limit": 64,
             },
         )
-        # What the plan leaves free is ate-setup's ceiling: 224 MiB and 600m.
-        self.assertEqual(VALIDATOR.load_free_limit_budget(), (224, 600))
+        # What the plan leaves free is ate-setup's ceiling: 192 MiB and 500m
+        # since the WinNest website joined the plan.
+        self.assertEqual(VALIDATOR.load_free_limit_budget(), (192, 500))
         install = self.lab["substrate"]["install"]
         self.assertEqual(
             (install["memory_limit_mib"], install["cpu_limit_millicores"]),
-            (224, 500),
+            (192, 500),
         )
 
 
