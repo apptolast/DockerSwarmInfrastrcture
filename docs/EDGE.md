@@ -974,8 +974,9 @@ de él (DNS-01), pero el navegador sí: hasta que resuelve, solo responde
 `ax.apptolast.com`.
 
 `ax.apptolast.com` es un registro A a `159.195.156.57` que el propietario
-creó a mano en Cloudflare, DNS-only, igual que los de OrganizationWeb y
-RacingGame (ver [RACINGGAME.md](RACINGGAME.md), «Alcance y precondiciones»).
+creó a mano en Cloudflare, DNS-only, igual que los de OrganizationWeb,
+RacingGame y WinNest (ver [RACINGGAME.md](RACINGGAME.md), «Alcance y
+precondiciones», y [WINNEST.md](WINNEST.md)).
 El 2026-09-26 resolvía a esa IP con TTL servido de 300 s y sin AAAA. Es
 deriva frente a Terraform (ver
 [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Deriva fuera del
@@ -1054,6 +1055,13 @@ El rollback es el de «Rollback de la ruta», con el spec del paso 1 como
 destino: `ax.apptolast.com` sigue igual y `oficina.apptolast.com` deja de
 tener router (404 de Traefik). Después del paso 6, la vuelta atrás es un PR
 revisado y otro apply de `edge`.
+
+### Ventana de la ruta de WinNest
+
+La ventana de `edge` que publica `winnest.apptolast.com` (red
+`apptolast-edge-winnest` y router `winnest`) es «Ventana de la ruta» de
+[WINNEST.md](WINNEST.md). Sigue las reglas comunes de la compuerta STOP 10
+de `CLAUDE.md` y usa el rollback de «Rollback de la ruta».
 
 ### Ventana de aplicación de la ruta
 

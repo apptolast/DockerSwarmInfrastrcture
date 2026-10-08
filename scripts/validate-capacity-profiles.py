@@ -24,10 +24,11 @@ SPEC.loader.exec_module(capacity)
 # The independent application stacks: rendered from their own
 # config/<name>.yml plus stacks/<name>/stack.yml.j2, budgeted in
 # config/capacity-profiles.yml rather than in the v1 contract.
-APP_STACKS = ("organizationweb", "racinggame")
+APP_STACKS = ("organizationweb", "racinggame", "winnest")
 APP_SERVICES = {
     "organizationweb": ["backend", "postgres", "rabbitmq", "web"],
     "racinggame": ["web"],
+    "winnest": ["web"],
 }
 # A plan is always edge + workloads + applications + autoupdater.
 PLAN_HEAD = ["edge", "workloads"]
@@ -697,6 +698,7 @@ def main(argv=None):
             "observability",
             "organizationweb",
             "racinggame",
+            "winnest",
             "autoupdater",
             "ax-lab",
             "site",

@@ -193,7 +193,7 @@ El validador rechaza:
   tiempo fuera de 600 a 7 200 s; una instalación con otro router que
   `envoy` (ni `agentgateway` ni sdsmint, que no tienen clave), con más
   memoria o CPU de las que el plan de capacidad que ejecuta el laboratorio
-  deja libres bajo el presupuesto de límites (224 MiB y 600m hoy), sin el
+  deja libres bajo el presupuesto de límites (192 MiB y 500m hoy), sin el
   suelo de `MemAvailable` o con un tiempo que no cubra las esperas del
   propio `ate-setup`; y un inventario de cargas desordenado, repetido,
   fuera de los tres espacios de nombres, sin el DaemonSet
@@ -805,7 +805,7 @@ ate-setup --kind --no-dev-env --kubeconfig /kubeconfig --context kind-kind \
   --image-repo localhost:5001 --image-tag 67253354 deploy ate-system
 ```
 
-Corre junto al nodo, así que sus límites caben en los 224 MiB y los 600m
+Corre junto al nodo, así que sus límites caben en los 192 MiB y los 500m
 de límites que el plan de capacidad activo deja libres bajo su presupuesto;
 el margen operativo de 512 MiB queda aparte (ver
 [CAPACITY.md](CAPACITY.md), «Contenedores del host»). El gestor lo acota a
@@ -1506,13 +1506,16 @@ CLI o las herramientas.
 no reserva CPU para un contenedor suelto. El tercer contenedor es
 `ax-web-edge`, el reenviador del panel web (ver [AX_WEB.md](AX_WEB.md)). El
 validador exige que coincidan con `config/ax-lab.yml`. Solo lo ejecuta el
-plan activo `organizationweb`, que queda en 3 110m y 5 682 MiB reservados y
-16 900m y 12 173 MiB de límite: 224 MiB por debajo de los 12 397 MiB del
-presupuesto de memoria. Por eso `ate-setup`, que corre junto al nodo y
-tiene que caber en lo que el plan deja libre, baja de 256 a 224 MiB (ver
-«Instalación de Substrate»). El plan `observability` no lo incluye, así que
-exige el laboratorio ausente o parado (ver [CAPACITY.md](CAPACITY.md),
-«Contenedores del host»).
+plan activo `organizationweb`, que con el reenviador quedaba en 3 110m y
+5 682 MiB reservados y 16 900m y 12 173 MiB de límite: 224 MiB por debajo
+de los 12 397 MiB del presupuesto de memoria. Por eso `ate-setup`, que corre
+junto al nodo y tiene que caber en lo que el plan deja libre, bajó de 256 a
+224 MiB (ver «Instalación de Substrate»). Con la web de WinNest (ver
+[WINNEST.md](WINNEST.md)) el plan queda en 3 160m y 5 698 MiB reservados y
+17 000m y 12 205 MiB de límite, 192 MiB y 500m por debajo del presupuesto,
+y `ate-setup` baja a 192 MiB (96 MiB reservados), con la misma CPU. El plan
+`observability` no lo incluye, así que exige el laboratorio ausente o
+parado (ver [CAPACITY.md](CAPACITY.md), «Contenedores del host»).
 
 Ningún playbook de producción depende de que el laboratorio esté en marcha.
 Con el grupo en el plan activo, el preflight de cada playbook acepta los dos
@@ -2168,8 +2171,8 @@ container outside the active profile is running».
   manifiestos fijados llevan en claro el par de claves S3 estático de
   upstream para rustfs, dentro del clúster y solo en loopback, que el rol
   nunca lee ni registra.
-- Un `ate-setup` en marcha ocupa hasta 224 MiB y 0,5 CPU que ningún plan
-  declara, dentro de los 224 MiB y 600m de límites que el plan activo deja
+- Un `ate-setup` en marcha ocupa hasta 192 MiB y 0,5 CPU que ningún plan
+  declara, dentro de los 192 MiB y 500m de límites que el plan activo deja
   libres bajo su presupuesto; el margen operativo no se toca (ver
   [CAPACITY.md](CAPACITY.md)).
 - Si se interrumpe el controlador durante una compilación de reserva o una

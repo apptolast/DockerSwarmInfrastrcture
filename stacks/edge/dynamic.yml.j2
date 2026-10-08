@@ -119,6 +119,17 @@ http:
       service: racinggame
       tls:
         certResolver: letsencrypt
+    # The WinNest website: static files only, so the full default chain
+    # (security headers plus compression; nginx itself does not compress).
+    winnest:
+      rule: "Host(`{{ winnest.hostname }}`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - edge-default
+      service: winnest
+      tls:
+        certResolver: letsencrypt
     # The monitoring dashboard is deployed outside this repository. Its
     # route is codified here so a reviewed edge apply reproduces the
     # running state instead of deleting it.
@@ -326,6 +337,14 @@ http:
           - url: http://racinggame_web:3000
         healthCheck:
           path: /info
+          interval: 15s
+          timeout: 3s
+    winnest:
+      loadBalancer:
+        servers:
+          - url: http://winnest_web:8080
+        healthCheck:
+          path: /healthz
           interval: 15s
           timeout: 3s
     monitorizacion:

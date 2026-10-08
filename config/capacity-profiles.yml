@@ -5,7 +5,7 @@
 #
 # A plan is edge + workloads + its application stacks + autoupdater, plus
 # every external stack below and the host container groups it lists. The
-# active plan runs two applications, so `stacks` lists both; the
+# active plan runs three applications, so `stacks` lists all three; the
 # observability plan stays a single-application alternative.
 capacity_profiles:
   schema_version: 1
@@ -16,7 +16,7 @@ capacity_profiles:
     # and include the external stacks (50m/16 MiB reserved, 2050m/896 MiB
     # limited). Only the active plan runs the AX lab (host container group
     # ax-lab: 560m/1936 MiB reserved, 2750m/3872 MiB limited), which leaves
-    # it 224 MiB under the 12397 MiB memory limit budget. The observability
+    # it 192 MiB under the 12397 MiB memory limit budget. The observability
     # plan requires the lab stopped.
     observability:
       stacks: [edge, workloads, observability, autoupdater]
@@ -25,11 +25,17 @@ capacity_profiles:
         reservations: {cpu_millicores: 2920, memory_mib: 4066}
         limits: {cpu_millicores: 16000, memory_mib: 8941}
     organizationweb:
-      stacks: [edge, workloads, organizationweb, racinggame, autoupdater]
+      stacks:
+        - edge
+        - workloads
+        - organizationweb
+        - racinggame
+        - winnest
+        - autoupdater
       host_containers: [ax-lab]
       aggregate:
-        reservations: {cpu_millicores: 3110, memory_mib: 5682}
-        limits: {cpu_millicores: 16900, memory_mib: 12173}
+        reservations: {cpu_millicores: 3160, memory_mib: 5698}
+        limits: {cpu_millicores: 17000, memory_mib: 12205}
   organizationweb:
     expected_services: [backend, postgres, rabbitmq, web]
     aggregate:
@@ -40,6 +46,11 @@ capacity_profiles:
     aggregate:
       reservations: {cpu_millicores: 200, memory_mib: 128}
       limits: {cpu_millicores: 1000, memory_mib: 256}
+  winnest:
+    expected_services: [web]
+    aggregate:
+      reservations: {cpu_millicores: 50, memory_mib: 16}
+      limits: {cpu_millicores: 100, memory_mib: 32}
   # Swarm stacks deployed on this host outside this repository: no stack
   # file, image or source lives here. Each service is declared with the
   # replicas and resources measured live on 2026-09-25; every plan counts

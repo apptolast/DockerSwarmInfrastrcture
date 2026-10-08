@@ -52,6 +52,7 @@ EDGE_NETWORKS = {
 APPLICATION_NETWORKS = {
     "organizationweb": "apptolast-edge-organizationweb",
     "racinggame": "apptolast-edge-racinggame",
+    "winnest": "apptolast-edge-winnest",
     "observatorio": "apptolast-edge-observatorio",
     "satisfactory": "apptolast-edge-satisfactory",
     "ax": "apptolast-edge-ax",
@@ -157,6 +158,30 @@ AX_ROUTE_ADDITIONS: dict[str, dict[str, Any]] = {
                 "responseHeaderTimeout": "60s",
                 "idleConnTimeout": "180s",
             },
+        },
+    },
+}
+# What the WinNest website route adds on top of that (docs/WINNEST.md).
+WINNEST_ROUTE_ADDITIONS: dict[str, dict[str, Any]] = {
+    "routers": {
+        "winnest": {
+            "rule": "Host(`winnest.apptolast.com`)",
+            "entryPoints": ["websecure"],
+            "middlewares": ["edge-default"],
+            "service": "winnest",
+            "tls": {"certResolver": "letsencrypt"},
+        },
+    },
+    "services": {
+        "winnest": {
+            "loadBalancer": {
+                "servers": [{"url": "http://winnest_web:8080"}],
+                "healthCheck": {
+                    "path": "/healthz",
+                    "interval": "15s",
+                    "timeout": "3s",
+                },
+            }
         },
     },
 }
@@ -571,6 +596,10 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             "racinggame": {
                 "hostname": "racinggame.apptolast.com",
                 "edge_network": "apptolast-edge-racinggame",
+            },
+            "winnest": {
+                "hostname": "winnest.apptolast.com",
+                "edge_network": "apptolast-edge-winnest",
             },
             "edge_adopted_attachable_networks": ADOPTED_NETWORKS,
             "edge_network_subnets": NETWORK_SUBNETS,
@@ -2281,10 +2310,11 @@ class EdgeLiveParityTests(unittest.TestCase):
                 "passHostHeader": True,
                 "servers": [],
             }
-        for section, additions in AX_ROUTE_ADDITIONS.items():
-            existing = expected["http"].setdefault(section, {})
-            self.assertFalse(set(existing) & set(additions), section)
-            existing.update(copy.deepcopy(additions))
+        for route_additions in (AX_ROUTE_ADDITIONS, WINNEST_ROUTE_ADDITIONS):
+            for section, additions in route_additions.items():
+                existing = expected["http"].setdefault(section, {})
+                self.assertFalse(set(existing) & set(additions), section)
+                existing.update(copy.deepcopy(additions))
         return expected
 
     def test_the_fixture_holds_no_credential(self) -> None:

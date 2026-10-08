@@ -1,0 +1,23 @@
+---
+# Reviewed contract of the independent WinNest website stack (stack
+# `winnest`, service `web`). scripts/validate-winnest.py pins every value
+# below and renders stacks/winnest/stack.yml.j2. See docs/WINNEST.md.
+#
+# The website is static: unprivileged NGINX serves the files Astro built
+# into the image. It owns no volume, no database and no secret, so a lost
+# server is rebuilt from this commit plus the published image alone.
+#
+# `images.web` is the reviewed baseline, kept as restore evidence. What the
+# service actually runs is the `:latest` channel in
+# config/image-channels.yml, which the watcher re-pins between deploys.
+winnest:
+  schema_version: 1
+  stack_name: winnest
+  # Commit of PabloHurtadoGonzalo86/WinNest the baseline image was built
+  # from; the image carries it as org.opencontainers.image.revision.
+  release: cfead73c56c97be76544816c31b99186260a1f89
+  hostname: winnest.apptolast.com
+  edge_network: apptolast-edge-winnest
+  images:
+    web: "ocholoko888/winnest-website@sha256:\
+      f77d1432069c9ca3d226f439cd0a65e96c54393cebe45a221581b432bfce91d9"

@@ -8,6 +8,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Stack independiente `winnest` para la web de WinNest en
+  `https://winnest.apptolast.com`: NGINX sin privilegios con raíz de solo
+  lectura, sin capacidades, sin volúmenes ni secrets, detrás de Traefik con
+  `edge-default`. Catálogo `config/winnest.yml` (release `cfead73` y digest
+  de `ocholoko888/winnest-website`), canal `:latest` con auto-actualización,
+  red `apptolast-edge-winnest`, ruta y upstream del edge, rol y playbook
+  `winnest` con prueba final por HTTPS verificado, validador
+  `scripts/validate-winnest.py` y presupuesto de 50m/16 MiB reservados y
+  100m/32 MiB de límite, con sus pruebas en
+  `tests/test_winnest_contract.py`. El CI del repositorio de WinNest
+  construye y prueba la imagen, y la publicará cuando tenga
+  `DOCKERHUB_TOKEN`; la baseline se publicó a mano desde el host. Ver
+  [`docs/WINNEST.md`](docs/WINNEST.md).
+
 - Observador manual de metadatos de workflows de n8n en
   `scripts/observe-n8n-workflows.py`, con baseline privado y consulta
   PostgreSQL de solo lectura. Distingue activos observados de bajas
@@ -628,6 +642,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   dos estados.
 
 ### Changed
+
+- `ate-setup` del laboratorio AX baja de 224 a 192 MiB de límite (96 MiB
+  reservados, 704 MiB de `MemAvailable` mínimo) para seguir cabiendo en los
+  límites que el plan activo deja libres con la web de WinNest, que quedan
+  en 192 MiB y 500m. Las cifras de capacidad de `docs/CAPACITY.md`,
+  `docs/AX.md` y `docs/AX_WEB.md` se actualizan con el plan nuevo.
 
 - El panel web de AX ya no tiene ventana sin ejecuciones: por decisión del
   propietario del 2026-09-28, `web.blackout_utc` pasa de `22:30-00:40` a

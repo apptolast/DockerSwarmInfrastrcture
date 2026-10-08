@@ -37,6 +37,8 @@ deployment_metadata_components_by_playbook:
     - organizationweb
   racinggame:
     - racinggame
+  winnest:
+    - winnest
   autoupdater:
     - autoupdater
   ax-lab:

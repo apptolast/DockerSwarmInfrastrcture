@@ -10,6 +10,7 @@
     - ../../config/services.yml
     - ../../config/organizationweb.yml
     - ../../config/racinggame.yml
+    - ../../config/winnest.yml
     - ../group_vars/all.yml
 
   vars:

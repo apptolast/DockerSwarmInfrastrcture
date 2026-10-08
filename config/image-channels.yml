@@ -185,6 +185,17 @@ image_channel_services:
     class: owner
     autoupdate: true
 
+  # --- winnest ------------------------------------------------------------
+  # The WinNest website: static files behind unprivileged NGINX, built and
+  # pushed by the WinNest repository's CI on every change to its main
+  # branch. No volume of its own, so it rides the `:latest` channel too.
+  - stack: winnest
+    service: web
+    baseline: {catalog: winnest, component: web}
+    reference: docker.io/ocholoko888/winnest-website:latest
+    class: owner
+    autoupdate: true
+
   # --- observability (not in the active profile; holds only) -------------
   - stack: observability
     service: prometheus

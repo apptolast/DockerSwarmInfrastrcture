@@ -62,11 +62,13 @@ ADOPTED_CHANNELS = {
         "docker.io/ocholoko888/organizationweb-web:latest"
     ),
     ("racinggame", "web"): "docker.io/ocholoko888/racinggame:latest",
+    ("winnest", "web"): "docker.io/ocholoko888/winnest-website:latest",
 }
 # PR-B3 opts in only the channels without data of their own or schema
 # migrations; everything else stays out of the watcher's selection.
 AUTOUPDATED_CHANNELS = {
     ("racinggame", "web"),
+    ("winnest", "web"),
     ("workloads", "kropia"),
     ("workloads", "minecraft-stats"),
     ("workloads", "portfolio-alberto"),
@@ -129,6 +131,7 @@ class ChannelMapTests(unittest.TestCase):
                 "workloads": 14,
                 "organizationweb": 4,
                 "racinggame": 1,
+                "winnest": 1,
                 "observability": 12,
             },
         )
@@ -591,6 +594,7 @@ class RenderedCoverageTests(unittest.TestCase):
                 "workloads",
                 "organizationweb",
                 "racinggame",
+                "winnest",
                 "observability",
                 "autoupdater",
             )
@@ -1054,6 +1058,7 @@ class ChannelWiringTests(unittest.TestCase):
             "workloads",
             "organizationweb",
             "racinggame",
+            "winnest",
             "observability",
         ):
             with self.subTest(stack=stack):
@@ -1071,6 +1076,7 @@ class ChannelWiringTests(unittest.TestCase):
             "ansible/roles/workloads/tasks/deploy.yml",
             "ansible/roles/organizationweb/tasks/deploy.yml",
             "ansible/roles/racinggame/tasks/deploy.yml",
+            "ansible/roles/winnest/tasks/deploy.yml",
             "ansible/roles/observability/tasks/deploy.yml",
         ):
             with self.subTest(path=path):

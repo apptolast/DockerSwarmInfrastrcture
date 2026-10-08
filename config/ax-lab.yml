@@ -165,9 +165,9 @@ ax_lab:
       mem_available_floor_mib: 512
     # ate-setup --kind --atenet-router envoy --image-repo localhost:5001
     # deploy ate-system, from its pinned image, only when the install
-    # drifts. It runs beside the node, so its limits fit in the 224 MiB and
-    # 600m of limits the active capacity plan leaves free since the web
-    # forwarder joined it; the operational headroom is not spent.
+    # drifts. It runs beside the node, so its limits fit in the 192 MiB and
+    # 500m of limits the active capacity plan leaves free since the WinNest
+    # website joined it; the operational headroom is not spent.
     install:
       atenet_router: envoy
       rollout_timeout_seconds: 600
@@ -179,11 +179,11 @@ ax_lab:
       # (deploy.go line 99, csi.go lines 61-104), and six rollouts
       # (deploy.go lines 150-174).
       timeout_seconds: 6480
-      memory_limit_mib: 224
-      memory_reservation_mib: 112
+      memory_limit_mib: 192
+      memory_reservation_mib: 96
       cpu_limit_millicores: 500
       pids_limit: 256
-      min_mem_available_mib: 736
+      min_mem_available_mib: 704
       mem_available_floor_mib: 512
     # What `ate-setup --kind` deploys at the pinned commit: every workload
     # of its three namespaces, sorted by namespace, kind and name, with the

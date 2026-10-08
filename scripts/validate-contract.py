@@ -293,6 +293,10 @@ expected_stack_networks["edge-racinggame"] = {
     "external": True,
     "name": "apptolast-edge-racinggame",
 }
+expected_stack_networks["edge-winnest"] = {
+    "external": True,
+    "name": "apptolast-edge-winnest",
+}
 # The monitoring dashboard lives outside this repository; only its
 # ingress is reviewed here.
 expected_stack_networks["edge-observatorio"] = {
@@ -628,6 +632,7 @@ if set(dynamic["http"]["routers"]) != {
     "edge-ping-internal",
     "organizationweb",
     "racinggame",
+    "winnest",
     "monitorizacion",
     *edge_routes,
     *satisfactory_routers,
@@ -638,6 +643,7 @@ if set(dynamic["http"]["services"]) != {
     *edge_routes,
     "organizationweb",
     "racinggame",
+    "winnest",
     "monitorizacion",
     *satisfactory_services,
     "ax",
@@ -774,6 +780,23 @@ if dynamic["http"]["services"]["racinggame"] != {
     },
 }:
     fail("the RacingGame upstream differs from its independent contract")
+if dynamic["http"]["routers"]["winnest"] != {
+    "rule": "Host(`winnest.apptolast.com`)",
+    "entryPoints": ["websecure"],
+    "middlewares": ["edge-default"],
+    "service": "winnest",
+    "tls": {"certResolver": "letsencrypt"},
+}:
+    fail("the WinNest router differs from its independent contract")
+if dynamic["http"]["services"]["winnest"] != {
+    "loadBalancer": {
+        "servers": [{"url": "http://winnest_web:8080"}],
+        "healthCheck": {
+            "path": "/healthz", "interval": "15s", "timeout": "3s",
+        },
+    },
+}:
+    fail("the WinNest upstream differs from its independent contract")
 # Codified from the live Traefik configuration: the dashboard itself
 # is deployed outside this repository, so only its route is pinned.
 monitorizacion_route = dynamic["http"]["routers"]["monitorizacion"]

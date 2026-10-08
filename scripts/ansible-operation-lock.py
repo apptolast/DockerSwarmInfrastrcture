@@ -37,6 +37,7 @@ SAFE_PLAYBOOKS = {
     "observability",
     "organizationweb",
     "racinggame",
+    "winnest",
     "autoupdater",
     "ax-lab",
     "backup",

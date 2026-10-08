@@ -68,6 +68,7 @@ SERVICE_CATALOG = ROOT / "config/services.yml"
 STACK_CATALOGS = {
     "organizationweb": ROOT / "config/organizationweb.yml",
     "racinggame": ROOT / "config/racinggame.yml",
+    "winnest": ROOT / "config/winnest.yml",
 }
 # The catalog components Traefik routes a catalog's host names to: a
 # database, cache, browser or API behind them publishes none.
