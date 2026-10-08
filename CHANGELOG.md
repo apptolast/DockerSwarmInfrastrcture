@@ -940,6 +940,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- Promueve el snapshot Ubuntu a `20261005T000000Z`: `20260924T000000Z` salió
+  del SLO de 14 días el 2026-10-08 a las 00:00 UTC y desde entonces fallaba
+  `validate-iac.sh` en `main` y en cada PR. Cuatro índices InRelease
+  verificados con la clave de archivo Ubuntu, ahora con el código de salida
+  de `gpgv` y la huella exigidos en cada uno, y simulación APT conjunta de
+  los trece paquetes Ubuntu fijados. Actualiza curl a su candidato revisado;
+  conserva el SLO y los pins externos de CrowdSec. No aplica cambios al
+  host. Evidencia: `docs/SNAPSHOT_20261005.md`.
 - Restricción de NetBird Cloud aplicada el 2026-10-05 y documentada en
   [`docs/NETBIRD_ACCESS.md`](docs/NETBIRD_ACCESS.md): un PC autorizado hacia
   el VPS, TCP/22, regla no bidireccional, `Default` deshabilitada y ninguna

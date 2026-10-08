@@ -175,12 +175,12 @@ host_security_crowdsec_allowlist_description: Operator trusted IPs - never ban
 host_security_crowdsec_allowlist_source: /etc/dockerswarm/crowdsec/trusted-ips
 
 # The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
-host_security_ubuntu_snapshot: 20260924T000000Z
+host_security_ubuntu_snapshot: 20261005T000000Z
 host_security_apt_update_policy: promoted-snapshot-only
 host_security_snapshot_max_age_days: 14
 host_security_repository_bootstrap_package_lock:
   - ca-certificates=20260601~26.04.1
-  - curl=8.18.0-1ubuntu2.5
+  - curl=8.18.0-1ubuntu2.7
   - gpg=2.4.8-4ubuntu3.1
   - python3-debian=1.0.1ubuntu2
 host_security_required_packages:

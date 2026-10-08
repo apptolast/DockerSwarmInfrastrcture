@@ -985,9 +985,10 @@ Minecraft espera un flag explícito que registre la aceptación de publicar con
 El 2026-10-04 el host tenía actualizaciones de seguridad pendientes dentro
 del snapshot `20260924T000000Z`, kernel incluido. Se aplican con «Parcheo
 del sistema operativo» ([OPERATIONS.md](OPERATIONS.md)). Ese
-snapshot sale del SLO el 2026-10-08 a las 00:00 UTC: desde entonces
-`validate-iac.sh` falla en cualquier rama, y antes de la ventana hay que
-promover otro.
+snapshot salía del SLO el 2026-10-08 a las 00:00 UTC; el repositorio
+promueve `20261005T000000Z`
+([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md)), que el host adopta con el
+siguiente apply de `host-baseline`.
 
 Antes de cualquier apply o `--check` que ejecute `host_security`, incluido
 el de esa ventana, hay que retirar el parser

@@ -593,7 +593,7 @@ Antes:
 1. el snapshot del host es el de `config/host-security.yml` y está dentro del
    SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`); si no, primero
    se promueve otro con su propio cambio revisado, como en
-   [SNAPSHOT_20260924.md](SNAPSHOT_20260924.md);
+   [SNAPSHOT_20261005.md](SNAPSHOT_20261005.md);
 2. no hay markers en `/run/lock/dockerswarm-*.marker` ni procesos `apt` o
    `dpkg` en curso;
 3. ninguna deriva registrada detiene el siguiente apply (ver
