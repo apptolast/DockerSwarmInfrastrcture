@@ -1159,6 +1159,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Fixed
 
+- `scripts/validate-traefik-config.sh` y `scripts/validate-edge.sh` fallaban
+  con Traefik v3.7.14, cabeza del canal `traefik:v3` desde el 2026-10-06, y
+  con ello la validación programada de `main`. Esa versión deja de registrar
+  el aviso de caracteres codificados cuando un entryPoint deniega alguno, y
+  los cuatro del edge los deniegan todos. Los validadores esperan ahora el
+  aviso una vez hasta v3.7.13 y ninguna desde v3.7.14, según la etiqueta
+  `org.opencontainers.image.version` de la imagen que arrancan, y fallan con
+  cualquier otra versión.
+
 - El guard del nodo AX compara los montajes Docker en orden canónico:
   una variación del orden en `inspect` ya no se confunde con un cambio del
   nodo. Conserva cada destino, tipo y permiso, rechaza destinos duplicados

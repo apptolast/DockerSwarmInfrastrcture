@@ -10,7 +10,8 @@ readonly PROJECT_DIR
 readonly PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
 readonly ANSIBLE_PLAYBOOK="${PROJECT_DIR}/.venv/bin/ansible-playbook"
 readonly SCRIPT_PATH="${SCRIPT_DIR}/${BASH_SOURCE[0]##*/}"
-# v3.7.9 emits this unconditionally before it evaluates effective config:
+# v3.7.9 to v3.7.13 emit this unconditionally before they evaluate effective
+# config; see expected_known_warning_count for v3.7.14 and later:
 # https://github.com/traefik/traefik/blob/d0bd2ec198533d760c1abfc74b98033d6d92d039/cmd/traefik/traefik.go#L100-L103
 readonly KNOWN_WARNING="Traefik can reject some encoded characters in the request path"
 # Traefik v3.7.13 (the v3 channel head since 2026-09) deprecates the option
@@ -27,6 +28,23 @@ cd "${PROJECT_DIR}"
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+# How many times Traefik logs KNOWN_WARNING at start. v3.7.9 to v3.7.13 log
+# it unconditionally. v3.7.14 logs it only while no entry point denies an
+# encoded character ("Silence encoded characters warning when some are
+# disallowed": https://github.com/traefik/traefik/blob/v3.7.14/cmd/traefik/traefik.go#L103-L113),
+# and every entry point in stacks/edge/static.yml.j2 denies them all.
+expected_known_warning_count() {
+  local version=$1
+  [[ "${version}" =~ ^v3\.[0-9]+\.[0-9]+$ ]] ||
+    fail "unexpected Traefik image version: ${version}"
+  if [[ "$(printf '%s\n' v3.7.14 "${version}" | sort --version-sort |
+    head -n 1)" == v3.7.14 ]]; then
+    printf '0\n'
+  else
+    printf '1\n'
+  fi
 }
 
 if ! docker info >/dev/null 2>&1; then
@@ -157,13 +175,20 @@ boot_traefik() {
     printf '%s\n' "${unknown_logs}" >&2
     fail "Traefik emitted an unexpected warning-or-higher entry"
   fi
-  local known_warning_count deprecation_count
+  local known_warning_count deprecation_count traefik_version expected_count
+  traefik_version="$(
+    docker inspect \
+      --format '{{index .Config.Labels "org.opencontainers.image.version"}}' \
+      "${name}"
+  )"
+  # A plain assignment, so an unexpected version stops the script here.
+  expected_count="$(expected_known_warning_count "${traefik_version}")"
   known_warning_count="$(
     grep -Fc "${KNOWN_WARNING}" <<<"${problem_logs}" ||
       true
   )"
-  [[ "${known_warning_count}" -eq 1 ]] ||
-    fail "the unconditional pinned Traefik warning did not occur exactly once"
+  [[ "${known_warning_count}" -eq "${expected_count}" ]] ||
+    fail "the encoded-characters notice of Traefik ${traefik_version} did not occur as expected"
   deprecation_count="$(
     grep -Fc "${KNOWN_DEPRECATION}" <<<"${problem_logs}" ||
       true
