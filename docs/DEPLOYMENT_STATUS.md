@@ -325,6 +325,61 @@ las nueve redes overlay aisladas, UFW mantiene exactamente trece reglas de
 egress más `80/tcp` y `443/tcp` de ingress, y `22/tcp` conservó su límite de
 tasa durante todo el proceso.
 
+### Web de WinNest: ventana de la ruta (2026-10-08)
+
+PR #104 (y #105, que corrige los validadores para Traefik v3.7.14), desde
+`main` en `f9dd86d`, por «Ventana de la ruta» de [WINNEST.md](WINNEST.md),
+con `--local` desde el clon operativo en detached HEAD. El árbol de `main` es
+el mismo que validaron en el host `validate-iac.sh` (1 088 + 96 pruebas) y
+`lint.sh`, y el CI del PR. Horas en UTC:
+
+- Paso 1 (08:19): `edge_traefik` con `edge-traefik-dynamic-adebe024ecc054f9`
+  y `edge-traefik-static-337ae07283336858`, las de la última ventana
+  registrada, y los tres secrets de la ruta de AX con su nombre y sus dos
+  etiquetas. El `Version.Index` era 150007, no 148678: el 2026-10-05 a las
+  19:33:41, seis segundos después del arranque, Docker reescribió a la vez
+  los 22 servicios del nodo añadiendo `DNSConfig: {}` (la única diferencia
+  entre `Spec` y `PreviousSpec`), sin cambio funcional. Las dos Configs vivas
+  son byte a byte el render de `16388e8`.
+- `edge_probe` antes: las 21 URL de la ventana anterior como entonces, más
+  `https://winnest.apptolast.com/` con `000`.
+- `edge --check` `ok=52 changed=2 failed=0`. Apply (08:20:45-08:23:53)
+  `ok=126 changed=9 failed=0`: red `apptolast-edge-winnest` (overlay
+  cifrada, no adjuntable ni interna), Config dinámica
+  `edge-traefik-dynamic-73fcb052d23a21a2`, 15 redes y la tarea
+  `ipww93c8eyy9`, con la misma imagen v3.7.13 por digest.
+- `edge_probe` después: solo cambia `https://winnest.apptolast.com/`, de
+  `000` a `503 verify=0`; el resto, idéntico. Certificado de Let's Encrypt
+  (`YR1`) para `DNS:winnest.apptolast.com`, válido hasta el 2027-01-06. En
+  los logs de la tarea, ningún error; solo los avisos conocidos de v3.7.13
+  y el `Health check failed.` de `winnest@file` mientras no existía
+  `winnest_web`.
+- `winnest --check` `ok=32 changed=2 failed=0`. Apply (08:24:48-08:25:36)
+  `ok=54 changed=7 failed=0`: `winnest_web` `1/1` y `healthy` (tarea
+  `j07tkcxvv261`) con
+  `ocholoko888/winnest-website@sha256:f77d1432…91d9`, revisión `cfead73`, y
+  la prueba final por HTTPS verificado de `/healthz`.
+- `website/deploy/smoke-test.sh https://winnest.apptolast.com` del
+  repositorio de WinNest: 29 de 29 comprobaciones. `http://` responde `301`
+  a `https://`, con HSTS, CSP, `nosniff`, `DENY`, `no-referrer` y sin
+  cabecera `Server`; Traefik sirve el HTML con gzip (19 998 a 4 600 bytes).
+- Repetidos: cada apply anota en `/opt/dockerswarm/DEPLOYED_VERSION.yml` el
+  último playbook, así que alternar `edge` y `winnest` da `changed=1` solo en
+  esa tarea. Consecutivos, `winnest` `ok=54 changed=0` y `edge`
+  `ok=124 changed=0`, con las mismas tareas. Estado final: `Version.Index`
+  150536 con `edge-traefik-dynamic-73fcb052d23a21a2` y
+  `edge-traefik-static-337ae07283336858`.
+- `edge_probe` final: solo `https://winnest.apptolast.com/` cambia respecto
+  al de antes, a `200 verify=0`, y Traefik no registra ningún aviso desde
+  que existe `winnest_web`. El contenedor corre como `101:101`, raíz de solo
+  lectura, sin capacidades, con 32 MiB y 0,1 CPU, y usaba 11 MiB.
+- El vigilante selecciona el servicio desde su primer ciclo: a las 08:41:37
+  revisó `winnest_web` y a las 08:43:39 respondió `No updates`.
+- Después de la ventana se publicó en el canal la imagen de la versión 0.2.1
+  (`sha256:c3d133a3…`, revisión `de7b26a` de WinNest, ver
+  [WINNEST.md](WINNEST.md), «Versión anunciada»), que el vigilante despliega
+  en su siguiente ciclo.
+
 ### Recuperación AX tras el reinicio (2026-10-06)
 
 PR #97 añadió la protección del nodo existente antes de arrancarlo; PR #98
