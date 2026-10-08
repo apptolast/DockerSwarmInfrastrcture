@@ -82,6 +82,24 @@ escritura de toda la cuenta guardada en el host; retirarlo es una decisión
 del propietario, porque nada en este repositorio documenta quién más lo
 usa.
 
+## Versión anunciada
+
+La web anuncia la release marcada como «Latest» en el repositorio público
+`PabloHurtadoGonzalo86/WinNest-releases`, la misma que instala su botón de
+descarga (`releases/latest/download/WinNest-setup-x64.exe`). El workflow
+`website-image.yml` la resuelve con la API de GitHub, comprueba que tenga el
+instalador y la pasa a la construcción (`WINNEST_RELEASE_TAG`). La portada,
+la descarga y las notas de versión muestran esa versión y las anteriores; si
+el `CHANGELOG.md` no tiene su sección, la construcción falla. La imagen la
+lleva en `org.opencontainers.image.version` y la prueba de humo comprueba
+que las páginas la anuncian.
+
+Ese workflow se ejecuta en cada cambio de la web en `main`, cuando
+`pnpm release:publish` publica una versión (lo lanza al terminar) y cada
+tres horas, por si una versión se publicó a mano en GitHub. Esa revisión
+solo publica si `:latest` no anuncia ya la release o le falta algún cambio
+de la web. El vigilante la despliega en menos de una hora.
+
 ## Canal de imagen y auto-actualización
 
 La entrada es un canal, no un hold:
