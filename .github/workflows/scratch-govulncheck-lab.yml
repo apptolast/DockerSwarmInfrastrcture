@@ -1,0 +1,87 @@
+# Scratch: never merged. Measures which govulncheck findings of the AX lab
+# sources survive Go 1.27.2 and whether bumping x/net and OpenTelemetry in
+# Substrate builds, before anyone designs a patch around guesses.
+name: Scratch govulncheck of the AX lab sources
+
+on:
+  push:
+    branches: ["scratch/govulncheck-lab"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  GOVULNCHECK_VERSION: v1.8.0
+  AX_COMMIT: f009cc81c9a571073bc1dd58cd2ed934bf2d5b1c
+  SUBSTRATE_COMMIT: 672533541dbfcd29084e4de2475267088bda3651
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the pinned sources
+        run: |
+          set -eu
+          git config --global --add safe.directory '*'
+          git clone --quiet https://github.com/google/ax /tmp/ax
+          git -C /tmp/ax checkout --quiet "${AX_COMMIT}"
+          git -C /tmp/ax apply --index "${GITHUB_WORKSPACE}/images/ax/google-ax-375.patch"
+          git clone --quiet https://github.com/agent-substrate/substrate /tmp/substrate
+          git -C /tmp/substrate checkout --quiet "${SUBSTRATE_COMMIT}"
+          go version
+
+      - name: Install govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      - name: AX, patched, on Go 1.27.2
+        run: |
+          cd /tmp/ax
+          /go/bin/govulncheck ./... >/tmp/ax.txt 2>&1 || true
+          echo "## AX" >>"${GITHUB_STEP_SUMMARY}"
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/ax.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
+
+      - name: Substrate, pristine, on Go 1.27.2
+        run: |
+          cd /tmp/substrate
+          ls vendor >/dev/null && echo "vendor dir present: $(find vendor -type f | wc -l) files"
+          /go/bin/govulncheck ./cmd/ate-setup ./cmd/ateapi ./cmd/atecontroller ./cmd/atelet ./cmd/atenet ./cmd/ateom-gvisor ./cmd/podcertcontroller >/tmp/sub-pristine.txt 2>&1 || true
+          echo "## Substrate pristine" >>"${GITHUB_STEP_SUMMARY}"
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-pristine.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
+
+      - name: Substrate, x/net and OpenTelemetry bumped
+        run: |
+          set -eu
+          cd /tmp/substrate
+          go list -m all 2>/dev/null | grep -E "golang.org/x/(net|crypto|sys|term|text) |go.opentelemetry.io/otel" | tee /tmp/modules-before.txt
+          export GOFLAGS=-mod=mod
+          go get golang.org/x/net@v0.60.0 \
+            go.opentelemetry.io/otel/sdk@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@v1.45.0
+          go mod tidy
+          go mod vendor
+          go mod verify
+          unset GOFLAGS
+          git status --porcelain | cut -c1-3 | sort | uniq -c
+          git diff --stat -- go.mod go.sum | tail -3
+          git diff -- go.mod | grep -E "^[+-][^+-]" | head -60
+          go build ./cmd/... && echo BUILD_OK
+          go vet ./cmd/... && echo VET_OK
+          /go/bin/govulncheck ./cmd/ate-setup ./cmd/ateapi ./cmd/atecontroller ./cmd/atelet ./cmd/atenet ./cmd/ateom-gvisor ./cmd/podcertcontroller >/tmp/sub-bumped.txt 2>&1 || true
+          echo "## Substrate bumped" >>"${GITHUB_STEP_SUMMARY}"
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-bumped.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
+          head -3 /tmp/sub-bumped.txt
