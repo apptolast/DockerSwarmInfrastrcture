@@ -30,6 +30,13 @@ updates:
     directory: /images/n8n-runners
     schedule:
       interval: weekly
+    # ioredis 6 changes the default protocol to RESP3, and the n8n runner
+    # allows ioredis in Code nodes (stacks/workloads/config/n8n-task-runners.json).
+    # A major bump is a manual change tested against those flows.
+    ignore:
+      - dependency-name: ioredis
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: docker
     directory: /images/n8n-runners
