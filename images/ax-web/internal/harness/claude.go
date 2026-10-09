@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ClaudeParser reads Claude Code's `--output-format stream-json` (one JSON
@@ -34,8 +35,39 @@ type claudeLine struct {
 		CacheRead     int64 `json:"cache_read_input_tokens"`
 		CacheCreation int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
-	NumTurns   int   `json:"num_turns"`
-	DurationMS int64 `json:"duration_ms"`
+	NumTurns   int              `json:"num_turns"`
+	DurationMS int64            `json:"duration_ms"`
+	RateLimit  *claudeRateLimit `json:"rate_limit_info"`
+}
+
+// claudeRateLimit is a rate_limit_event. Only the unified windows are read;
+// the rest of the event says nothing the gate needs.
+type claudeRateLimit struct {
+	Unified *struct {
+		FiveHour *claudeWindow `json:"five_hour"`
+		SevenDay *claudeWindow `json:"seven_day"`
+	} `json:"unifiedWindows"`
+}
+
+type claudeWindow struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    int64   `json:"resetsAt"`
+}
+
+// observeWindows keeps the latest pair of windows. An event that lacks
+// either window says nothing new about the account.
+func (p *ClaudeParser) observeWindows(rl *claudeRateLimit) {
+	if rl == nil || rl.Unified == nil || rl.Unified.FiveHour == nil || rl.Unified.SevenDay == nil {
+		return
+	}
+	p.final.Windows = &UsageWindows{
+		FiveHour: windowOf(*rl.Unified.FiveHour),
+		SevenDay: windowOf(*rl.Unified.SevenDay),
+	}
+}
+
+func windowOf(w claudeWindow) UsageWindow {
+	return UsageWindow{Utilization: w.Utilization, ResetsAt: time.Unix(w.ResetsAt, 0)}
 }
 
 type claudeBlock struct {
@@ -103,6 +135,9 @@ func (p *ClaudeParser) line(raw []byte) []Event {
 		return toolResults(ev)
 	case "result":
 		return []Event{p.result(ev)}
+	case "rate_limit_event":
+		p.observeWindows(ev.RateLimit)
+		return nil
 	}
 	// Other event types (partial messages, rate limit notices...) carry
 	// nothing the timeline shows.

@@ -21,9 +21,9 @@ APP = ROOT / "images/ax-web"
 STATIC = APP / "internal/web/static"
 WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
 SHA_PIN = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
-# docker.io/library/golang:1.27.1, the AX lab's toolbox.
-TOOLBOX = "docker.io/library/golang:1.27.1@sha256:" + (
-    "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+# docker.io/library/golang:1.27.2, ax-web's toolbox (images.web_toolbox).
+TOOLBOX = "docker.io/library/golang:1.27.2@sha256:" + (
+    "5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
 )
 # Substrate's own base at 672533541dbf (.ko.yaml, line 15).
 BASE = "gcr.io/distroless/static-debian13:latest@sha256:" + (
@@ -265,11 +265,15 @@ class BuildContract(unittest.TestCase):
             },
         )
 
+    def test_toolbox_is_the_web_toolbox_of_the_lab(self) -> None:
+        lab = yaml.safe_load((ROOT / "config/ax-lab.yml").read_text(encoding="utf-8"))
+        self.assertEqual(lab["ax_lab"]["images"]["web_toolbox"], TOOLBOX)
+
     def test_module_pins_the_lab_sources(self) -> None:
         lab = yaml.safe_load((ROOT / "config/ax-lab.yml").read_text(encoding="utf-8"))
         commit = lab["ax_lab"]["sources"]["ax"]["commit"]
         gomod = (APP / "go.mod").read_text(encoding="utf-8")
-        self.assertIn("\ngo 1.27.1\n", gomod)
+        self.assertIn("\ngo 1.27.2\n", gomod)
         self.assertRegex(
             gomod,
             r"\n\tgithub\.com/google/ax v0\.3\.1-0\.\d{14}-" + commit[:12] + r"\n",

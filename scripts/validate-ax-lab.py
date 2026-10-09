@@ -211,10 +211,13 @@ IMAGE_REPOSITORIES = {
     "registry": "docker.io/library/registry",
     "redis": "docker.io/library/redis",
     "toolbox": "docker.io/library/golang",
+    "web_toolbox": "docker.io/library/golang",
 }
 # The Go release the manual lab built every pinned image with; Substrate's
 # go.mod at the pinned commit says `go 1.27.0` with no toolchain line.
 REVIEWED_TOOLBOX_TAG = "1.27.1"
+# The Go release ax-web is built and vetted with (.github/workflows/ax-web.yml).
+REVIEWED_WEB_TOOLBOX_TAG = "1.27.2"
 IMAGE_RE = re.compile(
     r"(?P<repository>[a-z0-9]+(?:[._-][a-z0-9]+)*"
     r"(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+)"
@@ -1539,6 +1542,10 @@ def validate_catalog(
         raise AxLabError("the kind node image and kubectl must share one version")
     if images["toolbox"]["tag"] != REVIEWED_TOOLBOX_TAG:
         raise AxLabError(f"the toolbox must be golang {REVIEWED_TOOLBOX_TAG}")
+    if images["web_toolbox"]["tag"] != REVIEWED_WEB_TOOLBOX_TAG:
+        raise AxLabError(
+            f"the web toolbox must be golang {REVIEWED_WEB_TOOLBOX_TAG}"
+        )
     ratio, group = capacity if capacity is not None else load_capacity_declaration()
     cluster = validate_cluster(lab["cluster"], ratio)
     validate_registry(lab["registry"], cluster, ratio)

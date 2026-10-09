@@ -6,8 +6,21 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.2
+
+- Versión 1.0.2 de `ax-web`: la cola no empieza trabajos nuevos mientras una
+  ventana de uso está al 95 % o más (ver `Added`), compilada con Go 1.27.2 y
+  `golang.org/x/net` v0.60.0 para cerrar las vulnerabilidades de `govulncheck`.
+  El digest se fija en `config/ax-lab.yml` tras la reconstrucción de la CI.
+
 ### Added
 
+- La cola de la Oficina no empieza trabajos nuevos mientras una ventana de
+  uso de la suscripción está al 95 % o más. Lee la ventana de 5 horas y la
+  semanal del evento `rate_limit_event` que informa Claude Code, y espera al
+  reinicio de la ventana que retiene la cola. Los trabajos en marcha no se
+  detienen, y una muestra de más de 15 minutos no retiene nada (ver
+  [`docs/AX_WEB.md`](docs/AX_WEB.md), «Oficina»).
 - Stack independiente `winnest` para la web de WinNest en
   `https://winnest.apptolast.com`: NGINX sin privilegios con raíz de solo
   lectura, sin capacidades, sin volúmenes ni secrets, detrás de Traefik con
@@ -965,6 +978,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   desaconseja: oculta las violaciones en vez de mostrarlas.
 
 ### Security
+
+- Toolchain de Go 1.27.2 (en lugar de 1.27.1) y `golang.org/x/net` v0.60.0 en
+  `images/ax-web`. `govulncheck` reportaba 11 vulnerabilidades de la biblioteca
+  estándar corregidas en 1.27.2 y GO-2026-6617, 6612, 6611, 6610 y 6603 en
+  `x/net` v0.58.0. La imagen de la caja de herramientas de `ax-web` se fija
+  por digest en `images.web_toolbox` de `config/ax-lab.yml` y en el workflow
+  `ax-web`. La caja de herramientas del laboratorio (Substrate y las
+  imágenes de AX) sigue en Go 1.27.1, con el que se fijaron sus digests.
 
 - El secreto de acceso de la Oficina pasa a `edge-basicauth-ax-v2`, con el
   usuario y la contraseña que fija el propietario. Se crea con el hash

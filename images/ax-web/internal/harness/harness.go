@@ -150,6 +150,21 @@ type Usage struct {
 	DurationMS int64   `json:"duration_ms"`
 }
 
+// UsageWindow is one rate-limit window of the subscription as Claude Code
+// reports it. Utilization is a fraction (0.01 is 1 %) and ResetsAt is when
+// the window resets.
+type UsageWindow struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+}
+
+// UsageWindows are the two windows that gate new work: the rolling
+// five-hour window and the weekly one.
+type UsageWindows struct {
+	FiveHour UsageWindow `json:"five_hour"`
+	SevenDay UsageWindow `json:"seven_day"`
+}
+
 // Result is how a run ended. ResultText is the agent's final answer
 // (Claude's result event, Codex's last agent message), bounded by
 // MaxResultText.
@@ -161,6 +176,9 @@ type Result struct {
 	ResultText string   `json:"-"`
 	Usage      Usage    `json:"usage"`
 	Changes    *Changes `json:"-"`
+	// Windows are the subscription windows the run last reported, nil
+	// when the harness reports none.
+	Windows *UsageWindows `json:"-"`
 }
 
 // MaxResultText bounds the final answer kept from a run.

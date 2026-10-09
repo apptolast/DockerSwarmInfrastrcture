@@ -463,6 +463,15 @@ class SubstrateValidatorTests(unittest.TestCase):
                     message,
                 )
 
+    def test_web_toolbox_is_the_reviewed_golang_image(self) -> None:
+        self.rejected(
+            lambda document: document["ax_lab"]["images"].update(
+                web_toolbox="docker.io/library/golang:1.27.1@sha256:"
+                "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+            ),
+            "web toolbox must be golang 1.27.2",
+        )
+
     def test_fallback_builds_are_explicit_known_and_pinned(self) -> None:
         for value, message in (
             ("ate-setup", "distinct images"),
