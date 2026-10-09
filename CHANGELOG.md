@@ -15,6 +15,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Consejero para los agentes de la Oficina: un agente Claude puede tener un
+  modelo consejero (`advisor`, por defecto Opus), que el modelo ejecutor consulta
+  cuando se atasca (`--advisor`). El coste de cada modelo del trabajo se guarda
+  en el trabajo (`model_cost`), así que una consulta se ve en su propio coste.
 - La cola de la Oficina no empieza trabajos nuevos mientras una ventana de
   uso de la suscripción está al 95 % o más. Lee la ventana de 5 horas y la
   semanal del evento `rate_limit_event` que informa Claude Code, y espera al
@@ -682,6 +686,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- Reparto de modelos del equipo de semilla: Haiku para lo rutinario, Sonnet para
+  lo complejo y Opus solo como consejero. Solo afecta a las instalaciones nuevas:
+  los agentes ya creados conservan su configuración.
+- Codex queda desactivado en la Oficina. Un agente o un trabajo de Codex se rechaza
+  al guardarse o al despacharse, y el debate usa a Hedy como tercera propuesta.
 - `ate-setup` del laboratorio AX baja de 224 a 192 MiB de límite (96 MiB
   reservados, 704 MiB de `MemAvailable` mínimo) para seguir cabiendo en los
   límites que el plan activo deja libres con la web de WinNest, que quedan

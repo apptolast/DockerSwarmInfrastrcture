@@ -91,6 +91,7 @@ type Agent struct {
 	Harness         string     `json:"harness"`
 	Model           string     `json:"model"`
 	FallbackModel   string     `json:"fallback_model"`
+	Advisor         string     `json:"advisor"`
 	Effort          string     `json:"effort"`
 	Mode            string     `json:"mode"`
 	MaxTurns        int        `json:"max_turns"`
@@ -151,6 +152,7 @@ type Overrides struct {
 	Harness        string `json:"harness,omitempty"`
 	Model          string `json:"model,omitempty"`
 	FallbackModel  string `json:"fallback_model,omitempty"`
+	Advisor        string `json:"advisor,omitempty"`
 	Effort         string `json:"effort,omitempty"`
 	Mode           string `json:"mode,omitempty"`
 	MaxTurns       int    `json:"max_turns,omitempty"`
@@ -175,6 +177,7 @@ type AgentSnapshot struct {
 	Harness        string `json:"harness"`
 	Model          string `json:"model"`
 	FallbackModel  string `json:"fallback_model"`
+	Advisor        string `json:"advisor"`
 	Effort         string `json:"effort"`
 	Mode           string `json:"mode"`
 	MaxTurns       int    `json:"max_turns"`
@@ -210,33 +213,35 @@ type ChangeSummary struct {
 // (prompt, result text, events, patch, file contents) live in files of
 // the job's directory, not in this record.
 type Job struct {
-	ID         string         `json:"id"`
-	Title      string         `json:"title"`
-	ProjectID  string         `json:"project_id"`
-	AgentID    string         `json:"agent_id"`
-	Agent      AgentSnapshot  `json:"agent"`
-	Kind       string         `json:"kind"`
-	Branch     string         `json:"branch"`
-	Priority   int            `json:"priority"` // 0 baja, 1 normal, 2 alta
-	Status     string         `json:"status"`
-	Source     Source         `json:"source"`
-	PipelineID string         `json:"pipeline_id,omitempty"`
-	Step       int            `json:"step,omitempty"`
-	Created    time.Time      `json:"created"`
-	Started    *time.Time     `json:"started,omitempty"`
-	Finished   *time.Time     `json:"finished,omitempty"`
-	Task       string         `json:"task,omitempty"`
-	Outcome    string         `json:"outcome,omitempty"`
-	Message    string         `json:"message,omitempty"`
-	ExitCode   *int           `json:"exit_code,omitempty"`
-	Usage      harness.Usage  `json:"usage"`
-	Summary    string         `json:"summary,omitempty"`
-	Lessons    []string       `json:"lessons,omitempty"`
-	Verdict    string         `json:"verdict,omitempty"`
-	Score      *int           `json:"score,omitempty"` // judge jobs: 0-10
-	Changes    *ChangeSummary `json:"changes,omitempty"`
-	PR         *PullRequest   `json:"pr,omitempty"`
-	Rating     *Rating        `json:"rating,omitempty"`
+	// ModelCost is what each model cost in the run that finished the job.
+	ModelCost  map[string]float64 `json:"model_cost,omitempty"`
+	ID         string             `json:"id"`
+	Title      string             `json:"title"`
+	ProjectID  string             `json:"project_id"`
+	AgentID    string             `json:"agent_id"`
+	Agent      AgentSnapshot      `json:"agent"`
+	Kind       string             `json:"kind"`
+	Branch     string             `json:"branch"`
+	Priority   int                `json:"priority"` // 0 baja, 1 normal, 2 alta
+	Status     string             `json:"status"`
+	Source     Source             `json:"source"`
+	PipelineID string             `json:"pipeline_id,omitempty"`
+	Step       int                `json:"step,omitempty"`
+	Created    time.Time          `json:"created"`
+	Started    *time.Time         `json:"started,omitempty"`
+	Finished   *time.Time         `json:"finished,omitempty"`
+	Task       string             `json:"task,omitempty"`
+	Outcome    string             `json:"outcome,omitempty"`
+	Message    string             `json:"message,omitempty"`
+	ExitCode   *int               `json:"exit_code,omitempty"`
+	Usage      harness.Usage      `json:"usage"`
+	Summary    string             `json:"summary,omitempty"`
+	Lessons    []string           `json:"lessons,omitempty"`
+	Verdict    string             `json:"verdict,omitempty"`
+	Score      *int               `json:"score,omitempty"` // judge jobs: 0-10
+	Changes    *ChangeSummary     `json:"changes,omitempty"`
+	PR         *PullRequest       `json:"pr,omitempty"`
+	Rating     *Rating            `json:"rating,omitempty"`
 	// ApplyFrom names the job whose patch is applied before this one
 	// runs (a fix step continues the previous changes).
 	ApplyFrom string `json:"apply_from,omitempty"`

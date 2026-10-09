@@ -193,7 +193,7 @@ func seedSamples(off *office.Office) {
 		Prompt: "Añade al README una sección corta sobre cómo arrancar la demo de la Oficina."}, ip)
 	_, _ = off.CreatePipeline(ctx, office.PipelineRequest{Template: office.TplTeam, ProjectID: "ax",
 		Task: "Documenta en el README cómo se reapan las tareas web-* al arrancar."}, ip)
-	_, _ = off.CreateJob(ctx, office.JobRequest{ProjectID: "grpc-go", AgentID: "guido", Kind: office.KindAsk,
+	_, _ = off.CreateJob(ctx, office.JobRequest{ProjectID: "grpc-go", AgentID: "ada", Kind: office.KindAsk,
 		Prompt: "Explica en cinco pasos cómo funciona un stream de servidor en grpc-go.", Priority: ptr(0)}, ip)
 }
 

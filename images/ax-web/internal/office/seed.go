@@ -31,15 +31,15 @@ type seedAgent struct {
 }
 
 var seedAgents = []seedAgent{
-	{"ada", "Ada", "Arquitecta", "🏛️", "#8b5cf6", harness.Claude, "opus", "high", harness.ModeRead, 40, 30, promptAda},
-	{"linus", "Linus", "Desarrollador", "🛠️", "#22c55e", harness.Claude, "opus", "high", harness.ModeFull, 120, 60, promptLinus},
-	{"grace", "Grace", "Revisora de código", "🔍", "#f59e0b", harness.Claude, "opus", "xhigh", harness.ModeRead, 40, 30, promptGrace},
-	{"kent", "Kent", "QA y tests", "🧪", "#06b6d4", harness.Claude, "sonnet", "high", harness.ModeFull, 100, 60, promptKent},
-	{"hedy", "Hedy", "Seguridad", "🛡️", "#ef4444", harness.Claude, "opus", "high", harness.ModeRead, 60, 45, promptHedy},
-	{"margaret", "Margaret", "Documentación", "📚", "#ec4899", harness.Claude, "sonnet", "medium", harness.ModeFull, 60, 30, promptMargaret},
+	{"ada", "Ada", "Arquitecta", "🏛️", "#8b5cf6", harness.Claude, "sonnet", "high", harness.ModeRead, 40, 30, promptAda},
+	{"linus", "Linus", "Desarrollador", "🛠️", "#22c55e", harness.Claude, "sonnet", "high", harness.ModeFull, 120, 60, promptLinus},
+	{"grace", "Grace", "Revisora de código", "🔍", "#f59e0b", harness.Claude, "sonnet", "high", harness.ModeRead, 40, 30, promptGrace},
+	{"kent", "Kent", "QA y tests", "🧪", "#06b6d4", harness.Claude, "haiku", "medium", harness.ModeFull, 100, 60, promptKent},
+	{"hedy", "Hedy", "Seguridad", "🛡️", "#ef4444", harness.Claude, "sonnet", "high", harness.ModeRead, 60, 45, promptHedy},
+	{"margaret", "Margaret", "Documentación", "📚", "#ec4899", harness.Claude, "haiku", "medium", harness.ModeFull, 60, 30, promptMargaret},
 	{"guido", "Guido", "Segunda opinión (Codex)", "🤖", "#3b82f6", harness.Codex, "", "", harness.ModeFull, 0, 45, promptGuido},
 	{"becario", "Haiku", "Becario: preguntas rápidas", "⚡", "#a3a3a3", harness.Claude, "haiku", "low", harness.ModeRead, 15, 10, promptBecario},
-	{"coach", "Coach", "Mejora continua del equipo", "🧭", "#14b8a6", harness.Claude, "opus", "high", harness.ModeRead, 25, 20, promptCoach},
+	{"coach", "Coach", "Mejora continua del equipo", "🧭", "#14b8a6", harness.Claude, "haiku", "medium", harness.ModeRead, 25, 20, promptCoach},
 }
 
 // SeedAgents returns the initial team.
@@ -48,7 +48,7 @@ func SeedAgents(now time.Time) []Agent {
 	for _, s := range seedAgents {
 		out = append(out, Agent{
 			ID: s.id, Name: s.name, Role: s.role, Emoji: s.emoji, Color: s.color,
-			Harness: s.harness, Model: s.model, Effort: s.effort, Mode: s.mode,
+			Harness: s.harness, Model: s.model, Advisor: seedAdvisor[s.id], Effort: s.effort, Mode: s.mode,
 			MaxTurns: s.turns, TimeoutMinutes: s.timeout, SystemPrompt: strings.TrimSpace(s.prompt),
 			DisallowedTools: []string{}, Enabled: true, Version: 1, History: []AgentRev{},
 			Created: now, Updated: now,
@@ -246,3 +246,10 @@ Cómo trabajas:
 - Si los datos no justifican ningún cambio, devuelve el mismo prompt y explícalo en «motivo».
 - Un humano aprobará o rechazará tu propuesta: escribe el motivo para convencerle con hechos.
 No modifiques ficheros. Escribe en español.`
+
+// seedAdvisor is the Opus advisor each seeded worker may consult. The
+// quick-question worker (becario) answers without one, to spend less.
+var seedAdvisor = map[string]string{
+	"ada": "opus", "linus": "opus", "grace": "opus", "kent": "opus",
+	"hedy": "opus", "margaret": "opus", "coach": "opus",
+}

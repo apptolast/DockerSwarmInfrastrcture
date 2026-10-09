@@ -216,6 +216,12 @@ Oficina:
   reinicia, y el trabajo en espera muestra la hora del reinicio. Los trabajos en
   marcha no se detienen. Una muestra de más de 15 minutos no retiene nada: el
   siguiente trabajo informa una nueva.
+- **Consejero.** Un agente Claude puede tener `advisor` (Opus, en el equipo de
+  semilla), que se pasa a Claude Code con `--advisor`. Claude Code no limita ni
+  fuerza las consultas, y cada una cuesta como un trabajo de Opus: el coste por
+  modelo queda en `model_cost` del trabajo.
+- **Codex.** Desactivado: un agente de Codex no se guarda y un trabajo de Codex
+  se rechaza.
 - **Límites de una ejecución.** `max_turns` 150 y `max_timeout_minutes` 90;
   el panel admite de 1 a 500 y de 5 a 180.
 - **Orígenes.** Además de `origin`, el panel acepta POST con el origen de

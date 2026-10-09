@@ -74,7 +74,7 @@ var templates = []Template{
 		Roles:       []TemplateRole{{"correctness", "Corrección", "grace"}, {"security", "Seguridad", "hedy"}, {"tests", "Tests", "kent"}, {"chair", "Síntesis", "ada"}}},
 	{ID: TplDebate, Name: "Debate de diseño", Icon: "💬",
 		Description: "Tres propuestas independientes (una de ellas con Codex) y una decisión razonada de quien preside.",
-		Roles:       []TemplateRole{{"a", "Propuesta A", "ada"}, {"b", "Propuesta B", "linus"}, {"c", "Propuesta C", "guido"}, {"chair", "Decide", "grace"}}},
+		Roles:       []TemplateRole{{"a", "Propuesta A", "ada"}, {"b", "Propuesta B", "linus"}, {"c", "Propuesta C", "hedy"}, {"chair", "Decide", "grace"}}},
 	{ID: TplRedBlue, Name: "Rojo / azul (seguridad)", Icon: "🛡️", Iterative: true,
 		Description: "El equipo rojo busca problemas explotables; el azul los corrige y el rojo verifica, hasta que no quede nada o se agoten las iteraciones.",
 		Roles:       []TemplateRole{{"red", "Ataca", "hedy"}, {"blue", "Defiende", "linus"}}},

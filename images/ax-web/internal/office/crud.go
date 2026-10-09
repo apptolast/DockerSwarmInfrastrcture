@@ -22,6 +22,7 @@ type AgentInput struct {
 	Harness         *string   `json:"harness,omitempty"`
 	Model           *string   `json:"model,omitempty"`
 	FallbackModel   *string   `json:"fallback_model,omitempty"`
+	Advisor         *string   `json:"advisor,omitempty"`
 	Effort          *string   `json:"effort,omitempty"`
 	Mode            *string   `json:"mode,omitempty"`
 	MaxTurns        *int      `json:"max_turns,omitempty"`
@@ -57,6 +58,7 @@ func (in *AgentInput) apply(a *Agent) {
 	setStr(&a.Harness, in.Harness)
 	setStr(&a.Model, in.Model)
 	setStr(&a.FallbackModel, in.FallbackModel)
+	setStr(&a.Advisor, in.Advisor)
 	setStr(&a.Effort, in.Effort)
 	setStr(&a.Mode, in.Mode)
 	setInt(&a.MaxTurns, in.MaxTurns)
@@ -69,6 +71,7 @@ func (in *AgentInput) apply(a *Agent) {
 		a.Enabled = *in.Enabled
 	}
 	a.Model, a.FallbackModel, a.Effort = strings.TrimSpace(a.Model), strings.TrimSpace(a.FallbackModel), strings.TrimSpace(a.Effort)
+	a.Advisor = strings.TrimSpace(a.Advisor)
 }
 
 func behaviourChanged(a, b *Agent) bool {

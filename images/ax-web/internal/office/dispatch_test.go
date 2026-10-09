@@ -106,31 +106,15 @@ func TestSpecFromAgentAndJob(t *testing.T) {
 		len(spec.DisallowedTools) != 1 || !strings.HasPrefix(spec.AppendSystemPrompt, "Eres Linus") {
 		t.Fatalf("%+v", spec)
 	}
+	if spec.Advisor != "opus" {
+		t.Fatalf("advisor %q, want the seeded Opus advisor", spec.Advisor)
+	}
 	if !strings.Contains(spec.Prompt, "## Encargo\nArregla el README") {
 		t.Fatal(spec.Prompt)
 	}
 	d, _ := h.o.JobDetail(j.ID)
 	if d.FinalPrompt != spec.Prompt || d.SystemPrompt != spec.AppendSystemPrompt || d.Prompt != "Arregla el README" {
 		t.Fatal("files not stored")
-	}
-	h.complete(t, task, exited(0, "ok"))
-	// A codex job without a codex credential fails before launching.
-	c := h.job(t, JobRequest{ProjectID: "web", AgentID: "guido", Kind: KindAsk, Prompt: "¿Qué hace main.go?"})
-	if h.dispatch(t) != "" {
-		t.Fatal("codex launched without credential")
-	}
-	got, _ := h.o.Job(c.ID)
-	if got.Status != StatusFailed || got.Message != "Codex no está configurado en la Oficina" {
-		t.Fatalf("%+v", got)
-	}
-	// With one, the persona goes into the prompt and nothing to argv.
-	writeCodex(t, filepath.Join(h.cfg.OfficeSecretDir, h.cfg.CodexAuthKey), "2026-10-01T10:00:00Z", "r1")
-	c = h.job(t, JobRequest{ProjectID: "web", AgentID: "guido", Kind: KindAsk, Prompt: "¿Qué hace main.go?"})
-	task = h.dispatch(t)
-	spec = h.exec.last()
-	if spec.Harness != harness.Codex || spec.MaxTurns != 0 || spec.AppendSystemPrompt != "" ||
-		!strings.Contains(spec.Prompt, "## Tu papel\nEres Guido") || spec.CaptureChanges {
-		t.Fatalf("%+v", spec)
 	}
 	h.complete(t, task, exited(0, "ok"))
 }

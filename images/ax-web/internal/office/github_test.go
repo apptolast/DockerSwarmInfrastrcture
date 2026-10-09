@@ -393,7 +393,7 @@ func TestCreatePRSequence(t *testing.T) {
 		commit := calls[4].Body
 		msg, _ := commit["message"].(string)
 		if commit["tree"] != "newtree" || commit["parents"].([]any)[0] != res.Changes.BaseSHA ||
-			!strings.HasPrefix(msg, "Arregla el README\n\nREADME arreglado.\n\nOficina AppToLast · trabajo "+job.ID+" · Linus (opus)") {
+			!strings.HasPrefix(msg, "Arregla el README\n\nREADME arreglado.\n\nOficina AppToLast · trabajo "+job.ID+" · Linus (sonnet)") {
 			t.Fatalf("commit %+v", commit)
 		}
 		ref := calls[5].Body
