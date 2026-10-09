@@ -61,7 +61,7 @@ edge_traefik_cloudflare_secret_name: cloudflare_dns_api_token_v3
 # Satisfactory» and «Ruta de AX») and no hash ever enters this repository.
 edge_traefik_basicauth_secrets:
   basicauth_satisfactory_logs: edge-basicauth-satisfactory-logs-v1
-  basicauth_ax: edge-basicauth-ax-v1
+  basicauth_ax: edge-basicauth-ax-v2
 # mTLS material of Traefik towards an upstream, mounted at
 # /run/secrets/<key>: the private CA that signs the upstream's server
 # certificate, and one PEM with Traefik's client certificate and its key.

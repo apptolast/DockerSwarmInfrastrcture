@@ -940,6 +940,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Security
 
+- El secreto de acceso de la Oficina pasa a `edge-basicauth-ax-v2`, con el
+  usuario y la contraseña que fija el propietario. Se crea con el hash
+  bcrypt de coste 10 y las mismas etiquetas que el anterior; el nombre
+  nuevo se fija en `group_vars`, en la aserción del rol `edge`, en
+  `validate-contract.py` y en las pruebas de contrato. `-v1` se retira
+  después de verificar el acceso (ver [`docs/EDGE.md`](docs/EDGE.md),
+  «Ruta de AX»).
+
 - Promueve el snapshot Ubuntu a `20261005T000000Z`: `20260924T000000Z` salió
   del SLO de 14 días el 2026-10-08 a las 00:00 UTC y desde entonces fallaba
   `validate-iac.sh` en `main` y en cada PR. Cuatro índices InRelease

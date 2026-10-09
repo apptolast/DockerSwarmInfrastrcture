@@ -65,7 +65,7 @@ ADOPTED_NETWORKS = [
 NETWORK_SUBNETS = {"apptolast-edge-ax": "10.0.250.0/24"}
 BASICAUTH_SECRETS = {
     "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v1",
-    "basicauth_ax": "edge-basicauth-ax-v1",
+    "basicauth_ax": "edge-basicauth-ax-v2",
 }
 UPSTREAM_MTLS_SECRETS = {
     "ax_upstream_ca": "edge-ax-upstream-ca-v1",
@@ -668,7 +668,7 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             {
                 "edge_traefik_basicauth_secrets": {
                     "basicauth_logs": "edge-basicauth-satisfactory-logs-v1",
-                    "basicauth_ax": "edge-basicauth-ax-v1",
+                    "basicauth_ax": "edge-basicauth-ax-v2",
                 }
             },
         ):
@@ -695,7 +695,7 @@ class EdgeInputGateTests(AnsibleTaskAssertions, unittest.TestCase):
             {"edge_traefik_basicauth_secrets": without_login},
             {
                 "edge_traefik_basicauth_secrets": BASICAUTH_SECRETS
-                | {"basicauth_ax": "edge-basicauth-ax-v2"}
+                | {"basicauth_ax": "edge-basicauth-ax-v3"}
             },
             {"edge_traefik_upstream_mtls_secrets": without_client},
             {"edge_traefik_upstream_mtls_secrets": {}},
@@ -763,7 +763,7 @@ class EdgeBasicAuthSecretProvenanceTests(AnsibleTaskAssertions, unittest.TestCas
     VARIABLE = "edge_traefik_basicauth_secrets"
     PURPOSE = "traefik-basicauth"
     OTHER_PURPOSE = "traefik-cloudflare-dns"
-    NAME = "edge-basicauth-ax-v1"
+    NAME = "edge-basicauth-ax-v2"
 
     def reviewed_labels(self) -> dict[str, str]:
         return {
@@ -1723,7 +1723,7 @@ class EdgeStaticContractTests(unittest.TestCase):
         for variable, value, message in (
             (
                 "edge_traefik_basicauth_secrets",
-                BASICAUTH_SECRETS | {"basicauth_ax": "edge-basicauth-ax-v2"},
+                BASICAUTH_SECRETS | {"basicauth_ax": "edge-basicauth-ax-v3"},
                 "the basicAuth users file secrets differ from the reviewed map",
             ),
             (
