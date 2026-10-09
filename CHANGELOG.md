@@ -6,6 +6,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.2
+
+- Versión 1.0.2 de `ax-web`: la cola no empieza trabajos nuevos mientras una
+  ventana de uso está al 95 % o más (ver `Added`), compilada con Go 1.27.2 y
+  `golang.org/x/net` v0.60.0 para cerrar las vulnerabilidades de `govulncheck`.
+  El digest se fija en `config/ax-lab.yml` tras la reconstrucción de la CI.
+
 ### Added
 
 - La cola de la Oficina no empieza trabajos nuevos mientras una ventana de
