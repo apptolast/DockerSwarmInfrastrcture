@@ -46,6 +46,7 @@
   function buildHeader() {
     const top = document.getElementById("topbar");
     refs.brand = h("span", { class: "brand-name", text: "Oficina de agentes" });
+    refs.usage = h("div", { class: "usage", role: "group", "aria-label": "Uso de la suscripción", hidden: true });
     refs.axPill = h("span", { class: "ax-pill", role: "status" });
     refs.creds = h("span", { class: "creds" });
     refs.queueBtn = h("button", {
@@ -61,7 +62,52 @@
     O.put(top,
       h("button", { type: "button", class: "skip-link", on: { click: () => document.getElementById("view").focus() } }, "Saltar al contenido"),
       h("a", { class: "brand", href: "#/", "aria-label": "Ir a la oficina" }, logo(), refs.brand),
-      h("div", { class: "top-status" }, refs.axPill, refs.creds, refs.queueBtn, refs.inbox, refs.live));
+      h("div", { class: "top-status" }, refs.usage, refs.axPill, refs.creds, refs.queueBtn, refs.inbox, refs.live));
+  }
+
+  // One subscription window: a bar that turns amber 15 points before the gate
+  // and red at it (only while the sample still counts, as on the server), with
+  // the reset time in its title and in a toast on tap. A window whose reset
+  // has passed is empty again, so it is not drawn.
+  const USAGE_FRESH_MS = 15 * 60 * 1000;
+
+  function usageMeter(win, bar, gate, stale, top) {
+    const resets = new Date(bar.resets_at);
+    if (!(resets.getTime() > O.now())) return null;
+    const pct = Math.max(0, Math.min(100, Number(bar.percent) || 0));
+    const stop = pct >= gate && !stale;
+    const level = stop ? "is-stop" : pct >= gate - 15 ? "is-warn" : "is-ok";
+    const opts = win.long ? { weekday: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" };
+    const title = win.name + ": " + Math.round(pct) + " % usado. Se reinicia " + resets.toLocaleString("es", opts) + "." +
+      (stop ? " No arranca ningún trabajo nuevo hasta entonces." : "") +
+      (stale ? " Dato de hace más de 15 minutos: se renueva con el próximo trabajo." : "");
+    return h("span", {
+      class: ["usage-meter", level, stale ? "is-stale" : "", top ? "is-top" : ""], title, role: "button", tabindex: "0",
+      "aria-label": title, on: { click: () => O.toast(title, { kind: stop ? "warn" : "ok" }) },
+    },
+    h("span", { class: "usage-label", text: win.short }),
+    h("span", { class: "usage-track", "aria-hidden": "true" }, h("span", { class: "usage-fill", style: { "--p": pct.toFixed(1) + "%" } })),
+    h("span", { class: "usage-pct", text: Math.round(pct) + " %" }));
+  }
+
+  function updateUsage(u) {
+    u = u || {};
+    const gate = Number(u.gate_percent) || 95;
+    const sampled = u.sampled ? Date.parse(u.sampled) : NaN;
+    const stale = Number.isFinite(sampled) ? O.now() - sampled > USAGE_FRESH_MS : !!u.stale;
+    const wins = [
+      { short: "5 h", name: "Ventana de 5 horas", long: false, bar: u.five_hour },
+      { short: "Sem.", name: "Ventana semanal", long: true, bar: u.seven_day },
+    ].filter((w) => w.bar);
+    let top = null;
+    for (const w of wins) if (!top || Number(w.bar.percent) > Number(top.bar.percent)) top = w;
+    const meters = wins.map((w) => usageMeter(w, w.bar, gate, stale, w === top)).filter(Boolean);
+    // The 30-second tick calls this too: leave the DOM alone when nothing changed.
+    const sig = meters.map((m) => m.className + "|" + m.title).join("\n");
+    if (sig === refs.usageSig) return;
+    refs.usageSig = sig;
+    refs.usage.hidden = meters.length === 0;
+    O.put(refs.usage, ...meters);
   }
 
   async function toggleQueue() {
@@ -91,6 +137,7 @@
     const snap = S.snap;
     if (snap) {
       refs.brand.textContent = snap.settings.office_name || "Oficina de agentes";
+      updateUsage(snap.usage);
       const st = axStatus();
       refs.axPill.className = "ax-pill " + st.cls;
       refs.axPill.title = st.title;
@@ -312,6 +359,8 @@
     }
     updateChrome();
   });
+  // A window that resets, or a sample that goes stale, while nothing else changes.
+  O.on("tick", () => { if (S.snap) updateUsage(S.snap.usage); });
   O.on("conn", updateConn);
 
   // -------------------------------------------------------------- ticker --

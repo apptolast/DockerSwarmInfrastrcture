@@ -164,7 +164,8 @@ func TestSeedAndReconcileProjects(t *testing.T) {
 	}
 	for _, a := range s.Agents {
 		lines := strings.Count(a.SystemPrompt, "\n") + 1
-		if !a.Enabled || a.Version != 1 || lines < 8 || lines > 25 {
+		// Codex does not run in the Oficina, so its agent is seeded off.
+		if a.Enabled != (a.Harness != harness.Codex) || a.Version != 1 || lines < 8 || lines > 25 {
 			t.Errorf("agent %s: enabled %v version %d prompt lines %d", a.ID, a.Enabled, a.Version, lines)
 		}
 	}

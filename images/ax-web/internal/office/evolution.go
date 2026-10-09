@@ -106,8 +106,10 @@ func (o *Office) pruneProposalsLocked() {
 // bumpVersionLocked archives an agent's behaviour in History and starts
 // a new version.
 func (o *Office) bumpVersionLocked(a *Agent, note string) {
+	advisor, fallback := a.Advisor, a.FallbackModel
 	a.History = append(a.History, AgentRev{Version: a.Version, Harness: a.Harness, Model: a.Model,
-		Effort: a.Effort, Mode: a.Mode, SystemPrompt: a.SystemPrompt, Note: note, At: o.now()})
+		Effort: a.Effort, Mode: a.Mode, SystemPrompt: a.SystemPrompt, Note: note, At: o.now(),
+		Advisor: &advisor, FallbackModel: &fallback})
 	if len(a.History) > MaxAgentHistory {
 		a.History = slices.Delete(a.History, 0, len(a.History)-MaxAgentHistory)
 	}
@@ -338,6 +340,12 @@ func (o *Office) RollbackAgent(agentID string, version int, clientIP string) (Ag
 	rev := a.History[i]
 	trial := *a
 	trial.Harness, trial.Model, trial.Effort, trial.Mode, trial.SystemPrompt = rev.Harness, rev.Model, rev.Effort, rev.Mode, rev.SystemPrompt
+	if rev.Advisor != nil {
+		trial.Advisor = *rev.Advisor
+	}
+	if rev.FallbackModel != nil {
+		trial.FallbackModel = *rev.FallbackModel
+	}
 	if trial.Harness != a.Harness {
 		trial.FallbackModel = ""
 		if trial.Harness == harness.Codex {
@@ -346,12 +354,17 @@ func (o *Office) RollbackAgent(agentID string, version int, clientIP string) (Ag
 			trial.MaxTurns = min(40, o.cfg.Limits.MaxTurns)
 		}
 	}
+	// An advisor that is the restored model itself, or on an engine without
+	// advisors, would make the restore fail with nothing to fix it from.
+	if trial.Advisor == trial.Model || trial.Harness != harness.Claude {
+		trial.Advisor = ""
+	}
 	if err := validateAgent(&trial, o.cfg.Limits); err != nil {
 		return Agent{}, err
 	}
 	o.bumpVersionLocked(a, fmt.Sprintf("Sustituida al restaurar la versión %d", version))
 	a.Harness, a.Model, a.Effort, a.Mode, a.SystemPrompt = trial.Harness, trial.Model, trial.Effort, trial.Mode, trial.SystemPrompt
-	a.FallbackModel, a.MaxTurns = trial.FallbackModel, trial.MaxTurns
+	a.FallbackModel, a.MaxTurns, a.Advisor = trial.FallbackModel, trial.MaxTurns, trial.Advisor
 	o.invalidateLocked("agents", "metrics")
 	o.saveLocked(true, false)
 	o.auditAction("agent.rollback", clientIP, "agent", agentID, "version", version, "new_version", a.Version)

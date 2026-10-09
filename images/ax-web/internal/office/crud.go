@@ -126,6 +126,11 @@ func (o *Office) UpdateAgent(id string, in AgentInput, clientIP string) (Agent, 
 	}
 	trial := cloneAgent(*a)
 	in.apply(&trial)
+	// Picking the advisor's own model as the worker makes the advisor
+	// pointless, so it is dropped unless the request set it explicitly.
+	if in.Advisor == nil && trial.Advisor != "" && trial.Advisor == trial.Model {
+		trial.Advisor = ""
+	}
 	if in.Harness != nil && *in.Harness != a.Harness && in.MaxTurns == nil {
 		if trial.Harness == harness.Codex {
 			trial.MaxTurns = 0

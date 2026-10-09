@@ -101,7 +101,7 @@ docker network create --driver overlay --opt encrypted --attachable \
 `.github/workflows/ax-web.yml` compila `images/ax-web` con ko v0.19.1 dos
 veces (la segunda con la caché vacía), exige el mismo digest y además el que
 fija `web.image.digest`:
-`sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366`.
+`sha256:fa3bc6fc8394381cec907d5cbb038cc70024d32c7bc59540e236b90fd2ee199e`.
 Solo entonces guarda el layout OCI como artefacto `ax-web-oci-layout`. El
 host nunca compila la imagen. El propietario la siembra en la copia de
 seguridad del laboratorio, desde el artefacto descomprimido en un
@@ -116,8 +116,8 @@ sudo install -d -o root -g root -m 0700 /run/ax-web-seed
 sudo -- /usr/bin/python3 -m zipfile -e ax-web-oci-layout.zip /run/ax-web-seed
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
   --image-set web --source /run/ax-web-seed \
-  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.3 \
-  --image=ax-web=sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366
+  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.4 \
+  --image=ax-web=sha256:fa3bc6fc8394381cec907d5cbb038cc70024d32c7bc59540e236b90fd2ee199e
 sudo rm -rf /run/ax-web-seed
 ```
 
@@ -215,7 +215,24 @@ Oficina:
   está al 95 % o más, no empieza ningún trabajo nuevo hasta que esa ventana se
   reinicia, y el trabajo en espera muestra la hora del reinicio. Los trabajos en
   marcha no se detienen. Una muestra de más de 15 minutos no retiene nada: el
-  siguiente trabajo informa una nueva.
+  siguiente trabajo informa una nueva. La barra superior dibuja las dos
+  ventanas con el último uso informado: ámbar 15 puntos antes del tope y rojo al
+  llegar a él mientras la muestra cuenta; si tiene más de 15 minutos, la barra
+  se dibuja hueca y gris, porque ya no retiene nada. Se actualiza sola cada 30
+  segundos y una ventana ya reiniciada deja de dibujarse. En un móvil solo se
+  ve la más cercana al tope, y pulsarla dice cuándo se reinicia. Un valor
+  absurdo del stream (utilización no finita o un reinicio a más de 8 días) se
+  ignora, tanto en la barra como en el tope.
+- **Enrutado de modelos en un equipo desplegado.** Al arrancar, la Oficina mueve
+  una sola vez a los agentes que siguen como los sembró la versión anterior
+  (versión 1, sin historial, mismo modelo y esfuerzo y sin consejero) al
+  enrutado nuevo: ejecutor Haiku o Sonnet y consejero Opus. La versión anterior
+  queda en el historial del agente, con su consejero y su modelo de reserva, y
+  se restaura desde la Oficina. Un agente editado a mano no se toca, y eso
+  incluye un modelo de reserva, el modo, los turnos, el tiempo o las
+  herramientas prohibidas distintos de la semilla. Los agentes Codex se
+  desactivan. El editor de agentes tiene ahora un selector de Consejero; si se
+  elige como modelo el mismo que el consejero, este se quita.
 - **Consejero.** Un agente Claude puede tener `advisor` (Opus, en el equipo de
   semilla), que se pasa a Claude Code con `--advisor`. Claude Code no limita ni
   fuerza las consultas, y cada una cuesta como un trabajo de Opus: el coste por
@@ -324,7 +341,7 @@ Tras AX, en el mismo `ax-lab`:
    parado, lo arranca:
 
    ```bash
-   imagen=localhost:5001/ax-web@sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366
+   imagen=localhost:5001/ax-web@sha256:fa3bc6fc8394381cec907d5cbb038cc70024d32c7bc59540e236b90fd2ee199e
    docker run --detach --pull never --name ax-web-edge --restart no \
      --user 65532:65532 --read-only --cap-drop ALL \
      --security-opt no-new-privileges --memory 33554432 \

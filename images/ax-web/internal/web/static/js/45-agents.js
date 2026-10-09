@@ -93,7 +93,7 @@
   function editable(a) {
     return {
       name: a.name, role: a.role, emoji: a.emoji, color: a.color, harness: a.harness, model: a.model || "",
-      fallback_model: a.fallback_model || "", effort: a.effort || "", mode: a.mode, max_turns: a.max_turns,
+      fallback_model: a.fallback_model || "", advisor: a.advisor || "", effort: a.effort || "", mode: a.mode, max_turns: a.max_turns,
       timeout_minutes: a.timeout_minutes, system_prompt: a.system_prompt || "", disallowed_tools: a.disallowed_tools || [],
       enabled: a.enabled,
     };
@@ -110,7 +110,7 @@
     const maxSys = lim.max_system_prompt_bytes || 16384;
     const base = agent ? editable(agent) : {
       name: "", role: "", emoji: "🤖", color: COLORS[Math.floor(Math.random() * COLORS.length)], harness: "claude", model: "sonnet",
-      fallback_model: "", effort: "medium", mode: "lectura", max_turns: 40, timeout_minutes: 30, system_prompt: "", disallowed_tools: [], enabled: true,
+      fallback_model: "", advisor: "", effort: "medium", mode: "lectura", max_turns: 40, timeout_minutes: 30, system_prompt: "", disallowed_tools: [], enabled: true,
     };
     const form = h("form", { class: "form", novalidate: true });
     const preview = ui.avatar(base, "xl");
@@ -133,6 +133,15 @@
     emoji.addEventListener("input", syncPreview);
     color.addEventListener("input", syncPreview);
     const picker = ui.modelPicker({ harness: base.harness, model: base.model, effort: base.effort, fallback_model: base.fallback_model }, { onChange: () => syncHarness() });
+    const claudeModels = ((O.state.snap.catalog || {}).claude || {}).models || [];
+    const advisorOptions = [{ value: "", label: "Sin consejero" }]
+      .concat(claudeModels.map((m) => ({ value: m.id, label: m.label + (m.label !== m.id ? " · " + m.id : "") })));
+    if (base.advisor && !advisorOptions.some((o) => o.value === base.advisor)) advisorOptions.push({ value: base.advisor, label: base.advisor });
+    const advisorSel = ui.select(advisorOptions, base.advisor || "");
+    const advisorField = ui.field("Consejero", advisorSel, {
+      field: "advisor", optional: true,
+      hint: "El modelo ejecutor lo consulta cuando se atasca (suele ser Opus) y cada consulta gasta cuota de la suscripción. Si es el mismo modelo que el principal, se quita.",
+    });
     const modeSeg = ui.segmented({
       label: "Modo", showHint: true,
       options: ["lectura", "completo"].map((m) => ({ value: m, label: L.modes[m].label, hint: L.modes[m].hint })),
@@ -151,6 +160,7 @@
       const isClaude = picker.value().harness === "claude";
       turnsField.hidden = !isClaude;
       toolsField.hidden = !isClaude;
+      advisorField.hidden = !isClaude;
     }
     syncHarness();
 
@@ -167,6 +177,7 @@
         h("div", { class: "field", dataset: { field: "color" } }, h("label", { class: "field-label", for: color.id || (color.id = u.uid("f")), text: "Color" }), h("div", { class: "inline-row" }, color, swatches), h("p", { class: "field-error", role: "alert" }))),
       h("h3", { class: "form-h", text: "Cerebro" }),
       picker.el,
+      advisorField,
       ui.field("Modo", modeSeg.el, { field: "mode" }),
       h("div", { class: "grid-2" }, turnsField,
         ui.field("Tiempo máximo (min)", timeout, { field: "timeout_minutes", hint: "5-" + (lim.max_timeout_minutes || 180) + " minutos por trabajo." })),
@@ -202,6 +213,7 @@
       const body = {
         name: name.value.trim(), role: role.value.trim(), emoji: emoji.value.trim() || "🤖", color: color.value,
         harness: mp.harness, model: mp.model, fallback_model: mp.fallback_model, effort: mp.effort,
+        advisor: mp.harness === "claude" && advisorSel.value !== mp.model ? advisorSel.value : "",
         mode: modeSeg.value(), max_turns: mp.harness === "claude" ? tn : 0, timeout_minutes: tm,
         system_prompt: sys.value, disallowed_tools: mp.harness === "claude" ? toolList : [], enabled: enabled.checked,
       };
