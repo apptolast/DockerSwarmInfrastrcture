@@ -2,6 +2,7 @@ package office
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"apptolast.com/ax-web/internal/harness"
@@ -11,6 +12,20 @@ import (
 // window is at or above it, no queued job begins and the queue waits until
 // every such window has reset.
 const usageGatePercent = 95
+
+// maxWindowReset bounds how far ahead a window may say it resets: the
+// longest one is a week.
+const maxWindowReset = 8 * 24 * time.Hour
+
+// validWindow says whether a reported window can be trusted: a finite
+// utilization (a fraction, allowed a little over 1) and a reset that is still
+// ahead but within a week. The numbers come from the agent's stream, so a
+// nonsense one must neither hold the queue for ever nor break the snapshot.
+func validWindow(w harness.UsageWindow, now time.Time) bool {
+	u := w.Utilization
+	return !math.IsNaN(u) && !math.IsInf(u, 0) && u >= 0 && u <= 10 &&
+		w.ResetsAt.After(now) && !w.ResetsAt.After(now.Add(maxWindowReset))
+}
 
 // usageFreshness is how old a reported sample may be and still count. An
 // older sample says nothing about the windows now, so it holds nothing: the
@@ -42,10 +57,10 @@ func usageView(w *harness.UsageWindows, sampled, now time.Time) UsageView {
 	v.Sampled = &sampled
 	v.Stale = now.Sub(sampled) > usageFreshness
 	bar := func(win harness.UsageWindow) *UsageBar {
-		if !win.ResetsAt.After(now) {
+		if !validWindow(win, now) {
 			return nil
 		}
-		return &UsageBar{Percent: win.Utilization * 100, ResetsAt: win.ResetsAt}
+		return &UsageBar{Percent: math.Min(win.Utilization*100, 100), ResetsAt: win.ResetsAt}
 	}
 	v.FiveHour, v.SevenDay = bar(w.FiveHour), bar(w.SevenDay)
 	return v
@@ -66,7 +81,7 @@ func usageHold(w *harness.UsageWindows, sampled, now time.Time) (time.Time, stri
 		win  harness.UsageWindow
 	}{{"de 5 horas", w.FiveHour}, {"semanal", w.SevenDay}} {
 		at := c.win.Utilization * 100
-		if !c.win.ResetsAt.After(now) || at < usageGatePercent {
+		if !validWindow(c.win, now) || at < usageGatePercent {
 			continue
 		}
 		// Every window at the gate must reset, so the latest reset counts.

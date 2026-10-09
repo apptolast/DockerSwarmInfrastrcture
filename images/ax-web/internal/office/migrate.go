@@ -48,7 +48,7 @@ func (o *Office) migrateRoutingLocked() int {
 			continue
 		}
 		s := seedFor(a.ID)
-		if s == nil {
+		if s == nil || !o.asSeeded(a, s) {
 			continue
 		}
 		if s.model == a.Model && s.effort == a.Effort && seedAdvisor[a.ID] == "" {
@@ -70,4 +70,15 @@ func (o *Office) migrateRoutingLocked() int {
 		o.audit.Info("audit", "action", "office.migrate.routing", "agents", moved)
 	}
 	return moved
+}
+
+// asSeeded says whether the fields an edit does not version still match the
+// seed: a fallback model, the mode, the turns, the time and the forbidden
+// tools. Editing any of them leaves the agent at version 1, but it is no
+// longer exactly as the old seed left it.
+func (o *Office) asSeeded(a *Agent, s *seedAgent) bool {
+	want := Agent{MaxTurns: s.turns, TimeoutMinutes: s.timeout}
+	clampAgent(&want, o.cfg.Limits)
+	return a.FallbackModel == "" && len(a.DisallowedTools) == 0 && a.Mode == s.mode &&
+		a.MaxTurns == want.MaxTurns && a.TimeoutMinutes == want.TimeoutMinutes
 }

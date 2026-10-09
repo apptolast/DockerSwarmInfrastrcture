@@ -1,6 +1,8 @@
 package office
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -112,5 +114,85 @@ func TestSnapshotCarriesTheUsageOfTheLastRun(t *testing.T) {
 	v := h.o.Snapshot().Usage
 	if v.FiveHour == nil || v.FiveHour.Percent < 49.9 || v.FiveHour.Percent > 50.1 || v.SevenDay == nil {
 		t.Errorf("after a sample: %+v", v)
+	}
+}
+
+// The numbers come from the agent's stream: nonsense must neither break the
+// snapshot nor hold the queue.
+func TestHostileUsageWindowsAreIgnored(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	good := harness.UsageWindow{Utilization: 0.97, ResetsAt: now.Add(time.Hour)}
+	ms := time.UnixMilli(1791546000000).UTC() // a reset sent in milliseconds: the year 58000
+	cases := map[string]harness.UsageWindow{
+		"NaN":            {Utilization: math.NaN(), ResetsAt: now.Add(time.Hour)},
+		"+Inf":           {Utilization: math.Inf(1), ResetsAt: now.Add(time.Hour)},
+		"huge":           {Utilization: 1e307, ResetsAt: now.Add(time.Hour)},
+		"negative":       {Utilization: -0.5, ResetsAt: now.Add(time.Hour)},
+		"reset in ms":    {Utilization: 0.99, ResetsAt: ms},
+		"reset too far":  {Utilization: 0.99, ResetsAt: now.Add(9 * 24 * time.Hour)},
+		"reset was zero": {Utilization: 0.99},
+	}
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := &harness.UsageWindows{FiveHour: bad, SevenDay: good}
+			v := usageView(w, now.Add(-time.Minute), now)
+			if v.FiveHour != nil {
+				t.Errorf("the bad window was kept: %+v", v.FiveHour)
+			}
+			if v.SevenDay == nil {
+				t.Error("the good window was lost with the bad one")
+			}
+			if _, err := json.Marshal(Snapshot{Usage: v}); err != nil {
+				t.Fatalf("the snapshot no longer marshals: %v", err)
+			}
+			until, msg := usageHold(&harness.UsageWindows{FiveHour: bad}, now.Add(-time.Minute), now)
+			if !until.IsZero() || msg != "" {
+				t.Errorf("a bad window held the queue until %v: %q", until, msg)
+			}
+		})
+	}
+}
+
+func TestUsageOverOneHundredPercentIsDrawnAsFull(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	v := usageView(&harness.UsageWindows{FiveHour: harness.UsageWindow{Utilization: 1.04, ResetsAt: now.Add(time.Hour)}},
+		now, now)
+	if v.FiveHour == nil || v.FiveHour.Percent != 100 {
+		t.Errorf("got %+v, want a bar at 100", v.FiveHour)
+	}
+}
+
+// A finished run that reports windows reaches the snapshot and tells the
+// browser to reload, through the real finalize path.
+func TestFinishedRunPublishesItsUsageWindows(t *testing.T) {
+	h := newHarness(t)
+	sub := h.o.hub.subscribe("")
+	h.job(t, JobRequest{ProjectID: "web", AgentID: "becario", Kind: KindAsk, Prompt: "uso"})
+	res := exited(0, "ok")
+	res.Windows = &harness.UsageWindows{
+		FiveHour: harness.UsageWindow{Utilization: 0.61, ResetsAt: t0.Add(2 * time.Hour)},
+		SevenDay: harness.UsageWindow{Utilization: 0.12, ResetsAt: t0.Add(48 * time.Hour)},
+	}
+	h.runNext(t, res)
+	v := h.o.Snapshot().Usage
+	if v.FiveHour == nil || v.FiveHour.Percent < 60.9 || v.FiveHour.Percent > 61.1 || v.SevenDay == nil {
+		t.Fatalf("snapshot usage after the run: %+v", v)
+	}
+	h.o.flushDelta()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case m := <-sub.C:
+			var d Delta
+			if m.Event == "office" && json.Unmarshal(m.Data, &d) == nil {
+				for _, k := range d.Invalidate {
+					if k == "usage" {
+						return
+					}
+				}
+			}
+		case <-deadline:
+			t.Fatal("no delta told the browser to reload the usage")
+		}
 	}
 }

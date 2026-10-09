@@ -216,15 +216,23 @@ Oficina:
   reinicia, y el trabajo en espera muestra la hora del reinicio. Los trabajos en
   marcha no se detienen. Una muestra de más de 15 minutos no retiene nada: el
   siguiente trabajo informa una nueva. La barra superior dibuja las dos
-  ventanas con el último uso informado: ámbar 15 puntos antes del tope, rojo al
-  llegar a él y atenuada si la muestra es vieja. Una ventana ya reiniciada no
-  se dibuja.
+  ventanas con el último uso informado: ámbar 15 puntos antes del tope y rojo al
+  llegar a él mientras la muestra cuenta; si tiene más de 15 minutos, la barra
+  se dibuja hueca y gris, porque ya no retiene nada. Se actualiza sola cada 30
+  segundos y una ventana ya reiniciada deja de dibujarse. En un móvil solo se
+  ve la más cercana al tope, y pulsarla dice cuándo se reinicia. Un valor
+  absurdo del stream (utilización no finita o un reinicio a más de 8 días) se
+  ignora, tanto en la barra como en el tope.
 - **Enrutado de modelos en un equipo desplegado.** Al arrancar, la Oficina mueve
   una sola vez a los agentes que siguen como los sembró la versión anterior
   (versión 1, sin historial, mismo modelo y esfuerzo y sin consejero) al
   enrutado nuevo: ejecutor Haiku o Sonnet y consejero Opus. La versión anterior
-  queda en el historial del agente, y se restaura desde la Oficina. Un agente
-  editado a mano no se toca. Los agentes Codex se desactivan.
+  queda en el historial del agente, con su consejero y su modelo de reserva, y
+  se restaura desde la Oficina. Un agente editado a mano no se toca, y eso
+  incluye un modelo de reserva, el modo, los turnos, el tiempo o las
+  herramientas prohibidas distintos de la semilla. Los agentes Codex se
+  desactivan. El editor de agentes tiene ahora un selector de Consejero; si se
+  elige como modelo el mismo que el consejero, este se quita.
 - **Consejero.** Un agente Claude puede tener `advisor` (Opus, en el equipo de
   semilla), que se pasa a Claude Code con `--advisor`. Claude Code no limita ni
   fuerza las consultas, y cada una cuesta como un trabajo de Opus: el coste por

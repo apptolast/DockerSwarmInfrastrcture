@@ -72,11 +72,15 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: none;
+  border-radius: 6px;
   font-size: .78rem;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  cursor: pointer;
 }
+.usage-meter:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .usage-track {
   position: relative;
   width: 54px;
@@ -96,14 +100,22 @@
 .usage-meter.is-warn .usage-fill { background: var(--warn); }
 .usage-meter.is-stop .usage-fill { background: var(--bad); }
 .usage-meter.is-stop .usage-pct { color: var(--bad); font-weight: 650; }
-.usage-meter.is-stale { opacity: .55; }
+/* An old sample: the bar is drawn hollow and grey, the text keeps its contrast. */
+.usage-meter.is-stale .usage-track { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.usage-meter.is-stale .usage-fill { background: var(--muted); }
 @media (max-width: 1080px) {
-  .usage-label { display: none; }
   .usage-track { width: 38px; }
 }
 @media (max-width: 720px) {
   .usage { gap: 8px; }
   .usage-track { width: 28px; }
+}
+/* On a phone only the window closest to the gate is shown; tapping it says when it resets. */
+@media (max-width: 560px) {
+  .usage-meter:not(.is-top) { display: none; }
+}
+@media (max-width: 420px) {
+  .usage-track { display: none; }
 }
 
 .ax-pill {

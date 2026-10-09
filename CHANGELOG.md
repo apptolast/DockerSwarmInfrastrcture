@@ -19,6 +19,11 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   versión anterior queda en su historial y se puede restaurar desde la
   Oficina. Un agente editado a mano conserva lo que se le puso. El agente
   Codex se desactiva, porque Codex está apagado en la Oficina.
+- El editor de agentes tiene un selector de Consejero, y el historial de cada
+  agente guarda su consejero y su modelo de reserva, así que restaurar una
+  versión anterior funciona también en los agentes migrados.
+- Un valor absurdo del stream de Claude Code (utilización no finita, un reinicio
+  a más de 8 días) ya no rompe la instantánea ni retiene la cola: se ignora.
 
 ### Oficina 1.0.3
 

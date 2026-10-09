@@ -115,6 +115,10 @@ type AgentRev struct {
 	SystemPrompt string    `json:"system_prompt"`
 	Note         string    `json:"note"`
 	At           time.Time `json:"at"`
+	// Advisor and FallbackModel are nil in a revision written before they
+	// were archived: restoring it then keeps the agent's current ones.
+	Advisor       *string `json:"advisor,omitempty"`
+	FallbackModel *string `json:"fallback_model,omitempty"`
 }
 
 // MaxAgentHistory bounds Agent.History.
