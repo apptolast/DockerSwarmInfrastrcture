@@ -1149,6 +1149,49 @@ ya en unos 9-10 GB de uso y sin swap.
   Substrate (12 de la biblioteca estándar y una de `otlptrace`); su corrección
   está pendiente.
 
+### Oficina de agentes: 1.0.4 (2026-10-09)
+
+PR #117, desde `main` en `0511034`. La Oficina pasa de `ax-web:1.0.3` a
+`ax-web:1.0.4`: barras de uso en la cabecera y migración de los modelos de los
+agentes ya desplegados (ver [AX_WEB.md](AX_WEB.md), «Ventana de la Oficina»).
+Horas en UTC:
+
+- Antes de fusionar, tres revisores independientes de solo lectura y un
+  escéptico revisaron la rama. No hubo bloqueantes y se corrigieron dos
+  defectos mayores: restaurar un agente migrado fallaba en cinco de siete, y un
+  valor absurdo del stream podía romper `/api/office` o retener la cola. El
+  digest se volvió a fijar después de las correcciones.
+- Imagen `ax-web:1.0.4`, con el digest que la CI compiló dos veces y que se
+  reprodujo en local:
+  `sha256:fa3bc6fc8394381cec907d5cbb038cc70024d32c7bc59540e236b90fd2ee199e`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.4` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 37967980313. La copia conserva
+  `ax-web:1.0.3` (`sha256:86512b30…`) para volver atrás.
+- Antes del apply: cola sin trabajos en marcha (los 3, en `hecho`) y copia del
+  estado del PVC en un directorio de root `0700` bajo
+  `/var/backups/dockerswarm/`. La migración se probó antes sobre una copia de
+  ese estado.
+- `ax-lab --check` (operación `cd424796…`): `ok=149 changed=2 failed=0` (los dos
+  metadatos); el plan del panel, restaurar `ax-web`, aplicar `state` y
+  `ax-web.yaml` y recrear `ax-web-edge`. Substrate y AX, sin cambios.
+- Apply (17:47:22-17:49:2x, operación `8b4ec282…`): `ok=348 changed=10
+  failed=0`, sin markers. Pod `ax-web-68db8bd47d-svtr4` listo con 0
+  reinicios y la imagen por digest, `ax-web-edge` recreado con el mismo digest
+  en `kind` y `apptolast-edge-ax`.
+- Verificación: el log anota `office.migrate.routing` con 8 agentes y la
+  versión `1.0.4`; alerta TLS 116 desde el nodo; los 3 trabajos se conservan; los
+  dos nombres de la Oficina responden `401` sin credenciales. El último
+  `ax-lab --check` (operación `5ac2dfc8…`) da `changed=0`.
+- Resultado de la migración, leído del estado: `ada`, `linus`, `grace` y
+  `hedy` pasan de Opus a Sonnet con esfuerzo alto; `kent`, `margaret` y `coach`,
+  a Haiku con esfuerzo medio; los siete con consejero Opus y versión 2, con su
+  versión anterior en el historial. `becario` no cambia y `guido` (Codex)
+  queda desactivado.
+- Sin verificar todavía: las barras de uso solo aparecen cuando una ejecución
+  informa sus ventanas, y el consejero en el sandbox (Claude Code 2.1.274, que
+  contiene `--advisor` y los eventos de límite) se confirmará con el primer
+  trabajo real tras la migración.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
