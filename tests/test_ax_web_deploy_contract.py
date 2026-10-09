@@ -55,7 +55,7 @@ WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
 # The ko build of images/ax-web 1.0.4 (the Oficina) with Go 1.27.2 and ko
 # v0.19.1 produced this manifest digest; CI rebuilds it twice and compares.
 PINNED_DIGEST = (
-    "sha256:c6f62d707200b006fd25236475b507c0b92fd003eff20a7fe6385591870057fe"
+    "sha256:fa3bc6fc8394381cec907d5cbb038cc70024d32c7bc59540e236b90fd2ee199e"
 )
 # The office's release (SPEC: ax-web 1.0.4).
 TAG = "1.0.4"
