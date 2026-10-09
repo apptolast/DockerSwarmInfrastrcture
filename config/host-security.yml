@@ -294,3 +294,23 @@ host_security_proc_required_options:
   - noexec
   - relatime
   - hidepid=invisible
+
+# Línea de órdenes del kernel que host_baseline fija en
+# /etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg. En este host no existe
+# /etc/default/grub, así que cada kernel nuevo regenera grub.cfg solo desde
+# /etc/default/grub.d/. El 2026-10-05 el kernel 7.0.0-34 arrancó así sin
+# net.ifnames=0, la interfaz pública pasó a llamarse ens3 y apareció el
+# crashkernel= que añade kdump-tools.cfg. La primera lista
+# (GRUB_CMDLINE_LINUX) también llega a las entradas de recuperación, por eso
+# lleva net.ifnames=0: la plataforma declara la interfaz pública como eth0.
+# La segunda (GRUB_CMDLINE_LINUX_DEFAULT) solo llega a las entradas normales.
+# Ninguna lleva crashkernel=: reservaría memoria y MemTotal bajaría del
+# minimum_memory_mib de config/capacity.yml. autoinstall y ds=nocloud-net
+# vienen del instalador y se conservan para no cambiar el arranque actual.
+host_security_boot_cmdline_linux:
+  - net.ifnames=0
+  - console=tty0
+  - video=1024x768
+host_security_boot_cmdline_linux_default:
+  - autoinstall
+  - ds=nocloud-net

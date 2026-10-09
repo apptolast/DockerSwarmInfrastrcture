@@ -57,3 +57,13 @@
     enabled: true
     state: restarted
   listen: Host baseline restart Docker ingress ordering
+
+# update-grub es `grub-mkconfig -o /boot/grub/grub.cfg`: escribe primero
+# grub.cfg.new y solo lo copia sobre el menu si grub-script-check lo acepta.
+# Sin `check_mode: false`: en `--check` el modulo command no lo ejecuta.
+- name: Regenerate the GRUB configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/update-grub
+  changed_when: true
+  listen: Host baseline regenerate GRUB configuration

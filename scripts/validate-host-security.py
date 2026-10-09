@@ -24,6 +24,13 @@ ALLOWLIST_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 ALLOWLIST_DESCRIPTION = re.compile(r"[A-Za-z0-9 ._-]{1,100}")
 ALLOWLIST_SOURCE = re.compile(r"/etc/dockerswarm/crowdsec/[a-z0-9][a-z0-9-]*")
 ACCESS_LOG = re.compile(r"/var/log/dockerswarm/[a-z0-9-]+/[a-z0-9-]+\.log")
+# One kernel parameter, safe inside a double-quoted POSIX shell assignment:
+# no quote, `$`, backtick, `;`, backslash or whitespace.
+BOOT_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._,:=+-]*")
+BOOT_CMDLINE_KEYS = (
+    "host_security_boot_cmdline_linux",
+    "host_security_boot_cmdline_linux_default",
+)
 
 
 class HostSecurityContractError(RuntimeError):
@@ -120,6 +127,52 @@ def validate_traefik_basicauth(contract: dict[str, Any], hub_names: set[str]) ->
         contract.get("host_security_crowdsec_allowlist_source"),
         "the CrowdSec allowlist source must be a file under /etc/dockerswarm/crowdsec",
     )
+
+
+def validate_boot_cmdline(contract: dict[str, Any]) -> None:
+    """Check the kernel command line host_baseline pins for GRUB."""
+    # grub-mkconfig carga los drop-ins de /etc/default/grub.d como shell
+    # (/usr/sbin/grub-mkconfig), así que cada parámetro va entre comillas
+    # dobles sin nada que el shell pueda expandir. GRUB_CMDLINE_LINUX llega
+    # también a las entradas de recuperación (/etc/grub.d/10_linux), y por eso
+    # es la que debe llevar net.ifnames=0: la plataforma usa eth0. Ningún
+    # crashkernel=: la memoria reservada bajaría MemTotal del minimum_memory_mib
+    # de config/capacity.yml.
+    lists: dict[str, list[str]] = {}
+    for key in BOOT_CMDLINE_KEYS:
+        tokens = contract.get(key)
+        if not isinstance(tokens, list):
+            raise HostSecurityContractError(f"{key} must be a list")
+        for token in tokens:
+            require_match(
+                BOOT_TOKEN,
+                token,
+                f"{key} holds a kernel parameter that is unsafe in a "
+                "shell-sourced GRUB drop-in",
+            )
+        lists[key] = tokens
+    linux, default = (lists[key] for key in BOOT_CMDLINE_KEYS)
+    if not linux:
+        raise HostSecurityContractError(
+            "host_security_boot_cmdline_linux must not be empty"
+        )
+    every = [*linux, *default]
+    if len(set(every)) != len(every):
+        raise HostSecurityContractError("a kernel parameter is declared more than once")
+    if "net.ifnames=0" not in linux:
+        raise HostSecurityContractError(
+            "host_security_boot_cmdline_linux must keep net.ifnames=0, which "
+            "keeps the public interface named eth0 in every GRUB entry"
+        )
+    names = [token.split("=", 1)[0] for token in every]
+    if names.count("net.ifnames") != 1:
+        raise HostSecurityContractError(
+            "net.ifnames may only be declared as net.ifnames=0"
+        )
+    if "crashkernel" in names:
+        raise HostSecurityContractError(
+            "crashkernel= would reserve memory below the capacity floor"
+        )
 
 
 def validate(document: Any, now: datetime) -> None:
@@ -259,6 +312,8 @@ def validate(document: Any, now: datetime) -> None:
             raise HostSecurityContractError(
                 f"/proc must require the effective {mandatory}"
             )
+
+    validate_boot_cmdline(contract)
 
 
 def main() -> int:

@@ -1,0 +1,4 @@
+# Managed by Ansible. grub-mkconfig sources this file as POSIX shell after
+# kdump-tools.cfg. Both assignments ignore any earlier value on purpose.
+GRUB_CMDLINE_LINUX="{{ host_baseline_boot_cmdline_linux | join(' ') }}"
+GRUB_CMDLINE_LINUX_DEFAULT="{{ host_baseline_boot_cmdline_linux_default | join(' ') }}"

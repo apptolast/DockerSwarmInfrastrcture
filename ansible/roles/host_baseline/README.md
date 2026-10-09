@@ -95,6 +95,15 @@ public key material is read for this check.
   `sysctl --system`: that would also reload inherited files this contract
   does not manage, and on the production host `99-hardening.conf` would set
   `net.ipv6.conf.all.forwarding=0`.
+- `/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg` pins the kernel
+  command line from `config/host-security.yml`:
+  `GRUB_CMDLINE_LINUX="net.ifnames=0 console=tty0 video=1024x768"` and
+  `GRUB_CMDLINE_LINUX_DEFAULT="autoinstall ds=nocloud-net"`. A handler runs
+  `update-grub` only when the file changes, and the role then checks the
+  default entry of `/boot/grub/grub.cfg`. `net.ifnames=0` keeps the public
+  interface named `eth0`, which the preflight and the firewall checks
+  require; `crashkernel=` is rejected because the memory it reserves would
+  take `MemTotal` below the capacity floor. The role never reboots.
 - AppArmor, Fail2ban, PSAD, CrowdSec, its firewall bouncer, and rsyslog are
   validated as existing active controls. Their credential-bearing
   configuration is not copied into Git.
@@ -147,6 +156,99 @@ apply to it (core(5)), so a container cannot redirect or keep its dump. The
 `99-z` file sorts after `10-coredump-debian.conf`, so the managed value also
 wins at boot. To debug a crash, set another pattern at runtime; the next
 apply converges it back.
+
+### Kernel command line
+
+`/etc/default/grub` does not exist on the production host. `grub-mkconfig`
+sources it only when it exists, and then every `/etc/default/grub.d/*.cfg` in
+glob order, as shell (`/usr/sbin/grub-mkconfig`, grub2-common 2.14). Every
+kernel package runs `update-grub` through
+`/etc/kernel/postinst.d/zz-update-grub`, and the package `kdump-tools` ships
+`/etc/default/grub.d/kdump-tools.cfg`, which appends
+`crashkernel=2G-4G:320M,4G-32G:512M,32G-64G:1024M,64G-128G:2048M,128G-:4096M`
+to `GRUB_CMDLINE_LINUX_DEFAULT`. That line does not depend on `USE_KDUMP=0`
+in `/etc/default/kdump-tools`, which this host has. On 2026-10-05 the
+`7.0.0-34-generic` install regenerated `grub.cfg` without
+`net.ifnames=0 console=tty0 video=1024x768 autoinstall ds=nocloud-net` and
+with that `crashkernel=`. The public interface booted as `ens3`. The
+`ExecStartPost` of `docker.service`,
+`/usr/local/sbin/dockerswarm-docker-firewall` from the `platform` drop-in
+`20-dockerswarm-firewall.conf`, failed with
+`expected default interface eth0, found ens3`, so `docker.service` kept
+restarting. A hand-written drop-in, `update-grub` and a reboot restored the
+previous command line. This role now manages that same file.
+
+The parameters are reviewed in `config/host-security.yml`, and
+`scripts/validate-host-security.py` rejects a missing key or one that is not
+a list, an empty `host_security_boot_cmdline_linux`, a parameter that is not
+one shell-safe word, a parameter declared twice, `net.ifnames=0` outside
+`host_security_boot_cmdline_linux`, any other `net.ifnames` value, and any
+`crashkernel=`:
+
+- `net.ifnames=0` turns off predictable interface names in systemd-udevd.
+  `platform_public_interface` is `eth0`: the preflight requires it as the
+  IPv4 default-route interface, and the UFW and `DOCKERSWARM-INGRESS` rules
+  match `-i eth0`. It belongs in `GRUB_CMDLINE_LINUX` because recovery
+  entries boot only that variable (`/etc/grub.d/10_linux`).
+- With `crashkernel=`, a host with between 4 and 32 GiB of memory reserves
+  512 MiB for the crash kernel. `MemTotal` is exactly `minimum_memory_mib`
+  (15 981 MiB) of `config/capacity.yml`, and every playbook with
+  `capacity_preflight` stops below it. `kdump-tools.service` stays enabled
+  with `USE_KDUMP=0` and nothing reserved.
+- `autoinstall ds=nocloud-net` are left over from the installer, and the
+  debconf answer `grub2/linux_cmdline_default` still holds them. They are
+  kept so that the running command line does not change.
+
+The drop-in is named `zz-…` so it sorts after `kdump-tools.cfg`, and it
+assigns both variables without their earlier value, which discards the
+`crashkernel=` append. The role renders it in memory and requires exactly the
+two reviewed assignments with no `$` or backtick. It also repeats the
+validator's rules on the parameters, because `scripts/deploy-ansible.sh` does
+not run the validator. It then parses the file with `/bin/sh -n`, which reads
+commands without running them, and installs it with the same check as
+`validate`. Only a handler runs `update-grub`, which is
+`grub-mkconfig -o /boot/grub/grub.cfg`: it writes `grub.cfg.new` and replaces
+the menu only when `grub-script-check` accepts it. A converged host should
+report `changed=0`; only a repeated apply on the host proves it, not the
+offline tests. The first apply on the production host rewrites the
+hand-written file, whose comments differ, and runs `update-grub` once; the
+boot parameters stay the same.
+
+After the handlers, the role reads `/boot/grub/grub.cfg` with `no_log`:
+`grub-mkconfig` writes it with umask 077, readable by root only, and `-v`
+would print it whole. The first `linux` line is the default entry:
+`10_linux` writes the simple entry first, and with no `GRUB_DEFAULT`,
+`00_header` writes `set default="0"`. That line must carry every reviewed
+parameter, no other `net.ifnames` value and no `crashkernel=`, and the only
+`default` assignments allowed are `set default="0"` and the one-time
+`set default="${next_entry}"` of `grub-reboot`. A recreated
+`/etc/default/grub` with `GRUB_DEFAULT=saved`, or a later drop-in that drops
+a reviewed parameter or adds `crashkernel=` or `net.ifnames=1`, therefore
+stops the apply instead of surfacing at the next reboot. The drop-in is
+already correct at that point, so if the check fails right after an
+`update-grub` that failed in an earlier apply, which leaves the handler
+without a new notification, run `sudo -- update-grub` and apply again.
+
+The role then reads `/proc/cmdline` and requires only `net.ifnames=0` as its
+single `net.ifnames` value and no `crashkernel=`, so a future change to
+another parameter waits for the next reboot without failing every apply. A
+failure there means GRUB is already correct and the reboot in the manual
+window ([`docs/OPERATIONS.md`](../../../docs/OPERATIONS.md), «Parcheo del
+sistema operativo») is pending.
+
+Both checks are skipped under `--check`, which shows the drop-in diff and
+reports the handler as skipped. This is deliberate: without the handler the
+menu may not reflect a changed drop-in yet, and `--check` only previews
+changes. After every reboot, steps 2 and 3 of that window check `eth0` and
+`/proc/cmdline` by hand.
+
+This prevents the next kernel update from dropping `eth0`; it cannot repair a
+host that already booted as `ens3`, because the preflight stops the role
+before it reaches the drop-in. From the Netcup console, `e` on the GRUB menu
+edits the entry; add `net.ifnames=0` to the `linux` line and boot it with
+`Ctrl-x`. Then fix the drop-in by hand, run `sudo -- update-grub`, reboot in
+the manual window, and apply `host-baseline`, which rewrites the file with
+the reviewed content.
 
 ### No firewall restart on a converged host
 
@@ -320,3 +422,9 @@ Relevant primary documentation:
 - [systemd journal configuration](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html)
 - [Linux `fs` sysctls, including `suid_dumpable`](https://docs.kernel.org/admin-guide/sysctl/fs.html)
 - [Docker packet filtering and UFW](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
+- [GRUB `GRUB_CMDLINE_LINUX` and `GRUB_CMDLINE_LINUX_DEFAULT`](https://www.gnu.org/software/grub/manual/grub/html_node/Simple-configuration.html)
+- [GRUB menu entry editor](https://www.gnu.org/software/grub/manual/grub/html_node/Menu-entry-editor.html)
+- [Ubuntu `update-grub`](https://manpages.ubuntu.com/manpages/resolute/en/man8/update-grub.8.html)
+- [`dash -n`](https://manpages.ubuntu.com/manpages/resolute/en/man1/dash.1.html)
+- [`net.ifnames=` in systemd-udevd](https://manpages.ubuntu.com/manpages/resolute/en/man8/systemd-udevd.service.8.html)
+- [Ubuntu kernel crash dump and `crashkernel=`](https://ubuntu.com/server/docs/how-to/software/kernel-crash-dump/)

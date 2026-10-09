@@ -1,4 +1,4 @@
-# Diagnósticos conocidos de Docker 29.6.2, Traefik 3.7.9 y sudo-rs
+# Diagnósticos conocidos de Docker 29.6.2, Traefik 3.7.9, sudo-rs y GRUB
 
 La restauración de este Swarm sano genera dos registros de arranque reproducibles.
 No se ocultan ni se rebaja globalmente el nivel de logging. El validador solo los
@@ -131,3 +131,79 @@ Un fallo conserva su marcador global. La recuperación requiere probar que
 su proceso terminó y usar `recover` con la confirmación exacta emitida por
 el helper, según [CLAUDE.md](../CLAUDE.md). No borrar el lock o marcador ni
 considerar que una prueba específica sustituye la validación completa.
+
+## `eth0` pasa a `ens3` tras actualizar el kernel
+
+Cada paquete de kernel ejecuta `update-grub` al instalarse
+(`/etc/kernel/postinst.d/zz-update-grub`, de `grub2-common`), que regenera
+`/boot/grub/grub.cfg`. `grub-mkconfig` lee `/etc/default/grub` solo si
+existe, y después cada `/etc/default/grub.d/*.cfg`. En este host
+`/etc/default/grub` no existe, y en `/etc/default/grub.d/` está
+`kdump-tools.cfg`, del paquete `kdump-tools`, que añade a
+`GRUB_CMDLINE_LINUX_DEFAULT`:
+
+```text
+crashkernel=2G-4G:320M,4G-32G:512M,32G-64G:1024M,64G-128G:2048M,128G-:4096M
+```
+
+El host arrancaba con `net.ifnames=0`, `console=tty0`, `video=1024x768`,
+`autoinstall` y `ds=nocloud-net`. El kernel `7.0.0-34-generic`, el primero
+que se instala desde el 2026-07-21 según los `/var/log/dpkg.log*`
+conservados, regeneró `grub.cfg` el 2026-10-05 sin esos parámetros y con
+`crashkernel=`:
+
+- sin `net.ifnames=0`, systemd-udevd da a las interfaces nombres
+  predecibles y la pública arrancó como `ens3`. `config/platform.yml`
+  declara `eth0`: las aserciones previas de `platform` y `host-baseline` se
+  detienen si no existe, y las reglas `-i eth0` de UFW y de
+  `DOCKERSWARM-INGRESS` no casan con otro nombre. El `ExecStartPost` de
+  `docker.service` (`/usr/local/sbin/dockerswarm-docker-firewall`, del
+  drop-in `20-dockerswarm-firewall.conf` de `platform`) falló con
+  `expected default interface eth0, found ens3` y `docker.service` se
+  reiniciaba en bucle. Con `net.ifnames=0`, `ens3`, `enp0s3` y `enx…` siguen
+  siendo nombres alternativos de `eth0`: `ip link show dev ens3` responde
+  igual, y solo la primera columna de `ip -brief link` dice cómo se llama;
+- con la memoria de este host, entre 4 y 32 GiB, `crashkernel=` reserva
+  512 MiB para el kernel de volcado, que el sistema no usa
+  (`USE_KDUMP=0` en `/etc/default/kdump-tools`, que no impide esa línea). El
+  host tiene exactamente `minimum_memory_mib` (15 981 MiB) de
+  `config/capacity.yml`, y todo playbook con `capacity_preflight` se detiene
+  si `MemTotal` baja de ahí.
+
+Ese mismo día se escribió a mano
+`/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg`, se ejecutó
+`update-grub` y se reinició. `host_baseline` gestiona ahora ese drop-in con
+los parámetros de `config/host-security.yml` (ver su
+[README](../ansible/roles/host_baseline/README.md), «Kernel command line»):
+el primer apply reescribe el fichero manual con el contenido revisado y
+ejecuta `update-grub` una vez. Se lee después de `kdump-tools.cfg` y asigna
+las dos variables sin su valor previo, así que descarta el `crashkernel=` y
+kdump queda sin memoria reservada:
+
+```sh
+GRUB_CMDLINE_LINUX="net.ifnames=0 console=tty0 video=1024x768"
+GRUB_CMDLINE_LINUX_DEFAULT="autoinstall ds=nocloud-net"
+```
+
+Cada apply de `host-baseline` comprueba después que la entrada por defecto
+de `grub.cfg` lleva esos parámetros, ningún otro valor de `net.ifnames` y
+ningún `crashkernel=`, y que `/proc/cmdline` lleva `net.ifnames=0` como
+único valor de `net.ifnames` y ningún `crashkernel=`. La
+actualización de paquetes no pasa por Ansible: antes de cada reinicio con un
+kernel nuevo, «Parcheo del sistema operativo»
+([OPERATIONS.md](OPERATIONS.md)) compara la entrada por defecto de
+`grub.cfg` con `/proc/cmdline`, y después del reinicio comprueba `eth0`.
+
+Si el host ya arrancó sin `eth0`, la comprobación previa de `host-baseline`
+se detiene antes de llegar al drop-in, así que se arregla a mano. Desde la
+consola de Netcup, en el menú de GRUB, `e` edita la entrada, se añade
+`net.ifnames=0` a la línea `linux` y `Ctrl-x` arranca; ese arranque no se
+guarda. Después se corrige el drop-in, se ejecuta `sudo -- update-grub`, se
+comprueba `grub.cfg` como en «Parcheo del sistema operativo» y se reinicia.
+Con `eth0` de vuelta, un apply de `host-baseline` adopta el fichero.
+
+- [`net.ifnames=` en systemd-udevd](https://manpages.ubuntu.com/manpages/resolute/en/man8/systemd-udevd.service.8.html)
+- [`GRUB_CMDLINE_LINUX` y `GRUB_CMDLINE_LINUX_DEFAULT`](https://www.gnu.org/software/grub/manual/grub/html_node/Simple-configuration.html)
+- [`crashkernel=` y `kdump-tools.cfg` en Ubuntu Server](https://ubuntu.com/server/docs/how-to/software/kernel-crash-dump/)
+- [Editor de entradas de GRUB](https://www.gnu.org/software/grub/manual/grub/html_node/Menu-entry-editor.html)
+- [`NamePolicy=` y `AlternativeNamesPolicy=` en systemd.link](https://manpages.ubuntu.com/manpages/resolute/en/man5/systemd.link.5.html)

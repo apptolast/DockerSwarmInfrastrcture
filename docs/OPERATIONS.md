@@ -75,8 +75,9 @@ Efecto sobre la frontera del host:
   `owner-ssh-to-apptolast-vps`: TCP/22, no bidireccional, del único PC en
   `owner-ssh-clients` al único VPS en `apptolast-vps-ssh`. `Default` está
   deshabilitada; no hay otra política habilitada en la lectura posterior.
-  Se verificaron la API y las reglas efectivas IPv4/IPv6, pero falta una
-  conexión SSH nueva desde el PC. Configuración, reconstrucción y rollback
+  Se verificaron la API y las reglas efectivas IPv4/IPv6, y una conexión SSH
+  nueva desde el PC (2026-10-05, 21:19 UTC). No se ensayó el rechazo de otros
+  puertos desde el PC. Configuración, reconstrucción y rollback
   en [NETBIRD_ACCESS.md](NETBIRD_ACCESS.md).
 - NetBird también añade `-A FORWARD -i wt0 -j ACCEPT` antes de `DOCKER-USER`.
   Lo que llegue por `wt0` a un puerto publicado por Docker no pasaría por
@@ -94,10 +95,10 @@ Efecto sobre la frontera del host:
   STUN. Sin UDP de salida para WireGuard la conexión va por relay, que basta
   para SSH; una conexión directa exige ampliar ese contrato con un cambio
   revisado.
-- `PerSourcePenalties` de `sshd` también se aplica dentro de NetBird en
-  cuanto `host-baseline` retire la exención manual del 2026-10-04. Una
-  conexión que aborta antes de autenticarse, como un cliente que rechaza una
-  huella de host nueva, suma penalización a su dirección NetBird.
+- `PerSourcePenalties` de `sshd` se aplica también dentro de NetBird: la
+  exención manual del 2026-10-04 se retiró el 2026-10-05. Una conexión que
+  aborta antes de autenticarse, como un cliente que rechaza una huella de host
+  nueva, suma penalización a su dirección NetBird.
 
 La caducidad de sesión de los peers registrados con SSO está desactivada en
 toda la cuenta (Settings, Authentication, «Peer Session Expiration»), también
@@ -591,9 +592,9 @@ termina con un reinicio.
 Antes:
 
 1. el snapshot del host es el de `config/host-security.yml` y está dentro del
-   SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`); si no, primero
-   se promueve otro con su propio cambio revisado, como en
-   [SNAPSHOT_20261005.md](SNAPSHOT_20261005.md);
+   SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`). Si no coincide
+   o su SLO ya venció, el apply de `host-baseline` que adopta el snapshot
+   promovido va antes que el reinicio ([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md));
 2. no hay markers en `/run/lock/dockerswarm-*.marker` ni procesos `apt` o
    `dpkg` en curso;
 3. ninguna deriva registrada detiene el siguiente apply (ver
@@ -662,36 +663,85 @@ Antes de reiniciar:
   (ver [KNOWN_ISSUES.md](KNOWN_ISSUES.md), «`Timeout waiting for privilege
   escalation prompt` con sudo-rs»);
 - `sudo -- needrestart -b -r l` lista los servicios que siguen con librerías
-  antiguas, y existe `/run/reboot-required` si cambió el kernel.
+  antiguas, y existe `/run/reboot-required` si cambió el kernel;
+- la entrada por defecto de `/boot/grub/grub.cfg` arranca con los mismos
+  parámetros que `/proc/cmdline`, y con el kernel nuevo.
+
+Un kernel nuevo ejecuta `update-grub`, que regenera `grub.cfg` desde
+`/etc/default/grub.d/`: en este host no existe `/etc/default/grub`, y el
+2026-10-05 eso quitó `net.ifnames=0` y añadió `crashkernel=` (ver
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md), «`eth0` pasa a `ens3` tras actualizar el
+kernel»). `host-baseline` fija ahora esos parámetros y comprueba el menú en
+cada apply, pero la actualización de esta ventana no pasa por Ansible.
+`sudo -v` pide la contraseña una vez, antes de las dos `sudo`:
+
+```bash
+sudo -v
+prog='$1 == "linux" {for (i = 3; i <= NF; i++) print $i; exit}'
+diff <(tr ' ' '\n' </proc/cmdline | grep -v -e '^BOOT_IMAGE=' -e '^$') \
+  <(sudo -- awk "${prog}" /boot/grub/grub.cfg) && echo 'Mismos parámetros.'
+sudo -- awk '$1 == "linux" {print $2; exit}' /boot/grub/grub.cfg
+```
+
+La primera línea `linux` de `grub.cfg` es la entrada por defecto, porque
+nada fija `GRUB_DEFAULT` y vale `0`. `diff` no debe imprimir ninguna línea, y
+la última orden debe nombrar el kernel nuevo (`/vmlinuz-VERSIÓN`). Una línea
+`<` es un parámetro del arranque actual que falta en `grub.cfg`; una `>`, uno
+que aparecería.
+
+Una diferencia solo se acepta si la línea `linux` de la entrada por defecto
+es exactamente `root=… ro` seguido de `host_security_boot_cmdline_linux` y
+`host_security_boot_cmdline_linux_default` de `config/host-security.yml`, en
+ese orden. Entonces es un cambio revisado que `host-baseline` ya aplicó, o un
+`crashkernel=` del arranque actual que el menú ya no lleva, y este reinicio
+es el que lo activa: se reinicia y se anota en el registro de la ventana qué
+parámetros cambian. Con cualquier otra diferencia no se reinicia: se corrige
+con un cambio revisado y `host-baseline`, que ejecuta `update-grub`; a mano
+solo en emergencia, editando
+`/etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg` y ejecutando
+`sudo -- update-grub`, sabiendo que el siguiente apply lo reescribe. Después
+se repite la comprobación.
 
 El reinicio sigue «Reinicios» y, además de sus pasos «Después»:
 
 1. `uname -r` muestra el kernel nuevo;
-2. la memoria sigue cubriendo `minimum_memory_mib` de `config/capacity.yml`
+2. `ip -brief link show dev eth0` muestra `eth0` en la primera columna, en
+   `UP`. Es la interfaz pública: las aserciones previas de `platform` y
+   `host-baseline` y las reglas `-i eth0` del cortafuegos usan ese nombre.
+   `ens3`, `enp0s3` y `enx…` son nombres alternativos de la misma interfaz,
+   así que `ip link show dev ens3` también responde y no prueba nada;
+3. `/proc/cmdline` lleva `net.ifnames=0` y ningún `crashkernel=`
+   (`grep -o -e 'net.ifnames=0' -e 'crashkernel=[^ ]*' /proc/cmdline` solo
+   imprime `net.ifnames=0`);
+4. la memoria sigue cubriendo `minimum_memory_mib` de `config/capacity.yml`
    (`awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo`). El 2026-10-04
    coincidían exactamente, 15 981 MiB: si un kernel nuevo reserva más
    memoria, todo playbook con `capacity_preflight` se detiene hasta revisar
    ese contrato;
-3. `sudo -- iptables -S DOCKERSWARM-INGRESS` coincide con lo anotado: las
+5. `sudo -- iptables -S DOCKERSWARM-INGRESS` coincide con lo anotado: las
    reglas de SFTP y Satisfactory que añaden los drop-ins manuales vuelven
    con el arranque (compuerta STOP 10 de `CLAUDE.md`);
-4. se anota de nuevo `sudo -- iptables -S INPUT | head -n 4` y
+6. se anota de nuevo `sudo -- iptables -S INPUT | head -n 4` y
    `sudo -- netbird status`: el orden de `wt0` y `CROWDSEC_CHAIN` decide si un
    baneo de CrowdSec corta NetBird (ver «SSH por NetBird»);
-5. `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
+7. `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
    `DOCKERSWARM-INGRESS`, como lo anotado;
-6. `--playbook host-baseline --check` no propone más cambios que los
-   metadatos de un commit nuevo y, mientras siga en el host, la retirada de
-   la línea manual `PerSourcePenaltyExemptList` de `/etc/ssh/sshd_config`.
+8. `--playbook host-baseline --check` propone solo los cambios revisados que
+   sigan pendientes (el drop-in de GRUB, el snapshot y el pin de `curl`). La
+   línea manual `PerSourcePenaltyExemptList` ya se retiró el 2026-10-05, así
+   que no debe aparecer.
    Confirma pins, SSH y el inventario del Hub de CrowdSec; las comprobaciones
    del cortafuegos solo corren en un apply, por eso se miran a mano en los
-   pasos 3 a 5;
-7. se registran en [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md) los paquetes
+   pasos 5 a 7;
+9. se registran en [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md) los paquetes
    movidos, el kernel, la hora del reinicio y las comprobaciones.
 
 Vuelta atrás: el kernel anterior sigue instalado y se elige en el menú de
-GRUB desde la consola de Netcup. Los paquetes no se degradan; un fallo se
-corrige con un cambio revisado aparte.
+GRUB desde la consola de Netcup. Sus entradas salen del mismo `update-grub`
+y llevan los mismos parámetros que las del kernel nuevo: un parámetro que
+falte se añade editando la entrada con `e` y se arranca con `Ctrl-x` (ver
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md)). Los paquetes no se degradan; un fallo
+se corrige con un cambio revisado aparte.
 
 ## Reinicios
 

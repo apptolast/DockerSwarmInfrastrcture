@@ -115,6 +115,17 @@ runbook marca `STOP`.
 3. Ejecutar el bootstrap fresco desde un commit limpio.
 4. Importar/aplicar proveedor sin abrir todavía puertos de aplicaciones.
 5. Aplicar dos veces plataforma y baseline; la segunda debe ser idempotente.
+   Si el primer apply de `host-baseline` se detiene en «Verify the running
+   kernel keeps eth0 and reserves no crash memory», el drop-in de GRUB y la
+   entrada por defecto de `/boot/grub/grub.cfg` ya son los revisados (la
+   tarea anterior lo comprobó), pero el arranque actual lleva
+   `crashkernel=` o no lleva `net.ifnames=0` como único valor de
+   `net.ifnames`. Se reinicia una vez con la consola de Netcup a mano, se
+   comprueba que `/proc/cmdline` lleva `net.ifnames=0` y ningún
+   `crashkernel=` y que `MemTotal` cubre `minimum_memory_mib` de
+   `config/capacity.yml`, y se aplican de nuevo dos veces (ver «Kernel
+   command line» en el
+   [README de `host_baseline`](../ansible/roles/host_baseline/README.md)).
 6. Restaurar o inicializar Swarm según la causa del incidente.
 7. Restaurar ACME o emitir de nuevo tras validar DNS-01 staging.
 8. Aplicar preflight, edge y workloads sin cambiar aún DNS. En un Swarm
