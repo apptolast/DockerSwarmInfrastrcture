@@ -982,8 +982,10 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 - Toolchain de Go 1.27.2 (en lugar de 1.27.1) y `golang.org/x/net` v0.60.0 en
   `images/ax-web`. `govulncheck` reportaba 11 vulnerabilidades de la biblioteca
   estándar corregidas en 1.27.2 y GO-2026-6617, 6612, 6611, 6610 y 6603 en
-  `x/net` v0.58.0. La imagen de la caja de herramientas se fija por digest
-  en `config/ax-lab.yml` y en el workflow `ax-web`.
+  `x/net` v0.58.0. La imagen de la caja de herramientas de `ax-web` se fija
+  por digest en `images.web_toolbox` de `config/ax-lab.yml` y en el workflow
+  `ax-web`. La caja de herramientas del laboratorio (Substrate y las
+  imágenes de AX) sigue en Go 1.27.1, con el que se fijaron sus digests.
 
 - El secreto de acceso de la Oficina pasa a `edge-basicauth-ax-v2`, con el
   usuario y la contraseña que fija el propietario. Se crea con el hash

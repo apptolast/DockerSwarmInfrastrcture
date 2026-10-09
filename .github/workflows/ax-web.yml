@@ -6,7 +6,8 @@ name: AX web panel
 # the image is reproducible from this tree, so the production host never
 # has to compile it (docs/AX.md, «Reproducibilidad»), and requires the
 # digest config/ax-lab.yml pins as web.image.digest. Everything runs in the
-# official Go 1.27.2 image the AX lab's toolbox pins. Nothing is pushed
+# official Go 1.27.2 image that images.web_toolbox in config/ax-lab.yml pins.
+# Nothing is pushed
 # anywhere and no credential is used; the OCI layout of the build is kept
 # as a run artifact, which the owner seeds into the lab's backup with
 # manage-ax-lab-substrate.py seed-layout (docs/AX_WEB.md, «Imagen»).
@@ -43,7 +44,7 @@ jobs:
     name: Vet, race tests and vulnerability scan
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # docker.io/library/golang:1.27.2, as config/ax-lab.yml's toolbox.
+    # docker.io/library/golang:1.27.2, as config/ax-lab.yml's web_toolbox.
     container:
       image: "docker.io/library/golang:1.27.2@sha256:\
         5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"

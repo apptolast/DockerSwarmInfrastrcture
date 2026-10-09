@@ -187,7 +187,7 @@ El validador rechaza:
   distinto de las siete revisadas o sin `sha256:<64 hex>` (solo
   `ate-setup` puede quedar pendiente); otro directorio de copia que
   `/var/backups/dockerswarm/ax-lab/images`; una imagen de herramientas que
-  no sea `golang:1.27.2` por digest; una compilación de reserva con más
+  no sea `golang:1.27.1` por digest; una compilación de reserva con más
   memoria, reserva, CPU o PIDs que el nodo, CPU no entera, sin el suelo de
   `MemAvailable` y el margen operativo de `config/capacity.yml` o con un
   tiempo fuera de 600 a 7 200 s; una instalación con otro router que
@@ -716,7 +716,7 @@ Solo compila una imagen que cumpla todo esto:
   lugar de prometer la compilación.
 
 Cada imagen se compila sola, una tras otra, en un contenedor de la imagen
-oficial `golang:1.27.2` fijada por digest (`images.toolbox`), con el
+oficial `golang:1.27.1` fijada por digest (`images.toolbox`), con el
 `make build-images` de upstream (`Makefile`, líneas 72 a 75) e
 `IMAGES=./cmd/<nombre>`, `VERSION=67253354`, `KO_DOCKER_REPO` en la línea
 de make (la línea 19 exporta el suyo) y `KO_FLAGS=--push=false
@@ -1047,7 +1047,7 @@ un directorio `0700`), y el rol la instala en
 `/opt/dockerswarm/ax-lab/bin/ax` (`root:root 0755`) solo si su sha256
 difiere, después de exigir que la copia tenga el sha256 fijado
 (`ax.cli_sha256`). Está enlazada dinámicamente (`CGO_ENABLED=1`, `Makefile`
-de AX, línea 36) contra la glibc 2.41 de la imagen `golang:1.27.2`; el host
+de AX, línea 36) contra la glibc 2.41 de la imagen `golang:1.27.1`; el host
 tiene la 2.43.
 
 ### Semilla de AX
@@ -1106,7 +1106,7 @@ prueba en la CI pública lo que se puede probar de esas pins, sin publicar
 nada ni usar credenciales:
 
 1. lee de `validate-ax-lab.py --ax-plan` el commit de AX, el parche, el de
-   Substrate, la imagen `golang:1.27.2` y la base de ko;
+   Substrate, la imagen `golang:1.27.1` y la base de ko;
 2. clona google/ax con todos sus tags (el binario lleva la
    pseudo-versión `v0.3.1-0.20260924134026-f009cc81c9a5+dirty`, que Go
    deriva del tag `v0.3.0`) y exige ese commit, el árbol limpio y
@@ -1116,7 +1116,7 @@ nada ni usar credenciales:
    commit: los binarios del laboratorio manual llevan `vcs.modified=true`)
    y exige que `git diff --cached` dé ese mismo sha256;
 5. recompila la CLI y el binario del runner con las opciones exactas del
-   `Makefile` (líneas 36 y 49) en la imagen `golang:1.27.2` fijada, y exige
+   `Makefile` (líneas 36 y 49) en la imagen `golang:1.27.1` fijada, y exige
    sus sha256 (`ax.cli_sha256` y `ax.task_runner_binary_sha256`);
 6. recompila con ko v0.19.1 (el de `hack/tools/ko/go.mod` de Substrate,
    línea 89) `ax-controller` y `ax-server`, con la base
@@ -1735,7 +1735,7 @@ que el laboratorio codificado vuelve a usar.
    en el host antes de borrarlas una a una, y las órdenes
    `/usr/local/sbin/ax` y `/usr/local/sbin/ax-tarea`, que es un enlace a
    `/opt/ax-lab` y sobre el que el rol se niega a escribir. Se conserva la
-   imagen `golang@sha256:5bc7f572…` de `images.toolbox`, la de la
+   imagen `golang@sha256:3680233e…` de `images.toolbox`, la de la
    compilación de reserva. Antes de este paso y del 3, la copia de
    Substrate y la de AX tienen que estar sembradas (ver «Ventana del
    laboratorio»).
@@ -1825,7 +1825,7 @@ laboratorio» (ver «Verificación»).
 | kind | v0.33.0 | El que fija Substrate en `hack/tools/kind/go.mod` (línea 19) |
 | Kubernetes | v1.37.0 | La imagen por defecto de kind v0.33.0, con el mismo digest (`pkg/apis/config/defaults/image.go`, línea 21) |
 | gVisor | nightly 2026-09-02 | El que fija Substrate en `manifests/ate-install/sandboxconfig-gvisor.yaml` (línea 34) |
-| Go | 1.27.2 (`golang@sha256:5bc7f572…`) | Con el que el laboratorio manual compiló las imágenes; `go.mod` de Substrate pide `go 1.27.0` |
+| Go | 1.27.1 (`golang@sha256:3680233e…`) | Con el que el laboratorio manual compiló las imágenes; `go.mod` de Substrate pide `go 1.27.0` |
 | ko | v0.19.1 | El que fija Substrate en `hack/tools/ko/go.mod` (línea 89), compilado con `go tool` desde su `go.sum` |
 
 <!-- markdownlint-enable MD013 -->

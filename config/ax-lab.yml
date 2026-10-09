@@ -66,10 +66,17 @@ ax_lab:
     redis: "docker.io/library/redis:7-alpine@sha256:\
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
     # The official Go image that the explicit fallback build and the
-    # reproducibility workflow run: Go 1.27.2 (Substrate's go.mod says
+    # reproducibility workflow run: Go 1.27.1 (Substrate's go.mod says
     # `go 1.27.0`), git and make. The manual lab built every pinned
     # Substrate image in this exact digest.
-    toolbox: "docker.io/library/golang:1.27.2@sha256:\
+    toolbox: "docker.io/library/golang:1.27.1@sha256:\
+      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    # The official Go image that ax-web (images/ax-web, the Oficina) is built
+    # and vetted with: Go 1.27.2, which clears the standard-library
+    # advisories that govulncheck reported for 1.27.1 (.github/workflows/
+    # ax-web.yml). Substrate and the AX lab binaries above keep 1.27.1, the
+    # toolchain their pinned digests were built with.
+    web_toolbox: "docker.io/library/golang:1.27.2@sha256:\
       5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
   # The kind cluster the role creates when it is absent and reconciles
   # afterwards (docs/AX.md, «Ciclo de vida del clúster»). kind names the
