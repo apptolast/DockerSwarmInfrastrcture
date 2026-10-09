@@ -124,6 +124,12 @@ file — do not treat this list as a substitute for reading them.
   `terraform apply` and `ansible-playbook` against the real host stay
   100% manual, always. See the safety limit in
   `docs/adopcion-templatessd.md`.
+- One exception, per named change: the repository owner may authorize, in the
+  body of the merged pull request that introduces the change, a single
+  `deploy-ansible.sh` run (`--check`, then the apply) for one named playbook at
+  the commit that merge produces. The agent then runs only that run, stops on
+  any diff outside the change that pull request describes, and reports the
+  result. Any other run stays manual.
 
 ## 5. This repository's real pipeline
 
@@ -137,7 +143,8 @@ propose change (branch, PR)
      inspected plan (Terraform, via plan-terraform.sh)
   -> judge review, plus security-reviewer always, plus
      guardrail-adversary/mentor on demand -> APPROVED | CHANGES_REQUESTED
-  -> a human merges, and only a human runs the real apply
+  -> a human merges, and only a human runs the real apply, unless the merged
+     pull request grants the one-run exception of section 4
 ```
 
 See [`docs/adopcion-templatessd.md`](docs/adopcion-templatessd.md) for
