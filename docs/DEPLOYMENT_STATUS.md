@@ -1133,10 +1133,10 @@ ya en unos 9-10 GB de uso y sin swap.
   reinició casi todos los servicios, `edge_traefik` incluido: unos segundos de
   corte del ingress.
 - Sin acciones manuales: a las 16:09 todos los servicios estaban en su número de
-  réplicas salvo `autoupdater_shepherd` (0/1, fallaba desde tres días antes), las
-  bases de datos aceptaban conexiones y los pods del laboratorio estaban listos
-  con entre 1 y 6 reinicios. La Oficina se reinició una vez con la cola vacía:
-  `jobs.json` no cambió.
+  réplicas salvo `autoupdater_shepherd` (0/1: lo mató la oleada y espera su
+  `RestartPolicy` de 3 600 s), las bases de datos aceptaban conexiones y los
+  pods del laboratorio estaban listos con entre 1 y 6 reinicios. La Oficina se
+  reinició una vez con la cola vacía: `jobs.json` no cambió.
 - El primer intento de sembrar la 1.0.3 falló por permisos del directorio
   temporal y dejó el marker `dockerswarm-direct.marker` (operación
   `450063b7…`), que se recuperó con `host_global_operation_lock.py` tras
