@@ -210,6 +210,12 @@ Oficina:
 - **Cola y retención.** Como mucho `max_queue` (200) trabajos en cola; por
   encima de `retention_jobs` (3 000), la Oficina borra los terminados más
   antiguos.
+- **Ventanas de uso.** Antes de empezar un trabajo, la cola mira las dos ventanas
+  de la suscripción que informa Claude Code (la de 5 horas y la semanal). Si una
+  está al 95 % o más, no empieza ningún trabajo nuevo hasta que esa ventana se
+  reinicia, y el trabajo en espera muestra la hora del reinicio. Los trabajos en
+  marcha no se detienen. Una muestra de más de 15 minutos no retiene nada: el
+  siguiente trabajo informa una nueva.
 - **Límites de una ejecución.** `max_turns` 150 y `max_timeout_minutes` 90;
   el panel admite de 1 a 500 y de 5 a 180.
 - **Orígenes.** Además de `origin`, el panel acepta POST con el origen de

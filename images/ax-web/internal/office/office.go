@@ -111,20 +111,23 @@ type Office struct {
 	hub   *hub
 	wake  chan struct{}
 
-	mu        sync.Mutex
-	st        officeFile
-	jobs      map[string]*Job
-	order     []string // job ids, oldest first
-	warnings  []string
-	rev       int64
-	launching string
-	cancelReq bool
-	active    *activeRun
-	busyUntil time.Time
-	axState   AXState
-	probeAt   time.Time
-	closed    bool
-	prBusy    map[string]bool
+	mu           sync.Mutex
+	st           officeFile
+	jobs         map[string]*Job
+	order        []string // job ids, oldest first
+	warnings     []string
+	rev          int64
+	launching    string
+	cancelReq    bool
+	active       *activeRun
+	busyUntil    time.Time
+	usage        *harness.UsageWindows // the windows the last finished run reported
+	usageAt      time.Time             // when usage was observed
+	usageWaiting bool                  // the queued job shows the usage wait
+	axState      AXState
+	probeAt      time.Time
+	closed       bool
+	prBusy       map[string]bool
 
 	dirtyJobs  map[string]bool
 	dirtyPipes map[string]bool

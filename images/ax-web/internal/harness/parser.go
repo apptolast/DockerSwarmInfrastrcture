@@ -29,6 +29,8 @@ type Final struct {
 	IsError    bool
 	Usage      Usage
 	Saw        bool
+	// Windows are the subscription windows last reported, nil if none.
+	Windows *UsageWindows
 }
 
 // NewParser returns the parser of a harness. Anything but Codex gets the

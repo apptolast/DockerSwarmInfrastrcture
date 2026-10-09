@@ -8,6 +8,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- La cola de la Oficina no empieza trabajos nuevos mientras una ventana de
+  uso de la suscripción está al 95 % o más. Lee la ventana de 5 horas y la
+  semanal del evento `rate_limit_event` que informa Claude Code, y espera al
+  reinicio de la ventana que retiene la cola. Los trabajos en marcha no se
+  detienen, y una muestra de más de 15 minutos no retiene nada (ver
+  [`docs/AX_WEB.md`](docs/AX_WEB.md), «Oficina»).
 - Stack independiente `winnest` para la web de WinNest en
   `https://winnest.apptolast.com`: NGINX sin privilegios con raíz de solo
   lectura, sin capacidades, sin volúmenes ni secrets, detrás de Traefik con
