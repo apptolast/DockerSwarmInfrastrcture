@@ -845,7 +845,7 @@ los `basicAuth` rellenan ese campo.
 
 | Docker Secret | Fichero en `/run/secrets` | Contenido | Lo crea |
 | --- | --- | --- | --- |
-| `edge-basicauth-ax-v1` | `basicauth_ax` | una línea `usuario:hash` bcrypt de coste 10 | el operador, con la orden de abajo |
+| `edge-basicauth-ax-v2` | `basicauth_ax` | una línea `usuario:hash` bcrypt de coste 10 | el operador, con la orden de abajo |
 | `edge-ax-upstream-ca-v1` | `ax_upstream_ca` | el certificado PEM de la CA privada del panel | `scripts/ax-web-bootstrap.sh init`, del despliegue del panel |
 | `edge-ax-upstream-client-v1` | `ax_upstream_client` | un PEM con el certificado cliente (CN `edge-traefik`, uso `clientAuth`, emitido por esa CA) seguido de su clave privada sin cifrar | `scripts/ax-web-bootstrap.sh init`, del despliegue del panel |
 
@@ -938,7 +938,7 @@ sys.stdout.buffer.write(user.encode() + b":" + hashed + b"\n")
   sudo -- docker secret create \
     --label com.apptolast.managed-by=manual-bootstrap \
     --label com.apptolast.purpose=traefik-basicauth \
-    edge-basicauth-ax-v1 - >/dev/null
+    edge-basicauth-ax-v2 - >/dev/null
 ```
 
 - Quien automatiza la creación conecta su propia tubería a la entrada
@@ -955,7 +955,7 @@ sys.stdout.buffer.write(user.encode() + b":" + hashed + b"\n")
 Comprobación, solo de metadatos:
 
 ```bash
-sudo -- docker secret inspect edge-basicauth-ax-v1 \
+sudo -- docker secret inspect edge-basicauth-ax-v2 \
   --format '{{.Spec.Name}} {{json .Spec.Labels}}'
 ```
 
@@ -964,6 +964,10 @@ no se puede leer después ([Docker
 secrets](https://docs.docker.com/engine/swarm/secrets/)). La prueba de que
 Traefik lo cargó es el `401` con `realm="AX"` del apply (un fichero que no
 carga da `404`), y la de la contraseña, el primer login del propietario.
+
+Cuando el login con el nombre nuevo funcione, se retira el anterior, que ya no
+usa ningún servicio: `sudo -- docker secret rm edge-basicauth-ax-v1`. Revocar
+el secreto antiguo es un paso aparte y posterior al apply, no parte de él.
 
 ### Registro DNS
 
@@ -1099,7 +1103,7 @@ Pasos:
    ```bash
    sudo -- docker service inspect edge_traefik --format \
      '{{.Version.Index}}{{range .Spec.TaskTemplate.ContainerSpec.Configs}} {{.ConfigName}}{{end}}'
-   for name in edge-basicauth-ax-v1 edge-ax-upstream-ca-v1 \
+   for name in edge-basicauth-ax-v2 edge-ax-upstream-ca-v1 \
      edge-ax-upstream-client-v1; do
      sudo -- docker secret inspect "${name}" \
        --format '{{.Spec.Name}} {{json .Spec.Labels}}'

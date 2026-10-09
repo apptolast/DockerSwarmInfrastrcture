@@ -336,7 +336,7 @@ if group_vars.get("edge_network_subnets") != {"apptolast-edge-ax": "10.0.250.0/2
 # certificates and key exist only on the host.
 basicauth_secrets = {
     "basicauth_satisfactory_logs": "edge-basicauth-satisfactory-logs-v1",
-    "basicauth_ax": "edge-basicauth-ax-v1",
+    "basicauth_ax": "edge-basicauth-ax-v2",
 }
 if group_vars.get("edge_traefik_basicauth_secrets") != basicauth_secrets:
     fail("the basicAuth users file secrets differ from the reviewed map")

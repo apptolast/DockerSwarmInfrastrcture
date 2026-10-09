@@ -25,7 +25,7 @@
       - >-
         edge_traefik_basicauth_secrets == {
           'basicauth_satisfactory_logs': 'edge-basicauth-satisfactory-logs-v1',
-          'basicauth_ax': 'edge-basicauth-ax-v1'
+          'basicauth_ax': 'edge-basicauth-ax-v2'
         }
       - >-
         edge_traefik_upstream_mtls_secrets == {
