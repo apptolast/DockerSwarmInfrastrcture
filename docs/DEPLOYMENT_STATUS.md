@@ -1084,6 +1084,71 @@ en `0/0`. `edge_traefik` corre la tarea `1jp7fbzy6kqw`, sana y con la Config
 `edge-traefik-dynamic-8287b871c1ab8a3b`, y `logs-satisfactory` sigue
 respondiendo `401` con su realm.
 
+### Oficina de agentes: 1.0.3 (2026-10-09)
+
+PR #111, desde `main` en `980279a`. La Oficina pasa de `ax-web:1.0.1` a
+`ax-web:1.0.3` (consejero Opus, Codex desactivado, Go 1.27.2; ver
+[AX_WEB.md](AX_WEB.md), «Ventana de la Oficina»). La 1.0.2 se fusionó pero no se
+llegó a sembrar ni a desplegar. Horas en UTC:
+
+- Imagen `ax-web:1.0.3`, con el digest que la CI compiló dos veces y que se
+  reprodujo en local:
+  `sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.3` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 37951620622. La copia sigue guardando
+  `ax-web:1.0.1` (`sha256:3fc6d676…`) para volver atrás.
+- Antes del apply: cola sin trabajos en marcha (los 3 trabajos, en `hecho`),
+  copia del estado del PVC en un directorio de root `0700` bajo
+  `/var/backups/dockerswarm/` y comprobación de que cargar el estado vivo
+  no valida los agentes: el agente `guido` (Codex) sigue en el estado y la
+  1.0.3 rechaza crearle o despacharle trabajos con un error claro.
+- `ax-lab --check` (operación `b329abba…`): `ok=149 changed=2 failed=0`
+  (los dos metadatos); el plan del panel, restaurar `ax-web` en el registro,
+  aplicar `state` y `ax-web.yaml` y recrear `ax-web-edge`. Substrate y AX,
+  sin cambios.
+- Apply (16:14:23-16:16:25, operación `da084e91…`) `ok=348 changed=11
+  failed=0`, sin markers: pod `ax-web-58844db6bc-28spl` listo con 0 reinicios
+  y la imagen por digest, `ax-web-edge` recreado con el mismo digest en
+  `kind` y `apptolast-edge-ax`.
+- Verificación: alerta TLS 116 `certificate required` desde el nodo, el log
+  anuncia la versión `1.0.3` y los 3 trabajos se conservan. Los dos nombres
+  de la Oficina responden `401` sin credenciales. El último `ax-lab --check`
+  (operación `fcd1fbd9…`) da `changed=0`.
+- Los agentes ya desplegados conservan su modelo: el enrutado nuevo y el
+  consejero solo aplican a las instalaciones nuevas hasta que se actualicen
+  desde la Oficina.
+
+### Incidente de memoria por un análisis sin límite (2026-10-09)
+
+Entre las 15:46 y las 16:03 el host se quedó sin memoria. La causa fue una
+ejecución mía de `govulncheck` sobre las fuentes de Substrate, dos contenedores
+sin límite de memoria (el primero llegó a unos 5,7 GB residentes), con el host
+ya en unos 9-10 GB de uso y sin swap.
+
+- El kernel mató procesos de Postgres, `ateapi`, `atecontroller`, `atenet`,
+  `ateom-gvisor`, `rustfs`, `otelcol` y el primer `govulncheck`, con OOM global
+  a las 16:00:56 y las 16:02:07. A las 16:03:06 hubo además un OOM de cgroup
+  en `satisfactory-scheduler`, por su propio límite de 128 MiB, que puede no
+  estar relacionado. La carga media llegó a unos 330 y a las 16:03 Swarm
+  reinició casi todos los servicios, `edge_traefik` incluido: unos segundos de
+  corte del ingress.
+- Sin acciones manuales: a las 16:09 todos los servicios estaban en su número de
+  réplicas salvo `autoupdater_shepherd` (0/1, fallaba desde tres días antes), las
+  bases de datos aceptaban conexiones y los pods del laboratorio estaban listos
+  con entre 1 y 6 reinicios. La Oficina se reinició una vez con la cola vacía:
+  `jobs.json` no cambió.
+- El primer intento de sembrar la 1.0.3 falló por permisos del directorio
+  temporal y dejó el marker `dockerswarm-direct.marker` (operación
+  `450063b7…`), que se recuperó con `host_global_operation_lock.py` tras
+  comprobar que no quedaba ningún proceso; la evidencia está en
+  `/var/backups/dockerswarm/direct-lock-recovery/`.
+- Regla desde entonces: ningún análisis ni compilación pesada en el host sin un
+  límite de memoria; mejor en la CI o con las herramientas acotadas del repo.
+  `govulncheck` sobre los binarios del laboratorio (Go 1.27.1) encontró
+  11 vulnerabilidades alcanzables de la biblioteca estándar en AX y 13 en
+  Substrate (12 de la biblioteca estándar y una de `otlptrace`); su corrección
+  está pendiente.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
