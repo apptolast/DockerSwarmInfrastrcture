@@ -1,4 +1,4 @@
-# Oficina de agentes (`ax-web` 1.0.4)
+# Oficina de agentes (`ax-web` 1.0.5)
 
 Código de la Oficina de agentes de AppToLast, el panel que sirve
 `https://ax.apptolast.com` (y `https://oficina.apptolast.com`) detrás de

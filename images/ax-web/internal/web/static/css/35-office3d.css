@@ -1,0 +1,85 @@
+/* Oficina 3D (#/3d): the scene beside a list of the agents. The scene is
+   always the dark "night office" whatever the theme; the list follows it. */
+
+.o3d {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+.o3d-stage {
+  position: relative;
+  min-width: 0;
+  aspect-ratio: 16 / 10;
+  min-height: 320px;
+  max-height: calc(100dvh - 11rem);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #12110e;
+}
+.o3d-stage canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.o3d-stage canvas:active { cursor: grabbing; }
+.o3d-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  color: #b9b3a3;
+}
+.o3d-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.o3d-stats { margin: 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+.o3d-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.o3d-list li { min-width: 0; border-top: 1px solid var(--line); }
+.o3d-list li:first-child { border-top: 0; }
+.o3d-agent {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  grid-template-areas: "dot name" "dot state";
+  column-gap: 10px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+}
+.o3d-agent:hover { background: var(--surface-2); }
+.o3d-agent:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.o3d-agent .o3d-dot { grid-area: dot; align-self: center; }
+.o3d-agent-name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.o3d-agent-state { grid-area: state; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: .84rem; }
+.o3d-dot { display: inline-block; width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--muted); }
+.o3d-dot.is-working { background: var(--ok); }
+.o3d-dot.is-queued { background: var(--warn); }
+.o3d-dot.is-attention { background: var(--bad); }
+.o3d-dot.is-advisor { background: #8b6cf0; }
+.o3d-dot.is-idle { background: var(--muted); }
+.o3d-dot.is-sleeping { background: transparent; box-shadow: inset 0 0 0 2px var(--muted); }
+.o3d-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.o3d-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: .8rem;
+}
+.o3d-legend .o3d-dot { margin-right: -4px; }
+@media (max-width: 1080px) {
+  .o3d { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .o3d-stage { min-height: 300px; aspect-ratio: 4 / 5; }
+}
