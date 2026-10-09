@@ -211,6 +211,16 @@ func (o *Office) dispatchOnce(ctx context.Context) {
 		o.mu.Unlock()
 		return
 	}
+	if until, msg := usageHold(o.usage, o.usageAt, o.now()); !until.IsZero() {
+		j.Waiting, o.usageWaiting = msg, true
+		o.busyUntil = until
+		o.mu.Unlock()
+		time.AfterFunc(until.Sub(o.now()), o.kick)
+		return
+	}
+	if o.usageWaiting {
+		j.Waiting, o.usageWaiting = "", false
+	}
 	id := j.ID
 	pr := o.prepared
 	fresh := pr == nil || pr.jobID != id
@@ -554,6 +564,9 @@ func (o *Office) finalize(id string, res harness.Result) {
 	if a != nil && a.jobID == id {
 		o.active = nil
 		o.axState.CleanupFailed = ""
+	}
+	if res.Windows != nil {
+		o.usage, o.usageAt = res.Windows, o.now()
 	}
 	if j == nil {
 		if a != nil {
