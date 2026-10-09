@@ -42,7 +42,8 @@ var seedAgents = []seedAgent{
 	{"coach", "Coach", "Mejora continua del equipo", "🧭", "#14b8a6", harness.Claude, "haiku", "medium", harness.ModeRead, 25, 20, promptCoach},
 }
 
-// SeedAgents returns the initial team.
+// SeedAgents returns the initial team. The Codex agent is seeded switched
+// off: Codex does not run in the Oficina.
 func SeedAgents(now time.Time) []Agent {
 	out := make([]Agent, 0, len(seedAgents))
 	for _, s := range seedAgents {
@@ -50,7 +51,7 @@ func SeedAgents(now time.Time) []Agent {
 			ID: s.id, Name: s.name, Role: s.role, Emoji: s.emoji, Color: s.color,
 			Harness: s.harness, Model: s.model, Advisor: seedAdvisor[s.id], Effort: s.effort, Mode: s.mode,
 			MaxTurns: s.turns, TimeoutMinutes: s.timeout, SystemPrompt: strings.TrimSpace(s.prompt),
-			DisallowedTools: []string{}, Enabled: true, Version: 1, History: []AgentRev{},
+			DisallowedTools: []string{}, Enabled: s.harness != harness.Codex, Version: 1, History: []AgentRev{},
 			Created: now, Updated: now,
 		})
 	}

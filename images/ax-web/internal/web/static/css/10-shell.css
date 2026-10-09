@@ -59,6 +59,53 @@
   min-width: 0;
 }
 
+/* Subscription windows: how much of the 5-hour and the weekly allowance the
+   last run reported, and where new jobs stop starting. */
+.usage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.usage[hidden] { display: none; }
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .78rem;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.usage-track {
+  position: relative;
+  width: 54px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.usage-fill {
+  display: block;
+  height: 100%;
+  width: var(--p, 0%);
+  border-radius: 3px;
+  background: var(--ok);
+  transition: width .4s var(--ease);
+}
+.usage-meter.is-warn .usage-fill { background: var(--warn); }
+.usage-meter.is-stop .usage-fill { background: var(--bad); }
+.usage-meter.is-stop .usage-pct { color: var(--bad); font-weight: 650; }
+.usage-meter.is-stale { opacity: .55; }
+@media (max-width: 1080px) {
+  .usage-label { display: none; }
+  .usage-track { width: 38px; }
+}
+@media (max-width: 720px) {
+  .usage { gap: 8px; }
+  .usage-track { width: 28px; }
+}
+
 .ax-pill {
   display: inline-flex;
   align-items: center;

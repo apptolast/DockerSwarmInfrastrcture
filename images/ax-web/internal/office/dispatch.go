@@ -567,6 +567,7 @@ func (o *Office) finalize(id string, res harness.Result) {
 	}
 	if res.Windows != nil {
 		o.usage, o.usageAt = res.Windows, o.now()
+		o.invalidateLocked("usage")
 	}
 	if j == nil {
 		if a != nil {

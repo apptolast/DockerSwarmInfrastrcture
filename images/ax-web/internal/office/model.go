@@ -491,6 +491,7 @@ type Snapshot struct {
 	AX          AXState     `json:"ax"`
 	Credentials Credentials `json:"credentials"`
 	Limits      Limits      `json:"limits"`
+	Usage       UsageView   `json:"usage"`
 	Warnings    []string    `json:"warnings"`
 }
 

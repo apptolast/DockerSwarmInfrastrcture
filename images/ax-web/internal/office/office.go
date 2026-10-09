@@ -234,6 +234,7 @@ func (o *Office) load() error {
 	}
 	o.st = *of
 	o.normalize()
+	o.migrateRoutingLocked()
 	projects, warns := reconcileProjects(o.st.Projects, o.cfg.Projects, o.cfg.Limits, now)
 	o.st.Projects = projects
 	o.warnings = append(o.warnings, warns...)
@@ -838,7 +839,7 @@ func (o *Office) Snapshot() Snapshot {
 		Queue: o.queueLocked(), Active: o.activeViewLocked(), Pipelines: []Pipeline{},
 		Templates: Templates(), Schedules: []Schedule{}, Proposals: []Proposal{}, Evals: []Eval{},
 		Metrics: o.metricsLocked(), AX: o.axState, Credentials: credentials, Limits: o.cfg.Limits,
-		Warnings: slices.Clone(o.warnings),
+		Usage: usageView(o.usage, o.usageAt, o.now()), Warnings: slices.Clone(o.warnings),
 	}
 	s.Limits.RepoHosts = slices.Clone(s.Limits.RepoHosts)
 	if s.Warnings == nil {

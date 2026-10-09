@@ -17,6 +17,40 @@ const usageGatePercent = 95
 // next job reports a fresh one.
 const usageFreshness = 15 * time.Minute
 
+// UsageBar is one subscription window as the header shows it.
+type UsageBar struct {
+	Percent  float64   `json:"percent"`
+	ResetsAt time.Time `json:"resets_at"`
+}
+
+// UsageView is the usage of the subscription windows in the snapshot. A
+// window is absent when none was reported or it has reset since.
+type UsageView struct {
+	FiveHour    *UsageBar  `json:"five_hour,omitempty"`
+	SevenDay    *UsageBar  `json:"seven_day,omitempty"`
+	Sampled     *time.Time `json:"sampled,omitempty"`
+	GatePercent int        `json:"gate_percent"`
+	Stale       bool       `json:"stale"`
+}
+
+// usageView is what the header shows of the last reported windows.
+func usageView(w *harness.UsageWindows, sampled, now time.Time) UsageView {
+	v := UsageView{GatePercent: usageGatePercent}
+	if w == nil {
+		return v
+	}
+	v.Sampled = &sampled
+	v.Stale = now.Sub(sampled) > usageFreshness
+	bar := func(win harness.UsageWindow) *UsageBar {
+		if !win.ResetsAt.After(now) {
+			return nil
+		}
+		return &UsageBar{Percent: win.Utilization * 100, ResetsAt: win.ResetsAt}
+	}
+	v.FiveHour, v.SevenDay = bar(w.FiveHour), bar(w.SevenDay)
+	return v
+}
+
 // usageHold returns when the queue may start jobs again and the reason it
 // waits, or the zero time when no window is at the gate. A window whose
 // reset has passed is empty again, so it holds nothing.

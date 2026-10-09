@@ -46,6 +46,7 @@
   function buildHeader() {
     const top = document.getElementById("topbar");
     refs.brand = h("span", { class: "brand-name", text: "Oficina de agentes" });
+    refs.usage = h("div", { class: "usage", role: "group", "aria-label": "Uso de la suscripción", hidden: true });
     refs.axPill = h("span", { class: "ax-pill", role: "status" });
     refs.creds = h("span", { class: "creds" });
     refs.queueBtn = h("button", {
@@ -61,7 +62,37 @@
     O.put(top,
       h("button", { type: "button", class: "skip-link", on: { click: () => document.getElementById("view").focus() } }, "Saltar al contenido"),
       h("a", { class: "brand", href: "#/", "aria-label": "Ir a la oficina" }, logo(), refs.brand),
-      h("div", { class: "top-status" }, refs.axPill, refs.creds, refs.queueBtn, refs.inbox, refs.live));
+      h("div", { class: "top-status" }, refs.usage, refs.axPill, refs.creds, refs.queueBtn, refs.inbox, refs.live));
+  }
+
+  // One subscription window: a bar that turns amber 15 points before the gate
+  // and red at it, with the reset time in its title. A window whose reset has
+  // passed is empty again, so it is not drawn.
+  function usageMeter(label, bar, gate, stale, long) {
+    const resets = new Date(bar.resets_at);
+    if (!(resets.getTime() > Date.now())) return null;
+    const pct = Math.max(0, Math.min(100, Number(bar.percent) || 0));
+    const level = pct >= gate ? "is-stop" : pct >= gate - 15 ? "is-warn" : "is-ok";
+    const opts = long ? { weekday: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" };
+    const title = label + ": " + Math.round(pct) + " % usado. Se reinicia " + resets.toLocaleString("es", opts) + "." +
+      (pct >= gate ? " No arranca ningún trabajo nuevo hasta entonces." : "") +
+      (stale ? " Dato de hace más de 15 minutos." : "");
+    return h("span", { class: ["usage-meter", level, stale ? "is-stale" : ""], title, role: "img", "aria-label": title },
+      h("span", { class: "usage-label", text: label }),
+      h("span", { class: "usage-track", "aria-hidden": "true" }, h("span", { class: "usage-fill", style: { "--p": pct.toFixed(1) + "%" } })),
+      h("span", { class: "usage-pct", text: Math.round(pct) + " %" }));
+  }
+
+  function updateUsage(u) {
+    u = u || {};
+    const gate = Number(u.gate_percent) || 95;
+    const stale = !!u.stale;
+    const meters = [
+      u.five_hour ? usageMeter("5 h", u.five_hour, gate, stale, false) : null,
+      u.seven_day ? usageMeter("Semana", u.seven_day, gate, stale, true) : null,
+    ].filter(Boolean);
+    refs.usage.hidden = meters.length === 0;
+    O.put(refs.usage, ...meters);
   }
 
   async function toggleQueue() {
@@ -91,6 +122,7 @@
     const snap = S.snap;
     if (snap) {
       refs.brand.textContent = snap.settings.office_name || "Oficina de agentes";
+      updateUsage(snap.usage);
       const st = axStatus();
       refs.axPill.className = "ax-pill " + st.cls;
       refs.axPill.title = st.title;
