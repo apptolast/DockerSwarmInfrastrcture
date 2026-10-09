@@ -214,7 +214,7 @@ IMAGE_REPOSITORIES = {
 }
 # The Go release the manual lab built every pinned image with; Substrate's
 # go.mod at the pinned commit says `go 1.27.0` with no toolchain line.
-REVIEWED_TOOLBOX_TAG = "1.27.1"
+REVIEWED_TOOLBOX_TAG = "1.27.2"
 IMAGE_RE = re.compile(
     r"(?P<repository>[a-z0-9]+(?:[._-][a-z0-9]+)*"
     r"(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+)"

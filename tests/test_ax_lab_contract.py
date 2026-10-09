@@ -656,8 +656,8 @@ class AxLabValidatorTests(unittest.TestCase):
                 "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
                 # The image the manual lab's toolbox was built on (the spike's
                 # Dockerfile, FROM line 3), still cached on the host.
-                "toolbox": "docker.io/library/golang:1.27.1@sha256:"
-                "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244",
+                "toolbox": "docker.io/library/golang:1.27.2@sha256:"
+                "5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c",
             },
         )
         self.assertEqual(lab["install_root"], "/opt/dockerswarm/ax-lab")

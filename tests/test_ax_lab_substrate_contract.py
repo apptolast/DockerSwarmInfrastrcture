@@ -447,13 +447,13 @@ class SubstrateValidatorTests(unittest.TestCase):
         for value, message in (
             (
                 "docker.io/library/golang:1.26.0@sha256:" + "a" * 64,
-                "toolbox must be golang 1.27.1",
+                "toolbox must be golang 1.27.2",
             ),
             (
                 "docker.io/library/debian:1.27.1@sha256:" + "a" * 64,
                 "toolbox must use docker.io/library/golang",
             ),
-            ("docker.io/library/golang:1.27.1", "repository:tag@sha256"),
+            ("docker.io/library/golang:1.27.2", "repository:tag@sha256"),
         ):
             with self.subTest(value=value):
                 self.rejected(
