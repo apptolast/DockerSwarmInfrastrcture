@@ -6,6 +6,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.4
+
+- Versión 1.0.4 de `ax-web`: la barra superior muestra el uso de las dos
+  ventanas de la suscripción (5 horas y semanal), con la barra en ámbar 15
+  puntos antes del tope y en rojo al llegar al 95 % (ver `docs/AX_WEB.md`,
+  «Ventanas de uso»), y el enrutado de modelos llega a los agentes ya
+  desplegados.
+- Al arrancar, la Oficina mueve una sola vez a los agentes que siguen como los
+  sembró la versión anterior (versión 1, sin historial, mismo modelo y sin
+  consejero) al enrutado nuevo: ejecutor Haiku o Sonnet y consejero Opus. La
+  versión anterior queda en su historial y se puede restaurar desde la
+  Oficina. Un agente editado a mano conserva lo que se le puso. El agente
+  Codex se desactiva, porque Codex está apagado en la Oficina.
+
 ### Oficina 1.0.3
 
 - Versión 1.0.3 de `ax-web`: consejero Opus para los agentes (`advisor`, ver
