@@ -75,8 +75,9 @@ Efecto sobre la frontera del host:
   `owner-ssh-to-apptolast-vps`: TCP/22, no bidireccional, del único PC en
   `owner-ssh-clients` al único VPS en `apptolast-vps-ssh`. `Default` está
   deshabilitada; no hay otra política habilitada en la lectura posterior.
-  Se verificaron la API y las reglas efectivas IPv4/IPv6, pero falta una
-  conexión SSH nueva desde el PC. Configuración, reconstrucción y rollback
+  Se verificaron la API y las reglas efectivas IPv4/IPv6, y una conexión SSH
+  nueva desde el PC (2026-10-05, 21:19 UTC). No se ensayó el rechazo de otros
+  puertos desde el PC. Configuración, reconstrucción y rollback
   en [NETBIRD_ACCESS.md](NETBIRD_ACCESS.md).
 - NetBird también añade `-A FORWARD -i wt0 -j ACCEPT` antes de `DOCKER-USER`.
   Lo que llegue por `wt0` a un puerto publicado por Docker no pasaría por
@@ -94,10 +95,10 @@ Efecto sobre la frontera del host:
   STUN. Sin UDP de salida para WireGuard la conexión va por relay, que basta
   para SSH; una conexión directa exige ampliar ese contrato con un cambio
   revisado.
-- `PerSourcePenalties` de `sshd` también se aplica dentro de NetBird en
-  cuanto `host-baseline` retire la exención manual del 2026-10-04. Una
-  conexión que aborta antes de autenticarse, como un cliente que rechaza una
-  huella de host nueva, suma penalización a su dirección NetBird.
+- `PerSourcePenalties` de `sshd` se aplica también dentro de NetBird: la
+  exención manual del 2026-10-04 se retiró el 2026-10-05. Una conexión que
+  aborta antes de autenticarse, como un cliente que rechaza una huella de host
+  nueva, suma penalización a su dirección NetBird.
 
 La caducidad de sesión de los peers registrados con SSO está desactivada en
 toda la cuenta (Settings, Authentication, «Peer Session Expiration»), también
@@ -591,9 +592,9 @@ termina con un reinicio.
 Antes:
 
 1. el snapshot del host es el de `config/host-security.yml` y está dentro del
-   SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`); si no, primero
-   se promueve otro con su propio cambio revisado, como en
-   [SNAPSHOT_20261005.md](SNAPSHOT_20261005.md);
+   SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`). Si no coincide
+   o su SLO ya venció, el apply de `host-baseline` que adopta el snapshot
+   promovido va antes que el reinicio ([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md));
 2. no hay markers en `/run/lock/dockerswarm-*.marker` ni procesos `apt` o
    `dpkg` en curso;
 3. ninguna deriva registrada detiene el siguiente apply (ver
@@ -725,9 +726,10 @@ El reinicio sigue «Reinicios» y, además de sus pasos «Después»:
    baneo de CrowdSec corta NetBird (ver «SSH por NetBird»);
 7. `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
    `DOCKERSWARM-INGRESS`, como lo anotado;
-8. `--playbook host-baseline --check` no propone más cambios que los
-   metadatos de un commit nuevo y, mientras siga en el host, la retirada de
-   la línea manual `PerSourcePenaltyExemptList` de `/etc/ssh/sshd_config`.
+8. `--playbook host-baseline --check` propone solo los cambios revisados que
+   sigan pendientes (el drop-in de GRUB, el snapshot y el pin de `curl`). La
+   línea manual `PerSourcePenaltyExemptList` ya se retiró el 2026-10-05, así
+   que no debe aparecer.
    Confirma pins, SSH y el inventario del Hub de CrowdSec; las comprobaciones
    del cortafuegos solo corren en un apply, por eso se miran a mano en los
    pasos 5 a 7;

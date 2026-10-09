@@ -161,9 +161,9 @@ aquí:
   de OrganizationWeb y RacingGame. Resolvía a esa IP el 2026-09-26. No está
   en Terraform y no debe crearse desde él: Cloudflare admite varios A con el
   mismo nombre. Se adoptará con un bloque `import` en la adopción general del
-  DNS (ver [EDGE.md](EDGE.md), «Registro DNS»). Hasta que se aplique la ruta
-  de AX (EDGE.md, «Ruta de AX»), Traefik no tiene certificado para ese nombre
-  y, con `sniStrict`, rechaza su TLS.
+  DNS (ver [EDGE.md](EDGE.md), «Registro DNS»). La ruta de AX (EDGE.md, «Ruta
+  de AX») lo sirve desde el 2026-09-26; el certificado cubre también
+  `oficina`.
 - El registro DNS `winnest.apptolast.com` (A a `159.195.156.57`, DNS-only,
   sin AAAA) lo creó el propietario a mano en Cloudflare para la web de
   WinNest, con las mismas reglas que el de `ax`. Resolvía a esa IP el
@@ -248,7 +248,7 @@ Inventario de lo que se cambió a mano en el host el 2026-10-04, sobre todo
 para el acceso SSH del propietario. Las direcciones se leyeron sin mostrarlas
 aquí. La ventana de parcheo del 2026-10-05 retiró la línea de `sshd`, el
 parser de CrowdSec y los ficheros de Fail2ban (ver «Parcheo del sistema
-operativo (2026-10-05)»); sus copias, con direcciones, quedan en
+operativo (2026-10-05)»); sus copias quedan en
 `/var/backups/dockerswarm/os-patch-20261005/`, que solo lee root:
 
 - Cliente NetBird `0.80.0` desde `https://pkgs.netbird.io/debian`
@@ -921,9 +921,7 @@ PR #86, desde `main` en `6ed7a32`. El panel pasa a la Oficina de agentes
 
 «Parcheo del sistema operativo» de [OPERATIONS.md](OPERATIONS.md), desde
 `main` en `47eada9` (#90), con el snapshot `20260924T000000Z` dentro de su
-SLO. El propietario eligió la ventana sabiendo que el host no tiene copia
-externa (compuerta STOP 5 de `CLAUDE.md`) y que era el primer reinicio
-completo desde el despliegue. Horas en UTC:
+SLO. Horas en UTC:
 
 - Antes (19:08:48): alternativa `sudo` `auto` en `/usr/lib/cargo/bin/sudo`,
   `/usr/bin/sudo.ws` presente, `apt-mark showhold` vacío, sin markers ni
@@ -1010,10 +1008,9 @@ completo desde el despliegue. Horas en UTC:
   - `DOCKER-USER` empieza en IPv4 y en IPv6 por `CROWDSEC_CHAIN` y
     `DOCKERSWARM-INGRESS`. En `INPUT`, `CROWDSEC_CHAIN` queda ahora antes que
     `-i wt0 -j ACCEPT` en las dos familias (ver «SSH por NetBird»).
-    `DOCKERSWARM-INGRESS` coincide con lo anotado salvo los tres saltos a
-    `SATISFACTORY-PLAY` (17777 y 18888) del laboratorio privado de
-    Satisfactory: la unidad que los crea,
-    `satisfactory-presence-play.service`, no corre al arrancar. Las cadenas
+    `DOCKERSWARM-INGRESS` coincide con lo anotado salvo tres saltos de un
+    laboratorio privado cuya unidad de origen no arranca sola (ver
+    «Pendiente»). Las cadenas
     `PSAD_BLOCK_*` y los cuatro bloqueos automáticos permanentes de psad de
     antes de la ventana no están tras el arranque; psad sigue activo;
   - quince de los dieciséis nombres públicos responden lo esperado;
@@ -1199,19 +1196,18 @@ de otro puerto; API y nftables sí comprobaron el contrato restringido.
 Fuera de este repositorio, sin bloquear nada:
 
 - el contenedor Compose `satisfactory-game` no arranca solo tras un reinicio
-  porque su red overlay de Swarm aún no existe, y
-  `satisfactory-presence-play.service`, que crea `SATISFACTORY-PLAY`, no corre
-  al arrancar. Ese cambio tiene que llegar a su repositorio de origen;
+  porque su red overlay de Swarm aún no existe, y la unidad de su laboratorio
+  privado no crea su cadena al arrancar. Ese cambio tiene que llegar a su
+  repositorio de origen;
 - `monitor-production-prometheus-1` no volvió a arrancar solo tras los
   reinicios del 2026-10-05;
-- `oficina.apptolast.com` resuelve desde el 2026-10-09: su registro A lo
+- `oficina.apptolast.com` resuelve (observado el 2026-10-09): su registro A lo
   creó el propietario a mano en Cloudflare, DNS-only, con TTL servido de
   300 s y sin AAAA. El Secret opcional `ax-web-office` lleva la sesión de
   Codex, pero el host no tiene `/etc/dockerswarm/ax/github-token`: sin ese
   token la Oficina no abre PR. Lo añade el propietario con
   `ax-web-bootstrap.sh office` cuando lo decida;
-- en n8n, «Family Error Workflow» no está publicado, así que los fallos de
-  los siete flujos que lo usan como flujo de error no avisan. Publicarlo es
+- en n8n, el flujo «Family Error Workflow» no está publicado. Publicarlo es
   decisión del propietario (compuerta STOP 6 de `CLAUDE.md`).
 
 ## Advertencia sobre Terraform y DNS

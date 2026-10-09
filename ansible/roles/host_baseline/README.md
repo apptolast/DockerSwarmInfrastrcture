@@ -208,8 +208,9 @@ not run the validator. It then parses the file with `/bin/sh -n`, which reads
 commands without running them, and installs it with the same check as
 `validate`. Only a handler runs `update-grub`, which is
 `grub-mkconfig -o /boot/grub/grub.cfg`: it writes `grub.cfg.new` and replaces
-the menu only when `grub-script-check` accepts it. A converged host therefore
-reports `changed=0`. The first apply on the production host rewrites the
+the menu only when `grub-script-check` accepts it. A converged host should
+report `changed=0`; only a repeated apply on the host proves it, not the
+offline tests. The first apply on the production host rewrites the
 hand-written file, whose comments differ, and runs `update-grub` once; the
 boot parameters stay the same.
 
