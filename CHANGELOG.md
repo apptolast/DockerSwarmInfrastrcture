@@ -6,6 +6,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.3
+
+- Versión 1.0.3 de `ax-web`: consejero Opus para los agentes (`advisor`, ver
+  `Added`), enrutado de modelos del equipo (Haiku como ejecutor, Sonnet para lo
+  complejo) y Codex desactivado en la Oficina, que solo ejecuta Claude Code. El
+  enrutado aplica a las instalaciones nuevas: los agentes ya desplegados
+  conservan su modelo. El digest se fija en `config/ax-lab.yml` tras la
+  reconstrucción de la CI.
+
 ### Oficina 1.0.2
 
 - Versión 1.0.2 de `ax-web`: la cola no empieza trabajos nuevos mientras una
