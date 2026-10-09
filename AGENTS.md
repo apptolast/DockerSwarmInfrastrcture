@@ -133,6 +133,11 @@ file — do not treat this list as a substitute for reading them.
   every run is reported with its operation id and result. `terraform apply`
   stays manual: the Cloudflare root in `docs/DEPLOYMENT_STATUS.md` must not be
   run from this repository.
+- Owner authorization for GitHub operations: the repository owner has authorized
+  the agent to perform GitHub operations on this repository, including opening
+  and updating pull requests and squash-merging them. A merge happens only when
+  every required check has passed. The agent never bypasses a required check or
+  the ruleset, and never force-pushes `main`.
 
 ## 5. This repository's real pipeline
 
