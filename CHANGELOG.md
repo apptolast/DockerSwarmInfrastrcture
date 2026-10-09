@@ -6,6 +6,15 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.5
+
+- Versión 1.0.5 de `ax-web`: la vista **Oficina 3D** (`#/3d`), una escena de
+  Three.js con un escritorio por agente y su estado real, la sala del
+  consejero y una lista accesible junto a ella (ver
+  [`docs/OFICINA.md`](docs/OFICINA.md), «La oficina en 3D»). La escena y un
+  Three.js 0.186.1 recortado (MIT) son un paquete aparte que la vista descarga
+  al abrirse; la CSP no cambia.
+
 ### Oficina 1.0.4
 
 - Versión 1.0.4 de `ax-web`: la barra superior muestra el uso de las dos

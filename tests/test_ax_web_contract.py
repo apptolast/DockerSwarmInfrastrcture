@@ -10,6 +10,7 @@ inputs.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -221,8 +222,11 @@ class StaticUIContract(unittest.TestCase):
 
     def test_the_page_loads_only_its_own_hashed_assets(self) -> None:
         page = (STATIC / "index.html").read_text(encoding="utf-8")
-        for token in ("{{APP_CSS}}", "{{APP_JS}}"):
+        for token in ("{{APP_CSS}}", "{{APP_JS}}", "{{APP_3D}}"):
             self.assertEqual(page.count(token), 1, token)
+        # The 3D bundle is only named here, in a meta tag: it is fetched by the
+        # 3D view the first time it opens, not by every page.
+        self.assertRegex(page, r'<meta name="oficina-3d" content="\{\{APP_3D\}\}">')
         self.assertNotRegex(page, r"(?is)<script\b[^>]*>\s*[^<\s]")
         self.assertNotRegex(page, r"(?i)<style\b")
         self.assertNotRegex(page, r"(?i)\sstyle\s*=")
@@ -233,6 +237,26 @@ class StaticUIContract(unittest.TestCase):
         self.assertTrue(sorted((STATIC / "js").glob("*.js")))
         self.assertTrue(sorted((STATIC / "css").glob("*.css")))
         self.assertTrue((STATIC / "favicon.svg").is_file())
+
+    def test_the_three_d_bundle_is_separate_and_vendored_with_its_licence(self) -> None:
+        three = STATIC / "3d" / "00-three.js"
+        scene = STATIC / "3d" / "10-office3d.js"
+        self.assertTrue(three.is_file() and scene.is_file())
+        vendor = APP / "third_party/three"
+        for name in ("README.md", "LICENSE", "entry.js"):
+            self.assertTrue((vendor / name).is_file(), name)
+        readme = (vendor / "README.md").read_text(encoding="utf-8")
+        digest = hashlib.sha256(three.read_bytes()).hexdigest()
+        self.assertIn(digest, readme, "the vendored bundle is not the one the README records")
+        self.assertIn("three@0.186.1", readme)
+        self.assertIn("MIT License", (vendor / "LICENSE").read_text(encoding="utf-8"))
+        # Nothing of Three.js may sit in the scripts every page loads.
+        for path in sorted((STATIC / "js").glob("*.js")):
+            self.assertNotIn("WebGLRenderer", path.read_text(encoding="utf-8"), path.name)
+        # The view loads the bundle only by the hashed path the server names.
+        view = (STATIC / "js/51-office3d.js").read_text(encoding="utf-8")
+        self.assertIn("office3d", view)
+        self.assertNotRegex(view, r"https?://")
 
     def test_scripts_and_styles_load_nothing_from_elsewhere(self) -> None:
         for path in sorted([*STATIC.rglob("*.js"), *STATIC.rglob("*.css")]):

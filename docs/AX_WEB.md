@@ -233,6 +233,15 @@ Oficina:
   herramientas prohibidas distintos de la semilla. Los agentes Codex se
   desactivan. El editor de agentes tiene ahora un selector de Consejero; si se
   elige como modelo el mismo que el consejero, este se quita.
+- **Vista 3D.** La interfaz sirve tres ficheros con nombre por su contenido:
+  el CSS, el script y un tercer paquete, `office3d.<hash>.js`, que reúne
+  `static/3d/*.js` (un Three.js 0.186.1 recortado y la escena). La página solo
+  lleva su ruta en `<meta name="oficina-3d">`; la vista `#/3d` lo descarga la
+  primera vez que se abre y el script principal no contiene Three.js. Sin
+  carpeta `3d/` el meta queda vacío y la vista lo dice. La CSP no cambia: el
+  paquete es un `<script>` del mismo origen. La receta para regenerar el
+  Three.js recortado, su licencia y sus sumas están en
+  `images/ax-web/third_party/three`.
 - **Consejero.** Un agente Claude puede tener `advisor` (Opus, en el equipo de
   semilla), que se pasa a Claude Code con `--advisor`. Claude Code no limita ni
   fuerza las consultas, y cada una cuesta como un trabajo de Opus: el coste por

@@ -19,5 +19,11 @@ indent_style = tab
 [images/ax/google-ax-375.patch]
 trim_trailing_whitespace = false
 
+# Three.js recortado y fijado por su sha256 (images/ax-web/third_party/three).
+[images/ax-web/internal/web/static/3d/00-three.js]
+indent_style = unset
+trim_trailing_whitespace = false
+insert_final_newline = unset
+
 [images/ax/manifests/*.json]
 insert_final_newline = false
