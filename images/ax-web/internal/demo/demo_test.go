@@ -145,11 +145,11 @@ func TestDemoServesTheOffice(t *testing.T) {
 	if evs, _ := events["events"].([]any); len(evs) < 8 {
 		t.Fatalf("%d events", len(evs))
 	}
-	// A Codex job runs with the fake Codex credential.
-	if code := c.post("/api/jobs", `{"project_id":"ax","agent_id":"guido","kind":"pregunta","prompt":"¿Qué hace el reaper?"}`, &job); code != 201 {
+	// A Claude job runs in the demo.
+	if code := c.post("/api/jobs", `{"project_id":"ax","agent_id":"ada","kind":"pregunta","prompt":"¿Qué hace el reaper?"}`, &job); code != 201 {
 		t.Fatal(code)
 	}
-	if j := c.waitJob(job["id"].(string)); j["status"] != "hecho" || j["agent"].(map[string]any)["harness"] != harness.Codex {
+	if j := c.waitJob(job["id"].(string)); j["status"] != "hecho" || j["agent"].(map[string]any)["harness"] != harness.Claude {
 		t.Fatalf("%v", j)
 	}
 	// A team runs every step to an outcome.

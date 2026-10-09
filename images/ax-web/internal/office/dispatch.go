@@ -124,7 +124,7 @@ func (o *Office) buildSpecLocked(j *Job) (harness.Spec, error) {
 	}
 	spec := harness.Spec{
 		ID: "web-" + j.ID, Repo: p.Repo, Branch: j.Branch, Prompt: final, Harness: eff.Harness,
-		Model: eff.Model, FallbackModel: eff.FallbackModel, Effort: eff.Effort, Mode: eff.Mode,
+		Model: eff.Model, FallbackModel: eff.FallbackModel, Advisor: eff.Advisor, Effort: eff.Effort, Mode: eff.Mode,
 		Timeout: time.Duration(eff.TimeoutMinutes) * time.Minute, ApplyPatch: patch,
 		CaptureChanges: j.Kind == KindChange,
 	}
@@ -577,6 +577,7 @@ func (o *Office) finalize(id string, res harness.Result) {
 	now := o.now()
 	j.Status, j.Finished, j.Outcome, j.Message, j.ExitCode = status, &now, res.Outcome, res.Message, res.ExitCode
 	j.Usage, j.Changes, j.Activity, j.Stalled, j.Waiting = harness.SanitizeUsage(res.Usage), changes, "", false, ""
+	j.ModelCost = res.ModelCost
 	if len(unsaved) > 0 {
 		note := "Aviso: no se pudieron guardar en el disco " + strings.Join(unsaved, ", ")
 		if j.Message != "" {

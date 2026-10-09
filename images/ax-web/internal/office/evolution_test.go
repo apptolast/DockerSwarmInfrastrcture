@@ -184,8 +184,12 @@ func TestAgentCRUDAndVersions(t *testing.T) {
 	if a.Version != 1 || a.Role != "QA" {
 		t.Fatalf("%+v", a)
 	}
-	a, err = h.o.UpdateAgent(a.ID, AgentInput{Harness: ptr(harness.Codex), Model: ptr(""), Effort: ptr(""), Note: ptr("A Codex")}, "x")
-	if err != nil || a.Version != 2 || a.MaxTurns != 0 || a.History[0].Note != "A Codex" || a.History[0].Harness != harness.Claude {
+	_, err = h.o.UpdateAgent(a.ID, AgentInput{Harness: ptr(harness.Codex), Model: ptr(""), Effort: ptr(""), Note: ptr("A Codex")}, "x")
+	if err == nil || IsStatus(err) != 400 {
+		t.Fatalf("codex accepted while disabled: %v", err)
+	}
+	a, err = h.o.UpdateAgent(a.ID, AgentInput{Model: ptr("haiku"), Advisor: ptr("opus"), Effort: ptr("low"), Note: ptr("Haiku con consejero")}, "x")
+	if err != nil || a.Version != 2 || a.Advisor != "opus" || a.MaxTurns != 40 || a.History[0].Note != "Haiku con consejero" || a.History[0].Harness != harness.Claude {
 		t.Fatalf("%+v %v", a, err)
 	}
 	if _, err := h.o.UpdateAgent(a.ID, AgentInput{Effort: ptr("nope")}, "x"); IsStatus(err) != 400 {

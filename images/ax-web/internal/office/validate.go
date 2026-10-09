@@ -153,8 +153,8 @@ func runsError(field string, err error) error {
 // validateBehaviour checks the fields that shape a run. prefix names the
 // fields in errors ("" or "overrides.").
 func validateBehaviour(prefix string, b *AgentSnapshot, lim Limits, disallowed []string) error {
-	if b.Harness != harness.Claude && b.Harness != harness.Codex {
-		return fieldErr(prefix+"harness", "el agente debe ser claude o codex")
+	if b.Harness != harness.Claude {
+		return fieldErr(prefix+"harness", "el agente debe ser claude; Codex está desactivado en la Oficina")
 	}
 	if b.Mode != harness.ModeRead && b.Mode != harness.ModeFull {
 		return fieldErr(prefix+"mode", "el modo debe ser lectura o completo")
@@ -168,6 +168,14 @@ func validateBehaviour(prefix string, b *AgentSnapshot, lim Limits, disallowed [
 		}
 		if !modelRe.MatchString(b.FallbackModel) {
 			return fieldErr(prefix+"fallback_model", "modelo de reserva no válido")
+		}
+	}
+	if b.Advisor != "" {
+		if b.Harness != harness.Claude {
+			return fieldErr(prefix+"advisor", "solo Claude admite un consejero")
+		}
+		if !modelRe.MatchString(b.Advisor) || b.Advisor == b.Model {
+			return fieldErr(prefix+"advisor", "consejero no válido")
 		}
 	}
 	if b.Effort != "" && !slices.Contains(effortsFor(b.Harness, b.Model), b.Effort) {
@@ -230,7 +238,7 @@ func validateAgent(a *Agent, lim Limits) error {
 func behaviourOf(a *Agent) AgentSnapshot {
 	return AgentSnapshot{
 		Name: a.Name, Emoji: a.Emoji, Version: a.Version, Harness: a.Harness, Model: a.Model,
-		FallbackModel: a.FallbackModel, Effort: a.Effort, Mode: a.Mode,
+		FallbackModel: a.FallbackModel, Advisor: a.Advisor, Effort: a.Effort, Mode: a.Mode,
 		MaxTurns: a.MaxTurns, TimeoutMinutes: a.TimeoutMinutes,
 	}
 }
@@ -256,6 +264,9 @@ func effective(a *Agent, o *Overrides) AgentSnapshot {
 		if o.Effort == "" && b.Effort != "" && !slices.Contains(effortsFor(b.Harness, b.Model), b.Effort) {
 			b.Effort = ""
 		}
+	}
+	if o.Advisor != "" {
+		b.Advisor = o.Advisor
 	}
 	if o.FallbackModel != "" {
 		b.FallbackModel = o.FallbackModel

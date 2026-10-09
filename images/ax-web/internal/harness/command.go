@@ -78,6 +78,14 @@ func Validate(s Spec) error {
 	if s.FallbackModel != "" && !modelPattern.MatchString(s.FallbackModel) {
 		return specErr("fallback_model", "modelo de respaldo no válido")
 	}
+	if s.Advisor != "" {
+		if s.Harness != Claude {
+			return specErr("advisor", "solo Claude admite un consejero")
+		}
+		if !modelPattern.MatchString(s.Advisor) || s.Advisor == s.Model {
+			return specErr("advisor", "consejero no válido")
+		}
+	}
 	if s.Effort != "" && !slices.Contains(efforts, s.Effort) {
 		return specErr("effort", "esfuerzo no admitido por %s", s.Harness)
 	}
@@ -156,6 +164,7 @@ func Command(s Spec) ([]string, error) {
 	for _, f := range []struct{ flag, value string }{
 		{"--model", s.Model}, {"--fallback-model", s.FallbackModel},
 		{"--effort", s.Effort}, {"--append-system-prompt", s.AppendSystemPrompt},
+		{"--advisor", s.Advisor},
 	} {
 		if f.value != "" {
 			argv = append(argv, f.flag, f.value)

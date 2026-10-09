@@ -101,7 +101,7 @@ docker network create --driver overlay --opt encrypted --attachable \
 `.github/workflows/ax-web.yml` compila `images/ax-web` con ko v0.19.1 dos
 veces (la segunda con la caché vacía), exige el mismo digest y además el que
 fija `web.image.digest`:
-`sha256:81ed9abb730f782dc6ed53ea4b7569265a087958a25af9dc78d69519fa04d0e0`.
+`sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366`.
 Solo entonces guarda el layout OCI como artefacto `ax-web-oci-layout`. El
 host nunca compila la imagen. El propietario la siembra en la copia de
 seguridad del laboratorio, desde el artefacto descomprimido en un
@@ -116,8 +116,8 @@ sudo install -d -o root -g root -m 0700 /run/ax-web-seed
 sudo -- /usr/bin/python3 -m zipfile -e ax-web-oci-layout.zip /run/ax-web-seed
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
   --image-set web --source /run/ax-web-seed \
-  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.2 \
-  --image=ax-web=sha256:81ed9abb730f782dc6ed53ea4b7569265a087958a25af9dc78d69519fa04d0e0
+  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.3 \
+  --image=ax-web=sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366
 sudo rm -rf /run/ax-web-seed
 ```
 
@@ -216,6 +216,12 @@ Oficina:
   reinicia, y el trabajo en espera muestra la hora del reinicio. Los trabajos en
   marcha no se detienen. Una muestra de más de 15 minutos no retiene nada: el
   siguiente trabajo informa una nueva.
+- **Consejero.** Un agente Claude puede tener `advisor` (Opus, en el equipo de
+  semilla), que se pasa a Claude Code con `--advisor`. Claude Code no limita ni
+  fuerza las consultas, y cada una cuesta como un trabajo de Opus: el coste por
+  modelo queda en `model_cost` del trabajo.
+- **Codex.** Desactivado: un agente de Codex no se guarda y un trabajo de Codex
+  se rechaza.
 - **Límites de una ejecución.** `max_turns` 150 y `max_timeout_minutes` 90;
   el panel admite de 1 a 500 y de 5 a 180.
 - **Orígenes.** Además de `origin`, el panel acepta POST con el origen de
@@ -318,7 +324,7 @@ Tras AX, en el mismo `ax-lab`:
    parado, lo arranca:
 
    ```bash
-   imagen=localhost:5001/ax-web@sha256:81ed9abb730f782dc6ed53ea4b7569265a087958a25af9dc78d69519fa04d0e0
+   imagen=localhost:5001/ax-web@sha256:86512b30208944dd358a5a0a458b26a030fd539e0ab490e03ab658338f0d5366
    docker run --detach --pull never --name ax-web-edge --restart no \
      --user 65532:65532 --read-only --cap-drop ALL \
      --security-opt no-new-privileges --memory 33554432 \

@@ -57,6 +57,9 @@ type Spec struct {
 	Model         string
 	FallbackModel string
 	Effort        string
+	// Advisor (Claude only) is the model the run may consult for guidance
+	// when it is stuck: Claude --advisor. Empty means no advisor.
+	Advisor string
 	// Mode is ModeRead or ModeFull.
 	Mode string
 	// AppendSystemPrompt is the persona (Claude --append-system-prompt).
@@ -176,6 +179,10 @@ type Result struct {
 	ResultText string   `json:"-"`
 	Usage      Usage    `json:"usage"`
 	Changes    *Changes `json:"-"`
+	// ModelCost is what each model in the run cost, by model name. The
+	// advisor's calls show as their own model, so a run that consulted it
+	// has an entry other than the executor's.
+	ModelCost map[string]float64 `json:"-"`
 	// Windows are the subscription windows the run last reported, nil
 	// when the harness reports none.
 	Windows *UsageWindows `json:"-"`

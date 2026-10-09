@@ -31,6 +31,8 @@ type Final struct {
 	Saw        bool
 	// Windows are the subscription windows last reported, nil if none.
 	Windows *UsageWindows
+	// ModelCost is the cost of each model in the run, by name.
+	ModelCost map[string]float64
 }
 
 // NewParser returns the parser of a harness. Anything but Codex gets the

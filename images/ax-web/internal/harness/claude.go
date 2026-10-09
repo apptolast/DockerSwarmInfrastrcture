@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -35,9 +36,15 @@ type claudeLine struct {
 		CacheRead     int64 `json:"cache_read_input_tokens"`
 		CacheCreation int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
-	NumTurns   int              `json:"num_turns"`
-	DurationMS int64            `json:"duration_ms"`
-	RateLimit  *claudeRateLimit `json:"rate_limit_info"`
+	NumTurns   int                        `json:"num_turns"`
+	DurationMS int64                      `json:"duration_ms"`
+	RateLimit  *claudeRateLimit           `json:"rate_limit_info"`
+	ModelUsage map[string]claudeModelCost `json:"modelUsage"`
+}
+
+// claudeModelCost is one entry of the result's modelUsage.
+type claudeModelCost struct {
+	CostUSD float64 `json:"costUSD"`
 }
 
 // claudeRateLimit is a rate_limit_event. Only the unified windows are read;
@@ -162,6 +169,7 @@ func (p *ClaudeParser) result(ev claudeLine) Event {
 		IsError:    ev.IsError || strings.HasPrefix(ev.Subtype, "error"),
 		Usage:      u,
 		Saw:        true,
+		ModelCost:  modelCosts(ev.ModelUsage),
 	}
 	return Event{
 		Kind: EventResult, Text: clip(text, MaxEventText), CostUSD: u.CostUSD,
@@ -306,3 +314,25 @@ func orUnknown(s string) string {
 	}
 	return s
 }
+
+// modelCosts keeps the finite, non-negative cost of each model in a run,
+// bounded to maxModelCosts models and to the length of each name.
+func modelCosts(in map[string]claudeModelCost) map[string]float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]float64{}
+	for name, c := range in {
+		if len(out) == maxModelCosts {
+			break
+		}
+		if math.IsNaN(c.CostUSD) || math.IsInf(c.CostUSD, 0) || c.CostUSD < 0 {
+			continue
+		}
+		out[cut(name, MaxModelBytes)] = c.CostUSD
+	}
+	return out
+}
+
+// maxModelCosts bounds how many models one run reports.
+const maxModelCosts = 8

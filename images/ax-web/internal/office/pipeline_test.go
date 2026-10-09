@@ -220,11 +220,11 @@ func TestDebate(t *testing.T) {
 	h.step(t, "Propuesta A", exited(0, "A"))
 	h.step(t, "Propuesta B", exited(0, "B"))
 	spec, _ := h.step(t, "Propuesta C", exited(0, "C"))
-	if spec.Harness != harness.Codex {
+	if spec.Harness != harness.Claude {
 		t.Fatalf("C is %s", spec.Harness)
 	}
 	spec, _ = h.step(t, "Decisión", exited(0, "Gana B"))
-	if !strings.Contains(spec.Prompt, "### Propuesta C — Guido\nC") || spec.Mode != harness.ModeRead {
+	if !strings.Contains(spec.Prompt, "### Propuesta C — Hedy\nC") || spec.Mode != harness.ModeRead {
 		t.Fatal(spec.Prompt)
 	}
 	p, _ := h.pipeline(t, pl.ID)
