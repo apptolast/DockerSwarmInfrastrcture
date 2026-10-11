@@ -116,7 +116,7 @@ sudo install -d -o root -g root -m 0700 /run/ax-web-seed
 sudo -- /usr/bin/python3 -m zipfile -e ax-web-oci-layout.zip /run/ax-web-seed
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
   --image-set web --source /run/ax-web-seed \
-  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.6 \
+  --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.7 \
   --image=ax-web=sha256:0fd9fbd7ea310e571e79f85f7dc10b0c1ea663b97730ed591b9ea9c7acef6fe9
 sudo rm -rf /run/ax-web-seed
 ```

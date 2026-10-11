@@ -6,6 +6,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.7
+
+- Versión 1.0.7 de `ax-web`. La 1.0.6 se desplegó diciendo `1.0.5` en su
+  log y en `/api/office`, porque la constante `Version` de `main.go` se
+  compila dentro de la imagen y no se había subido. Ahora la sube y un test
+  del contrato exige que coincida con el tag de `config/ax-lab.yml` y con el
+  título de `images/ax-web/README.md`.
+- El workflow `ax-web.yml` escribe también en el log los dos digests de la
+  compilación (antes solo estaban en el resumen del run), para fijar el de un
+  release sin compilar aparte.
+
 ### Oficina 1.0.6
 
 - Versión 1.0.6 de `ax-web`. Arregla las barras de uso: el lector de la

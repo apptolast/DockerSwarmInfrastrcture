@@ -132,6 +132,8 @@ jobs:
             tail -n 1 >"${build}/second"
           first="${first##*@}"
           second="$(sed 's/.*@//' "${build}/second")"
+          echo "first build:       ${first}"
+          echo "empty build cache: ${second}"
           echo "${first}" | grep -Eq '^sha256:[a-f0-9]{64}$'
           {
             echo "## AX web panel image"
