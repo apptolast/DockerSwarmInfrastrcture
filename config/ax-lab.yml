@@ -351,7 +351,7 @@ ax_lab:
     # registry like the AX images; never built on this host.
     image:
       name: ax-web
-      tag: "1.0.7"
+      tag: "1.0.8"
       digest: >-
         sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603
     # The panel's mTLS port, published by a NodePort Service on the kind

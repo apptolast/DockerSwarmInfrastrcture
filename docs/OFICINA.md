@@ -188,9 +188,11 @@ elegidos (por ejemplo, una auditoría de seguridad los lunes a las 06:00).
    agente, sus métricas y sus últimos trabajos (resultados, veredictos,
    valoraciones). Propone un prompt nuevo; si lo apruebas, el agente sube de
    versión y la anterior queda en su historial, de donde se puede recuperar.
-4. **Métricas.** Por agente y versión, y por modelo: trabajos, éxito,
-   valoraciones, aprobación de sus cambios en revisión, nota en el banco de
-   pruebas, coste y duración medios.
+4. **Métricas.** Por agente y versión, por modelo y por proyecto: trabajos,
+   éxito, valoraciones, aprobación de sus cambios en revisión, nota en el
+   banco de pruebas, coste y duración medios, y el consumo medio de las
+   ventanas de suscripción (5 h y semanal) de los trabajos que reportaron
+   una, con la misma salvedad de que puede incluir uso ajeno a la Oficina.
 5. **Banco de pruebas.** Encargos fijos con criterios; un juez puntúa de 0
    a 10 la respuesta de un agente. Sirve para comparar versiones o modelos
    antes de quedarse con uno.

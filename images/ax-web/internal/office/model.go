@@ -407,12 +407,14 @@ type Eval struct {
 	Created   time.Time `json:"created"`
 }
 
-// Metric aggregates finished jobs of one agent version (or one model).
+// Metric aggregates finished jobs of one agent version (or one model, or
+// one project).
 type Metric struct {
 	AgentID      string     `json:"agent_id,omitempty"`
 	Version      int        `json:"version,omitempty"`
 	Harness      string     `json:"harness,omitempty"`
 	Model        string     `json:"model,omitempty"`
+	ProjectID    string     `json:"project_id,omitempty"`
 	Jobs         int        `json:"jobs"`
 	Succeeded    int        `json:"succeeded"`
 	Failed       int        `json:"failed"`
@@ -427,12 +429,21 @@ type Metric struct {
 	AvgSeconds   float64    `json:"avg_seconds"`
 	AvgTurns     float64    `json:"avg_turns"`
 	LastUsed     *time.Time `json:"last_used,omitempty"`
+	// AvgFiveHourPP/AvgSevenDayPP are the average window_delta_*_pct of
+	// the finished jobs that reported one (see windowDeltaPct), nil when
+	// none did. WindowN is how many jobs contributed at least one of the
+	// two, for "(n trabajos)" in the UI; each average is its own divisor,
+	// since a job can report one window's delta without the other.
+	AvgFiveHourPP *float64 `json:"avg_five_hour_pp,omitempty"`
+	AvgSevenDayPP *float64 `json:"avg_seven_day_pp,omitempty"`
+	WindowN       int      `json:"window_n"`
 }
 
 // Metrics is the leaderboard.
 type Metrics struct {
 	ByAgentVersion []Metric `json:"by_agent_version"`
 	ByModel        []Metric `json:"by_model"`
+	ByProject      []Metric `json:"by_project"`
 	TotalCostUSD   float64  `json:"total_cost_usd"`
 	CostTodayUSD   float64  `json:"cost_today_usd"`
 	JobsToday      int      `json:"jobs_today"`

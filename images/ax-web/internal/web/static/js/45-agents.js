@@ -286,6 +286,18 @@
       list, diffBox);
   }
 
+  // The average window_delta_*_pct of the finished jobs that reported one
+  // (never the Office's own guess): "sin dato" when none did.
+  const WINDOW_NOTE = "Puede incluir uso ajeno a la Oficina: otra sesión de Claude Code " +
+    "del propietario de la suscripción corriendo a la vez cuenta contra la misma ventana.";
+  function windowConsumptionText(m) {
+    if (!m.window_n) return "Consumo medio: sin dato";
+    const pp = (n) => (n > 0 ? "+" : "") + fmt.num1(n) + " pp";
+    return "Consumo medio: 5 h " + (m.avg_five_hour_pp == null ? "sin dato" : pp(m.avg_five_hour_pp)) +
+      " · semanal " + (m.avg_seven_day_pp == null ? "sin dato" : pp(m.avg_seven_day_pp)) +
+      " (" + fmt.num(m.window_n) + " " + u.plural(m.window_n, "trabajo", "trabajos") + ")";
+  }
+
   function metricsTable(agent) {
     const ms = metricsOf(agent.id);
     if (!ms.length) return h("p", { class: "muted", text: "Sin métricas todavía: aparecen cuando la versión termina trabajos." });
@@ -298,9 +310,12 @@
       h("td", { class: "num", text: m.eval_runs ? fmt.num1(m.eval_score_avg) : "—" }),
       h("td", { class: "num", text: fmt.usd(m.avg_cost_usd) }),
       h("td", { class: "num", text: fmt.duration(m.avg_seconds * 1000) }));
-    return h("div", { class: "table-wrap" }, h("table", { class: "table" },
-      h("thead", null, h("tr", null, ["Versión", "Trabajos", "Éxito", "👍/👎", "Revisiones OK", "Nota eval.", "Coste medio", "Duración"].map((t) => h("th", { scope: "col", text: t })))),
-      h("tbody", null, ms.map(row))));
+    return h("div", null,
+      h("div", { class: "table-wrap" }, h("table", { class: "table" },
+        h("thead", null, h("tr", null, ["Versión", "Trabajos", "Éxito", "👍/👎", "Revisiones OK", "Nota eval.", "Coste medio", "Duración"].map((t) => h("th", { scope: "col", text: t })))),
+        h("tbody", null, ms.map(row)))),
+      h("div", { class: "stack" }, ms.map((m) => h("p", { class: "muted small", title: WINDOW_NOTE },
+        h("strong", { text: "v" + m.version + ": " }), windowConsumptionText(m)))));
   }
 
   O.route("/agentes/:id", {

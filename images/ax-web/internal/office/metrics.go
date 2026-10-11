@@ -18,12 +18,17 @@ type modelKey struct {
 }
 
 type acc struct {
-	m        Metric
-	seconds  float64
-	timed    int
-	turns    int
-	evalSum  int
-	lastUsed time.Time
+	m           Metric
+	seconds     float64
+	timed       int
+	turns       int
+	evalSum     int
+	lastUsed    time.Time
+	winFiveN    int
+	winFiveSum  float64
+	winSevenN   int
+	winSevenSum float64
+	windowN     int // jobs with at least one of the two deltas, for "(n trabajos)"
 }
 
 // finiteCost is a job's cost for the sums: a value that is not a finite
@@ -52,7 +57,8 @@ func modelOf(j *Job) string {
 func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) Metrics {
 	byAgent := map[agentKey]*acc{}
 	byModel := map[modelKey]*acc{}
-	accs := func(j *Job) (*acc, *acc) {
+	byProject := map[string]*acc{}
+	accs := func(j *Job) (*acc, *acc, *acc) {
 		ak := agentKey{j.AgentID, j.Agent.Version}
 		mk := modelKey{j.Agent.Harness, modelOf(j)}
 		a := byAgent[ak]
@@ -65,9 +71,14 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 			m = &acc{m: Metric{Harness: mk.harness, Model: mk.model}}
 			byModel[mk] = m
 		}
-		return a, m
+		p := byProject[j.ProjectID]
+		if p == nil {
+			p = &acc{m: Metric{ProjectID: j.ProjectID}}
+			byProject[j.ProjectID] = p
+		}
+		return a, m, p
 	}
-	out := Metrics{ByAgentVersion: []Metric{}, ByModel: []Metric{}}
+	out := Metrics{ByAgentVersion: []Metric{}, ByModel: []Metric{}, ByProject: []Metric{}}
 	y, mo, d := now.UTC().Date()
 	today := time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
 	for _, j := range jobs {
@@ -80,8 +91,8 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 			out.CostTodayUSD += cost
 			out.JobsToday++
 		}
-		a, m := accs(j)
-		for _, x := range []*acc{a, m} {
+		a, m, pr := accs(j)
+		for _, x := range []*acc{a, m, pr} {
 			x.m.Jobs++
 			switch j.Status {
 			case StatusDone:
@@ -106,6 +117,20 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 			if j.Finished != nil && j.Finished.After(x.lastUsed) {
 				x.lastUsed = *j.Finished
 			}
+			any := false
+			if j.WindowDeltaFiveHour != nil {
+				x.winFiveN++
+				x.winFiveSum += *j.WindowDeltaFiveHour
+				any = true
+			}
+			if j.WindowDeltaSevenDay != nil {
+				x.winSevenN++
+				x.winSevenSum += *j.WindowDeltaSevenDay
+				any = true
+			}
+			if any {
+				x.windowN++
+			}
 		}
 	}
 	// Reviews of changes count for the author of the changes.
@@ -117,8 +142,8 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 		if c == nil || c.Kind != KindChange || !isTerminal(c.Status) {
 			continue
 		}
-		a, m := accs(c)
-		for _, x := range []*acc{a, m} {
+		a, m, pr := accs(c)
+		for _, x := range []*acc{a, m, pr} {
 			if r.Verdict == VerdictApproved {
 				x.m.Approved++
 			} else {
@@ -135,8 +160,8 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 		if c == nil || !isTerminal(c.Status) {
 			continue
 		}
-		a, m := accs(c)
-		for _, x := range []*acc{a, m} {
+		a, m, pr := accs(c)
+		for _, x := range []*acc{a, m, pr} {
 			x.m.EvalRuns++
 			x.evalSum += *p.Score
 		}
@@ -157,6 +182,15 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 			t := x.lastUsed
 			m.LastUsed = &t
 		}
+		if x.winFiveN > 0 {
+			avg := x.winFiveSum / float64(x.winFiveN)
+			m.AvgFiveHourPP = &avg
+		}
+		if x.winSevenN > 0 {
+			avg := x.winSevenSum / float64(x.winSevenN)
+			m.AvgSevenDayPP = &avg
+		}
+		m.WindowN = x.windowN
 		return m
 	}
 	for _, x := range byAgent {
@@ -164,6 +198,9 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 	}
 	for _, x := range byModel {
 		out.ByModel = append(out.ByModel, finish(x))
+	}
+	for _, x := range byProject {
+		out.ByProject = append(out.ByProject, finish(x))
 	}
 	sort.Slice(out.ByAgentVersion, func(i, j int) bool {
 		a, b := out.ByAgentVersion[i], out.ByAgentVersion[j]
@@ -179,6 +216,9 @@ func computeMetrics(jobs map[string]*Job, pipelines []Pipeline, now time.Time) M
 		}
 		return a.Model < b.Model
 	})
+	sort.Slice(out.ByProject, func(i, j int) bool {
+		return out.ByProject[i].ProjectID < out.ByProject[j].ProjectID
+	})
 	return out
 }
 
@@ -193,6 +233,7 @@ func (o *Office) metricsLocked() Metrics {
 	m := o.metrics
 	m.ByAgentVersion = slices.Clone(m.ByAgentVersion)
 	m.ByModel = slices.Clone(m.ByModel)
+	m.ByProject = slices.Clone(m.ByProject)
 	return m
 }
 
