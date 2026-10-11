@@ -1278,6 +1278,51 @@ previo) y lo revisó una persona otra vez. Horas en UTC:
   parche anterior. La nota del proyecto «Infraestructura Docker Swarm» explica
   ahora cómo instalar Go con su suma de comprobación.
 
+### Oficina de agentes: 1.0.7 (2026-10-11)
+
+PR #125, desde `main` en `c0926b0` (fusionado como `d143ddc`). La Oficina pasa
+de `ax-web:1.0.6` a `ax-web:1.0.7`, que solo corrige el número de versión que
+informa el binario y añade un test que lo vigila. Horas en UTC:
+
+- Motivo: la 1.0.6 se desplegó diciendo `1.0.5` en su log y en `/api/office`,
+  porque la constante `Version` de `images/ax-web/main.go` se compila dentro de
+  la imagen y no se había subido. Como el binario cambia, el tag no podía
+  seguir siendo `1.0.6` (la copia nunca da dos digests a un mismo
+  `ax-web:<tag>`). Un test del contrato exige ahora que `Version` y el título
+  de `images/ax-web/README.md` coincidan con el tag de `config/ax-lab.yml`.
+  El workflow `ax-web.yml` también escribe en el log los dos digests de la
+  compilación, que antes solo estaban en el resumen del run.
+- Imagen `ax-web:1.0.7`, con el digest que la CI compiló dos veces con la
+  caché vacía:
+  `sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.7` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 38175717384 (`d143ddc`). La copia
+  conserva `ax-web:1.0.6` (`sha256:0fd9fbd7…`) y `ax-web:1.0.5`
+  (`sha256:a1c9613c…`) para volver atrás.
+- Antes de fusionar: seis comprobaciones del PR en verde, entre ellas
+  `go vet` y las pruebas con `-race` y la comparación del digest.
+- Antes del apply: cola sin trabajos en marcha (17 hechos, 5 fallidos y 1
+  cancelado) y copia del estado del PVC en un directorio de root `0700` bajo
+  `/var/backups/dockerswarm/`.
+- `ax-lab --check` (operación `1a274135…`): `ok=149 changed=2 failed=0` (los
+  dos metadatos); el plan del panel, restaurar `ax-web`, aplicar `state` y
+  `ax-web.yaml` y recrear `ax-web-edge`. Substrate y AX, sin cambios.
+- Apply (21:22-21:24, operación `5dc5d4a9…`): `ok=348 changed=10 failed=0`,
+  sin markers. Pod `ax-web-74fbbb8675-sh64v` listo con 0 reinicios y la imagen
+  por digest; contadores de OOM del nodo kind a 0. El último `ax-lab --check`
+  (operación `2d57aa94…`) da `changed=0`.
+- Verificación: el log de arranque y `/api/office` dicen `1.0.7`. Como las
+  ventanas de uso viven en memoria, tras el reinicio la cabecera dice «Uso:
+  sin dato» hasta que termina el primer trabajo.
+- Campo de URL probado en producción (21:30): con
+  `https://github.com/google/ax` en el formulario, el panel creó el proyecto
+  `ax` (no sembrado) una sola vez, el trabajo de comprobación del Becario
+  terminó (0,03 US$) y dejó sus lecturas de uso, y la cabecera volvió a
+  mostrar las dos barras. El proyecto de prueba se borró después. Con eso
+  queda comprobado lo que la ventana de la 1.0.6 dejó como pendiente; la
+  idempotencia con la misma URL sigue cubierta solo por las pruebas
+  unitarias.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
