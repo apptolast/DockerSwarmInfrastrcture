@@ -50,16 +50,18 @@ jobs:
         run: |
           cd /tmp/ax
           /go/bin/govulncheck ./... >/tmp/ax.txt 2>&1 || true
-          echo "## AX" >>"${GITHUB_STEP_SUMMARY}"
-          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/ax.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
+          echo "##### RESULT AX (patched, Go 1.27.2)"
+          tail -3 /tmp/ax.txt
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/ax.txt | sed 's/^ *//' | tee -a "${GITHUB_STEP_SUMMARY}" || true
 
       - name: Substrate, pristine, on Go 1.27.2
         run: |
           cd /tmp/substrate
           ls vendor >/dev/null && echo "vendor dir present: $(find vendor -type f | wc -l) files"
           /go/bin/govulncheck ./cmd/ate-setup ./cmd/ateapi ./cmd/atecontroller ./cmd/atelet ./cmd/atenet ./cmd/ateom-gvisor ./cmd/podcertcontroller >/tmp/sub-pristine.txt 2>&1 || true
-          echo "## Substrate pristine" >>"${GITHUB_STEP_SUMMARY}"
-          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-pristine.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
+          echo "##### RESULT Substrate pristine (Go 1.27.2 only)"
+          tail -3 /tmp/sub-pristine.txt
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-pristine.txt | sed 's/^ *//' | tee -a "${GITHUB_STEP_SUMMARY}" || true
 
       - name: Substrate, x/net and OpenTelemetry bumped
         run: |
@@ -82,6 +84,16 @@ jobs:
           go build ./cmd/... && echo BUILD_OK
           go vet ./cmd/... && echo VET_OK
           /go/bin/govulncheck ./cmd/ate-setup ./cmd/ateapi ./cmd/atecontroller ./cmd/atelet ./cmd/atenet ./cmd/ateom-gvisor ./cmd/podcertcontroller >/tmp/sub-bumped.txt 2>&1 || true
-          echo "## Substrate bumped" >>"${GITHUB_STEP_SUMMARY}"
-          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-bumped.txt | sed 's/^ *//' >>"${GITHUB_STEP_SUMMARY}" || true
-          head -3 /tmp/sub-bumped.txt
+          echo "##### RESULT Substrate bumped (Go 1.27.2 + modules)"
+          tail -3 /tmp/sub-bumped.txt
+          echo "##### PATCH SIZE (what a vendor patch would carry)"
+          git add -A
+          git diff --cached --stat | tail -1
+          echo "files in vendor/: $(git diff --cached --numstat -- vendor | wc -l)"
+          echo "go.mod/go.sum files: $(git diff --cached --numstat -- go.mod go.sum | wc -l)"
+          echo "outside vendor/go.mod/go.sum: $(git diff --cached --name-only | grep -vE '^(vendor/|go\.mod$|go\.sum$)' | wc -l)"
+          git diff --cached --full-index --binary --no-color --no-ext-diff | wc -c | awk '{print "patch bytes: "$1}'
+          git diff --cached --full-index --binary --no-color --no-ext-diff | sha256sum | cut -c1-16 | awk '{print "patch sha256 prefix (run 1): "$1}'
+          git diff --cached --full-index --binary --no-color --no-ext-diff | sha256sum | cut -c1-16 | awk '{print "patch sha256 prefix (run 2): "$1}'
+          git diff --cached --name-only | grep -E "\.(md|txt|sh)$|_test\.go$" | head -3 || true
+          grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|doesn't appear to call" /tmp/sub-bumped.txt | sed 's/^ *//' | tee -a "${GITHUB_STEP_SUMMARY}" || true
