@@ -223,6 +223,17 @@ Oficina:
   ve la más cercana al tope, y pulsarla dice cuándo se reinicia. Un valor
   absurdo del stream (utilización no finita o un reinicio a más de 8 días) se
   ignora, tanto en la barra como en el tope.
+- **Consumo por trabajo.** Cada trabajo guarda la primera y la última lectura
+  de las ventanas que informó su propia ejecución, y su página muestra cuántos
+  puntos se movió cada una («Consumo suscripción»). Es la diferencia entre dos
+  lecturas de la misma ventana: si falta una lectura o la ventana se reinició
+  entre ellas, dice «sin dato», nunca un valor inventado. Puede incluir uso
+  ajeno a la Oficina, porque otra sesión de Claude Code de la misma
+  suscripción cuenta contra la misma ventana. Claude Code informa las ventanas
+  de forma intermitente; sin ninguna, la barra superior dice «Uso: sin dato».
+  Hasta la 1.0.5 el lector perdía las ventanas ya leídas al llegar el
+  resultado final, y solo se veían tras un trabajo sin resultado, como uno
+  cancelado.
 - **Enrutado de modelos en un equipo desplegado.** Al arrancar, la Oficina mueve
   una sola vez a los agentes que siguen como los sembró la versión anterior
   (versión 1, sin historial, mismo modelo y esfuerzo y sin consejero) al

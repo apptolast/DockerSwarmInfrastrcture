@@ -68,12 +68,18 @@ func section(result string, head *regexp.Regexp) (string, bool) {
 	return strings.TrimSpace(rest), true
 }
 
+// truncRunes shortens s to at most n runes, the "…" mark included: callers
+// that re-validate the result against the same bound (e.g. a job title
+// through line()) must not see it grow past n.
 func truncRunes(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
+	if n <= 0 {
+		return ""
+	}
 	r := []rune(s)
-	return strings.TrimSpace(string(r[:n])) + "…"
+	return strings.TrimSpace(string(r[:n-1])) + "…"
 }
 
 // ParseSummary is the "## Resumen" section, or the start of the result,

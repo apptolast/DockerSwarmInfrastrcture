@@ -422,7 +422,7 @@ func (m *Manager) lifecycle(r *Run) {
 	result := harness.Result{
 		Outcome: outcome, Message: message, ExitCode: code, IsError: final.IsError,
 		ResultText: final.ResultText, Usage: final.Usage, Changes: changes,
-		Windows: final.Windows, ModelCost: final.ModelCost,
+		WindowsFirst: final.WindowsFirst, Windows: final.Windows, ModelCost: final.ModelCost,
 	}
 	r.mu.Lock()
 	r.result, r.finished = result, m.dep.Now()

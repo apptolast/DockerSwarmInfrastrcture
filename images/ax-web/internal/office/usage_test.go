@@ -153,12 +153,86 @@ func TestHostileUsageWindowsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestWindowDeltaPct(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	w := func(pct float64, resetIn time.Duration) harness.UsageWindow {
+		return harness.UsageWindow{Utilization: pct / 100, ResetsAt: now.Add(resetIn)}
+	}
+	t.Run("same reset gives the points moved", func(t *testing.T) {
+		d := windowDeltaPct(w(40, time.Hour), w(55, time.Hour))
+		if d == nil || math.Abs(*d-15) > 1e-9 {
+			t.Fatalf("got %v, want 15", d)
+		}
+	})
+	t.Run("a different reset means the window reset mid-run: no data", func(t *testing.T) {
+		if d := windowDeltaPct(w(40, time.Hour), w(5, 48*time.Hour)); d != nil {
+			t.Fatalf("got %v, want nil", d)
+		}
+	})
+	t.Run("a hostile utilization is not trusted either side", func(t *testing.T) {
+		if d := windowDeltaPct(harness.UsageWindow{Utilization: math.NaN(), ResetsAt: now}, w(5, time.Hour)); d != nil {
+			t.Fatalf("got %v, want nil", d)
+		}
+	})
+}
+
 func TestUsageOverOneHundredPercentIsDrawnAsFull(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	v := usageView(&harness.UsageWindows{FiveHour: harness.UsageWindow{Utilization: 1.04, ResetsAt: now.Add(time.Hour)}},
 		now, now)
 	if v.FiveHour == nil || v.FiveHour.Percent != 100 {
 		t.Errorf("got %+v, want a bar at 100", v.FiveHour)
+	}
+}
+
+// A finished run that first and last reported windows sharing the same
+// reset leaves the job with both readings and the percentage points moved,
+// through the real finalize path.
+func TestJobRecordsWindowFirstLastAndDelta(t *testing.T) {
+	h := newHarness(t)
+	h.job(t, JobRequest{ProjectID: "web", AgentID: "becario", Kind: KindAsk, Prompt: "uso"})
+	res := exited(0, "ok")
+	res.WindowsFirst = &harness.UsageWindows{
+		FiveHour: harness.UsageWindow{Utilization: 0.40, ResetsAt: t0.Add(2 * time.Hour)},
+		SevenDay: harness.UsageWindow{Utilization: 0.10, ResetsAt: t0.Add(48 * time.Hour)},
+	}
+	res.Windows = &harness.UsageWindows{
+		FiveHour: harness.UsageWindow{Utilization: 0.55, ResetsAt: t0.Add(2 * time.Hour)},
+		SevenDay: harness.UsageWindow{Utilization: 0.11, ResetsAt: t0.Add(48 * time.Hour)},
+	}
+	got := h.runNext(t, res)
+	if got.WindowsFirst == nil || got.WindowsLast == nil {
+		t.Fatalf("job did not keep the readings: %+v", got)
+	}
+	if got.WindowDeltaFiveHour == nil || math.Abs(*got.WindowDeltaFiveHour-15) > 1e-9 {
+		t.Fatalf("five_hour delta = %v, want 15", got.WindowDeltaFiveHour)
+	}
+	if got.WindowDeltaSevenDay == nil || math.Abs(*got.WindowDeltaSevenDay-1) > 1e-9 {
+		t.Fatalf("seven_day delta = %v, want 1", got.WindowDeltaSevenDay)
+	}
+}
+
+// A window that reset mid-run (different ResetsAt between the first and
+// the last reading) leaves the job with the readings but no delta: mixing
+// the two says nothing about this job.
+func TestJobDeltaIsNilWhenTheWindowResetMidRun(t *testing.T) {
+	h := newHarness(t)
+	h.job(t, JobRequest{ProjectID: "web", AgentID: "becario", Kind: KindAsk, Prompt: "uso"})
+	res := exited(0, "ok")
+	res.WindowsFirst = &harness.UsageWindows{
+		FiveHour: harness.UsageWindow{Utilization: 0.90, ResetsAt: t0.Add(time.Minute)},
+		SevenDay: harness.UsageWindow{Utilization: 0.10, ResetsAt: t0.Add(48 * time.Hour)},
+	}
+	res.Windows = &harness.UsageWindows{
+		FiveHour: harness.UsageWindow{Utilization: 0.05, ResetsAt: t0.Add(5 * time.Hour)},
+		SevenDay: harness.UsageWindow{Utilization: 0.11, ResetsAt: t0.Add(48 * time.Hour)},
+	}
+	got := h.runNext(t, res)
+	if got.WindowDeltaFiveHour != nil {
+		t.Fatalf("five_hour delta = %v, want nil (window reset mid-run)", got.WindowDeltaFiveHour)
+	}
+	if got.WindowDeltaSevenDay == nil {
+		t.Fatal("seven_day delta should still compute: its reset did not change")
 	}
 }
 

@@ -151,7 +151,10 @@ repositorio, servicio y dominio (`config/ax-lab.yml`, `web.office.projects`).
 Desde «Proyectos → Importar desde GitHub» se añaden más repositorios
 públicos de una organización o usuario; los privados no, porque AX los
 clona sin credenciales. Cada proyecto tiene notas y su memoria de
-lecciones.
+lecciones. Al encargar un trabajo también se puede pegar directamente la
+URL de un repositorio público de GitHub en vez de elegir uno de la lista:
+la Oficina reutiliza el proyecto existente de esa misma URL (sin
+distinguir mayúsculas ni un `.git` final) o crea uno nuevo si no lo había.
 
 ## Equipos
 

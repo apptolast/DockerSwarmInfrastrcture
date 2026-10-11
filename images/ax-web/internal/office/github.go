@@ -656,7 +656,7 @@ func oneLine(s string, runes int) string {
 	}, cleanText(s, 4<<10))
 	s = strings.Join(strings.Fields(s), " ")
 	if utf8.RuneCountInString(s) > runes {
-		s = truncRunes(s, runes-1)
+		s = truncRunes(s, runes)
 	}
 	return s
 }

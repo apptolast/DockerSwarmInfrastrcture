@@ -17,14 +17,31 @@ const usageGatePercent = 95
 // longest one is a week.
 const maxWindowReset = 8 * 24 * time.Hour
 
-// validWindow says whether a reported window can be trusted: a finite
-// utilization (a fraction, allowed a little over 1) and a reset that is still
-// ahead but within a week. The numbers come from the agent's stream, so a
-// nonsense one must neither hold the queue for ever nor break the snapshot.
+// validWindowValue says whether a window's utilization alone is sane: a
+// finite fraction, allowed a little over 1. The number comes from the
+// agent's stream, so a nonsense one must not be trusted as data.
+func validWindowValue(u float64) bool {
+	return !math.IsNaN(u) && !math.IsInf(u, 0) && u >= 0 && u <= 10
+}
+
+// validWindow says whether a reported window can be trusted: a sane
+// utilization and a reset that is still ahead but within a week. The reset
+// check only makes sense against a live "now" (the header, the gate); a
+// job's own first/last readings are checked with validWindowValue instead.
 func validWindow(w harness.UsageWindow, now time.Time) bool {
-	u := w.Utilization
-	return !math.IsNaN(u) && !math.IsInf(u, 0) && u >= 0 && u <= 10 &&
-		w.ResetsAt.After(now) && !w.ResetsAt.After(now.Add(maxWindowReset))
+	return validWindowValue(w.Utilization) && w.ResetsAt.After(now) && !w.ResetsAt.After(now.Add(maxWindowReset))
+}
+
+// windowDeltaPct is how many percentage points a window moved between two
+// readings of the same run, or nil when either is invalid or the window
+// reset between them (different ResetsAt): mixing two windows across a
+// reset says nothing about this job.
+func windowDeltaPct(first, last harness.UsageWindow) *float64 {
+	if !validWindowValue(first.Utilization) || !validWindowValue(last.Utilization) || !first.ResetsAt.Equal(last.ResetsAt) {
+		return nil
+	}
+	d := (last.Utilization - first.Utilization) * 100
+	return &d
 }
 
 // usageFreshness is how old a reported sample may be and still count. An

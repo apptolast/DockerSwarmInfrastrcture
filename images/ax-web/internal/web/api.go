@@ -33,6 +33,7 @@ func (s *Server) officeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agents/{id}/rollback", s.withID(office.ValidID, s.rollbackAgent))
 
 	mux.HandleFunc("POST /api/projects", s.createProject)
+	mux.HandleFunc("POST /api/projects/by-repo", s.findOrCreateProjectByRepo)
 	mux.HandleFunc("POST /api/projects/{id}", s.withID(office.ValidID, s.updateProject))
 	mux.HandleFunc("POST /api/projects/{id}/delete", s.withID(office.ValidID, s.deleteProject))
 	mux.HandleFunc("POST /api/projects/{id}/memory", s.withID(office.ValidID, s.projectMemory))
@@ -187,6 +188,20 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if body(w, r, &in, false) {
 		p, err := s.Office.CreateProject(in, ClientIP(r))
 		s.reply(w, http.StatusCreated, p, err)
+	}
+}
+
+// findOrCreateProjectByRepo is the job form's "pega la URL de un
+// repositorio" field: it resolves a GitHub URL to a project, creating one
+// the same way POST /api/projects does when none matches yet.
+func (s *Server) findOrCreateProjectByRepo(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Repo   string `json:"repo"`
+		Branch string `json:"branch,omitempty"`
+	}
+	if body(w, r, &in, false) {
+		p, err := s.Office.FindOrCreateProjectByRepo(in.Repo, in.Branch, ClientIP(r))
+		s.reply(w, http.StatusOK, p, err)
 	}
 }
 

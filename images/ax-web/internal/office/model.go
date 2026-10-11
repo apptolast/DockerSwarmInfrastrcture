@@ -263,6 +263,19 @@ type Job struct {
 	Waiting string `json:"waiting,omitempty"`
 	// Stalled is set when a running job printed nothing for a while.
 	Stalled bool `json:"stalled,omitempty"`
+	// WindowsFirst/WindowsLast are the subscription windows (5 hours,
+	// weekly) the job's own run first and last reported, nil when the
+	// harness reported none. They can include usage outside the Office:
+	// another Claude Code session of the subscription's owner running at
+	// the same time counts against the same windows.
+	WindowsFirst *harness.UsageWindows `json:"windows_first,omitempty"`
+	WindowsLast  *harness.UsageWindows `json:"windows_last,omitempty"`
+	// WindowDeltaFiveHour/WindowDeltaSevenDay are how many percentage
+	// points each window moved during the job, nil when there is not a
+	// first and a last reading sharing the same reset (see
+	// windowDeltaPct).
+	WindowDeltaFiveHour *float64 `json:"window_delta_five_hour_pct,omitempty"`
+	WindowDeltaSevenDay *float64 `json:"window_delta_seven_day_pct,omitempty"`
 }
 
 // JobDetail is GET /api/jobs/{id}: the record plus its files.

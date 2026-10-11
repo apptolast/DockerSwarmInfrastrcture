@@ -91,6 +91,16 @@
     h("span", { class: "usage-pct", text: Math.round(pct) + " %" }));
   }
 
+  // No reading at all (the agent's last run reported no window) is its own
+  // state, distinct from "the feature isn't deployed": say so instead of
+  // hiding the bar, so a propietario does not mistake one for the other.
+  function noUsageData() {
+    const title = "Sin dato del consumo de la suscripción: el agente no reportó las ventanas de 5 horas ni la semanal.";
+    return h("span", { class: "usage-meter is-nodata", title, role: "button", tabindex: "0", "aria-label": title,
+      on: { click: () => O.toast(title, { kind: "warn" }) } },
+    h("span", { class: "usage-pct", text: "Uso: sin dato" }));
+  }
+
   function updateUsage(u) {
     u = u || {};
     const gate = Number(u.gate_percent) || 95;
@@ -103,12 +113,13 @@
     let top = null;
     for (const w of wins) if (!top || Number(w.bar.percent) > Number(top.bar.percent)) top = w;
     const meters = wins.map((w) => usageMeter(w, w.bar, gate, stale, w === top)).filter(Boolean);
+    const nodes = meters.length ? meters : [noUsageData()];
     // The 30-second tick calls this too: leave the DOM alone when nothing changed.
-    const sig = meters.map((m) => m.className + "|" + m.title).join("\n");
+    const sig = nodes.map((m) => m.className + "|" + (m.title || "")).join("\n");
     if (sig === refs.usageSig) return;
     refs.usageSig = sig;
-    refs.usage.hidden = meters.length === 0;
-    O.put(refs.usage, ...meters);
+    refs.usage.hidden = false;
+    O.put(refs.usage, ...nodes);
   }
 
   async function toggleQueue() {

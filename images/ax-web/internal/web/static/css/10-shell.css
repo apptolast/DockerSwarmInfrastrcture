@@ -103,6 +103,8 @@
 /* An old sample: the bar is drawn hollow and grey, the text keeps its contrast. */
 .usage-meter.is-stale .usage-track { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
 .usage-meter.is-stale .usage-fill { background: var(--muted); }
+/* No window reported at all: said plainly, not drawn as an empty bar. */
+.usage-meter.is-nodata .usage-pct { color: var(--muted); }
 @media (max-width: 1080px) {
   .usage-track { width: 38px; }
 }

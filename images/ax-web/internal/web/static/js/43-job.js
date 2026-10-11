@@ -18,6 +18,18 @@
     return label;
   }
 
+  // The percentage points a subscription window moved during the job (its
+  // own run's first and last reading), or "sin dato" when the agent never
+  // reported one, or the window reset mid-run: never a made-up number.
+  const WINDOW_NOTE = "Puede incluir uso ajeno a la Oficina: otra sesión de Claude Code " +
+    "del propietario de la suscripción corriendo a la vez cuenta contra la misma ventana.";
+  function windowDeltaText(j) {
+    const five = j.window_delta_five_hour_pct, week = j.window_delta_seven_day_pct;
+    const fmtPp = (n) => (n > 0 ? "+" : "") + fmt.num1(n) + " pp";
+    if (five == null && week == null) return "sin dato";
+    return "5 h " + (five == null ? "sin dato" : fmtPp(five)) + " · Semanal " + (week == null ? "sin dato" : fmtPp(week));
+  }
+
   function metaGrid(j) {
     const a = ui.agentOf(j);
     const ag = j.agent || {};
@@ -33,6 +45,7 @@
       ["Modo", h("span", { title: (O.own(L.modes, ag.mode) || {}).hint || null, text: (O.own(L.modes, ag.mode) || {}).label || ag.mode || "—" })],
       ["Prioridad", O.own(L.priority, j.priority) || String(j.priority)],
       ["Coste", usage.cost_usd ? fmt.usd(usage.cost_usd) : "—"],
+      ["Consumo suscripción", h("span", { title: WINDOW_NOTE, text: windowDeltaText(j) })],
       ["Tokens", usage.in_tokens || usage.out_tokens
         ? h("span", { title: "caché leída " + fmt.tokens(usage.cache_read_tokens) + " · escrita " + fmt.tokens(usage.cache_write_tokens) }, fmt.tokens(usage.in_tokens) + " ent. · " + fmt.tokens(usage.out_tokens) + " sal.")
         : "—"],
