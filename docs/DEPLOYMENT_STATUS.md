@@ -1226,6 +1226,58 @@ a `ax-web:1.0.5`: la vista **Oficina 3D** (`#/3d`) y su paquete de Three.js
   propietario no alcanza la Oficina desde su red), las barras de uso y el
   consejero en el sandbox, que dependen del primer trabajo real.
 
+### Oficina de agentes: 1.0.6 (2026-10-11)
+
+PR #124, desde `main` en `36a4a65` (fusionado como `5716320`). La Oficina pasa
+de `ax-web:1.0.5` a `ax-web:1.0.6`: arreglo de las barras de uso, consumo por
+trabajo y proyecto por URL en el formulario. Lo planificaron, escribieron y
+revisaron Ada, Linus y Grace desde la propia Oficina (con un debate de diseño
+previo) y lo revisó una persona otra vez. Horas en UTC:
+
+- Causa de las barras vacías: el lector de la salida de Claude Code reiniciaba
+  su estado al llegar el resultado final y perdía las ventanas ya leídas;
+  solo quedaba muestra tras un trabajo sin resultado, como uno cancelado. El
+  parche lo corrige, guarda la primera y la última lectura de cada trabajo y
+  corrige `truncRunes`, que dejaba títulos de equipo de 121 caracteres.
+- Imagen `ax-web:1.0.6`, con el digest que la CI compiló dos veces con la
+  caché vacía: `sha256:0fd9fbd7ea310e571e79f85f7dc10b0c1ea663b97730ed591b9ea9c7acef6fe9`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.6` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 38168649050 (`5716320`). La copia
+  conserva `ax-web:1.0.5` (`sha256:a1c9613c…`) para volver atrás.
+- Antes de fusionar: `go vet`, las pruebas con `-race` y la comparación del
+  digest en verde en la CI (el sandbox de la Oficina no trae Go, así que lo
+  probó la CI), seis comprobaciones del PR en verde y revisión de Grace
+  («APROBADO», con dos observaciones menores que hoy no se pueden alcanzar).
+- Antes del apply: cola sin trabajos en marcha (16 hechos, 5 fallidos y 1
+  cancelado) y copia del estado del PVC en un directorio de root `0700` bajo
+  `/var/backups/dockerswarm/`.
+- `ax-lab --check` (operación `06ff21d3…`): `ok=149 changed=2 failed=0` (los
+  dos metadatos); el plan del panel, restaurar `ax-web`, aplicar `state` y
+  `ax-web.yaml` y recrear `ax-web-edge`. Substrate y AX, sin cambios.
+- Apply (19:40-19:42, operación `1040aeee…`): `ok=348 changed=10 failed=0`,
+  sin markers. Pod `ax-web-5b94cff5c6-xzq4n` listo con 0 reinicios y la imagen
+  por digest; contadores de OOM del nodo kind a 0. El último `ax-lab --check`
+  (operación `fff7cd07…`) da `changed=0`.
+- Verificación en vivo: la interfaz nueva carga con el campo de URL y la
+  cabecera dice «Uso: sin dato» mientras no hay muestra; un trabajo de
+  comprobación del Becario (0,04 US$) terminó con resultado final y dejó sus
+  lecturas de las dos ventanas; la cabecera pasó a mostrar la de 5 h al 2 % y
+  la semanal al 14 %, y la página del trabajo, «Consumo suscripción: 5 h 0 pp ·
+  Semanal 0 pp».
+- Defecto encontrado en la verificación: el log de arranque y `/api/office`
+  siguen diciendo `1.0.5`, porque la constante `Version` de `main.go` no se
+  subió. Lo corrige la 1.0.7 (PR #125), con un test del contrato que exige que
+  coincida con el tag.
+- Sin verificar todavía: que el campo de URL resuelva y cree un proyecto de un
+  repositorio real, porque el sandbox no tiene navegador y no se probó en este
+  apply. Los acumulados de consumo por agente y por proyecto no están
+  implementados.
+- Lección sobre la Oficina: cuatro intentos de Linus agotaron los 120 turnos
+  (unos 5 US$ cada uno) porque el sandbox no trae Go y no podía compilar;
+  «Reintentar» empieza desde el árbol limpio, mientras que «Pedir a…» parte del
+  parche anterior. La nota del proyecto «Infraestructura Docker Swarm» explica
+  ahora cómo instalar Go con su suma de comprobación.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
