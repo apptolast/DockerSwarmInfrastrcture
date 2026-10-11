@@ -81,6 +81,22 @@ entienda («otro…»).
 Por decisión del propietario del 2026-10-02, los agentes tienen el máximo
 de autonomía dentro del sandbox.
 
+### La oficina en 3D
+
+`#/3d` (el elemento «3D» del menú, atajo `d`) dibuja la oficina como una
+escena de Three.js: un escritorio por agente activo, con el color de su estado
+(trabajando, pide tu atención, con cola, libre o descansando), un montón de
+papeles por su cola y, si trabaja, el título del trabajo sobre su cabeza. La
+sala de cristal es el consejero: se ilumina mientras trabaja un agente que
+tiene uno, y un pulso viaja hasta ella cuando un trabajo terminado muestra en
+su coste que lo consultó. Los datos son los reales, no una simulación.
+
+Se gira arrastrando, se acerca con la rueda o pellizcando, y tocar un agente
+abre el tablero filtrado por él. Junto a la escena hay una lista de los
+agentes con su estado, que enlaza a sus trabajos y funciona sin WebGL. La
+escena se detiene al ocultar la pestaña, se dibuja solo cuando algo cambia si
+el sistema pide menos movimiento y libera todos sus recursos al salir.
+
 ## Encargos
 
 Un encargo (un «trabajo») es un agente, un proyecto, un tipo, una

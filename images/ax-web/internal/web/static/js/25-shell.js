@@ -20,6 +20,7 @@
     { href: "#/proyectos", label: "Proyectos", icon: "folder", key: "p", match: (p) => p.startsWith("/proyectos") },
     { href: "#/turnos", label: "Turnos", icon: "clock", key: "u", match: (p) => p.startsWith("/turnos") },
     { href: "#/evolucion", label: "Evolución", icon: "trend", key: "v", match: (p) => p.startsWith("/evolucion") },
+    { href: "#/3d", label: "3D", icon: "cube", key: "d", match: (p) => p.startsWith("/3d") },
     { href: "#/ax", label: "AX", icon: "server", key: "x", match: (p) => p.startsWith("/ax") },
     { href: "#/ajustes", label: "Ajustes", icon: "sliders", key: "j", match: (p) => p.startsWith("/ajustes") },
   ];

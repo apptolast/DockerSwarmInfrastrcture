@@ -19,12 +19,14 @@ var static embed.FS
 const (
 	tokenCSS = "{{APP_CSS}}"
 	tokenJS  = "{{APP_JS}}"
+	// tokenThreeD is the lazy 3D bundle's path, or empty when there is none.
+	tokenThreeD = "{{APP_3D}}"
 	// AssetCache is for content-addressed assets: their name changes
 	// with their content.
 	AssetCache = "public, max-age=31536000, immutable"
 )
 
-// StaticFS is the embedded UI (index.html, css/, js/, favicon.svg).
+// StaticFS is the embedded UI (index.html, css/, js/, 3d/, favicon.svg).
 func StaticFS() fs.FS {
 	sub, err := fs.Sub(static, "static")
 	if err != nil {
@@ -34,15 +36,19 @@ func StaticFS() fs.FS {
 }
 
 // bundle is the UI as served: index.html pointing at one concatenated
-// stylesheet and one script, each named by its sha256.
+// stylesheet and one script, each named by its sha256, and a third script
+// (the 3D view: a trimmed Three.js and the scene) that the browser fetches only
+// when that view is opened.
 type bundle struct {
-	index   []byte
-	css     []byte
-	js      []byte
-	cssName string
-	jsName  string
-	favicon []byte
-	err     error
+	index    []byte
+	css      []byte
+	js       []byte
+	js3d     []byte
+	cssName  string
+	jsName   string
+	js3dName string
+	favicon  []byte
+	err      error
 }
 
 // concat joins the files matching pattern in lexical order, "\n"
@@ -86,7 +92,17 @@ func buildBundle(fsys fs.FS) *bundle {
 		return b
 	}
 	b.cssName, b.jsName = hashName("app", "css", b.css), hashName("app", "js", b.js)
+	if b.js3d, err = concat(fsys, "3d/*.js"); err != nil {
+		b.err = err
+		return b
+	}
+	threeD := ""
+	if len(b.js3d) > 0 {
+		b.js3dName = hashName("office3d", "js", b.js3d)
+		threeD = "/assets/" + b.js3dName
+	}
 	index = bytes.ReplaceAll(index, []byte(tokenCSS), []byte("/assets/"+b.cssName))
+	index = bytes.ReplaceAll(index, []byte(tokenThreeD), []byte(threeD))
 	b.index = bytes.ReplaceAll(index, []byte(tokenJS), []byte("/assets/"+b.jsName))
 	b.favicon, _ = fs.ReadFile(fsys, "favicon.svg")
 	return b
@@ -111,6 +127,8 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 		data, ctype = s.assets.css, "text/css; charset=utf-8"
 	case name == s.assets.jsName:
 		data, ctype = s.assets.js, "text/javascript; charset=utf-8"
+	case s.assets.js3dName != "" && name == s.assets.js3dName:
+		data, ctype = s.assets.js3d, "text/javascript; charset=utf-8"
 	}
 	if ctype == "" {
 		writeError(w, http.StatusNotFound, "no existe")

@@ -35,7 +35,7 @@ import (
 )
 
 // Version of the panel and its office.
-const Version = "1.0.4"
+const Version = "1.0.5"
 
 const usage = "usage: ax-web serve --config <file> | " +
 	"ax-web forward --listen <addr> --target <host:port> --allow-cidr <cidr>[,<cidr>...] | " +

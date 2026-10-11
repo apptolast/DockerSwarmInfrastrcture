@@ -971,3 +971,63 @@ func TestGitHubPreviewForgetAndReposEndpoints(t *testing.T) {
 		t.Fatalf("%d %v", resp.StatusCode, body)
 	}
 }
+
+func TestThreeDBundleIsHashedLazyAndServed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html":     {Data: []byte(`<meta name="oficina-3d" content="{{APP_3D}}"><link href="{{APP_CSS}}"><script src="{{APP_JS}}">`)},
+		"3d/10-scene.js": {Data: []byte("scene();")},
+		"3d/00-three.js": {Data: []byte("window.THREE={};")},
+		"3d/notes.txt":   {Data: []byte("ignored")},
+	}
+	b := buildBundle(fsys)
+	want := "window.THREE={};\nscene();"
+	if b.err != nil || string(b.js3d) != want || b.js3dName != hashName("office3d", "js", []byte(want)) {
+		t.Fatalf("bundle: %v %q %q", b.err, b.js3d, b.js3dName)
+	}
+	if !bytes.Contains(b.index, []byte(`content="/assets/`+b.js3dName+`"`)) || bytes.Contains(b.index, []byte("{{")) {
+		t.Fatalf("index: %s", b.index)
+	}
+	srv := httptest.NewServer((&Server{Static: fsys}).Handler())
+	defer srv.Close()
+	resp, body := raw(t, srv.URL+"/assets/"+b.js3dName)
+	if resp.StatusCode != 200 || body != want || resp.Header.Get("Cache-Control") != AssetCache ||
+		!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") {
+		t.Fatalf("%d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	for _, p := range []string{"/assets/office3d.000000000000.js", "/assets/" + b.js3dName + "x", "/assets/../3d/00-three.js", "/3d/00-three.js"} {
+		if resp, _ := raw(t, srv.URL+p); resp.StatusCode != 404 {
+			t.Errorf("%s: %d", p, resp.StatusCode)
+		}
+	}
+}
+
+func TestWithoutThreeDFolderThePageHasNoThreeDBundle(t *testing.T) {
+	b := buildBundle(fstest.MapFS{"index.html": {Data: []byte(`<meta name="oficina-3d" content="{{APP_3D}}"><script src="{{APP_JS}}">`)}})
+	if b.err != nil || b.js3dName != "" || len(b.js3d) != 0 || !bytes.Contains(b.index, []byte(`content=""`)) {
+		t.Fatalf("%v %q %s", b.err, b.js3dName, b.index)
+	}
+	srv := httptest.NewServer((&Server{Static: fstest.MapFS{"index.html": {Data: []byte("{{APP_3D}}")}}}).Handler())
+	defer srv.Close()
+	if resp, _ := raw(t, srv.URL+"/assets/office3d..js"); resp.StatusCode != 404 {
+		t.Errorf("an unnamed 3D bundle was served: %d", resp.StatusCode)
+	}
+}
+
+func TestEmbeddedUIShipsTheThreeDBundle(t *testing.T) {
+	b := buildBundle(StaticFS())
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	if !regexp.MustCompile(`^office3d\.[0-9a-f]{12}\.js$`).MatchString(b.js3dName) {
+		t.Fatalf("3D bundle name %q", b.js3dName)
+	}
+	if !bytes.Contains(b.js3d, []byte("Oficina3D")) || !bytes.Contains(b.js3d, []byte("WebGLRenderer")) {
+		t.Error("the 3D bundle lacks the scene or Three.js")
+	}
+	if !bytes.Contains(b.index, []byte(`name="oficina-3d" content="/assets/`+b.js3dName+`"`)) {
+		t.Errorf("the page does not point at the 3D bundle: %s", b.index)
+	}
+	if bytes.Contains(b.js, []byte("WebGLRenderer")) {
+		t.Error("Three.js leaked into the main script, which every page loads")
+	}
+}
