@@ -52,13 +52,13 @@ WEB_APPLY = "ansible/roles/ax_lab/tasks/web.yml"
 EXAMPLES = "ansible/roles/ax_lab/tasks/examples.yml"
 BOOTSTRAP = ROOT / "scripts/ax-web-bootstrap.sh"
 WORKFLOW = ROOT / ".github/workflows/ax-web.yml"
-# The ko build of images/ax-web 1.0.6 (the Oficina) with Go 1.27.2 and ko
+# The ko build of images/ax-web 1.0.7 (the Oficina) with Go 1.27.2 and ko
 # v0.19.1 produced this manifest digest; CI rebuilds it twice and compares.
 PINNED_DIGEST = (
-    "sha256:0fd9fbd7ea310e571e79f85f7dc10b0c1ea663b97730ed591b9ea9c7acef6fe9"
+    "sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603"
 )
-# The office's release (SPEC: ax-web 1.0.6).
-TAG = "1.0.6"
+# The office's release (SPEC: ax-web 1.0.7).
+TAG = "1.0.7"
 IMAGE = f"localhost:5001/ax-web:{TAG}@{PINNED_DIGEST}"
 # The projects the office seeds, each verified on 2026-10-02 as a public
 # repository on its default branch (`gh repo view`); service and url only
@@ -410,6 +410,20 @@ class WebValidatorTests(unittest.TestCase):
         for taken in ("10.0.0.0/19", "172.16.0.0/12", "10.244.0.0/16", "10.96.0.0/16"):
             self.assertFalse(subnet.overlaps(ipaddress.ip_network(taken)), taken)
         VALIDATOR.validate_catalog(self.document)
+
+    def test_the_binary_reports_the_release_it_ships_as(self) -> None:
+        # 1.0.6 was deployed reporting 1.0.5: main.go's Version is compiled
+        # into the image, so it has to move with the tag.
+        main = (ROOT / "images/ax-web/main.go").read_text(encoding="utf-8")
+        found = re.search(r'^const Version = "([^"]+)"$', main, re.MULTILINE)
+        self.assertIsNotNone(found, "main.go has no Version constant")
+        assert found is not None
+        self.assertEqual(found.group(1), TAG)
+        readme = (ROOT / "images/ax-web/README.md").read_text(encoding="utf-8")
+        self.assertTrue(
+            readme.startswith(f"# Oficina de agentes (`ax-web` {TAG})"),
+            "images/ax-web/README.md names another release",
+        )
 
     def test_projects_are_proven_by_this_repository(self) -> None:
         """A project's service is one config/image-channels.yml runs, and its
