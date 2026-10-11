@@ -1,0 +1,58 @@
+# Scratch: never merged. Builds images/ax-web twice exactly as ax-web.yml does
+# and prints both digests in the log (the real workflow only writes them to
+# the run summary), so a release PR can pin the new one.
+name: Scratch ax-web digest
+
+on:
+  push:
+    branches: ["scratch/ax-web-digest"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  KO_VERSION: v0.19.1
+
+jobs:
+  digest:
+    name: Build twice and print the digest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    defaults:
+      run:
+        working-directory: images/ax-web
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned ko
+        run: go install "github.com/google/ko@${KO_VERSION}"
+
+      - name: Build twice and print both digests
+        env:
+          KO_DOCKER_REPO: localhost:5001/ax-web
+        run: |
+          set -eu
+          build="/tmp/ax-web"
+          rm -rf "${build}"
+          mkdir -p "${build}"
+          first="$(
+            ko build --bare --push=false --sbom=none --image-user=65532 \
+              --oci-layout-path="${build}/layout" . | tail -n 1
+          )"
+          GOCACHE="$(mktemp -d)" ko build --bare --push=false --sbom=none \
+            --image-user=65532 --oci-layout-path="${build}/rebuild" . |
+            tail -n 1 >"${build}/second"
+          first="${first##*@}"
+          second="$(sed 's/.*@//' "${build}/second")"
+          echo "DIGEST_FIRST=${first}"
+          echo "DIGEST_EMPTY_CACHE=${second}"
+          [ "${first}" = "${second}" ] && echo "DIGEST_REPRODUCIBLE=yes" || echo "DIGEST_REPRODUCIBLE=NO"
