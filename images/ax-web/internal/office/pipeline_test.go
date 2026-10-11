@@ -78,6 +78,34 @@ func TestTeamApprovedFirstTime(t *testing.T) {
 	}
 }
 
+// A pipeline title close to MaxTitleRunes used to fail creating its second
+// step: nextStepLocked built the step title as truncRunes(p.Title+" · "+
+// plan.Name, MaxTitleRunes), which could return MaxTitleRunes+1 runes, and
+// enqueueLocked's line() rejected it as over the limit, silently failing
+// the pipeline (nextStepLocked swallows enqueueLocked's error into
+// PipelineFailed once the first step already ran).
+func TestTeamStepTitleIsBoundedWhenThePipelineTitleIsLong(t *testing.T) {
+	h := newHarness(t)
+	longTitle := strings.Repeat("x", MaxTitleRunes-10) // no spaces: truncation can't dodge the bound by trimming
+	pl, err := h.o.CreatePipeline(context.Background(), PipelineRequest{Template: TplTeam, ProjectID: "web",
+		Task: "Arregla el bug", Title: longTitle}, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := h.runNext(t, exited(0, "plan"))
+	impl := h.runNext(t, withChanges(exited(0, "impl"), 1))
+	for _, j := range []Job{plan, impl} {
+		if n := len([]rune(j.Title)); n > MaxTitleRunes {
+			t.Fatalf("title %q has %d runes", j.Title, n)
+		}
+	}
+	h.runNext(t, exited(0, "VEREDICTO: APROBADO"))
+	p, _ := h.pipeline(t, pl.ID)
+	if p.Status != PipelineDone || p.Outcome != OutcomeApproved || len(p.Steps) != 3 {
+		t.Fatalf("%+v", p)
+	}
+}
+
 func TestTeamIterationLimit(t *testing.T) {
 	cases := []struct {
 		name, last, outcome string

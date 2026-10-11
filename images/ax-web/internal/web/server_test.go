@@ -598,6 +598,15 @@ func TestCatalogueEndpoints(t *testing.T) {
 		{"/api/projects/otro", `{"notes":"Usa make"}`, 200, func(b map[string]any) bool { return b["notes"] == "Usa make" }},
 		{"/api/projects/otro/memory", `{"action":"add","text":"Lección"}`, 200,
 			func(b map[string]any) bool { return len(b["memory"].([]any)) == 1 }},
+		// The literal /api/projects/by-repo must not be shadowed by the
+		// /api/projects/{id} wildcard registered right above it.
+		{"/api/projects/by-repo", `{"repo":"https://github.com/apptolast/nuevo-repo"}`, 200,
+			func(b map[string]any) bool { return b["id"] == "nuevo-repo" && b["seeded"] == false }},
+		{"/api/projects/by-repo", `{"repo":"https://github.com/APPTOLAST/nuevo-repo.git"}`, 200,
+			func(b map[string]any) bool { return b["id"] == "nuevo-repo" }},
+		{"/api/projects/by-repo", `{"repo":"https://evil.example.com/a/b"}`, 400,
+			func(b map[string]any) bool { return b["field"] == "repo" }},
+		{"/api/projects/nuevo-repo/delete", `{}`, 200, nil},
 		{"/api/projects/web/delete", `{}`, 409, func(b map[string]any) bool {
 			return b["error"] == "Los proyectos de la configuración solo se archivan"
 		}},

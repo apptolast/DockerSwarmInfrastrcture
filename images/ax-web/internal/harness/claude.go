@@ -61,16 +61,18 @@ type claudeWindow struct {
 	ResetsAt    int64   `json:"resetsAt"`
 }
 
-// observeWindows keeps the latest pair of windows. An event that lacks
-// either window says nothing new about the account.
+// observeWindows keeps the latest pair of windows, and the first one seen
+// this run. An event that lacks either window says nothing new about the
+// account.
 func (p *ClaudeParser) observeWindows(rl *claudeRateLimit) {
 	if rl == nil || rl.Unified == nil || rl.Unified.FiveHour == nil || rl.Unified.SevenDay == nil {
 		return
 	}
-	p.final.Windows = &UsageWindows{
-		FiveHour: windowOf(*rl.Unified.FiveHour),
-		SevenDay: windowOf(*rl.Unified.SevenDay),
+	w := &UsageWindows{FiveHour: windowOf(*rl.Unified.FiveHour), SevenDay: windowOf(*rl.Unified.SevenDay)}
+	if p.final.WindowsFirst == nil {
+		p.final.WindowsFirst = w
 	}
+	p.final.Windows = w
 }
 
 func windowOf(w claudeWindow) UsageWindow {
@@ -163,13 +165,18 @@ func (p *ClaudeParser) result(ev claudeLine) Event {
 	}
 	u = SanitizeUsage(u)
 	// A run cut by --max-turns or an execution error ends with an error
-	// subtype; is_error is not always set on those.
+	// subtype; is_error is not always set on those. The windows already
+	// observed (rate_limit_event arrives before the final result in a
+	// real session) must survive this reset, or the one event the office
+	// needs never reaches Final.
 	p.final = Final{
-		ResultText: cut(text, MaxResultText),
-		IsError:    ev.IsError || strings.HasPrefix(ev.Subtype, "error"),
-		Usage:      u,
-		Saw:        true,
-		ModelCost:  modelCosts(ev.ModelUsage),
+		ResultText:   cut(text, MaxResultText),
+		IsError:      ev.IsError || strings.HasPrefix(ev.Subtype, "error"),
+		Usage:        u,
+		Saw:          true,
+		ModelCost:    modelCosts(ev.ModelUsage),
+		WindowsFirst: p.final.WindowsFirst,
+		Windows:      p.final.Windows,
 	}
 	return Event{
 		Kind: EventResult, Text: clip(text, MaxEventText), CostUSD: u.CostUSD,

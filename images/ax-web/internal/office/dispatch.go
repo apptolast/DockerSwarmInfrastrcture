@@ -579,6 +579,12 @@ func (o *Office) finalize(id string, res harness.Result) {
 	j.Status, j.Finished, j.Outcome, j.Message, j.ExitCode = status, &now, res.Outcome, res.Message, res.ExitCode
 	j.Usage, j.Changes, j.Activity, j.Stalled, j.Waiting = harness.SanitizeUsage(res.Usage), changes, "", false, ""
 	j.ModelCost = res.ModelCost
+	j.WindowsFirst, j.WindowsLast = res.WindowsFirst, res.Windows
+	j.WindowDeltaFiveHour, j.WindowDeltaSevenDay = nil, nil
+	if res.WindowsFirst != nil && res.Windows != nil {
+		j.WindowDeltaFiveHour = windowDeltaPct(res.WindowsFirst.FiveHour, res.Windows.FiveHour)
+		j.WindowDeltaSevenDay = windowDeltaPct(res.WindowsFirst.SevenDay, res.Windows.SevenDay)
+	}
 	if len(unsaved) > 0 {
 		note := "Aviso: no se pudieron guardar en el disco " + strings.Join(unsaved, ", ")
 		if j.Message != "" {

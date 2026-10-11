@@ -239,6 +239,12 @@ func (in *ProjectInput) apply(p *Project) {
 func (o *Office) CreateProject(in ProjectInput, clientIP string) (Project, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.createProjectLocked(in, clientIP)
+}
+
+// createProjectLocked is CreateProject's body, callable by other methods
+// that already hold o.mu (it is not reentrant).
+func (o *Office) createProjectLocked(in ProjectInput, clientIP string) (Project, error) {
 	p := Project{Memory: []MemoryItem{}, Created: o.now()}
 	in.apply(&p)
 	if err := validateProject(&p, o.cfg.Limits); err != nil {
@@ -260,6 +266,56 @@ func (o *Office) CreateProject(in ProjectInput, clientIP string) (Project, error
 	o.saveLocked(true, false)
 	o.auditAction("project.create", clientIP, "project", p.ID, "repo", p.Repo)
 	return cloneProject(p), nil
+}
+
+// repoKey is a repository's identity for matching purposes: case
+// insensitive, a trailing ".git" ignored. ValidateRepo's canonical form
+// keeps both as the owner typed them, so two projects of the same
+// repository can otherwise end up with different Repo strings (mirrors
+// static/js/46-projects.js's repoKey, used there to dedupe a GitHub
+// import against existing projects).
+func repoKey(repo string) string {
+	return strings.TrimSuffix(strings.ToLower(repo), ".git")
+}
+
+// FindOrCreateProjectByRepo returns the owner's project for repo: an
+// existing one whose Repo matches by repoKey, or (none matching) a new
+// one created the same way CreateProject does (not seeded, validateProject
+// applies in full). Atomic under o.mu: two concurrent calls for the same
+// repository cannot create two projects.
+//
+// A match is returned exactly as stored: branch and any other field the
+// caller passed are not applied to it, so a found project can't be
+// mutated through this path (that stays UpdateProject's job, and a seeded
+// project's reviewed fields still only change in config/ax-lab.yml).
+func (o *Office) FindOrCreateProjectByRepo(repo, branch, clientIP string) (Project, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	canon, err := runs.ValidateRepo(strings.TrimSpace(repo), o.cfg.Limits.RepoHosts)
+	if err != nil {
+		return Project{}, runsError("repo", err)
+	}
+	branch = strings.TrimSpace(branch)
+	if branch != "" {
+		if err := runs.ValidateBranch(branch); err != nil {
+			return Project{}, runsError("branch", err)
+		}
+	}
+	if i := slices.IndexFunc(o.st.Projects, func(p Project) bool { return repoKey(p.Repo) == repoKey(canon) }); i >= 0 {
+		return cloneProject(o.st.Projects[i]), nil
+	}
+	name, err := line("name", truncRunes(nameFromRepo(canon), MaxNameRunes), MaxNameRunes, true)
+	if err != nil {
+		return Project{}, err
+	}
+	return o.createProjectLocked(ProjectInput{Name: &name, Repo: &canon, Branch: &branch}, clientIP)
+}
+
+// nameFromRepo derives a project name from a ValidateRepo canonical URL:
+// the repository's own name, ".git" dropped.
+func nameFromRepo(canon string) string {
+	parts := strings.Split(canon, "/")
+	return strings.TrimSuffix(parts[len(parts)-1], ".git")
 }
 
 // UpdateProject edits a project. The reviewed fields of a seeded one

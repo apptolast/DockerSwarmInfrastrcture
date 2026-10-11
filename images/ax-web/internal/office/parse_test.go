@@ -3,6 +3,7 @@ package office
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"apptolast.com/ax-web/internal/harness"
 )
@@ -37,7 +38,7 @@ func TestParseSummary(t *testing.T) {
 	if got := ParseSummary(long); len([]rune(got)) > fallbackSummary+1 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("fallback %q", got)
 	}
-	if got := ParseSummary("## resumen:\n" + strings.Repeat("ñ", 3000)); len([]rune(got)) != MaxSummaryRunes+1 {
+	if got := ParseSummary("## resumen:\n" + strings.Repeat("ñ", 3000)); len([]rune(got)) != MaxSummaryRunes {
 		t.Fatalf("bounded %d", len([]rune(got)))
 	}
 	if ParseSummary("") != "" {
@@ -56,8 +57,34 @@ func TestParseLessons(t *testing.T) {
 			t.Errorf("%q: %q", none, l)
 		}
 	}
-	if l := ParseLessons("## Lecciones\n- " + strings.Repeat("a", 500)); len([]rune(l[0])) != MaxLessonRunes+1 {
+	if l := ParseLessons("## Lecciones\n- " + strings.Repeat("a", 500)); len([]rune(l[0])) != MaxLessonRunes {
 		t.Fatal("lesson not bounded")
+	}
+}
+
+// truncRunes never returns more than n runes: a title built from it
+// (pipeline.go, schedule.go, evolution.go) is re-validated with the same
+// bound by line(), and used to fail just above it.
+func TestTruncRunesNeverExceedsTheBound(t *testing.T) {
+	cases := []struct {
+		s string
+		n int
+	}{
+		{strings.Repeat("x", 200), 120},
+		{strings.Repeat("x", 121), 120},
+		{strings.Repeat("palabra ", 50), 300},
+		{strings.Repeat("ñ", 10), 1},
+		{"abc", 0},
+		{"abc", -1},
+	}
+	for _, c := range cases {
+		got := truncRunes(c.s, c.n)
+		if n := utf8.RuneCountInString(got); n > max(c.n, 0) {
+			t.Errorf("truncRunes(%dx, %d) = %d runes", utf8.RuneCountInString(c.s), c.n, n)
+		}
+		if utf8.RuneCountInString(c.s) > c.n && c.n > 0 && !strings.HasSuffix(got, "…") {
+			t.Errorf("truncRunes(%dx, %d) = %q, want it to end in …", utf8.RuneCountInString(c.s), c.n, got)
+		}
 	}
 }
 

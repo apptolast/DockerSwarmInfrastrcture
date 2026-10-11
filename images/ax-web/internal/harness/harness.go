@@ -183,6 +183,9 @@ type Result struct {
 	// advisor's calls show as their own model, so a run that consulted it
 	// has an entry other than the executor's.
 	ModelCost map[string]float64 `json:"-"`
+	// WindowsFirst are the subscription windows the run first reported,
+	// nil when the harness reports none; Windows (below) are its last.
+	WindowsFirst *UsageWindows `json:"-"`
 	// Windows are the subscription windows the run last reported, nil
 	// when the harness reports none.
 	Windows *UsageWindows `json:"-"`

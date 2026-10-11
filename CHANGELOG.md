@@ -6,6 +6,30 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.6
+
+- Versión 1.0.6 de `ax-web`. Arregla las barras de uso: el lector de la
+  salida de Claude Code reiniciaba su estado al llegar el resultado final y
+  perdía las ventanas ya leídas, así que solo aparecían tras un trabajo sin
+  resultado (por ejemplo, uno cancelado). Ahora se conservan y el tope del
+  95 % las ve.
+- Cada trabajo guarda la primera y la última lectura de las ventanas de la
+  suscripción y su página muestra la diferencia en puntos («Consumo
+  suscripción», con la salvedad de que puede incluir uso ajeno a la
+  Oficina). Sin lectura, o con la ventana reiniciada, dice «sin dato». La
+  barra superior dice «Uso: sin dato» en lugar de ocultarse. Los acumulados
+  por agente y por proyecto quedan pendientes.
+- Arregla el recorte de textos largos (`truncRunes` añadía «…» después del
+  límite): un equipo con título largo fallaba al crear su segundo paso
+  («supera 120 caracteres»).
+- El formulario de «Nuevo» trabajo admite pegar la URL de un repositorio
+  público de GitHub en vez de elegir un proyecto de la lista: la Oficina
+  reutiliza el proyecto existente de esa URL (sin distinguir mayúsculas ni un
+  `.git` final) o crea uno nuevo con la misma validación que
+  `POST /api/projects`, de forma atómica. Nuevo endpoint
+  `POST /api/projects/by-repo`. Lo planificaron, escribieron y revisaron Ada,
+  Linus y Grace desde la propia Oficina, tras un debate de diseño.
+
 ### Pruebas de la Oficina
 
 - Prueba de humo en Node del cliente de la API y del almacén SSE de la

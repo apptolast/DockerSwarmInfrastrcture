@@ -29,6 +29,11 @@ type Final struct {
 	IsError    bool
 	Usage      Usage
 	Saw        bool
+	// WindowsFirst are the subscription windows the run first reported,
+	// nil if none; Windows (below) are the last it reported. Both are
+	// readings this run's own stream produced, not a fresh sample taken
+	// when the process launched or exited.
+	WindowsFirst *UsageWindows
 	// Windows are the subscription windows last reported, nil if none.
 	Windows *UsageWindows
 	// ModelCost is the cost of each model in the run, by name.

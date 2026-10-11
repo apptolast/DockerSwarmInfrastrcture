@@ -148,6 +148,7 @@
         },
       },
     }, h("span", { "aria-hidden": "true", text: q.icon + " " }), q.label)));
+    const repoInput = ui.input({ maxlength: 300, placeholder: "https://github.com/propietario/repositorio", class: "input mono", autocomplete: "off", spellcheck: "false" });
     const title = ui.input({ maxlength: 120, placeholder: "Se genera a partir del encargo si lo dejas vacío" });
     const branch = ui.input({ maxlength: 200, autocomplete: "off", spellcheck: "false", class: "input mono" });
     const prio = ui.segmented({
@@ -268,12 +269,16 @@
 
     function updateSummary() {
       const a = agentOf();
-      const p = O.sel.project(st.project);
+      // A pasted URL overrides the dropdown at submit time: naming the
+      // dropdown's project here would describe the wrong repository.
+      const repoURL = repoInput.value.trim();
+      const p = repoURL ? null : O.sel.project(st.project);
       const qn = O.sel.queueJobs().length;
       const busy = !!S.snap.active || O.sel.running().length > 0;
       const mp = picker ? picker.value() : { harness: a.harness, model: a.model, effort: a.effort };
       summary.textContent = a.emoji + " " + a.name + " (" + ui.modelLabel(mp.harness, mp.model, mp.effort) + ", " + effectiveMode() + ") trabajará en " +
-        (p ? p.name : "?") + ", rama " + (branch.value.trim() || (p && p.branch) || "main") + ". " +
+        (repoURL ? "el repositorio pegado" : p ? p.name : "?") +
+        (repoURL ? "" : ", rama " + (branch.value.trim() || (p && p.branch) || "main")) + ". " +
         (S.snap.settings.queue_paused ? "La cola está en pausa: esperará a que la reanudes." : busy || qn ? "Entrará en la cola en la posición " + (qn + 1) + " (según prioridad)." : "El sandbox está libre: empezará enseguida.");
     }
 
@@ -285,12 +290,17 @@
       updateSummary();
     });
     branch.addEventListener("input", updateSummary);
+    repoInput.addEventListener("input", updateSummary);
 
     const submit = ui.btn("Encargar", { type: "submit", kind: "primary", icon: "send", cls: "btn-lg" });
     O.put(form,
       h("div", { class: "form-grid" },
         h("div", { class: "form-main" },
-          ui.field("Proyecto", projSel, { field: "project_id" }), projHint,
+          h("div", { class: "grid-2" },
+            ui.field("Proyecto", projSel, { field: "project_id" }),
+            ui.field("O pega la URL de un repositorio público de GitHub", repoInput, { field: "repo", optional: true,
+              hint: "Si la rellenas, se usa en vez del proyecto de la lista (se crea uno si no existe ya)." })),
+          projHint,
           h("div", { class: "field", dataset: { field: "agent_id" } }, h("span", { class: "field-label", text: "Agente" }), agentGrid, h("p", { class: "field-error", role: "alert" })),
           ui.field("Tipo de trabajo", kindSeg.el, { field: "kind" }), modeWarn,
           h("div", { class: "field", dataset: { field: "prompt" } },
@@ -328,6 +338,8 @@
       if (u.bytes(prompt.value) > maxPrompt) return err("prompt", "El encargo supera " + fmt.bytes(maxPrompt) + ".");
       if (u.runes(title.value) > 120) return err("title", "Máximo 120 caracteres.");
       if (!ui.valid.branch(branch.value.trim())) return err("branch", "Nombre de rama no válido.");
+      const repoURL = repoInput.value.trim();
+      if (repoURL && !ui.valid.repo(repoURL)) return err("repo", "Tiene que ser https://github.com/propietario/repositorio.");
       const pv = picker.validate();
       if (pv) {
         advBox.querySelector("details").open = true;
@@ -357,18 +369,24 @@
       if (mp.harness === "claude" && tn !== a.max_turns) ov.max_turns = tn;
       if (tm !== a.timeout_minutes) ov.timeout_minutes = tm;
       for (const k of Object.keys(ov)) if (ov[k] === "" || ov[k] === 0) delete ov[k];
-      const body = {
-        project_id: st.project, agent_id: a.id, kind: st.kind, prompt: prompt.value,
-        priority: st.priority,
-      };
-      if (title.value.trim()) body.title = title.value.trim();
-      if (branch.value.trim()) body.branch = branch.value.trim();
-      if (Object.keys(ov).length) body.overrides = ov;
-      if (st.source) body.source = st.source;
       await ui.busy(submit, async () => {
         try {
+          let projectId = st.project;
+          if (repoURL) {
+            const p = await O.api.post("/api/projects/by-repo", { repo: repoURL });
+            projectId = p.id;
+            O.store.refresh();
+          }
+          const body = {
+            project_id: projectId, agent_id: a.id, kind: st.kind, prompt: prompt.value,
+            priority: st.priority,
+          };
+          if (title.value.trim()) body.title = title.value.trim();
+          if (branch.value.trim()) body.branch = branch.value.trim();
+          if (Object.keys(ov).length) body.overrides = ov;
+          if (st.source) body.source = st.source;
           const job = await O.api.post("/api/jobs", body);
-          lastProject = st.project;
+          lastProject = projectId;
           if (job && job.id) {
             O.store.upsertJob(job);
             O.toast("Encargo creado: " + (job.title || ""), { kind: "ok" });
