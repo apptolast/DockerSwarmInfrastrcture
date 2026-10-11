@@ -33,6 +33,23 @@
       p.service ? h("span", { class: "badge badge-soft mono", title: "Servicio de Swarm", text: "🐳 " + p.service }) : null);
   }
 
+  // The average window_delta_*_pct of the finished jobs of this project
+  // that reported one (never the Office's own guess): "sin dato" when
+  // none did.
+  const WINDOW_NOTE = "Puede incluir uso ajeno a la Oficina: otra sesión de Claude Code " +
+    "del propietario de la suscripción corriendo a la vez cuenta contra la misma ventana.";
+  function windowConsumptionText(m) {
+    if (!m.window_n) return "Consumo medio: sin dato";
+    const pp = (n) => (n > 0 ? "+" : "") + fmt.num1(n) + " pp";
+    return "Consumo medio: 5 h " + (m.avg_five_hour_pp == null ? "sin dato" : pp(m.avg_five_hour_pp)) +
+      " · semanal " + (m.avg_seven_day_pp == null ? "sin dato" : pp(m.avg_seven_day_pp)) +
+      " (" + fmt.num(m.window_n) + " " + u.plural(m.window_n, "trabajo", "trabajos") + ")";
+  }
+
+  function projectMetric(id) {
+    return (S.snap.metrics.by_project || []).find((m) => m.project_id === id);
+  }
+
   // ------------------------------------------------- import from GitHub --
 
   const DEFAULT_OWNER = "apptolast";
@@ -560,42 +577,51 @@
         }
         ui.memo(memBox, JSON.stringify([p.memory, memState.editing, S.snap.settings.max_lessons_in_prompt]), () => memoryLedger(p, memState));
         const jobs = O.sel.jobs().filter((j) => j.project_id === id).slice(0, 8);
-        ui.memo(side, JSON.stringify([p.archived, p.seeded, jobs.map((j) => j.id + j.status)]), () => [
-          h("div", { class: "card" },
-            h("h3", { class: "card-title", text: "Acciones" }),
-            h("div", { class: "stack" },
-              p.archived ? null : ui.btn("Encargar trabajo", { href: "#/nuevo?proyecto=" + O.enc(id), kind: "primary", icon: "plus" }),
-              p.archived ? null : ui.btn("Reunir un equipo", { href: "#/nuevo?tab=equipo&proyecto=" + O.enc(id), icon: "team" }),
-              ui.btn("Ver sus trabajos", { href: "#/tablero?proyecto=" + O.enc(id), icon: "board" }),
-              ui.btn(p.archived ? "Restaurar" : "Archivar", {
-                icon: p.archived ? "undo" : "archive",
-                onClick: async (e) => {
-                  const btn = e.currentTarget;
-                  if (!p.archived && !(await O.confirm({ title: "¿Archivar " + p.name + "?", text: "No aparecerá al encargar trabajo. Su memoria y sus trabajos se conservan.", confirmLabel: "Archivar" }))) return;
-                  await ui.busy(btn, async () => {
-                    await updateProject(p, { archived: !p.archived });
-                    O.toast(p.archived ? "Proyecto restaurado." : "Proyecto archivado.", { kind: "ok" });
-                  }, "No se pudo cambiar");
-                },
-              }),
-              p.seeded ? null : ui.btn("Borrar proyecto", {
-                icon: "trash", kind: "danger-ghost",
-                onClick: async (e) => {
-                  const btn = e.currentTarget;
-                  const ok = await O.confirm({ title: "¿Borrar " + p.name + "?", text: "Se borran el proyecto y su memoria. Los trabajos pasados se conservan.", confirmLabel: "Borrar", danger: true, typeToConfirm: p.id });
-                  if (!ok) return;
-                  await ui.busy(btn, async () => {
-                    await O.api.post(P(id, "delete"), {});
-                    O.toast("Proyecto borrado.", { kind: "ok" });
-                    O.store.sync();
-                    O.go("#/proyectos");
-                  }, "No se pudo borrar");
-                },
-              }))),
-          h("div", { class: "card" },
-            h("h3", { class: "card-title", text: "Últimos trabajos" }),
-            jobs.length ? h("div", { class: "card-list" }, jobs.map((j) => ui.jobCard(j))) : h("p", { class: "muted", text: "Aún no hay trabajos en este proyecto." })),
-        ]);
+        ui.memo(side, JSON.stringify([p.archived, p.seeded, jobs.map((j) => j.id + j.status), projectMetric(id)]), () => {
+          const metric = projectMetric(id);
+          return [
+            h("div", { class: "card" },
+              h("h3", { class: "card-title", text: "Consumo" }),
+              metric && metric.jobs
+                ? h("p", { class: "muted small", text: "Coste medio " + fmt.usd(metric.avg_cost_usd) + " · " + fmt.num1(metric.avg_turns) + " turnos medios" })
+                : h("p", { class: "muted small", text: "Sin trabajos terminados todavía." }),
+              metric ? h("p", { class: "muted small", title: WINDOW_NOTE, text: windowConsumptionText(metric) }) : null),
+            h("div", { class: "card" },
+              h("h3", { class: "card-title", text: "Acciones" }),
+              h("div", { class: "stack" },
+                p.archived ? null : ui.btn("Encargar trabajo", { href: "#/nuevo?proyecto=" + O.enc(id), kind: "primary", icon: "plus" }),
+                p.archived ? null : ui.btn("Reunir un equipo", { href: "#/nuevo?tab=equipo&proyecto=" + O.enc(id), icon: "team" }),
+                ui.btn("Ver sus trabajos", { href: "#/tablero?proyecto=" + O.enc(id), icon: "board" }),
+                ui.btn(p.archived ? "Restaurar" : "Archivar", {
+                  icon: p.archived ? "undo" : "archive",
+                  onClick: async (e) => {
+                    const btn = e.currentTarget;
+                    if (!p.archived && !(await O.confirm({ title: "¿Archivar " + p.name + "?", text: "No aparecerá al encargar trabajo. Su memoria y sus trabajos se conservan.", confirmLabel: "Archivar" }))) return;
+                    await ui.busy(btn, async () => {
+                      await updateProject(p, { archived: !p.archived });
+                      O.toast(p.archived ? "Proyecto restaurado." : "Proyecto archivado.", { kind: "ok" });
+                    }, "No se pudo cambiar");
+                  },
+                }),
+                p.seeded ? null : ui.btn("Borrar proyecto", {
+                  icon: "trash", kind: "danger-ghost",
+                  onClick: async (e) => {
+                    const btn = e.currentTarget;
+                    const ok = await O.confirm({ title: "¿Borrar " + p.name + "?", text: "Se borran el proyecto y su memoria. Los trabajos pasados se conservan.", confirmLabel: "Borrar", danger: true, typeToConfirm: p.id });
+                    if (!ok) return;
+                    await ui.busy(btn, async () => {
+                      await O.api.post(P(id, "delete"), {});
+                      O.toast("Proyecto borrado.", { kind: "ok" });
+                      O.store.sync();
+                      O.go("#/proyectos");
+                    }, "No se pudo borrar");
+                  },
+                }))),
+            h("div", { class: "card" },
+              h("h3", { class: "card-title", text: "Últimos trabajos" }),
+              jobs.length ? h("div", { class: "card-list" }, jobs.map((j) => ui.jobCard(j))) : h("p", { class: "muted", text: "Aún no hay trabajos en este proyecto." })),
+          ];
+        });
       };
       render();
       return { update: render };

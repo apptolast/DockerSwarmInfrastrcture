@@ -40,6 +40,7 @@
     snap.metrics = snap.metrics || {};
     if (!Array.isArray(snap.metrics.by_agent_version)) snap.metrics.by_agent_version = [];
     if (!Array.isArray(snap.metrics.by_model)) snap.metrics.by_model = [];
+    if (!Array.isArray(snap.metrics.by_project)) snap.metrics.by_project = [];
     snap.ax = snap.ax || {};
     snap.credentials = snap.credentials || {};
     if (!Array.isArray(snap.credentials.github_owners)) snap.credentials.github_owners = [];

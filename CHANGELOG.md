@@ -6,6 +6,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Oficina 1.0.8
+
+- Versión 1.0.8 de `ax-web`. Acumulados de consumo de las ventanas de
+  suscripción por agente y versión, por modelo y por proyecto
+  (`avg_five_hour_pp`, `avg_seven_day_pp` y `window_n` en `GET /api/metrics`,
+  promediados solo sobre los trabajos que reportaron ventana): resuelve lo
+  pendiente de la 1.0.6. Las páginas de Agentes y Proyectos lo muestran como
+  «Consumo medio», con la misma salvedad de que puede incluir uso ajeno a la
+  Oficina. Lo planificó, escribió y revisó la propia Oficina (Linus y Grace) y
+  una persona lo revisó otra vez.
+
 ### Oficina 1.0.7
 
 - Versión 1.0.7 de `ax-web`. La 1.0.6 se desplegó diciendo `1.0.5` en su

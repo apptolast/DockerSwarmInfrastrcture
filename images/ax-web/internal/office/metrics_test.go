@@ -13,24 +13,35 @@ import (
 func TestComputeMetrics(t *testing.T) {
 	now := at("2026-10-02T12:00:00Z")
 	tm := func(s string) *time.Time { v := at(s); return &v }
+	fp := func(v float64) *float64 { return &v }
 	snap := func(v int, model string) AgentSnapshot {
 		return AgentSnapshot{Name: "Linus", Version: v, Harness: harness.Claude, Model: model}
 	}
 	jobs := map[string]*Job{
-		"c1": {ID: "c1", AgentID: "linus", Agent: snap(1, "opus"), Kind: KindChange, Status: StatusDone,
+		// c1 has both window deltas; c2 (same agent v1, same project) has
+		// neither, so the agent-v1 and project "web" averages must count
+		// only c1, never dividing by the group's 2 jobs.
+		"c1": {ID: "c1", AgentID: "linus", ProjectID: "web", Agent: snap(1, "opus"), Kind: KindChange, Status: StatusDone,
 			Started: tm("2026-10-01T10:00:00Z"), Finished: tm("2026-10-01T10:01:40Z"),
-			Usage: harness.Usage{CostUSD: 1, Turns: 10}, Rating: &Rating{Score: 1}},
-		"c2": {ID: "c2", AgentID: "linus", Agent: snap(1, "opus"), Kind: KindChange, Status: StatusFailed,
+			Usage: harness.Usage{CostUSD: 1, Turns: 10}, Rating: &Rating{Score: 1},
+			WindowDeltaFiveHour: fp(10), WindowDeltaSevenDay: fp(2)},
+		"c2": {ID: "c2", AgentID: "linus", ProjectID: "web", Agent: snap(1, "opus"), Kind: KindChange, Status: StatusFailed,
 			Started: tm("2026-10-02T10:00:00Z"), Finished: tm("2026-10-02T10:00:20Z"),
 			Usage: harness.Usage{CostUSD: 0.5, Turns: 2}, Rating: &Rating{Score: -1}},
-		"c3": {ID: "c3", AgentID: "linus", Agent: snap(2, "sonnet"), Kind: KindChange, Status: StatusDone,
-			Started: tm("2026-10-02T11:00:00Z"), Finished: tm("2026-10-02T11:00:10Z"), Usage: harness.Usage{CostUSD: 2}},
+		// c3 reports only the five-hour window (its weekly reset mid-run,
+		// say): the seven-day average must stay nil, not 0, and the
+		// five-hour average must not be diluted by the missing one.
+		"c3": {ID: "c3", AgentID: "linus", ProjectID: "infra", Agent: snap(2, "sonnet"), Kind: KindChange, Status: StatusDone,
+			Started: tm("2026-10-02T11:00:00Z"), Finished: tm("2026-10-02T11:00:10Z"), Usage: harness.Usage{CostUSD: 2},
+			WindowDeltaFiveHour: fp(-5)},
 		"r1": {ID: "r1", AgentID: "grace", Agent: AgentSnapshot{Version: 1, Harness: harness.Claude, Model: "opus"},
 			Kind: KindReview, Status: StatusDone, ApplyFrom: "c1", Verdict: VerdictApproved, Finished: tm("2026-10-02T11:30:00Z")},
 		"r2": {ID: "r2", AgentID: "grace", Agent: AgentSnapshot{Version: 1, Harness: harness.Claude, Model: "opus"},
 			Kind: KindReview, Status: StatusDone, ApplyFrom: "c3", Verdict: VerdictChanges, Finished: tm("2026-10-02T11:40:00Z")},
 		"q": {ID: "q", AgentID: "linus", Agent: snap(2, "sonnet"), Kind: KindAsk, Status: StatusQueued},
-		"g1": {ID: "g1", AgentID: "guido", Agent: AgentSnapshot{Version: 1, Harness: harness.Codex}, Kind: KindAsk, Status: StatusDone,
+		// Codex job with no subscription windows reported at all: must not
+		// count toward any window average or WindowN.
+		"g1": {ID: "g1", AgentID: "guido", ProjectID: "web", Agent: AgentSnapshot{Version: 1, Harness: harness.Codex}, Kind: KindAsk, Status: StatusDone,
 			Usage: harness.Usage{ModelUsed: ""}, Finished: tm("2026-10-02T09:00:00Z")},
 	}
 	score := 7
@@ -51,9 +62,21 @@ func TestComputeMetrics(t *testing.T) {
 		l1.AvgTurns != 6 || l1.LastUsed == nil || !l1.LastUsed.Equal(at("2026-10-02T10:00:20Z")) {
 		t.Fatalf("%+v", l1)
 	}
+	// Only c1 reported windows; c2 (no data) must not count toward the
+	// average or dilute it, even though it is one of l1's two jobs.
+	if l1.WindowN != 1 || l1.AvgFiveHourPP == nil || *l1.AvgFiveHourPP != 10 ||
+		l1.AvgSevenDayPP == nil || *l1.AvgSevenDayPP != 2 {
+		t.Fatalf("l1 windows %+v", l1)
+	}
 	l2 := find("linus", 2)
 	if l2.Jobs != 1 || l2.Rejected != 1 || l2.EvalRuns != 1 || l2.EvalScoreAvg != 7 {
 		t.Fatalf("%+v", l2)
+	}
+	// c3 reported only the five-hour window: the seven-day average stays
+	// nil (never 0) and the five-hour one is not diluted by a missing
+	// weekly reading.
+	if l2.WindowN != 1 || l2.AvgFiveHourPP == nil || *l2.AvgFiveHourPP != -5 || l2.AvgSevenDayPP != nil {
+		t.Fatalf("l2 windows %+v", l2)
 	}
 	if m.ByAgentVersion[2].AgentID != "linus" || m.ByAgentVersion[2].Version != 2 {
 		t.Fatalf("order %+v", m.ByAgentVersion)
@@ -67,8 +90,41 @@ func TestComputeMetrics(t *testing.T) {
 	if codex == nil || codex.Model != "predeterminado" || codex.Jobs != 1 {
 		t.Fatalf("%+v", m.ByModel)
 	}
+	// Codex never reported a window: no average, no count.
+	if codex.WindowN != 0 || codex.AvgFiveHourPP != nil || codex.AvgSevenDayPP != nil {
+		t.Fatalf("codex windows %+v", codex)
+	}
 	if m.TotalCostUSD != 3.5 || m.CostTodayUSD != 2.5 || m.JobsToday != 5 {
 		t.Fatalf("totals %+v", m)
+	}
+
+	findProject := func(id string) Metric {
+		for _, x := range m.ByProject {
+			if x.ProjectID == id {
+				return x
+			}
+		}
+		t.Fatalf("no metric for project %s", id)
+		return Metric{}
+	}
+	// "web" has the same shape (jobs, cost, turns, duration, approvals,
+	// windows) as the agent/model breakdowns above: c1, c2 and g1.
+	web := findProject("web")
+	if web.Jobs != 3 || web.Succeeded != 2 || web.Failed != 1 || web.Approved != 1 || web.Rejected != 0 ||
+		web.CostUSD != 1.5 || web.AvgCostUSD != 0.5 || web.AvgTurns != 4 ||
+		web.AvgSeconds != 60 || // only c1 (100s) and c2 (20s) are timed; g1 has no Started
+		web.LastUsed == nil || !web.LastUsed.Equal(at("2026-10-02T10:00:20Z")) ||
+		web.WindowN != 1 || web.AvgFiveHourPP == nil || *web.AvgFiveHourPP != 10 ||
+		web.AvgSevenDayPP == nil || *web.AvgSevenDayPP != 2 {
+		t.Fatalf("project web %+v", web)
+	}
+	infra := findProject("infra")
+	if infra.Jobs != 1 || infra.Rejected != 1 || infra.EvalRuns != 1 || infra.EvalScoreAvg != 7 ||
+		infra.WindowN != 1 || infra.AvgFiveHourPP == nil || *infra.AvgFiveHourPP != -5 || infra.AvgSevenDayPP != nil {
+		t.Fatalf("project infra %+v", infra)
+	}
+	if b, err := json.Marshal(m); err != nil || strings.Contains(string(b), "NaN") {
+		t.Fatalf("marshal: %v, %s", err, b)
 	}
 }
 
