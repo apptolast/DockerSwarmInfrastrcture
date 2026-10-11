@@ -101,7 +101,7 @@ docker network create --driver overlay --opt encrypted --attachable \
 `.github/workflows/ax-web.yml` compila `images/ax-web` con ko v0.19.1 dos
 veces (la segunda con la caché vacía), exige el mismo digest y además el que
 fija `web.image.digest`:
-`sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603`.
+`sha256:236673949ed7eebe8c61a5fd5e52d7d11800efa72933e90677aac6c862413b9b`.
 Solo entonces guarda el layout OCI como artefacto `ax-web-oci-layout`. El
 host nunca compila la imagen. El propietario la siembra en la copia de
 seguridad del laboratorio, desde el artefacto descomprimido en un
@@ -117,7 +117,7 @@ sudo -- /usr/bin/python3 -m zipfile -e ax-web-oci-layout.zip /run/ax-web-seed
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
   --image-set web --source /run/ax-web-seed \
   --layout /var/backups/dockerswarm/ax-lab/images --tag 1.0.8 \
-  --image=ax-web=sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603
+  --image=ax-web=sha256:236673949ed7eebe8c61a5fd5e52d7d11800efa72933e90677aac6c862413b9b
 sudo rm -rf /run/ax-web-seed
 ```
 
@@ -361,7 +361,7 @@ Tras AX, en el mismo `ax-lab`:
    parado, lo arranca:
 
    ```bash
-   imagen=localhost:5001/ax-web@sha256:7d4afaff1cccc43bb6c896a567eb41d225fed99bd73599d6e6838c122ba02603
+   imagen=localhost:5001/ax-web@sha256:236673949ed7eebe8c61a5fd5e52d7d11800efa72933e90677aac6c862413b9b
    docker run --detach --pull never --name ax-web-edge --restart no \
      --user 65532:65532 --read-only --cap-drop ALL \
      --security-opt no-new-privileges --memory 33554432 \
