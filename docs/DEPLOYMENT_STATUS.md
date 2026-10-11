@@ -1192,6 +1192,40 @@ Horas en UTC:
   contiene `--advisor` y los eventos de límite) se confirmará con el primer
   trabajo real tras la migración.
 
+### Oficina de agentes: 1.0.5 (2026-10-11)
+
+PR #120 y #119, desde `main` en `e91b558`. La Oficina pasa de `ax-web:1.0.4`
+a `ax-web:1.0.5`: la vista **Oficina 3D** (`#/3d`) y su paquete de Three.js
+(ver [OFICINA.md](OFICINA.md), «La oficina en 3D»). Horas en UTC:
+
+- Antes de fusionar, tres revisores independientes de solo lectura y un
+  escéptico revisaron la rama: la cola contaba como terminados los trabajos
+  en espera, la lista se reconstruía en cada evento, la pérdida del contexto
+  WebGL no se recuperaba y el recorte de Three.js dejaba un reloj en desuso.
+  Todo se corrigió con pruebas, entre ellas una de humo en Node con un
+  renderizador simulado y un contador de recursos.
+- Imagen `ax-web:1.0.5`, con el digest que la CI compiló dos veces:
+  `sha256:a1c9613cc2255d708458ca40bcdb308dccc6f4a814fa9237465f6d5749096e76`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.5` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 38118564609 (`efc4abd`). La copia
+  conserva `ax-web:1.0.4` (`sha256:fa3bc6fc…`) para volver atrás. La siembra
+  usó un directorio de root `0700` y cambió los permisos del origen antes de
+  copiar.
+- Antes del apply: cola sin trabajos en marcha (los 3, en `hecho`, releída
+  justo antes) y copia del estado del PVC en un directorio de root `0700`
+  bajo `/var/backups/dockerswarm/`.
+- `ax-lab --check`: `ok=149 changed=2 failed=0` (los dos metadatos); el plan
+  del panel, restaurar `ax-web`, aplicar `state` y `ax-web.yaml` y recrear
+  `ax-web-edge`. Substrate y AX, sin cambios.
+- Apply (06:41-06:44, operación `a6a6109e…`): `ok=348 changed=10 failed=0`,
+  sin markers. Pod `ax-web-7f6f64684-n5qxg` listo con 0 reinicios, la imagen
+  por digest y `version":"1.0.5"` en el log de arranque. Contadores de OOM del
+  nodo kind, a 0.
+- El último `ax-lab --check` (operación `855ea3cc…`) da `changed=0`.
+- Sin verificar todavía: el aspecto de `#/3d` en un navegador (el Chrome del
+  propietario no alcanza la Oficina desde su red), las barras de uso y el
+  consejero en el sandbox, que dependen del primer trabajo real.
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
