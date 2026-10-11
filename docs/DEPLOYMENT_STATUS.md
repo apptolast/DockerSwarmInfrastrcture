@@ -1314,6 +1314,14 @@ informa el binario y añade un test que lo vigila. Horas en UTC:
 - Verificación: el log de arranque y `/api/office` dicen `1.0.7`. Como las
   ventanas de uso viven en memoria, tras el reinicio la cabecera dice «Uso:
   sin dato» hasta que termina el primer trabajo.
+- Campo de URL probado en producción (21:30): con
+  `https://github.com/google/ax` en el formulario, el panel creó el proyecto
+  `ax` (no sembrado) una sola vez, el trabajo de comprobación del Becario
+  terminó (0,03 US$) y dejó sus lecturas de uso, y la cabecera volvió a
+  mostrar las dos barras. El proyecto de prueba se borró después. Con eso
+  queda comprobado lo que la ventana de la 1.0.6 dejó como pendiente; la
+  idempotencia con la misma URL sigue cubierta solo por las pruebas
+  unitarias.
 
 ## Runtime regenerado
 
