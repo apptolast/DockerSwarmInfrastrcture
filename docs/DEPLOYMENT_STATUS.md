@@ -1323,6 +1323,50 @@ informa el binario y añade un test que lo vigila. Horas en UTC:
   idempotencia con la misma URL sigue cubierta solo por las pruebas
   unitarias.
 
+### Oficina de agentes: 1.0.8 (2026-10-11)
+
+PR #128, desde `main` en `3530ca8` (fusionado como `3f88494`). La Oficina pasa
+de `ax-web:1.0.7` a `ax-web:1.0.8`: acumulados de consumo de las ventanas de
+suscripción por agente y versión, por modelo y por proyecto. Cierra lo que la
+ventana de la 1.0.6 dejó pendiente. Lo planificó, escribió y revisó la propia
+Oficina (Linus escribió, con Go instalado en el sandbox gracias a la nota del
+proyecto, y Grace lo aprobó) y lo revisó una persona otra vez. Horas en UTC:
+
+- Qué hace: `GET /api/metrics` incluye `avg_five_hour_pp`, `avg_seven_day_pp`
+  y `window_n` por agente, por modelo y, nuevo, por proyecto (`by_project`).
+  Cada promedio divide por su propio contador y solo cuenta los trabajos que
+  informaron esa ventana. Las páginas de Agentes y Proyectos lo muestran como
+  «Consumo medio», con la salvedad de que puede incluir uso ajeno a la
+  Oficina, y como «sin dato» si ningún trabajo informó.
+- Imagen `ax-web:1.0.8`, con el digest que la CI compiló dos veces con la
+  caché vacía:
+  `sha256:236673949ed7eebe8c61a5fd5e52d7d11800efa72933e90677aac6c862413b9b`.
+  Sembrada con `seed-layout --image-set web --tag 1.0.8` desde el artefacto
+  `ax-web-oci-layout` de la ejecución 38180299387 (`3f88494`). La copia
+  conserva `ax-web:1.0.7` (`sha256:7d4afaff…`), `1.0.6` (`sha256:0fd9fbd7…`) y
+  `1.0.5` (`sha256:a1c9613c…`) para volver atrás.
+- Antes de fusionar: seis comprobaciones del PR en verde, entre ellas
+  `go vet`, las pruebas con `-race` y la comparación del digest, y la
+  revisión de Grace («APROBADO»; solo anota una duplicación de dos ayudantes
+  de JavaScript, sin consecuencias).
+- Antes del apply: cola sin trabajos en marcha y copia del estado del PVC en
+  un directorio de root `0700` bajo `/var/backups/dockerswarm/`.
+- `ax-lab --check` (operación `03b7d18f…`): `ok=149 changed=2 failed=0` (los
+  dos metadatos); el plan del panel, restaurar `ax-web`, aplicar `state` y
+  `ax-web.yaml` y recrear `ax-web-edge`. Substrate y AX, sin cambios.
+- Apply (22:30-22:32, operación `abcb3109…`): `ok=348 changed=10 failed=0`,
+  sin markers. Pod `ax-web-75d57b99b4-q77pl` listo con 0 reinicios y la imagen
+  por digest; contadores de OOM del nodo kind a 0. El último `ax-lab --check`
+  (operación `f52c4204…`) da `changed=0`.
+- Verificación en vivo: el log de arranque dice `1.0.8`; la página del
+  proyecto «Infraestructura Docker Swarm» muestra la tarjeta nueva «Consumo»
+  («Coste medio 2,38 US$ · 51 turnos medios», «Consumo medio: 5 h +0,3 pp ·
+  semanal 0 pp (3 trabajos)») y la de Linus, «v2: Consumo medio: 5 h 0 pp ·
+  semanal 0 pp (1 trabajo)». Los trabajos anteriores a la 1.0.6 no guardaron
+  ventanas, así que no cuentan.
+- Sin verificar: el aspecto en un móvil de las líneas nuevas, y ningún
+  trabajo de Codex tiene dato (Codex está desactivado).
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
