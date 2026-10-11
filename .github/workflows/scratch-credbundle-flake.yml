@@ -1,0 +1,56 @@
+# Scratch: never merged. Is the one Substrate test that failed after the module
+# bump (internal/credbundle, TestLoaderConcurrentHandshakes) flaky on its own?
+name: Scratch credbundle flake check
+
+on:
+  push:
+    branches: ["scratch/credbundle-flake"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  SUBSTRATE_COMMIT: 672533541dbfcd29084e4de2475267088bda3651
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  flake:
+    name: Repeat the test before and after the bump
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    steps:
+      - name: Pristine Substrate, the test 60 times
+        run: |
+          set -uo pipefail
+          git config --global --add safe.directory '*'
+          git clone --quiet https://github.com/agent-substrate/substrate /tmp/sub
+          git -C /tmp/sub checkout --quiet "${SUBSTRATE_COMMIT}"
+          cd /tmp/sub
+          out="$(go test ./internal/credbundle -run TestLoaderConcurrentHandshakes -count=60 2>&1 || true)"
+          echo "pristine: $(printf '%s\n' "$out" | grep -c -- '--- FAIL') failing runs of 60"
+          printf '%s\n' "$out" | tail -3
+
+      - name: Bumped Substrate, the same test 60 times
+        run: |
+          set -uo pipefail
+          cd /tmp/sub
+          go get golang.org/x/net@v0.60.0 \
+            go.opentelemetry.io/otel/sdk@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@v1.45.0
+          go mod tidy
+          go mod vendor
+          out="$(go test ./internal/credbundle -run TestLoaderConcurrentHandshakes -count=60 2>&1 || true)"
+          echo "bumped: $(printf '%s\n' "$out" | grep -c -- '--- FAIL') failing runs of 60"
+          printf '%s\n' "$out" | tail -3
+          echo "whole package, pristine vs bumped (single run each):"
+          go test ./internal/credbundle -count=3 2>&1 | tail -4
