@@ -72,7 +72,7 @@ jobs:
             echo '```'
             go mod why -m golang.org/x/net | head -12
             echo '```'
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
           go list -m all | sort >/tmp/ax-mods-before.txt
 
       - name: Baseline, build and tests before the bump
@@ -108,7 +108,7 @@ jobs:
             echo '```'
             cat /tmp/ax-mods-diff.txt
             echo '```'
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
           echo "tree_bumped=${tree}" >>"${GITHUB_OUTPUT}"
           echo "patch_sha=${sha}" >>"${GITHUB_OUTPUT}"
 
@@ -126,7 +126,7 @@ jobs:
             echo "tests ok before/after: $(grep -c '^ok' /tmp/ax-test-base.txt) / $(grep -c '^ok' /tmp/ax-test-patched.txt)"
             echo "failing only after the bump: $(comm -13 /tmp/ax-fail-base.txt /tmp/ax-fail-patched.txt | tr '\n' ' ')"
             grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|No vulnerabilities" /tmp/ax-vuln-patched.txt | sed 's/^ *//' || true
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Round trip on a fresh checkout
         run: |
@@ -140,7 +140,7 @@ jobs:
           tree="$(git write-tree)"
           echo "round trip tree: ${tree}"
           echo "worked tree:     ${{ steps.patch.outputs.tree_bumped }}"
-          [[ "${tree}" == "${{ steps.patch.outputs.tree_bumped }}" ]] && echo "## AX round trip: identical tree" >>"${GITHUB_STEP_SUMMARY}" || echo "## AX round trip: TREES DIFFER" >>"${GITHUB_STEP_SUMMARY}"
+          [[ "${tree}" == "${{ steps.patch.outputs.tree_bumped }}" ]] && echo "## AX round trip: identical tree" | tee -a "${GITHUB_STEP_SUMMARY}" || echo "## AX round trip: TREES DIFFER" | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Keep the patch and the logs
         # v7.0.1
@@ -198,7 +198,7 @@ jobs:
           source /tmp/fetch.sh
           fetch /tmp/sub
           cd /tmp/sub
-          go list -m all | sort >/tmp/sub-mods-before.txt
+          go list -mod=mod -m all | sort >/tmp/sub-mods-before.txt
           go build ./cmd/...
           if go vet ./cmd/...; then echo VET_BASE_OK; else echo VET_BASE_FAILED; fi
           timeout 3000 go test ./... -count=1 >/tmp/sub-test-base.txt 2>&1 || true
@@ -224,7 +224,7 @@ jobs:
           stray="$(git -C /tmp/subA1 diff --cached --name-only | grep -v -E '^(go\.mod|go\.sum|vendor/)' || true)"
           cp /tmp/full1.patch /tmp/substrate-full.patch
           git -C /tmp/subA1 diff --cached --full-index --binary --no-color --no-ext-diff -- go.mod go.sum >/tmp/substrate-gomod-only.patch
-          cd /tmp/subA1 && go list -m all | sort >/tmp/sub-mods-after.txt
+          cd /tmp/subA1 && go list -mod=mod -m all | sort >/tmp/sub-mods-after.txt
           diff /tmp/sub-mods-before.txt /tmp/sub-mods-after.txt | grep '^[<>]' >/tmp/sub-mods-diff.txt || true
           {
             echo "## Substrate bump recipe"
@@ -238,7 +238,7 @@ jobs:
             echo '```'
             cat /tmp/sub-mods-diff.txt
             echo '```'
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
           echo "tree_full=${t1}" >>"${GITHUB_OUTPUT}"
           echo "full_sha=${sha1}" >>"${GITHUB_OUTPUT}"
 
@@ -258,7 +258,7 @@ jobs:
             echo "tree: ${tb}"
             echo "full-patch tree: $(cat /tmp/tree1.txt)"
             echo "same vendor tree: $([[ "${tb}" == "$(cat /tmp/tree1.txt)" ]] && echo yes || echo NO)"
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Patched, build, vet, tests and vulnerabilities
         run: |
@@ -275,7 +275,7 @@ jobs:
             echo "tests ok before/after: $(grep -c '^ok' /tmp/sub-test-base.txt) / $(grep -c '^ok' /tmp/sub-test-patched.txt)"
             echo "failing only after the bump: $(comm -13 /tmp/sub-fail-base.txt /tmp/sub-fail-patched.txt | tr '\n' ' ')"
             grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|No vulnerabilities" /tmp/sub-vuln-patched.txt | sed 's/^ *//' || true
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Keep the patches and the logs
         # v7.0.1
@@ -318,7 +318,7 @@ jobs:
             echo "patch sha256 ${sha} (job said ${{ needs.substrate.outputs.full_sha }})"
             echo "tree ${tree} (job said ${{ needs.substrate.outputs.tree_full }})"
             echo "identical: $([[ "${tree}" == "${{ needs.substrate.outputs.tree_full }}" && "${sha}" == "${{ needs.substrate.outputs.full_sha }}" ]] && echo yes || echo NO)"
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
   binaries:
     name: Build the lab binaries with the deployed Go 1.27.1
@@ -388,4 +388,4 @@ jobs:
               n="$(printf '%s\n' "$out" | grep -c '^Vulnerability #' || true)"
               echo "- $(basename "$b"): ${n} findings ${ids}"
             done
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
