@@ -6,6 +6,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Pruebas de la Oficina
+
+- Prueba de humo en Node del cliente de la API y del almacén SSE de la
+  Oficina (`00-core.js` y `10-store.js`), que no tenían ninguna prueba
+  automatizada: enlaces seguros, mensajes de error, límite de peticiones
+  simultáneas, descarte de flujos obsoletos, reconexión con espera creciente y
+  fusión de `watch()` en una sola reconexión. La planificó Ada, la escribió
+  Linus y la revisó Grace en el equipo «Auto-mejora de la Oficina»; una
+  persona la revisó otra vez antes de fusionarla. No cambia la imagen.
+
 ### Oficina 1.0.5
 
 - Versión 1.0.5 de `ax-web`: la vista **Oficina 3D** (`#/3d`), una escena de
