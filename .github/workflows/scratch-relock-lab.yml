@@ -1,0 +1,391 @@
+# Scratch: never merged. Measures, on GitHub runners only, what a toolchain and
+# module re-lock of the AX lab sources would need before anyone writes pins:
+# where AX takes golang.org/x/net from, whether the module bump builds and
+# keeps the tests, whether the patches reproduce the exact tree, whether a
+# small go.mod patch plus `go mod vendor` gives the same vendor/ tree as the
+# 1.4 MB patch, and which vulnerabilities each binary built with the deployed
+# Go 1.27.1 can actually reach.
+name: Scratch relock of the AX lab sources
+
+on:
+  push:
+    branches: ["scratch/relock-lab-go1272"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  GOVULNCHECK_VERSION: v1.8.0
+  AX_COMMIT: f009cc81c9a571073bc1dd58cd2ed934bf2d5b1c
+  SUBSTRATE_COMMIT: 672533541dbfcd29084e4de2475267088bda3651
+  GIT_AUTHOR_NAME: scratch
+  GIT_AUTHOR_EMAIL: scratch@example.invalid
+  GIT_COMMITTER_NAME: scratch
+  GIT_COMMITTER_EMAIL: scratch@example.invalid
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ax:
+    name: AX module re-lock on Go 1.27.2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    outputs:
+      tree_bumped: ${{ steps.patch.outputs.tree_bumped }}
+      patch_sha: ${{ steps.patch.outputs.patch_sha }}
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Fetch AX at the pinned commit with the vendored patch
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          git clone --quiet https://github.com/google/ax /tmp/ax
+          git -C /tmp/ax checkout --quiet "${AX_COMMIT}"
+          git -C /tmp/ax apply --index "${GITHUB_WORKSPACE}/images/ax/google-ax-375.patch"
+          git -C /tmp/ax commit --quiet -m "base: AX plus the vendored #375 patch"
+          go version
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      - name: Where does x/net come from
+        run: |
+          set -euo pipefail
+          cd /tmp/ax
+          echo "vendor dir: $(test -d vendor && echo yes || echo no)"
+          echo "x/net selected: $(go list -m golang.org/x/net)"
+          {
+            echo "## AX: who requires golang.org/x/net"
+            echo '```'
+            go mod graph | awk '$2 ~ /^golang.org\/x\/net@/ {print $1 " -> " $2}' | sort | uniq -c | sort -rn | head -25
+            echo '```'
+            echo '```'
+            go mod why -m golang.org/x/net | head -12
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+          go list -m all | sort >/tmp/ax-mods-before.txt
+
+      - name: Baseline, build and tests before the bump
+        run: |
+          set -euo pipefail
+          cd /tmp/ax
+          go build ./...
+          timeout 2400 go test ./... -count=1 >/tmp/ax-test-base.txt 2>&1 || true
+          awk '$1 == "FAIL" && NF >= 2 { print $2 }' /tmp/ax-test-base.txt | sort -u >/tmp/ax-fail-base.txt
+          echo "baseline: $(grep -c '^ok' /tmp/ax-test-base.txt) packages ok, $(wc -l </tmp/ax-fail-base.txt) failing"
+
+      - name: Bump x/net and make the patch
+        id: patch
+        run: |
+          set -euo pipefail
+          cd /tmp/ax
+          go get golang.org/x/net@v0.60.0
+          go mod tidy
+          if [ -d vendor ]; then go mod vendor; fi
+          go mod verify
+          go list -m all | sort >/tmp/ax-mods-after.txt
+          diff /tmp/ax-mods-before.txt /tmp/ax-mods-after.txt | grep '^[<>]' >/tmp/ax-mods-diff.txt || true
+          git add -A
+          git diff --cached --full-index --binary --no-color --no-ext-diff >/tmp/ax-modules.patch
+          stray="$(git diff --cached --name-only | grep -v -E '^(go\.mod|go\.sum|vendor/)' || true)"
+          tree="$(git write-tree)"
+          sha="$(sha256sum /tmp/ax-modules.patch | cut -d' ' -f1)"
+          {
+            echo "## AX module bump"
+            echo "patch: $(wc -c </tmp/ax-modules.patch) bytes, sha256 ${sha}"
+            echo "files: $(git diff --cached --name-only | wc -l)"
+            echo "paths outside go.mod, go.sum and vendor/: ${stray:-none}"
+            echo '```'
+            cat /tmp/ax-mods-diff.txt
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "tree_bumped=${tree}" >>"${GITHUB_OUTPUT}"
+          echo "patch_sha=${sha}" >>"${GITHUB_OUTPUT}"
+
+      - name: Patched, build, tests and vulnerabilities
+        run: |
+          set -euo pipefail
+          cd /tmp/ax
+          if go build ./... 2>/tmp/ax-build-patched.txt; then build=ok; else build="FAILED: $(head -5 /tmp/ax-build-patched.txt | tr '\n' ' ')"; fi
+          timeout 2400 go test ./... -count=1 >/tmp/ax-test-patched.txt 2>&1 || true
+          awk '$1 == "FAIL" && NF >= 2 { print $2 }' /tmp/ax-test-patched.txt | sort -u >/tmp/ax-fail-patched.txt
+          /go/bin/govulncheck ./... >/tmp/ax-vuln-patched.txt 2>&1 || true
+          {
+            echo "## AX patched tests and govulncheck"
+            echo "build after the bump: ${build}"
+            echo "tests ok before/after: $(grep -c '^ok' /tmp/ax-test-base.txt) / $(grep -c '^ok' /tmp/ax-test-patched.txt)"
+            echo "failing only after the bump: $(comm -13 /tmp/ax-fail-base.txt /tmp/ax-fail-patched.txt | tr '\n' ' ')"
+            grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|No vulnerabilities" /tmp/ax-vuln-patched.txt | sed 's/^ *//' || true
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Round trip on a fresh checkout
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/google/ax /tmp/ax2
+          cd /tmp/ax2
+          git checkout --quiet "${AX_COMMIT}"
+          git apply --index "${GITHUB_WORKSPACE}/images/ax/google-ax-375.patch"
+          git commit --quiet -m base
+          git apply --index /tmp/ax-modules.patch
+          tree="$(git write-tree)"
+          echo "round trip tree: ${tree}"
+          echo "worked tree:     ${{ steps.patch.outputs.tree_bumped }}"
+          [[ "${tree}" == "${{ steps.patch.outputs.tree_bumped }}" ]] && echo "## AX round trip: identical tree" >>"${GITHUB_STEP_SUMMARY}" || echo "## AX round trip: TREES DIFFER" >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Keep the patch and the logs
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: relock-ax
+          path: |
+            /tmp/ax-modules.patch
+            /tmp/ax-mods-diff.txt
+            /tmp/ax-test-base.txt
+            /tmp/ax-test-patched.txt
+            /tmp/ax-vuln-patched.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  substrate:
+    name: Substrate module re-lock on Go 1.27.2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    outputs:
+      tree_full: ${{ steps.recipe.outputs.tree_full }}
+      full_sha: ${{ steps.recipe.outputs.full_sha }}
+    steps:
+      - name: Prepare tools and the bump recipe
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          go version
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          cat >/tmp/bump.sh <<'EOF'
+          set -euo pipefail
+          # Usage: bump.sh DIR. Same module set the first scratch run measured.
+          cd "$1"
+          go get golang.org/x/net@v0.60.0 \
+            go.opentelemetry.io/otel/sdk@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@v1.45.0 \
+            go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@v1.45.0
+          go mod tidy
+          go mod vendor
+          go mod verify
+          EOF
+          fetch() {
+            git clone --quiet https://github.com/agent-substrate/substrate "$1"
+            git -C "$1" checkout --quiet "${SUBSTRATE_COMMIT}"
+          }
+          declare -f fetch >/tmp/fetch.sh
+
+      - name: Baseline, build, vet and tests before the bump
+        run: |
+          set -euo pipefail
+          source /tmp/fetch.sh
+          fetch /tmp/sub
+          cd /tmp/sub
+          go list -m all | sort >/tmp/sub-mods-before.txt
+          go build ./cmd/...
+          if go vet ./cmd/...; then echo VET_BASE_OK; else echo VET_BASE_FAILED; fi
+          timeout 3000 go test ./... -count=1 >/tmp/sub-test-base.txt 2>&1 || true
+          awk '$1 == "FAIL" && NF >= 2 { print $2 }' /tmp/sub-test-base.txt | sort -u >/tmp/sub-fail-base.txt
+          echo "baseline: $(grep -c '^ok' /tmp/sub-test-base.txt) packages ok, $(wc -l </tmp/sub-fail-base.txt) failing"
+
+      - name: Apply the recipe twice on fresh checkouts and compare
+        id: recipe
+        run: |
+          set -euo pipefail
+          source /tmp/fetch.sh
+          for n in 1 2; do
+            fetch "/tmp/subA${n}"
+            bash /tmp/bump.sh "/tmp/subA${n}"
+            git -C "/tmp/subA${n}" add -A
+            git -C "/tmp/subA${n}" diff --cached --full-index --binary --no-color --no-ext-diff >"/tmp/full${n}.patch"
+            git -C "/tmp/subA${n}" write-tree >"/tmp/tree${n}.txt"
+          done
+          sha1="$(sha256sum /tmp/full1.patch | cut -d' ' -f1)"
+          sha2="$(sha256sum /tmp/full2.patch | cut -d' ' -f1)"
+          t1="$(cat /tmp/tree1.txt)"
+          t2="$(cat /tmp/tree2.txt)"
+          stray="$(git -C /tmp/subA1 diff --cached --name-only | grep -v -E '^(go\.mod|go\.sum|vendor/)' || true)"
+          cp /tmp/full1.patch /tmp/substrate-full.patch
+          git -C /tmp/subA1 diff --cached --full-index --binary --no-color --no-ext-diff -- go.mod go.sum >/tmp/substrate-gomod-only.patch
+          cd /tmp/subA1 && go list -m all | sort >/tmp/sub-mods-after.txt
+          diff /tmp/sub-mods-before.txt /tmp/sub-mods-after.txt | grep '^[<>]' >/tmp/sub-mods-diff.txt || true
+          {
+            echo "## Substrate bump recipe"
+            echo "full patch: $(wc -c </tmp/full1.patch) bytes; files: $(git -C /tmp/subA1 diff --cached --name-only | wc -l)"
+            echo "run 1 sha256 ${sha1}"
+            echo "run 2 sha256 ${sha2}"
+            echo "identical patches across runs: $([[ "${sha1}" == "${sha2}" ]] && echo yes || echo NO)"
+            echo "identical trees across runs:   $([[ "${t1}" == "${t2}" ]] && echo yes || echo NO)"
+            echo "paths outside go.mod, go.sum and vendor/: ${stray:-none}"
+            echo "go.mod and go.sum only patch: $(wc -c </tmp/substrate-gomod-only.patch) bytes"
+            echo '```'
+            cat /tmp/sub-mods-diff.txt
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "tree_full=${t1}" >>"${GITHUB_OUTPUT}"
+          echo "full_sha=${sha1}" >>"${GITHUB_OUTPUT}"
+
+      - name: Small go.mod patch plus go mod vendor, does it give the same tree
+        run: |
+          set -euo pipefail
+          source /tmp/fetch.sh
+          fetch /tmp/subB
+          cd /tmp/subB
+          git apply --index /tmp/substrate-gomod-only.patch
+          go mod vendor
+          go mod verify
+          git add -A
+          tb="$(git write-tree)"
+          {
+            echo "## go.mod patch plus go mod vendor"
+            echo "tree: ${tb}"
+            echo "full-patch tree: $(cat /tmp/tree1.txt)"
+            echo "same vendor tree: $([[ "${tb}" == "$(cat /tmp/tree1.txt)" ]] && echo yes || echo NO)"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Patched, build, vet, tests and vulnerabilities
+        run: |
+          set -euo pipefail
+          cd /tmp/subA1
+          if go build ./cmd/... 2>/tmp/sub-build-patched.txt; then build=ok; else build="FAILED: $(head -5 /tmp/sub-build-patched.txt | tr '\n' ' ')"; fi
+          if go vet ./cmd/... 2>/tmp/sub-vet-patched.txt; then vet=ok; else vet="FAILED: $(head -5 /tmp/sub-vet-patched.txt | tr '\n' ' ')"; fi
+          timeout 3000 go test ./... -count=1 >/tmp/sub-test-patched.txt 2>&1 || true
+          awk '$1 == "FAIL" && NF >= 2 { print $2 }' /tmp/sub-test-patched.txt | sort -u >/tmp/sub-fail-patched.txt
+          /go/bin/govulncheck ./cmd/ate-setup ./cmd/ateapi ./cmd/atecontroller ./cmd/atelet ./cmd/atenet ./cmd/ateom-gvisor ./cmd/podcertcontroller >/tmp/sub-vuln-patched.txt 2>&1 || true
+          {
+            echo "## Substrate patched tests and govulncheck"
+            echo "build after the bump: ${build}; vet: ${vet}"
+            echo "tests ok before/after: $(grep -c '^ok' /tmp/sub-test-base.txt) / $(grep -c '^ok' /tmp/sub-test-patched.txt)"
+            echo "failing only after the bump: $(comm -13 /tmp/sub-fail-base.txt /tmp/sub-fail-patched.txt | tr '\n' ' ')"
+            grep -E "Your code is affected|Vulnerability #|Found in|Fixed in|No vulnerabilities" /tmp/sub-vuln-patched.txt | sed 's/^ *//' || true
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Keep the patches and the logs
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: relock-substrate
+          path: |
+            /tmp/substrate-full.patch
+            /tmp/substrate-gomod-only.patch
+            /tmp/sub-mods-diff.txt
+            /tmp/sub-test-base.txt
+            /tmp/sub-test-patched.txt
+            /tmp/sub-vuln-patched.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  roundtrip:
+    name: Substrate patch round trip on a fresh runner
+    needs: substrate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download the full patch
+        # v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: relock-substrate
+          path: patches
+
+      - name: Apply it to the pristine pinned checkout and compare the tree
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/agent-substrate/substrate sub
+          git -C sub checkout --quiet "${SUBSTRATE_COMMIT}"
+          sha="$(sha256sum patches/substrate-full.patch | cut -d' ' -f1)"
+          git -C sub apply --index "${GITHUB_WORKSPACE}/patches/substrate-full.patch"
+          tree="$(git -C sub write-tree)"
+          {
+            echo "## Substrate round trip on a fresh runner"
+            echo "patch sha256 ${sha} (job said ${{ needs.substrate.outputs.full_sha }})"
+            echo "tree ${tree} (job said ${{ needs.substrate.outputs.tree_full }})"
+            echo "identical: $([[ "${tree}" == "${{ needs.substrate.outputs.tree_full }}" && "${sha}" == "${{ needs.substrate.outputs.full_sha }}" ]] && echo yes || echo NO)"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  binaries:
+    name: Build the lab binaries with the deployed Go 1.27.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: "docker.io/library/golang:1.27.1@sha256:\
+        3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    steps:
+      - name: Check out this repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Build AX and Substrate binaries, not stripped, so they can be scanned
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          go version
+          git clone --quiet https://github.com/google/ax /tmp/ax
+          git -C /tmp/ax checkout --quiet "${AX_COMMIT}"
+          git -C /tmp/ax apply --index "${GITHUB_WORKSPACE}/images/ax/google-ax-375.patch"
+          git clone --quiet https://github.com/agent-substrate/substrate /tmp/substrate
+          git -C /tmp/substrate checkout --quiet "${SUBSTRATE_COMMIT}"
+          mkdir -p /tmp/bin
+          (cd /tmp/ax && ls cmd && go build -trimpath -o /tmp/bin/ ./cmd/... && \
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/bin/ax-task-runner-linux ./cmd/ax-task-runner)
+          (cd /tmp/substrate && ls cmd && go build -trimpath -o /tmp/bin/ ./cmd/...)
+          ls -la /tmp/bin
+
+      - name: Keep the binaries
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lab-binaries-1271
+          path: /tmp/bin
+          if-no-files-found: error
+          retention-days: 3
+
+  scan-binaries:
+    name: What each deployed-toolchain binary can reach
+    needs: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: "docker.io/library/golang:1.27.2@sha256:\
+        5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    steps:
+      - name: Download the binaries
+        # v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: lab-binaries-1271
+          path: /tmp/bin
+
+      - name: govulncheck in binary mode, one by one
+        run: |
+          set -uo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          chmod +x /tmp/bin/* || true
+          {
+            echo "## Reachable findings per binary built with Go 1.27.1 (binary mode)"
+            for b in /tmp/bin/*; do
+              out="$(/go/bin/govulncheck -mode=binary "$b" 2>&1 || true)"
+              ids="$(printf '%s\n' "$out" | grep -o 'GO-[0-9]*-[0-9]*' | sort -u | tr '\n' ' ')"
+              n="$(printf '%s\n' "$out" | grep -c '^Vulnerability #' || true)"
+              echo "- $(basename "$b"): ${n} findings ${ids}"
+            done
+          } >>"${GITHUB_STEP_SUMMARY}"
