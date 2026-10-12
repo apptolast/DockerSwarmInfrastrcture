@@ -152,6 +152,17 @@ jobs:
             "$(jq -r .toolbox_image "${plan}")" \
             bash -c 'set -euo pipefail; go mod vendor; go mod verify'
           git -C substrate add --all
+          # add --all skips an ignored file, and the pinned tree would then
+          # cover less than the tree the build compiles.
+          skipped="$(
+            git -C substrate status --porcelain --ignored \
+              --untracked-files=all -- vendor | awk '/^(!!|[?][?]) /'
+          )"
+          if [[ -n "${skipped}" ]]; then
+            echo "add --all left vendored files out of the tree:"
+            echo "${skipped}"
+            exit 1
+          fi
           tree="$(git -C substrate write-tree)"
           vendor="$(git -C substrate rev-parse "${tree}:vendor")"
           jq -n --arg tree "${tree}" --arg vendor "${vendor}" \

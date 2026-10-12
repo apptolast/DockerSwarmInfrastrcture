@@ -4,19 +4,23 @@ ax-lab-images.yml builds what config/ax-lab.yml pins of the lab's Go images
 with the steps ax-lab-reproducibility.yml proves them with, keeps them as
 run artifacts only after every pin and every proof passed, and uploads
 nothing from a pull request. These checks are static, apart from running the
-no-op branches and the gates of the shell steps on synthetic plans: nothing
-here needs Docker, a network or a runner.
+no-op branches, the gates and the vendor guard of the shell steps on synthetic
+plans and a toy checkout: nothing here needs Docker, a network or a runner.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -279,9 +283,8 @@ class ImagesWorkflowTests(unittest.TestCase):
 
     def test_the_cli_must_not_need_a_newer_glibc_than_the_host_has(self) -> None:
         # One constant, declared at the top of its step.
-        self.assertEqual(
-            len(re.findall(r"^\s*host_glibc=2\.43$", self.images.text, re.M)), 1
-        )
+        constant = re.findall(r"^\s*host_glibc=2\.43$", self.images.text, re.MULTILINE)
+        self.assertEqual(len(constant), 1)
         self.assertEqual(self.images.text.count("2.43"), 1)
         step = self.images.step("ax", GLIBC)
         self.assertEqual(step["if"], "always()")
@@ -466,6 +469,8 @@ class ReproducibilityEditsTests(unittest.TestCase):
             "go mod vendor",
             "go mod verify",
             "git -C substrate add --all",
+            "git -C substrate status --porcelain --ignored",
+            "--untracked-files=all -- vendor",
             "git -C substrate write-tree",
             "${tree}:vendor",
             ".modules_patch.tree",
@@ -485,6 +490,14 @@ class ReproducibilityEditsTests(unittest.TestCase):
         self.assertNotIn("GOFLAGS", run)
         self.assertLess(
             run.index("No Substrate modules patch"), run.index("docker run")
+        )
+        # Whatever add --all skipped is looked for before the tree is written.
+        self.assertLess(run.index("docker run"), run.index("add --all"))
+        self.assertLess(
+            run.index("add --all"), run.index("status --porcelain --ignored")
+        )
+        self.assertLess(
+            run.index("status --porcelain --ignored"), run.index("write-tree")
         )
 
     def test_the_last_substrate_step_compares_the_tree_after_the_digests(self) -> None:
@@ -581,7 +594,7 @@ class ReproducibilityEditsTests(unittest.TestCase):
 
 
 def placeholder(run: str) -> str:
-    return re.sub(r"\$\{\{.*?\}\}", "EXPRESSION", run, flags=re.S)
+    return re.sub(r"\$\{\{.*?\}\}", "EXPRESSION", run, flags=re.DOTALL)
 
 
 class ShellSyntaxTests(unittest.TestCase):
@@ -606,44 +619,338 @@ class ShellSyntaxTests(unittest.TestCase):
         self.assertGreaterEqual(checked, 30)
 
 
+# --------------------------------------------------------------------------
+# What the shell steps read: synthetic layouts and a toy checkout
+
+KO_NAMES = ("ax-controller", "ax-server")
+BASE_NAME = "org.opencontainers.image.base.name"
+OTHER = "sha256:" + "f" * 64
+CLI = b"the rebuilt ax CLI"
+RUNNER = b"the rebuilt task runner"
+MODULES_PATCH = {"path": "p", "sha256": "c" * 64, "tree": "d" * 40}
+# Git as a runner has it: nothing of this host's configuration, such as an
+# excludes file or a signing setting, changes what a step sees.
+GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+# What the vendoring writes: a file the checkout tracks and a new one, and
+# the two ways add --all could leave a vendored file out.
+VENDORED = ("vendor/modules.txt", "vendor/example.com/m/a.go")
+SKIPPED = {
+    "an ignored file": "vendor/example.com/m/__gen.go",
+    "a file of an ignored directory": "vendor/example.com/m/__cache/b.go",
+}
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def mutated(script: str, old: str, new: str) -> str:
+    """The script with one fragment replaced, which must occur exactly once."""
+    assert old != new, old
+    assert script.count(old) == 1, f"{old!r} occurs {script.count(old)} times"
+    return script.replace(old, new)
+
+
+def ko_manifest(name: str) -> tuple[str, bytes]:
+    """The digest and the bytes of the manifest the gate's build produced."""
+    blob = f"the manifest of {name}".encode()
+    return f"sha256:{sha256(blob)}", blob
+
+
+BUILT_KO = {name: ko_manifest(name) for name in KO_NAMES}
+PINS = {name: digest for name, (digest, _) in BUILT_KO.items()}
+
+
+def ax_gate_files(
+    relocked: bool,
+    *,
+    pins: dict[str, str] | None = None,
+    pinned_cli: bytes = CLI,
+    blobs: dict[str, bytes] | None = None,
+    manifests: int = 1,
+) -> dict[str, Any]:
+    """The plan and the ax-out directory the AX gate reads, as built."""
+    plan: dict[str, Any] = {
+        "cli_sha256": sha256(pinned_cli),
+        "ko_images": pins or PINS,
+    }
+    if relocked:
+        plan["modules_patch"] = MODULES_PATCH
+    files: dict[str, Any] = {"ax-plan.json": plan, "ax-out/ax": CLI}
+    for name, (digest, blob) in BUILT_KO.items():
+        layout = f"ax-out/ko-{name}"
+        held = (blobs or {}).get(name, blob)
+        files[f"{layout}/blobs/sha256/{digest.removeprefix('sha256:')}"] = held
+        files[f"{layout}/index.json"] = {"manifests": [{"digest": digest}] * manifests}
+    return files
+
+
+# Every refusal differs in one fact from a case that passes: the first case
+# before the modules patch, the second after it.
+AX_GATE_CASES = (
+    (
+        "legacy, ko digests that are not the pins",
+        ax_gate_files(False, pins=dict.fromkeys(KO_NAMES, OTHER)),
+        True,
+    ),
+    ("relocked, ko digests that are the pins", ax_gate_files(True), True),
+    (
+        "relocked, ax-controller is not its pin",
+        ax_gate_files(True, pins={**PINS, "ax-controller": OTHER}),
+        False,
+    ),
+    (
+        "relocked, ax-server is not its pin",
+        ax_gate_files(True, pins={**PINS, "ax-server": OTHER}),
+        False,
+    ),
+    (
+        "legacy, a wrong CLI hash",
+        ax_gate_files(False, pinned_cli=b"another CLI"),
+        False,
+    ),
+    (
+        "relocked, a wrong CLI hash",
+        ax_gate_files(True, pinned_cli=b"another CLI"),
+        False,
+    ),
+    (
+        "legacy, a blob that is not its digest",
+        ax_gate_files(False, blobs={"ax-server": b"another manifest"}),
+        False,
+    ),
+    ("legacy, two manifests in an index", ax_gate_files(False, manifests=2), False),
+)
+
+
+def ko_documents(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The manifest the manual lab pinned and the one a rebuild produces.
+
+    They differ in the annotation that names the base image, and in nothing
+    else.
+    """
+    pinned = {
+        "schemaVersion": 2,
+        "layers": [name],
+        "annotations": {BASE_NAME: "registry.example/base:old", "title": name},
+    }
+    built = {**pinned, "annotations": {**pinned["annotations"], BASE_NAME: "new"}}
+    return pinned, built
+
+
+def compare_files(
+    relocked: bool,
+    *,
+    pins: dict[str, str] | None = None,
+    pinned_cli: bytes = CLI,
+    pinned_runner: bytes = RUNNER,
+    extra_layer: bool = False,
+) -> dict[str, Any]:
+    """The plan, the manifests and the ax-out directory the compare step reads."""
+    plan: dict[str, Any] = {
+        "cli_sha256": sha256(pinned_cli),
+        "task_runner_binary_sha256": sha256(pinned_runner),
+        "ko_images": {},
+        "ko_manifests": {},
+    }
+    if relocked:
+        plan["modules_patch"] = MODULES_PATCH
+    files: dict[str, Any] = {
+        "ax-plan.json": plan,
+        "ax-out/ax": CLI,
+        "ax-out/ax-task-runner": RUNNER,
+    }
+    for name in KO_NAMES:
+        pinned, built = ko_documents(name)
+        blob = json.dumps(built).encode()
+        digest = sha256(blob)
+        # Once the modules patch is set, the vendored manifest is a CI build.
+        vendored = built if relocked else pinned
+        if extra_layer:
+            vendored = {**vendored, "layers": [*vendored["layers"], "extra"]}
+        manifest = f"images/ax/manifests/{name}.json"
+        pin = f"sha256:{digest if relocked else sha256(json.dumps(pinned).encode())}"
+        plan["ko_images"][name] = (pins or {}).get(name, pin)
+        plan["ko_manifests"][name] = manifest
+        files[manifest] = vendored
+        files[f"ax-out/ko-{name}/index.json"] = {
+            "manifests": [{"digest": f"sha256:{digest}"}]
+        }
+        files[f"ax-out/ko-{name}/blobs/sha256/{digest}"] = blob
+    return files
+
+
+# (label, files, passes, what a refusal says)
+COMPARE_CASES = (
+    ("legacy, rebuilt digests that are not the pins", compare_files(False), True, ""),
+    ("relocked, rebuilt digests that are the pins", compare_files(True), True, ""),
+    (
+        "relocked, ax-controller is not its pin",
+        compare_files(True, pins={"ax-controller": OTHER}),
+        False,
+        "ax-controller: the rebuilt digest is not the pin",
+    ),
+    (
+        "relocked, ax-server is not its pin",
+        compare_files(True, pins={"ax-server": OTHER}),
+        False,
+        "ax-server: the rebuilt digest is not the pin",
+    ),
+    (
+        "legacy, a rebuild that differs beyond the base name",
+        compare_files(False, extra_layer=True),
+        False,
+        f"the rebuild differs beyond {BASE_NAME}",
+    ),
+    (
+        "legacy, a wrong CLI hash",
+        compare_files(False, pinned_cli=b"another CLI"),
+        False,
+        "",
+    ),
+    (
+        "legacy, a wrong task runner hash",
+        compare_files(False, pinned_runner=b"another runner"),
+        False,
+        "",
+    ),
+)
+
+
+def git(directory: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "-C",
+            str(directory),
+            *arguments,
+        ],
+        env={"PATH": os.environ["PATH"], **GIT_ENV},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout
+
+
+def toy_substrate(directory: Path) -> bytes:
+    """A checkout like Substrate's, and a patch of its go.mod and go.sum.
+
+    Its .gitignore ignores names like __x, as the real one does, and
+    vendor/modules.txt is tracked, as the pinned vendor/ is.
+    """
+    base = {
+        ".gitignore": "__*\n",
+        "go.mod": "module example.com/root\n\ngo 1.27.1\n",
+        "go.sum": "",
+        "vendor/modules.txt": "# base\n",
+    }
+    directory.mkdir()
+    git(directory, "init", "-q")
+    for name, content in base.items():
+        (directory / name).parent.mkdir(exist_ok=True)
+        (directory / name).write_text(content, encoding="utf-8")
+    git(directory, "add", "--all")
+    git(directory, "commit", "-q", "-m", "pinned")
+    required = base["go.mod"] + "require example.com/m v1.0.0\n"
+    (directory / "go.mod").write_text(required, encoding="utf-8")
+    (directory / "go.sum").write_text("example.com/m v1.0.0 h1:x=\n", encoding="utf-8")
+    patch = git(directory, "diff").encode()
+    git(directory, "checkout", "--", "go.mod", "go.sum")
+    return patch
+
+
+def docker_shim(written: tuple[str, ...]) -> str:
+    """A docker that writes the files the step's go mod vendor would write."""
+    lines = ["#!/bin/sh", "set -e", 'cd "${GITHUB_WORKSPACE}/substrate"']
+    for path in written:
+        lines.append(f"mkdir -p {shlex.quote(Path(path).parent.as_posix())}")
+        lines.append(f"echo vendored >{shlex.quote(path)}")
+    return "\n".join(lines) + "\n"
+
+
+@dataclass
+class VendorRun:
+    """What the vendor step did to a toy checkout."""
+
+    code: int
+    output: str
+    recorded: dict[str, str] | None
+    held: list[str]
+    staged: str
+
+
 @unittest.skipUnless(shutil.which("jq"), "jq is not installed")
 class ShellBehaviourTests(unittest.TestCase):
-    """The no-op branches and the gates, run on synthetic plans."""
+    """The no-op branches, the gates and the vendor guard, run on fixtures."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.images = Workflow(IMAGES)
         cls.reproducibility = Workflow(REPRODUCIBILITY)
+        # Steps call sudo for what the runner's root does; here it only runs
+        # the command, so a test never reaches the real sudo.
+        cls.tools = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tools.cleanup)
+        sudo = Path(cls.tools.name) / "sudo"
+        sudo.write_text('#!/bin/sh\nexec "$@"\n', encoding="utf-8")
+        sudo.chmod(0o755)
+
+    @staticmethod
+    def write_files(directory: Path, files: dict[str, Any]) -> None:
+        for filename, content in files.items():
+            path = directory / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(
+                    content if isinstance(content, str) else json.dumps(content),
+                    encoding="utf-8",
+                )
+
+    def execute(self, script: str, directory: Path, *shims: Path) -> tuple[int, str]:
+        """Run a script as a step, with RUNNER_TEMP and the workspace in a directory."""
+        summary = directory / "summary.md"
+        summary.write_text("", encoding="utf-8")
+        path = os.pathsep.join([self.tools.name, *map(str, shims), os.environ["PATH"]])
+        completed = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=directory,
+            env={
+                **GIT_ENV,
+                "PATH": path,
+                "RUNNER_TEMP": str(directory),
+                "GITHUB_WORKSPACE": str(directory),
+                "GITHUB_STEP_SUMMARY": str(summary),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        output = completed.stdout + completed.stderr
+        return completed.returncode, output + summary.read_text(encoding="utf-8")
+
+    def run_script(
+        self, script: str, files: dict[str, Any]
+    ) -> tuple[int, str, set[str]]:
+        """Run a script in a fresh directory that holds the files."""
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            self.write_files(temp, files)
+            code, output = self.execute(script, temp)
+            return code, output, {path.name for path in temp.iterdir()}
 
     def run_step(
         self, workflow: Workflow, job: str, name: str, files: dict[str, Any]
     ) -> tuple[int, str, set[str]]:
-        """Run a step with RUNNER_TEMP and the workspace in a fresh directory."""
-        with tempfile.TemporaryDirectory() as directory:
-            temp = Path(directory)
-            for filename, content in files.items():
-                (temp / filename).write_text(
-                    content if isinstance(content, str) else json.dumps(content),
-                    encoding="utf-8",
-                )
-            summary = temp / "summary.md"
-            summary.write_text("", encoding="utf-8")
-            completed = subprocess.run(
-                ["bash", "-e", "-c", workflow.run(job, name)],
-                cwd=directory,
-                env={
-                    "PATH": os.environ["PATH"],
-                    "RUNNER_TEMP": directory,
-                    "GITHUB_WORKSPACE": directory,
-                    "GITHUB_STEP_SUMMARY": str(summary),
-                },
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            output = completed.stdout + completed.stderr
-            output += summary.read_text(encoding="utf-8")
-            return completed.returncode, output, {p.name for p in temp.iterdir()}
+        return self.run_script(workflow.run(job, name), files)
 
     def test_without_a_modules_patch_both_modules_steps_do_nothing(self) -> None:
         cases = (
@@ -712,6 +1019,212 @@ class ShellBehaviourTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertIn("built `none`", output)
                 self.assertNotEqual(self.gate(workflow, job, stale, None)[0], 0)
+
+    def assert_bites(
+        self,
+        deviations: Callable[[str], set[str]],
+        script: str,
+        mutations: tuple[tuple[str, str, set[str]], ...],
+    ) -> None:
+        """Each mutation of a copy of the script is caught by the cases named."""
+        self.assertEqual(deviations(script), set())
+        for old, new, caught in mutations:
+            with self.subTest(mutation=old):
+                self.assertTrue(caught)
+                self.assertLessEqual(caught, deviations(mutated(script, old, new)))
+
+    def ax_gate_deviations(self, script: str) -> set[str]:
+        """The cases of the AX gate that the script does not answer as it should."""
+        return {
+            label
+            for label, files, passes in AX_GATE_CASES
+            if (self.run_script(script, files)[0] == 0) != passes
+        }
+
+    def test_the_ax_gate_compares_the_ko_digests_only_with_a_modules_patch(
+        self,
+    ) -> None:
+        script = self.images.run("ax", AX_GATE)
+        self.assertEqual(self.ax_gate_deviations(script), set())
+
+    def test_every_check_of_the_ax_gate_fails_when_it_is_disabled(self) -> None:
+        script = self.images.run("ax", AX_GATE)
+        cli = '[[ "${cli}" == "$(jq -r .cli_sha256 "${plan}")" ]]'
+        blob = '[[ "$(sha256sum "${blob}" | cut -d\' \' -f1)" == "${built#sha256:}" ]]'
+        count = "jq --exit-status '.manifests | length == 1' \"${index}\" >/dev/null"
+        ko = '[[ "${built}" == "${pinned}" ]]'
+        modules = 'if jq -e .modules_patch "${plan}" >/dev/null; then'
+        self.assert_bites(
+            self.ax_gate_deviations,
+            script,
+            (
+                (
+                    cli,
+                    f"{cli} || true",
+                    {"legacy, a wrong CLI hash", "relocked, a wrong CLI hash"},
+                ),
+                (blob, f"{blob} || true", {"legacy, a blob that is not its digest"}),
+                (count, f"{count} || true", {"legacy, two manifests in an index"}),
+                (
+                    ko,
+                    f"{ko} || true",
+                    {
+                        "relocked, ax-controller is not its pin",
+                        "relocked, ax-server is not its pin",
+                    },
+                ),
+                # The pins are exact only with the patch: before it the manual
+                # lab's images differ, and the gate must not ask for more.
+                (
+                    modules,
+                    "if true; then",
+                    {"legacy, ko digests that are not the pins"},
+                ),
+            ),
+        )
+
+    def compare_deviations(self, script: str) -> set[str]:
+        """The cases of the compare step that the script does not answer as it should."""
+        deviations = set()
+        for label, files, passes, message in COMPARE_CASES:
+            code, output, _ = self.run_script(script, files)
+            if (code == 0) != passes or message not in output:
+                deviations.add(label)
+        return deviations
+
+    def test_the_compare_step_asks_for_the_pins_only_with_a_modules_patch(
+        self,
+    ) -> None:
+        script = self.reproducibility.run("reproduce-ax", COMPARE)
+        self.assertEqual(self.compare_deviations(script), set())
+
+    def test_every_check_of_the_compare_step_fails_when_it_is_disabled(self) -> None:
+        script = self.reproducibility.run("reproduce-ax", COMPARE)
+        pin = 'sys.exit(f"{name}: the rebuilt digest is not the pin")'
+        beyond = 'sys.exit(f"{name}: the rebuild differs beyond {BASE_NAME}")'
+        patched = 'plan.get("modules_patch") and entry["digest"]'
+        base = 'document.get("annotations", {}).pop(BASE_NAME, None)'
+        cli = '[[ "${cli}" == "${pinned_cli}" ]]'
+        runner = '[[ "${runner}" == "${pinned_runner}" ]]'
+        self.assert_bites(
+            self.compare_deviations,
+            script,
+            (
+                (
+                    pin,
+                    pin.replace("sys.exit", "print"),
+                    {
+                        "relocked, ax-controller is not its pin",
+                        "relocked, ax-server is not its pin",
+                    },
+                ),
+                (
+                    beyond,
+                    beyond.replace("sys.exit", "print"),
+                    {"legacy, a rebuild that differs beyond the base name"},
+                ),
+                # Before the patch the digest is not the pin, and must not be.
+                (
+                    patched,
+                    'entry["digest"]',
+                    {"legacy, rebuilt digests that are not the pins"},
+                ),
+                (
+                    base,
+                    "pass",
+                    {"legacy, rebuilt digests that are not the pins"},
+                ),
+                (cli, f"{cli} || true", {"legacy, a wrong CLI hash"}),
+                (runner, f"{runner} || true", {"legacy, a wrong task runner hash"}),
+            ),
+        )
+
+    def vendor(self, script: str, written: tuple[str, ...]) -> VendorRun:
+        """Run the vendor step on a toy checkout whose go mod vendor writes files."""
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            patch = toy_substrate(temp / "substrate")
+            plan = {
+                "toolbox_image": "toolbox",
+                "modules_patch": {
+                    "path": "modules.patch",
+                    "sha256": sha256(patch),
+                    "tree": "d" * 40,
+                },
+            }
+            self.write_files(temp, {"plan.json": plan, "modules.patch": patch})
+            docker = temp / "bin" / "docker"
+            docker.parent.mkdir()
+            docker.write_text(docker_shim(written), encoding="utf-8")
+            docker.chmod(0o755)
+            code, output = self.execute(script, temp, docker.parent)
+            substrate = temp / "substrate"
+            recorded = None
+            held: list[str] = []
+            trees = temp / "substrate-trees.json"
+            if trees.exists():
+                recorded = json.loads(trees.read_text(encoding="utf-8"))
+                held = git(
+                    substrate,
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    recorded["tree"],
+                    "vendor",
+                ).split()
+            return VendorRun(
+                code, output, recorded, held, git(substrate, "write-tree").strip()
+            )
+
+    def vendor_deviations(self, script: str) -> set[str]:
+        """The cases of the vendor step that the script does not answer as it should."""
+        deviations = set()
+        run = self.vendor(script, VENDORED)
+        # Staged files are not a finding: the tree holds them all.
+        if not (
+            run.code == 0
+            and run.recorded is not None
+            and run.recorded["tree"] == run.staged
+            and set(VENDORED) <= set(run.held)
+        ):
+            deviations.add("staged files only")
+        for label, skipped in SKIPPED.items():
+            run = self.vendor(script, (*VENDORED, skipped))
+            # Refused before anything is recorded, and the file is named.
+            if run.code == 0 or run.recorded is not None or skipped not in run.output:
+                deviations.add(label)
+        return deviations
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_the_vendor_step_refuses_a_vendored_file_that_add_all_skipped(
+        self,
+    ) -> None:
+        for workflow, job in (
+            (self.images, "substrate"),
+            (self.reproducibility, "reproduce"),
+        ):
+            with self.subTest(workflow=workflow.path.name):
+                script = workflow.run(job, SUBSTRATE_VENDOR)
+                self.assertEqual(self.vendor_deviations(script), set())
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_every_part_of_the_vendor_guard_fails_when_it_is_disabled(self) -> None:
+        script = self.images.run("substrate", SUBSTRATE_VENDOR)
+        self.assert_bites(
+            self.vendor_deviations,
+            script,
+            (
+                ("exit 1", "true", set(SKIPPED)),
+                ("--ignored", "", set(SKIPPED)),
+                # All of the status, not only what is ignored or untracked.
+                ("| awk '/^(!!|[?][?]) /'", "", {"staged files only"}),
+                (
+                    "--untracked-files=all",
+                    "--untracked-files=normal",
+                    {"a file of an ignored directory"},
+                ),
+            ),
+        )
 
 
 if __name__ == "__main__":
