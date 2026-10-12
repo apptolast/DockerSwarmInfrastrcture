@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -627,6 +628,476 @@ class AxImageSetTests(unittest.TestCase):
             )  # fmt: skip
         self.assertEqual(code, 1)
         self.assertIn("is not one known image", stderr.getvalue())
+
+
+AX_TAG = AxImageSetTests.AX_TAG
+WEB_TAG = "1.0.8"
+# Every image of the lab's backup under its version: Substrate's, AX's and the
+# panel's.
+LAB_TAGS = {
+    **dict.fromkeys(manager.IMAGE_NAMES, TAG),
+    **dict.fromkeys(manager.AX_IMAGE_NAMES, AX_TAG),
+    "ax-web": WEB_TAG,
+}
+# What a relock pins again under the same version: every Substrate image and
+# the two AX images ko builds.
+RELOCKED = (*manager.IMAGE_NAMES, *manager.AX_KO_IMAGES)
+
+
+def write_backup(root: Path, images: dict[str, dict[str, Any]]) -> None:
+    """A layout as this script writes its own: one image per <name>:<tag>."""
+    with manager.Layout(root) as layout:
+        layout.open(create=True)
+        for ref_name, image in sorted(images.items()):
+            files = {**image["blobs"], image["digest"]: image["manifest"]}
+            for digest, body in files.items():
+                layout.write_blob({"digest": digest, "size": len(body)}, iter([body]))
+            layout.add_reference(
+                ref_name,
+                {
+                    "mediaType": OCI_MANIFEST,
+                    "digest": image["digest"],
+                    "size": len(image["manifest"]),
+                },
+            )
+
+
+def write_build_output(root: Path, images: dict[str, dict[str, Any]], tag: str) -> None:
+    """The layout of the build command as the CI uploads it.
+
+    One <name>:<tag> reference per image and the pins.json the staging step
+    writes beside it, with the modes of a copy made for another user: the
+    manager reads a source that nobody else can write, not only a 0600 one.
+    """
+    write_backup(root, {f"{name}:{tag}": image for name, image in images.items()})
+    pins = {name: image["digest"] for name, image in images.items()}
+    (root / "pins.json").write_text(json.dumps({"tag": tag, "images": pins}))
+    for path in [root, *root.rglob("*")]:
+        path.chmod(0o755 if path.is_dir() else 0o644)
+
+
+def write_ko_layout(root: Path, image: dict[str, Any], *, listed: bool = True) -> None:
+    """The OCI layout ko writes for one image, as the web panel's tests do."""
+    # That module imports this one, so it is imported when first used.
+    from test_ax_web_deploy_contract import write_layout
+
+    write_layout(root, image, listed=listed)
+
+
+def blob_path(root: Path, digest: str) -> Path:
+    return root / "blobs/sha256" / digest.split(":")[1]
+
+
+def blob_names(root: Path) -> set[str]:
+    return {path.name for path in (root / "blobs/sha256").iterdir()}
+
+
+def image_blob_names(*images: dict[str, Any]) -> set[str]:
+    """The files that hold these images: their blobs and their manifests."""
+    return {
+        digest.split(":")[1]
+        for image in images
+        for digest in (*image["blobs"], image["digest"])
+    }
+
+
+def digests(
+    images: dict[str, dict[str, Any]], names: tuple[str, ...]
+) -> dict[str, str]:
+    return {name: images[name]["digest"] for name in names}
+
+
+class RelockCase(unittest.TestCase):
+    """The backup layout a relock window changes, and the sources it reads.
+
+    Each layout is a direct child of one temporary directory: the manager
+    refuses any directory or file that group or others can write, and a bare
+    mkdir under umask 0007 makes one.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.backup = self.directory / "images"
+        self.source = self.directory / "source"
+        self.snapshot = self.directory / "snapshot"
+        # The images the lab holds, and the ones a relock pins in their place
+        # under the same names and versions: other digests.
+        self.old = {name: make_image(f"{name}-old") for name in LAB_TAGS}
+        self.new = {name: make_image(f"{name}-new") for name in RELOCKED}
+
+    def write_old_backup(self) -> None:
+        """The backup as the lab has it: its twelve images under their tags."""
+        write_backup(
+            self.backup,
+            {f"{name}:{LAB_TAGS[name]}": self.old[name] for name in LAB_TAGS},
+        )
+
+    def seed(self, source: Path, tag: str, pins: dict[str, str]) -> dict[str, str]:
+        with (
+            manager.Layout(source, strict=False) as from_layout,
+            manager.Layout(self.backup) as layout,
+        ):
+            return manager.seed_layout(from_layout, layout, tag, pins)
+
+    def forget(self, tag: str, pins: dict[str, str]) -> dict[str, str]:
+        with manager.Layout(self.backup) as layout:
+            return manager.forget_images(layout, tag, pins)
+
+    def status(self, tag: str, pins: dict[str, str]) -> dict[str, str]:
+        layout = manager.Layout(self.backup)
+        return manager.image_status(None, layout, tag, pins)["backup"]
+
+    def index(self, root: Path | None = None) -> list[dict[str, Any]]:
+        index = json.loads(((root or self.backup) / "index.json").read_text())
+        return index["manifests"]
+
+    def index_bytes(self) -> bytes:
+        return (self.backup / "index.json").read_bytes()
+
+    def refs(self) -> dict[str, str]:
+        """The digest the backup names each <name>:<tag> with."""
+        return {
+            entry["annotations"][manager.REF_NAME]: entry["digest"]
+            for entry in self.index()
+        }
+
+    def named(self, name: str, tag: str) -> str | None:
+        """The digest the backup names <name>:<tag> with, if it names it."""
+        with manager.Layout(self.backup) as layout:
+            layout.open()
+            entry = layout.reference(f"{name}:{tag}")
+        return None if entry is None else entry["digest"]
+
+
+class SeedLayoutSourceTests(RelockCase):
+    """seed-layout from the layouts the CI uploads: build output and ko's."""
+
+    def test_a_build_output_layout_seeds_the_seven_substrate_images(self) -> None:
+        images = {name: self.new[name] for name in manager.IMAGE_NAMES}
+        unrelated = make_image("unrelated")
+        write_build_output(self.source, {**images, "unrelated": unrelated}, TAG)
+        pins = digests(self.new, manager.IMAGE_NAMES)
+        names = sorted(pins)
+        self.assertEqual(len(names), 7)
+        self.assertEqual(
+            self.seed(self.source, TAG, pins), dict.fromkeys(names, "seeded")
+        )
+        self.assertEqual(
+            self.seed(self.source, TAG, pins), dict.fromkeys(names, "present")
+        )
+        self.assertEqual(self.status(TAG, pins), dict.fromkeys(names, "complete"))
+        # Only the pinned images were copied: not the source's unrelated image,
+        # not its pins.json.
+        self.assertEqual(blob_names(self.backup), image_blob_names(*images.values()))
+        self.assertEqual(
+            sorted(path.name for path in self.backup.iterdir()),
+            ["blobs", "index.json", "oci-layout"],
+        )
+        self.assertEqual(
+            self.refs(), {f"{name}:{TAG}": digest for name, digest in pins.items()}
+        )
+        # Root-only like the rest of the backup, whatever the source's modes.
+        self.assertEqual(stat.S_IMODE(self.backup.stat().st_mode), 0o700)
+        for path in (self.backup / "blobs/sha256").iterdir():
+            with self.subTest(blob=path.name):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_each_ko_layout_seeds_its_one_image_beside_the_substrate_entries(
+        self,
+    ) -> None:
+        write_backup(
+            self.backup,
+            {f"{name}:{TAG}": self.old[name] for name in manager.IMAGE_NAMES},
+        )
+        substrate = digests(self.old, manager.IMAGE_NAMES)
+        for name in manager.AX_KO_IMAGES:
+            layout = self.directory / f"ko-{name}"
+            write_ko_layout(layout, self.new[name])
+            # The window reads the pin from the layout the image was built in.
+            (entry,) = self.index(layout)
+            self.assertEqual(entry["digest"], self.new[name]["digest"])
+            self.assertEqual(
+                self.seed(layout, AX_TAG, {name: entry["digest"]}), {name: "seeded"}
+            )
+        ko = digests(self.new, manager.AX_KO_IMAGES)
+        self.assertEqual(
+            self.status(AX_TAG, ko), dict.fromkeys(manager.AX_KO_IMAGES, "complete")
+        )
+        self.assertEqual(
+            self.status(TAG, substrate), dict.fromkeys(sorted(substrate), "complete")
+        )
+        self.assertEqual(
+            self.refs(),
+            {
+                **{f"{name}:{TAG}": digest for name, digest in substrate.items()},
+                **{f"{name}:{AX_TAG}": digest for name, digest in ko.items()},
+            },
+        )
+
+    def test_a_ko_layout_lists_only_its_own_image(self) -> None:
+        controller, server = (self.new[name] for name in manager.AX_KO_IMAGES)
+        pins = {"ax-controller": controller["digest"], "ax-server": server["digest"]}
+        write_ko_layout(self.source, controller)
+        # One call per ko layout: the second pin is not in the first's.
+        with self.assertRaisesRegex(
+            manager.SubstrateError, f"does not list {server['digest']}"
+        ):
+            self.seed(self.source, AX_TAG, pins)
+        self.assertEqual(
+            self.status(AX_TAG, {"ax-server": server["digest"]}),
+            {"ax-server": "missing"},
+        )
+        # A manifest that is in the blobs but not in index.json is not listed.
+        shutil.rmtree(self.source)
+        shutil.rmtree(self.backup)
+        write_ko_layout(self.source, controller, listed=False)
+        with self.assertRaisesRegex(
+            manager.SubstrateError, f"does not list {controller['digest']}"
+        ):
+            self.seed(self.source, AX_TAG, {"ax-controller": controller["digest"]})
+
+    def test_a_source_that_cannot_prove_the_pin_is_refused_and_leaves_nothing(
+        self,
+    ) -> None:
+        image = self.new["atelet"]
+        digest = image["digest"]
+        pin = {"atelet": digest}
+        layer = list(image["blobs"])[-1]
+        body = image["blobs"][layer]
+
+        def edit_index(source: Path, **change: Any) -> None:
+            document = json.loads((source / "index.json").read_text())
+            for entry in document["manifests"]:
+                if entry["digest"] == digest:
+                    entry.update(change)
+            (source / "index.json").write_text(json.dumps(document))
+
+        def unlist(source: Path) -> None:
+            document = json.loads((source / "index.json").read_text())
+            document["manifests"] = []
+            (source / "index.json").write_text(json.dumps(document))
+
+        def replace(source: Path, blob: str, data: bytes) -> None:
+            blob_path(source, blob).write_bytes(data)
+
+        for label, pattern, mutate in (
+            ("pin not listed", f"does not list {digest}", unlist),
+            (
+                "other media type",
+                "describes .* as another type",
+                lambda source: edit_index(source, mediaType=manager.DOCKER_MANIFEST),
+            ),
+            (
+                "other size",
+                "describes .* as another type",
+                lambda source: edit_index(source, size=len(image["manifest"]) + 1),
+            ),
+            (
+                "tampered layer",
+                f"blob {layer} is corrupt in",
+                lambda source: replace(source, layer, b"x" * len(body)),
+            ),
+            (
+                "longer layer",
+                f"blob {layer} is too large",
+                lambda source: replace(source, layer, body + b"x"),
+            ),
+            (
+                "swapped manifest",
+                f"manifest bytes do not hash to {digest}",
+                lambda source: replace(source, digest, self.old["atelet"]["manifest"]),
+            ),
+        ):
+            with self.subTest(case=label):
+                for path in (self.source, self.backup):
+                    shutil.rmtree(path, ignore_errors=True)
+                write_build_output(self.source, {"atelet": image}, TAG)
+                mutate(self.source)
+                with self.assertRaisesRegex(manager.SubstrateError, pattern):
+                    self.seed(self.source, TAG, pin)
+                self.assertEqual(self.status(TAG, pin), {"atelet": "missing"})
+                self.assertEqual(self.index(), [])
+                # What was copied before the refusal is verified blobs only.
+                for path in (self.backup / "blobs/sha256").iterdir():
+                    self.assertEqual(sha(path.read_bytes()), "sha256:" + path.name)
+
+
+class ReseedTests(RelockCase):
+    """Re-pinning under the same version: forget the old pin, seed the new."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_old_backup()
+        write_build_output(
+            self.source,
+            {name: self.new[name] for name in manager.IMAGE_NAMES},
+            TAG,
+        )
+        self.old_pins = digests(self.old, manager.IMAGE_NAMES)
+        self.new_pins = digests(self.new, manager.IMAGE_NAMES)
+
+    def complete(self, names: tuple[str, ...] | list[str]) -> dict[str, str]:
+        return dict.fromkeys(sorted(names), "complete")
+
+    def move_ko_images(self) -> None:
+        """The window's AX step: forget the old pins, seed each from its layout."""
+        old = digests(self.old, manager.AX_KO_IMAGES)
+        self.assertEqual(
+            self.forget(AX_TAG, old), dict.fromkeys(manager.AX_KO_IMAGES, "forgotten")
+        )
+        for name in manager.AX_KO_IMAGES:
+            layout = self.directory / f"ko-{name}"
+            write_ko_layout(layout, self.new[name])
+            pin = {name: self.new[name]["digest"]}
+            self.assertEqual(self.seed(layout, AX_TAG, pin), {name: "seeded"})
+
+    def test_a_mismatching_digest_never_changes_an_entry(self) -> None:
+        before = self.index_bytes()
+        blobs = blob_names(self.backup)
+        # The new pin cannot be seeded while the old one is named, in one call
+        # for all the images or image by image.
+        singles = [{name: pin} for name, pin in self.new_pins.items()]
+        for pins in (self.new_pins, *singles):
+            first = min(pins)
+            with (
+                self.subTest(seed=sorted(pins)),
+                self.assertRaisesRegex(
+                    manager.SubstrateError, f"names {first}:{TAG} with another digest"
+                ),
+            ):
+                self.seed(self.source, TAG, pins)
+            self.assertEqual(self.index_bytes(), before)
+            self.assertEqual(blob_names(self.backup), blobs)
+        # Nor forgotten: forget names the exact digest it drops.
+        for name, pin in self.new_pins.items():
+            with (
+                self.subTest(forget=name),
+                self.assertRaisesRegex(
+                    manager.SubstrateError,
+                    f"names {name}:{TAG} with {self.old_pins[name]}, not {pin}",
+                ),
+            ):
+                self.forget(TAG, {name: pin})
+            self.assertEqual(self.index_bytes(), before)
+        self.assertEqual(
+            self.status(TAG, self.old_pins), self.complete(manager.IMAGE_NAMES)
+        )
+
+    def test_a_re_pin_goes_through_forget_then_seed_and_keeps_the_old_blobs(
+        self,
+    ) -> None:
+        names = sorted(manager.IMAGE_NAMES)
+        with self.assertRaisesRegex(manager.SubstrateError, "another digest"):
+            self.status(TAG, self.new_pins)
+        # The literal old digests, as the previous config pinned them.
+        self.assertEqual(
+            self.forget(TAG, self.old_pins), dict.fromkeys(names, "forgotten")
+        )
+        self.assertEqual(
+            self.status(TAG, self.new_pins), dict.fromkeys(names, "missing")
+        )
+        self.assertEqual(
+            self.seed(self.source, TAG, self.new_pins), dict.fromkeys(names, "seeded")
+        )
+        self.assertEqual(self.status(TAG, self.new_pins), self.complete(names))
+        # The old manifests and layers are still on disk: no blob is deleted.
+        old_files = image_blob_names(*(self.old[name] for name in names))
+        self.assertLessEqual(old_files, blob_names(self.backup))
+        # The other image sets were never touched.
+        ax = digests(self.old, manager.AX_IMAGE_NAMES)
+        self.assertEqual(self.status(AX_TAG, ax), self.complete(manager.AX_IMAGE_NAMES))
+        web = digests(self.old, ("ax-web",))
+        self.assertEqual(self.status(WEB_TAG, web), self.complete(("ax-web",)))
+
+    def test_only_the_re_pinned_ax_images_move_each_from_its_own_ko_layout(
+        self,
+    ) -> None:
+        untouched = digests(self.old, ("ax-agents", "ax-task-runner"))
+        before = {name: self.named(name, AX_TAG) for name in untouched}
+        self.move_ko_images()
+        self.assertEqual(
+            self.status(
+                AX_TAG, {**digests(self.new, manager.AX_KO_IMAGES), **untouched}
+            ),
+            self.complete(manager.AX_IMAGE_NAMES),
+        )
+        # The two images ko does not build still name their own pins.
+        self.assertEqual({name: self.named(name, AX_TAG) for name in untouched}, before)
+        self.assertEqual(before, untouched)
+        ko_files = image_blob_names(*(self.old[name] for name in manager.AX_KO_IMAGES))
+        self.assertLessEqual(ko_files, blob_names(self.backup))
+        self.assertEqual(
+            self.status(TAG, self.old_pins), self.complete(manager.IMAGE_NAMES)
+        )
+
+    def test_the_rollback_restores_each_image_from_a_copy_of_the_original(
+        self,
+    ) -> None:
+        names = sorted(manager.IMAGE_NAMES)
+        # `cp -a` of the layout before any forget: it keeps the modes, so it is
+        # a strict layout read as a source, as the window's command reads it.
+        shutil.copytree(self.backup, self.snapshot, symlinks=True)
+        self.assertEqual(stat.S_IMODE(self.snapshot.stat().st_mode), 0o700)
+        original = self.index()
+        # A window that stopped part-way: most images moved to the new pin, one
+        # was forgotten and never seeded, one was not touched yet.
+        crashed, untouched = names[3], names[4]
+        for name in names:
+            if name != untouched:
+                self.forget(TAG, {name: self.old_pins[name]})
+            if name not in (crashed, untouched):
+                self.seed(self.source, TAG, {name: self.new_pins[name]})
+        outcomes = {}
+        for name in names:
+            new, old = self.new_pins[name], self.old_pins[name]
+            before = self.index_bytes()
+            try:
+                forgot = self.forget(TAG, {name: new})[name]
+            except manager.SubstrateError as error:
+                # The entry names the old pin already: nothing to roll back.
+                self.assertRegex(
+                    str(error), f"names {name}:{TAG} with {old}, not {new}"
+                )
+                self.assertEqual(self.index_bytes(), before)
+                forgot = "kept"
+            outcomes[name] = (forgot, self.seed(self.snapshot, TAG, {name: old})[name])
+        self.assertEqual(
+            outcomes,
+            {
+                **dict.fromkeys(names, ("forgotten", "seeded")),
+                crashed: ("absent", "seeded"),
+                untouched: ("kept", "present"),
+            },
+        )
+        self.assertEqual(self.status(TAG, self.old_pins), self.complete(names))
+        self.assertEqual(self.index(), original)
+        self.assertEqual(self.index(self.snapshot), original)
+        # Rolled back, the new pin is the one that stops every read again, and
+        # the blobs of the images that moved stay on disk like the old ones did.
+        with self.assertRaisesRegex(manager.SubstrateError, "another digest"):
+            self.status(TAG, self.new_pins)
+        moved = (self.new[name] for name in names if name not in (crashed, untouched))
+        self.assertLessEqual(image_blob_names(*moved), blob_names(self.backup))
+
+    def test_the_rollback_of_the_ko_images_reads_the_copy_and_keeps_the_rest(
+        self,
+    ) -> None:
+        shutil.copytree(self.backup, self.snapshot, symlinks=True)
+        original = self.index()
+        self.move_ko_images()
+        for name in manager.AX_KO_IMAGES:
+            new, old = self.new[name]["digest"], self.old[name]["digest"]
+            self.assertEqual(self.forget(AX_TAG, {name: new}), {name: "forgotten"})
+            self.assertEqual(
+                self.seed(self.snapshot, AX_TAG, {name: old}), {name: "seeded"}
+            )
+        self.assertEqual(
+            self.status(AX_TAG, digests(self.old, manager.AX_IMAGE_NAMES)),
+            self.complete(manager.AX_IMAGE_NAMES),
+        )
+        self.assertEqual(self.index(), original)
 
 
 class ArgumentTests(unittest.TestCase):
@@ -1546,6 +2017,256 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertTrue(stderr.getvalue().startswith("ERROR: --image ateapi needs"))
+
+
+class RelockCommandTests(RelockCase):
+    """The window's commands through manager.main, with only the lock patched.
+
+    Nothing below main is replaced: seed-layout for the Substrate and AX sets
+    and forget run here for the first time, so that production does not.
+    """
+
+    def run_main(self, *argv: str) -> types.SimpleNamespace:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(manager, "ensure_host_lock") as lock,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            code = manager.main(list(argv))
+        # One JSON line when the command succeeds, and no partial result when
+        # it does not.
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 1 if code == 0 else 0, stderr.getvalue())
+        return types.SimpleNamespace(
+            code=code,
+            lock=lock,
+            result=json.loads(lines[0]) if lines else None,
+            stderr=stderr.getvalue(),
+        )
+
+    @staticmethod
+    def images(pins: dict[str, str]) -> list[str]:
+        return [
+            argument
+            for name, digest in sorted(pins.items())
+            for argument in ("--image", f"{name}={digest}")
+        ]
+
+    def seed_command(
+        self, image_set: str, source: Path, tag: str, pins: dict[str, str]
+    ) -> types.SimpleNamespace:
+        return self.run_main(
+            "seed-layout", "--image-set", image_set, "--source", str(source),
+            "--layout", str(self.backup), "--tag", tag, *self.images(pins),
+        )  # fmt: skip
+
+    def forget_command(
+        self, image_set: str, tag: str, pins: dict[str, str]
+    ) -> types.SimpleNamespace:
+        return self.run_main(
+            "forget", "--image-set", image_set, "--layout", str(self.backup),
+            "--tag", tag, *self.images(pins),
+        )  # fmt: skip
+
+    def status_command(
+        self, image_set: str, tag: str, pins: dict[str, str]
+    ) -> types.SimpleNamespace:
+        return self.run_main(
+            "image-status", "--image-set", image_set, "--layout", str(self.backup),
+            "--tag", tag, *self.images(pins),
+        )  # fmt: skip
+
+    def assert_locked(self, run: types.SimpleNamespace, command: str) -> None:
+        run.lock.assert_called_once()
+        self.assertEqual(run.lock.call_args.args[0], f"ax-lab-substrate-{command}")
+
+    def assert_every(
+        self, run: types.SimpleNamespace, outcome: str, count: int
+    ) -> None:
+        """The check the window makes: `length == <count> and every one <outcome>`."""
+        self.assertEqual(run.code, 0, run.stderr)
+        self.assertEqual(len(run.result), count)
+        self.assertEqual(set(run.result.values()), {outcome})
+
+    def test_the_cli_seeds_a_build_output_layout_into_an_empty_backup(self) -> None:
+        write_build_output(
+            self.source, {name: self.new[name] for name in manager.IMAGE_NAMES}, TAG
+        )
+        pins = digests(self.new, manager.IMAGE_NAMES)
+        first = self.seed_command("substrate", self.source, TAG, pins)
+        self.assert_every(first, "seeded", 7)
+        self.assert_locked(first, "seed-layout")
+        second = self.seed_command("substrate", self.source, TAG, pins)
+        self.assert_every(second, "present", 7)
+        self.assert_locked(second, "seed-layout")
+        # Reading the layout takes no lock.
+        status = self.status_command("substrate", TAG, pins)
+        status.lock.assert_not_called()
+        self.assertEqual(
+            status.result,
+            {"backup": dict.fromkeys(sorted(pins), "complete"), "registry": None},
+        )
+
+    def test_the_cli_re_pins_the_substrate_set_by_the_exact_old_digests(self) -> None:
+        self.write_old_backup()
+        write_build_output(
+            self.source, {name: self.new[name] for name in manager.IMAGE_NAMES}, TAG
+        )
+        old = digests(self.old, manager.IMAGE_NAMES)
+        new = digests(self.new, manager.IMAGE_NAMES)
+        forgotten = self.forget_command("substrate", TAG, old)
+        self.assert_every(forgotten, "forgotten", 7)
+        self.assert_locked(forgotten, "forget")
+        seeded = self.seed_command("substrate", self.source, TAG, new)
+        self.assert_every(seeded, "seeded", 7)
+        self.assert_locked(seeded, "seed-layout")
+        status = self.status_command("substrate", TAG, new)
+        self.assertEqual(
+            status.result["backup"], dict.fromkeys(sorted(new), "complete")
+        )
+        # Run again, the forget of the old digests stops: the entries name the
+        # new pins now, and a forget never drops one it was not told.
+        before = self.index_bytes()
+        again = self.forget_command("substrate", TAG, old)
+        first = min(old)
+        self.assertEqual(again.code, 1)
+        self.assertIn(
+            f"names {first}:{TAG} with {new[first]}, not {old[first]}", again.stderr
+        )
+        self.assertEqual(self.index_bytes(), before)
+
+    def test_the_cli_re_pins_the_ax_ko_images_one_layout_at_a_time(self) -> None:
+        self.write_old_backup()
+        old = digests(self.old, manager.AX_KO_IMAGES)
+        forgotten = self.forget_command("ax", AX_TAG, old)
+        self.assert_every(forgotten, "forgotten", 2)
+        self.assert_locked(forgotten, "forget")
+        for name in manager.AX_KO_IMAGES:
+            layout = self.directory / f"ko-{name}"
+            write_ko_layout(layout, self.new[name])
+            (entry,) = self.index(layout)
+            seeded = self.seed_command("ax", layout, AX_TAG, {name: entry["digest"]})
+            self.assertEqual(seeded.result, {name: "seeded"})
+            self.assert_locked(seeded, "seed-layout")
+        pins = {
+            **digests(self.new, manager.AX_KO_IMAGES),
+            **digests(self.old, ("ax-agents", "ax-task-runner")),
+        }
+        status = self.status_command("ax", AX_TAG, pins)
+        self.assertEqual(
+            status.result["backup"], dict.fromkeys(manager.AX_IMAGE_NAMES, "complete")
+        )
+
+    def test_a_name_outside_the_chosen_set_is_refused_and_nothing_changes(
+        self,
+    ) -> None:
+        self.write_old_backup()
+        before = self.index_bytes()
+        for command, image_set, name in (
+            ("seed-layout", "substrate", "ax-controller"),
+            ("seed-layout", "ax", "ateapi"),
+            ("seed-layout", "web", "ax-server"),
+            ("forget", "ax", "ateapi"),
+            ("forget", "substrate", "ax-agents"),
+            ("forget", "web", "ateapi"),
+        ):
+            with self.subTest(command=command, image_set=image_set, name=name):
+                pins = {name: self.old[name]["digest"]}
+                if command == "forget":
+                    run = self.forget_command(image_set, TAG, pins)
+                else:
+                    run = self.seed_command(image_set, self.source, TAG, pins)
+                self.assertEqual(run.code, 1)
+                self.assertIn("is not one known image", run.stderr)
+                self.assertEqual(self.index_bytes(), before)
+
+    def test_seed_layout_without_an_image_set_is_the_web_set(self) -> None:
+        # tests/test_ax_web_deploy_contract.py seeds the panel's image this way.
+        root = manager.parser()
+        for command, extra, expected in (
+            ("seed-layout", ["--source", "/s"], "web"),
+            ("forget", [], "substrate"),
+            ("image-status", [], "substrate"),
+            ("export", ["--registry", "localhost:5001"], "substrate"),
+            ("import", ["--registry", "localhost:5001"], "substrate"),
+        ):
+            with self.subTest(command=command):
+                parsed = root.parse_args(
+                    [command, *extra, "--layout", "/x", "--tag", "t"]
+                )
+                self.assertEqual(parsed.image_set, expected)
+        web = self.old["ax-web"]
+        write_ko_layout(self.source, web)
+        argv = [
+            "seed-layout", "--source", str(self.source),
+            "--layout", str(self.backup), "--tag", WEB_TAG,
+        ]  # fmt: skip
+        seeded = self.run_main(*argv, "--image", f"ax-web={web['digest']}")
+        self.assertEqual(seeded.result, {"ax-web": "seeded"})
+        self.assert_locked(seeded, "seed-layout")
+        other = self.old["ateapi"]["digest"]
+        refused = self.run_main(*argv, "--image", f"ateapi={other}")
+        self.assertEqual(refused.code, 1)
+        self.assertIn("is not one known image", refused.stderr)
+
+    def test_a_forget_that_fails_partway_prints_nothing_and_is_finished_per_image(
+        self,
+    ) -> None:
+        # Why the window forgets and seeds one image per command: a forget of
+        # several stops at the first entry that names another digest, after it
+        # dropped the names that sort before it, and prints no result.
+        self.write_old_backup()
+        write_build_output(
+            self.source, {name: self.new[name] for name in manager.IMAGE_NAMES}, TAG
+        )
+        shutil.copytree(self.backup, self.snapshot, symlinks=True)
+        names = sorted(manager.IMAGE_NAMES)
+        old = digests(self.old, manager.IMAGE_NAMES)
+        new = digests(self.new, manager.IMAGE_NAMES)
+        # A window moved every image and its rollback began with the third.
+        restored = names[2]
+        self.forget(TAG, old)
+        self.seed(self.source, TAG, new)
+        self.forget(TAG, {restored: new[restored]})
+        self.seed(self.snapshot, TAG, {restored: old[restored]})
+        run = self.forget_command("substrate", TAG, new)
+        self.assertEqual(run.code, 1)
+        self.assertIn(
+            f"names {restored}:{TAG} with {old[restored]}, not {new[restored]}",
+            run.stderr,
+        )
+        self.assertEqual(
+            {name: self.named(name, TAG) for name in names},
+            {
+                **dict.fromkeys(names[:2]),
+                restored: old[restored],
+                **{name: new[name] for name in names[3:]},
+            },
+        )
+        # One image at a time, every outcome is known and the rerun is safe.
+        outcomes = {}
+        for name in names:
+            forgot = self.forget_command("substrate", TAG, {name: new[name]})
+            if forgot.code == 0:
+                forgot_outcome = forgot.result[name]
+            else:
+                self.assertIn(f"names {name}:{TAG} with {old[name]}", forgot.stderr)
+                forgot_outcome = "kept"
+            seeded = self.seed_command(
+                "substrate", self.snapshot, TAG, {name: old[name]}
+            )
+            outcomes[name] = (forgot_outcome, seeded.result[name])
+        self.assertEqual(
+            outcomes,
+            {
+                **dict.fromkeys(names, ("forgotten", "seeded")),
+                **dict.fromkeys(names[:2], ("absent", "seeded")),
+                restored: ("kept", "present"),
+            },
+        )
+        status = self.status_command("substrate", TAG, old)
+        self.assertEqual(status.result["backup"], dict.fromkeys(names, "complete"))
 
 
 if __name__ == "__main__":
