@@ -168,9 +168,36 @@ diag() {
   docker stats --no-stream --format \
     '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}} pids={{.PIDs}}' || true
   docker exec "$(cfg .cluster.node_container)" /usr/bin/df -h / || true
-  docker logs --tail 20 "$(cfg .cluster.node_container)" 2>&1 | tail -n 20 \
-    || true
   endgroup
+}
+
+# What the role asserts after an install over an existing one: every
+# create-once object keeps its UID, the postgres StatefulSet and the bucket Job
+# stay the same objects at the same generation, and the node label holds.
+# The workloads whose pod template moved are listed, which is the rollout.
+identity() {
+  local before="${E2E}/$1/cluster-status-last.json"
+  local after="${E2E}/$2/cluster-status-last.json"
+  group "identity of the objects before ($1) and after ($2)"
+  jq -n --slurpfile before "${before}" --slurpfile after "${after}" '
+    {create_once_unchanged:
+       ($before[0].create_once == $after[0].create_once),
+     immutable_unchanged: ($before[0].immutable == $after[0].immutable),
+     node_label_unchanged: ($before[0].node_label == $after[0].node_label),
+     workloads_with_a_new_uid:
+       [$after[0].objects | to_entries[]
+         | select(.value.uid != ($before[0].objects[.key].uid // null))
+         | .key],
+     workloads_rolled_out:
+       [$after[0].objects | to_entries[]
+         | select(.value.generation != ($before[0].objects[.key].generation // null))
+         | "\(.key) generation \($before[0].objects[.key].generation) to \(.value.generation)"]}
+  ' | tee "${E2E}/identity-$1-$2.json"
+  endgroup
+  jq --exit-status '
+    .create_once_unchanged and .immutable_unchanged
+    and .node_label_unchanged and (.workloads_with_a_new_uid == [])
+  ' "${E2E}/identity-$1-$2.json" >/dev/null
 }
 
 "$@"

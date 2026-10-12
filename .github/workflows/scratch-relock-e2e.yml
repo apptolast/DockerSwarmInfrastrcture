@@ -596,6 +596,16 @@ jobs:
         timeout-minutes: 200
         run: .github/scratch-relock-e2e/escalate.sh
 
+      # The production window installs over the lab's existing install of the
+      # old pins: build them from main's config, install them, move the tags
+      # to the re-pinned images and install again. It also gives the old-pin
+      # control: peak and readiness of the same flow with the old images.
+      - name: Install the old pins, then the re-pinned stack over them
+        id: upgrade
+        continue-on-error: true
+        timeout-minutes: 200
+        run: .github/scratch-relock-e2e/upgrade.sh
+
       - name: Final diagnostics of the cluster
         if: always()
         run: |
@@ -612,4 +622,5 @@ jobs:
             reapply=${{ steps.reapply.outcome }}
             reapply_ready=${{ steps.reapply_ready.outcome }}
             escalate=${{ steps.escalate.outcome }}
+            upgrade=${{ steps.upgrade.outcome }}
         run: .github/scratch-relock-e2e/final.sh

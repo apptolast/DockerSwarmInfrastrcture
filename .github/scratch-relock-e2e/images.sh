@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Scratch end-to-end run (never merged): the images move into the lab
 # registry exactly as the role moves them, through the manager and never
-# through docker pull and push. `seed-ko` copies the two ko layouts the build
+# through docker pull and push. `seed_ko` copies the two ko layouts the build
 # produced into the root-only layout the Substrate build already filled (what
-# the owner's window does with seed-layout). `import` imports the seven
-# Substrate images and the two ko images with the manager's import command
-# and the tags the config names, and requires every one to be pinned.
+# the owner's window does with seed-layout). `import_substrate` and
+# `import_ax` import the seven Substrate images and the two ko images with the
+# manager's import command and the tags the config names, and require every
+# one to be pinned in the registry; `import_all` does both and reports what the
+# registry serves.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,28 +51,34 @@ seed_ko() {
   endgroup
 }
 
-import_all() {
-  local -a substrate_pins ko_pins
+import_substrate() {
+  local -a substrate_pins
   mapfile -t substrate_pins < <(all_args)
-  mapfile -t ko_pins < <(ko_args)
-  [[ "${#substrate_pins[@]}" -eq 7 && "${#ko_pins[@]}" -eq 2 ]]
-
-  group "Import the seven Substrate images"
+  [[ "${#substrate_pins[@]}" -eq 7 ]]
+  group "Import the seven Substrate images (${CFG##*/}, layout ${LAYOUT})"
   "${MANAGER[@]}" import --registry "${registry}" --layout "${LAYOUT}" \
     --tag "${tag}" "${substrate_pins[@]}"
   endgroup
-  group "Import the two ko images"
-  "${MANAGER[@]}" import --image-set ax --registry "${registry}" \
-    --layout "${LAYOUT}" --tag "${ax_tag}" "${ko_pins[@]}"
-  endgroup
-
-  group "image-status: every image pinned in the registry, complete in the layout"
+  group "image-status: the Substrate images pinned in the registry, complete in the layout"
   "${MANAGER[@]}" image-status --registry "${registry}" --layout "${LAYOUT}" \
-    --tag "${tag}" "${substrate_pins[@]}" | tee "${RUNNER_TEMP}/status-substrate.json"
+    --tag "${tag}" "${substrate_pins[@]}" |
+    tee "${RUNNER_TEMP}/status-substrate.json"
   jq --exit-status '
     (.registry | to_entries | all(.value == "pinned"))
     and (.backup | to_entries | all(.value == "complete"))
   ' "${RUNNER_TEMP}/status-substrate.json"
+  endgroup
+}
+
+import_ax() {
+  local -a ko_pins
+  mapfile -t ko_pins < <(ko_args)
+  [[ "${#ko_pins[@]}" -eq 2 ]]
+  group "Import the two ko images"
+  "${MANAGER[@]}" import --image-set ax --registry "${registry}" \
+    --layout "${LAYOUT}" --tag "${ax_tag}" "${ko_pins[@]}"
+  endgroup
+  group "image-status: the ko images pinned in the registry, complete in the layout"
   "${MANAGER[@]}" image-status --image-set ax --registry "${registry}" \
     --layout "${LAYOUT}" --tag "${ax_tag}" "${ko_pins[@]}" |
     tee "${RUNNER_TEMP}/status-ax.json"
@@ -79,7 +87,9 @@ import_all() {
     and (.backup | to_entries | all(.value == "complete"))
   ' "${RUNNER_TEMP}/status-ax.json"
   endgroup
+}
 
+registry_report() {
   group "What the registry serves"
   curl -fsS "http://${registry}/v2/_catalog"
   echo
@@ -96,6 +106,12 @@ import_all() {
   sudo grep -qx 'oom_kill 0' \
     "/sys/fs/cgroup/system.slice/docker-${id}.scope/memory.events"
   endgroup
+}
+
+import_all() {
+  import_substrate
+  import_ax
+  registry_report
 }
 
 "$@"

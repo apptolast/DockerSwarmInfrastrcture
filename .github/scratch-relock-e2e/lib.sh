@@ -5,10 +5,10 @@
 
 # shellcheck disable=SC2034  # the variables are read by the sourcing scripts
 LAB=/var/lib/ax-lab-ci/lab
-LAYOUT=/var/lib/ax-lab-ci/backup
+LAYOUT="${LAYOUT:-/var/lib/ax-lab-ci/backup}"
 SEED=/var/lib/ax-lab-ci/seed
 KUBECONFIG_PATH="${LAB}/home/.kube/config"
-CFG="${RUNNER_TEMP}/lab.json"
+CFG="${CFG:-${RUNNER_TEMP}/lab.json}"
 E2E="${RUNNER_TEMP}/e2e"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MANAGER=(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py)
