@@ -572,6 +572,13 @@ jobs:
           set -euo pipefail
           .github/scratch-relock-e2e/verify.sh diag "c${CAP:-none}"
 
+      - name: Let the fresh install settle and read the restarts again
+        id: settle
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          .github/scratch-relock-e2e/settle.sh "c${CAP}" 180
+
       # The production apply runs ate-setup over an installed cluster: the
       # same install again, same cap, as the closest thing to that upgrade
       # this run can measure (the old pins are another run).
@@ -623,4 +630,5 @@ jobs:
             reapply_ready=${{ steps.reapply_ready.outcome }}
             escalate=${{ steps.escalate.outcome }}
             upgrade=${{ steps.upgrade.outcome }}
+            settle=${{ steps.settle.outcome }}
         run: .github/scratch-relock-e2e/final.sh

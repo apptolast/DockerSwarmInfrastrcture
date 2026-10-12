@@ -88,4 +88,5 @@ cap="$(cfg .substrate.install.memory_limit_mib)"
 "${HERE}/verify.sh" wait_ready "upgrade${cap}" || status=1
 "${HERE}/verify.sh" diag "upgrade${cap}" || true
 "${HERE}/verify.sh" identity "old${cap}" "upgrade${cap}" || status=1
+"${HERE}/settle.sh" "upgrade${cap}" 180 || status=1
 exit "${status}"
