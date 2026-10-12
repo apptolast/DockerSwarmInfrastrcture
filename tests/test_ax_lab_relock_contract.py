@@ -14,10 +14,14 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import os
+import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -40,7 +44,7 @@ GOMOD = [
     INDEX,
     "--- a/go.mod",
     "+++ b/go.mod",
-    "@@ -3,7 +3,7 @@ go 1.27.0",
+    "@@ -3,5 +3,5 @@ go 1.27.0",
     " ",
     " require (",
     "-\texample.com/a v1.0.0 // indirect",
@@ -79,8 +83,25 @@ def patch_bytes(*blocks: list[str]) -> bytes:
     return ("\n".join(line for block in blocks for line in block) + "\n").encode()
 
 
+def with_lines(block: list[str], lines: list[str], at: int = 1) -> list[str]:
+    return [*block[:at], *lines, *block[at:]]
+
+
 def with_line(block: list[str], line: str, at: int = 1) -> list[str]:
-    return [*block[:at], line, *block[at:]]
+    return with_lines(block, [line], at)
+
+
+def counted(block: list[str]) -> list[str]:
+    """The block with its hunk header counting the lines the hunk now holds."""
+    body = [line for line in block[5:] if line[:1] in (" ", "+", "-")]
+    old = sum(not line.startswith("+") for line in body)
+    new = sum(not line.startswith("-") for line in body)
+    header = re.sub(
+        r"^@@ -(\d+),\d+ \+(\d+),\d+ @@",
+        rf"@@ -\g<1>,{old} +\g<2>,{new} @@",
+        block[4],
+    )
+    return [*block[:4], header, *block[5:]]
 
 
 GOMOD_PATCH = patch_bytes(GOMOD, GOSUM)
@@ -374,11 +395,6 @@ class GomodPatchTests(RelockCase):
 
         for label, data in (
             (
-                "a plain diff between the sections",
-                patch_bytes(GOMOD, PLAIN_DIFF, GOSUM),
-            ),
-            ("a plain diff after the last", patch_bytes(GOMOD, GOSUM, PLAIN_DIFF)),
-            (
                 "a created file",
                 patch_bytes(named(GOMOD, "--- /dev/null", "+++ b/go.mod"), GOSUM),
             ),
@@ -406,13 +422,44 @@ class GomodPatchTests(RelockCase):
                 "the new name for the old one",
                 patch_bytes(GOMOD, named(GOSUM, "--- b/go.sum", "+++ b/go.sum")),
             ),
+        ):
+            with self.subTest(case=label):
+                self.refused(data, "names a file its header does not")
+
+    def test_no_second_file_header_follows_the_first_one(self) -> None:
+        # Not another file, not the section's own pair again: git reads a
+        # repeated pair followed by a hunk as a second patch of the same file.
+        own = GOMOD[2:4]
+        for label, data in (
+            (
+                "a plain diff between the sections",
+                patch_bytes(GOMOD, PLAIN_DIFF, GOSUM),
+            ),
+            ("a plain diff after the last", patch_bytes(GOMOD, GOSUM, PLAIN_DIFF)),
             (
                 "a second pair of another file",
                 patch_bytes(with_line(GOMOD, "--- a/main.go", 9), GOSUM),
             ),
+            (
+                "a second pair of its own in the hunk",
+                patch_bytes(with_lines(GOMOD, own, 9), GOSUM),
+            ),
+            (
+                "its own pair and hunk again after the hunk",
+                patch_bytes([*GOMOD, *GOMOD[2:]], GOSUM),
+            ),
+            ("a second index line", patch_bytes(with_line(GOMOD, INDEX, 9), GOSUM)),
+            (
+                "its own old header alone",
+                patch_bytes(GOMOD, counted(with_line(GOSUM, "--- a/go.sum", 10))),
+            ),
+            (
+                "its own new header alone",
+                patch_bytes(GOMOD, counted(with_line(GOSUM, "+++ b/go.sum", 10))),
+            ),
         ):
             with self.subTest(case=label):
-                self.refused(data, "names a file its header does not")
+                self.refused(data, "carries a second file header")
 
     def test_no_rename_copy_mode_creation_deletion_or_binary_marker(self) -> None:
         for marker in (
@@ -446,16 +493,16 @@ class GomodPatchTests(RelockCase):
                 )
 
     def test_the_size_is_bounded(self) -> None:
+        def padded(width: int, rows: int = 1) -> bytes:
+            filler = [" " + "x" * width] * rows
+            return patch_bytes(counted(with_lines(GOMOD, filler, 5)), GOSUM)
+
         self.refused(b"", "must hold 1 to 65536 bytes")
-        filler = [" " + "x" * 99] * 700
-        self.refused(patch_bytes(GOMOD, filler, GOSUM), "must hold 1 to 65536 bytes")
+        self.refused(padded(99, 700), "must hold 1 to 65536 bytes")
         # The limit itself still passes.
         room = VALIDATOR.GOMOD_PATCH_MAX_BYTES - len(GOMOD_PATCH)
-        self.accepted(patch_bytes(GOMOD, [" " + "x" * (room - 2)], GOSUM))
-        self.refused(
-            patch_bytes(GOMOD, [" " + "x" * (room - 1)], GOSUM),
-            "must hold 1 to 65536 bytes",
-        )
+        self.accepted(padded(room - 2))
+        self.refused(padded(room - 1), "must hold 1 to 65536 bytes")
 
     def test_the_text_is_strict_utf8(self) -> None:
         self.refused(GOMOD_PATCH + b"\xff\xfe", "must be UTF-8 text")
@@ -463,34 +510,282 @@ class GomodPatchTests(RelockCase):
             GOMOD_PATCH.replace(b"example.com/c", b"example.com/\xc3"), "UTF-8"
         )
 
-    def test_an_added_replace_or_exclude_is_refused_a_removed_one_is_not(self) -> None:
+    def test_no_carriage_return_line_separator_or_byte_order_mark_is_accepted(
+        self,
+    ) -> None:
+        # Git cuts the patch into lines at \n alone. Whatever else a text tool
+        # may cut at stays out, whether it sits in a header, in a hunk line or
+        # before the patch, so that the validator and git read the same lines.
+        message = "must hold no carriage return, line separator or byte order mark"
+        self.refused(GOMOD_PATCH.replace(b"\n", b"\r\n"), message)
+        self.refused(b"\xef\xbb\xbf" + GOMOD_PATCH, message)
+        for char in (
+            "\r",
+            "\v",
+            "\f",
+            "\x1c",
+            "\x1d",
+            "\x1e",
+            "\x85",
+            "\u2028",
+            "\u2029",
+            "\ufeff",
+        ):
+            added = with_line(GOMOD, "+\texample.com/z v1.0.0" + char + "// z", 7)
+            for label, data in (
+                ("before the patch", char.encode() + GOMOD_PATCH),
+                (
+                    "for the line feed between two headers",
+                    GOMOD_PATCH.replace(
+                        b"--- a/go.mod\n+++", f"--- a/go.mod{char}+++".encode()
+                    ),
+                ),
+                ("in the middle of an added line", patch_bytes(counted(added), GOSUM)),
+                (
+                    "at the end of a context line",
+                    GOMOD_PATCH.replace(b" )\n", f" ){char}\n".encode(), 1),
+                ),
+            ):
+                with self.subTest(char=repr(char), where=label):
+                    self.refused(data, message)
+        # A tab is the one blank a go.mod line is indented with.
+        added = with_line(GOMOD, "+\texample.com/z\tv1.0.0\t// z", 7)
+        self.accepted(patch_bytes(counted(added), GOSUM))
+
+    def test_a_stray_line_between_the_headers_is_refused(self) -> None:
+        shape = re.escape("a file is its diff --git, index, --- and +++ lines, then")
+        for place, at in (
+            ("diff and index", 1),
+            ("index and ---", 2),
+            ("--- and +++", 3),
+        ):
+            for stray in (
+                "+x",
+                "-x",
+                " x",
+                "@@ -1 +1 @@",
+                "\\ No newline at end of file",
+                INDEX,
+            ):
+                with self.subTest(place=place, stray=stray):
+                    self.refused(patch_bytes(with_line(GOMOD, stray, at), GOSUM), shape)
+                    self.refused(patch_bytes(GOMOD, with_line(GOSUM, stray, at)), shape)
+        for label, block, at in (
+            ("no index line", GOMOD, 1),
+            ("no --- line", GOMOD, 2),
+            ("no +++ line", GOSUM, 3),
+        ):
+            gone = [line for number, line in enumerate(block) if number != at]
+            with self.subTest(case=label):
+                self.refused(
+                    patch_bytes(gone, GOSUM)
+                    if block is GOMOD
+                    else patch_bytes(GOMOD, gone),
+                    shape,
+                )
+
+    def test_the_index_line_is_git_s_for_a_file_whose_mode_did_not_change(self) -> None:
+        shape = re.escape("a file is its diff --git, index, --- and +++ lines, then")
+        abbreviated = "index 1234567..89abcde 100644"
+        self.accepted(
+            patch_bytes(with_line(GOMOD[:1], abbreviated, 1), GOMOD[2:], GOSUM)
+        )
+        for index in (
+            "index 123456..789abcd 100644",
+            "index " + "1" * 65 + ".." + "2" * 40 + " 100644",
+            "index " + "A" * 40 + ".." + "2" * 40 + " 100644",
+            "index " + "1" * 40 + ".." + "2" * 40,
+            "index " + "1" * 40 + ".." + "2" * 40 + " 100755",
+            "index " + "1" * 40 + ".." + "2" * 40 + " 120000",
+            "index " + "1" * 40 + "..." + "2" * 40 + " 100644",
+            "index " + "1" * 40 + ".." + "2" * 40 + " 100644 ",
+            "index ",
+        ):
+            with self.subTest(index=index):
+                self.refused(patch_bytes([GOMOD[0], index, *GOMOD[2:]], GOSUM), shape)
+
+    def test_a_hunk_holds_exactly_the_lines_its_header_counts(self) -> None:
+        more = "more lines than its hunk header counts"
+        fewer = "fewer lines than its hunk header counts"
+        later = [
+            "@@ -9,2 +9,2 @@",
+            " example.com/d v1.0.0 h1:x=",
+            "-example.com/e h1:y=",
+            "+example.com/e h1:z=",
+        ]
+        two = [*GOSUM, *later]
+        self.accepted(patch_bytes(GOMOD, two))
+
+        def counting(counts: str, block: list[str] = GOSUM) -> list[str]:
+            return [*block[:4], f"@@ {counts} @@", *block[5:]]
+
+        for label, block, message in (
+            ("a line before the first hunk", with_line(GOSUM, "+x", 4), more),
+            ("a removed line before the first hunk", with_line(GOSUM, "-x", 4), more),
+            ("a context line before the first hunk", with_line(GOSUM, " x", 4), more),
+            ("a line in the middle of a hunk", with_line(GOSUM, "+x", 7), more),
+            ("a line between two hunks", with_line(two, "+x", len(GOSUM)), more),
+            ("a line after the last hunk", [*two, "+x"], more),
+            ("a context line after the last hunk", [*two, " x"], more),
+            (
+                "a line missing from the hunk",
+                [line for line in GOSUM if "h1:" + "D" * 43 not in line],
+                fewer,
+            ),
+            ("a header counting more old lines", counting("-1,5 +1,4"), fewer),
+            ("a header counting more new lines", counting("-1,4 +1,5"), fewer),
+            ("a header counting fewer old lines", counting("-1,3 +1,4"), more),
+            ("a header counting fewer new lines", counting("-1,4 +1,3"), more),
+            (
+                "a hunk begun inside a hunk",
+                with_line(GOSUM, "@@ -9,1 +9,1 @@", 8),
+                fewer,
+            ),
+            ("a line missing from the last hunk", two[:-1], fewer),
+            ("a file without a hunk", GOSUM[:4], "a file without a hunk"),
+        ):
+            with self.subTest(case=label):
+                self.refused(patch_bytes(GOMOD, block), message)
+
+    def test_a_hunk_header_may_leave_out_a_count_of_one_or_name_a_function(
+        self,
+    ) -> None:
+        old, new = GOSUM[6], GOSUM[8]
+        for counts in ("-7 +7", "-7,1 +7,1", "-7,1 +7", "-7 +7,1"):
+            with self.subTest(counts=counts):
+                self.accepted(
+                    patch_bytes(GOMOD, [*GOSUM[:4], f"@@ {counts} @@", old, new])
+                )
+        # No old line at all: a pure addition.
+        added = [
+            *GOSUM[:4],
+            "@@ -6,0 +7,2 @@",
+            "+example.com/f h1:x=",
+            "+example.com/g h1:y=",
+        ]
+        self.accepted(patch_bytes(GOMOD, added))
+        for context in ("", " require (", " go.uber.org/atomic v1.11.0 h1:x="):
+            with self.subTest(context=context):
+                header = [*GOSUM[:4], "@@ -1,4 +1,4 @@" + context, *GOSUM[5:]]
+                self.accepted(patch_bytes(GOMOD, header))
+        for header in (
+            "@@ -1,4 +1,4",
+            "@@ -1,4 +1,4 @",
+            "@@ -1,4 +1,4 @@x",
+            "@@ -1,4 +1,4 @@@",
+            "@@@ -1,4 +1,4 @@@",
+            "@@ -a +b @@",
+            "@@ -1,4 @@",
+            "@@ +1,4 -1,4 @@",
+            "@@ -1,4 +1,4",
+            "@ -1,4 +1,4 @@",
+            "@",
+        ):
+            with self.subTest(header=header):
+                self.refused(
+                    patch_bytes(GOMOD, [*GOSUM[:4], header, *GOSUM[5:]]),
+                    "not a hunk header",
+                )
+
+    def test_a_no_newline_marker_follows_a_line_of_a_hunk(self) -> None:
+        marker = "\\ No newline at end of file"
+        needs = "needs a line before it"
+        for label, block in (
+            ("right after the file header", with_line(GOSUM, marker, 4)),
+            ("right after the hunk header", with_line(GOSUM, marker, 5)),
+            ("after another marker", [*GOSUM, marker, marker]),
+            (
+                "after the hunk header of a later hunk",
+                [*GOSUM, "@@ -9,1 +9,1 @@", marker],
+            ),
+        ):
+            with self.subTest(case=label):
+                self.refused(patch_bytes(GOMOD, block), needs)
+        # After the old line and after the new line of a hunk.
+        both = [*GOSUM[:4], "@@ -7 +7 @@", GOSUM[6], marker, GOSUM[8], marker]
+        self.accepted(patch_bytes(GOMOD, both))
+
+    def test_an_added_directive_that_changes_the_build_is_refused(self) -> None:
+        message = (
+            "adds a replace, exclude, go, toolchain, godebug, tool, ignore or retract"
+        )
         for added in (
             "replace example.com/a => ../a",
             "replace (",
             "replace(",
+            "replace",
             "\treplace example.com/a v1.0.0 => example.com/b v1.0.0",
             "exclude example.com/a v1.0.0",
             "\texclude example.com/a v1.0.0",
+            "go 1.20",
+            "go\t1.20",
+            "go",
+            "go(",
+            "\tgo 1.27.2",
+            "toolchain go1.99.0",
+            "toolchain",
+            "godebug default=go1.20",
+            "godebug (",
+            "tool example.com/x/cmd/y",
+            "tool (",
+            "ignore ./vendor",
+            "ignore (",
+            "retract v1.0.0",
+            "retract [v1.0.0, v1.1.0]",
+            "retract (",
+            # A blank of Unicode in front, which Go does not skip but git takes.
+            "\u00a0go 1.20",
+            "\u2003exclude example.com/a v1.0.0",
             # Inside an existing replace block the keyword is not repeated.
             "\texample.com/a v1.0.0 => example.com/b v1.0.0",
             "\texample.com/a => ../a",
         ):
             with self.subTest(added=added):
                 self.refused(
-                    patch_bytes(with_line(GOMOD, "+" + added, 7), GOSUM),
-                    "adds a replace or exclude",
+                    patch_bytes(counted(with_line(GOMOD, "+" + added, 7)), GOSUM),
+                    message,
                 )
+        with self.subTest(file="go.sum"):
+            self.refused(
+                patch_bytes(GOMOD, counted(with_line(GOSUM, "+go 1.20", 5))), message
+            )
+        hash_ = " h1:" + "F" * 43 + "="
         for neutral in (
             "-replace example.com/a => ../a",
             "-\texample.com/a => ../a",
             "-exclude example.com/a v1.0.0",
+            "-go 1.20",
+            "-toolchain go1.99.0",
             " replace example.com/a => ../a",
+            " go 1.27.0",
             "+\treplace-me.example/x v1.0.0 // indirect",
             "+\texample.com/replace v1.0.0 // indirect",
             "+\texample.com/exclude v1.0.0 // indirect",
+            # A module path that starts with a directive's name, or holds it.
+            "+\tgo.uber.org/atomic v1.11.0 // indirect",
+            "+\tgolang.org/x/mod v0.1.0 // indirect",
+            "+\tgo-yaml.example/x v1.0.0",
+            "+\ttoolchain.example/x v1.0.0",
+            "+\tgodebug.example/x v1.0.0 // indirect",
+            "+\ttool.example/x v1.0.0",
+            "+\tignore.example/x v1.0.0",
+            "+\tretract.example/x v1.0.0",
+            "+\texample.com/go v1.0.0",
+            "+\texample.com/tool v1.0.0 // indirect",
+            # Only the first word of the line is a directive.
+            "+\texample.com/a v1.1.0 // go 1.20, replace and exclude",
         ):
             with self.subTest(neutral=neutral):
-                self.accepted(patch_bytes(with_line(GOMOD, neutral, 7), GOSUM))
+                self.accepted(patch_bytes(counted(with_line(GOMOD, neutral, 7)), GOSUM))
+        for neutral in (
+            "+go.uber.org/atomic v1.11.0" + hash_,
+            "+go.uber.org/atomic v1.11.0/go.mod" + hash_,
+            "+golang.org/x/mod v0.1.0" + hash_,
+            "+toolchain.example/x v1.0.0" + hash_,
+            "+tool.example/x v1.0.0/go.mod" + hash_,
+        ):
+            with self.subTest(neutral=neutral):
+                self.accepted(patch_bytes(GOMOD, counted(with_line(GOSUM, neutral, 5))))
 
     def test_the_file_function_reads_through_read_patch_text(self) -> None:
         with mock.patch.object(
@@ -511,8 +806,195 @@ class GomodPatchTests(RelockCase):
             VALIDATOR.validate_gomod_patch("images/ax/no-such-file.patch")
 
     def test_the_vendored_375_patch_is_not_a_modules_patch(self) -> None:
-        with self.assertRaises(VALIDATOR.AxLabError):
+        # The error names the files, so a renamed patch ("cannot read ...")
+        # or any other refusal does not pass for it.
+        self.assertTrue((ROOT / "images/ax/google-ax-375.patch").is_file())
+        with self.assertRaisesRegex(
+            VALIDATOR.AxLabError,
+            "^images/ax/google-ax-375.patch must patch go.mod and then go.sum, only$",
+        ):
             VALIDATOR.validate_gomod_patch("images/ax/google-ax-375.patch")
+
+
+# A toy module in a real repository: what git itself makes of a patch, and
+# whether it applies. No commit is made, so no identity is needed.
+TOY_MOD = (
+    "module example.com/toy\n\ngo 1.27.0\n\nrequire (\n"
+    "\texample.com/a v1.0.0 // indirect\n"
+    "\tgo.uber.org/atomic v1.11.0 // indirect\n)\n"
+)
+TOY_SUM = (
+    "example.com/a v1.0.0 h1:" + "A" * 43 + "=\n"
+    "example.com/a v1.0.0/go.mod h1:" + "B" * 43 + "=\n"
+    "go.uber.org/atomic v1.11.0 h1:" + "C" * 43 + "=\n"
+)
+TOY_BUMPED_SUM = TOY_SUM.replace("a v1.0.0", "a v1.1.0")
+
+
+class GitAgreementTests(unittest.TestCase):
+    """What the validator refuses, a real git would apply or read otherwise."""
+
+    def setUp(self) -> None:
+        self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # Built from nothing, so that no GIT_DIR of a hook or user config leaks in.
+        self.env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+
+    def git(
+        self, directory: Path, *args: str, stdin: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=directory,
+            env=self.env,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def repository(self) -> Path:
+        """A repository whose index holds the toy go.mod and go.sum."""
+        directory = Path(tempfile.mkdtemp(dir=self.home))
+        self.assertEqual(self.git(directory, "init", "-q").returncode, 0)
+        (directory / "go.mod").write_text(TOY_MOD)
+        (directory / "go.sum").write_text(TOY_SUM)
+        self.assertEqual(self.git(directory, "add", "go.mod", "go.sum").returncode, 0)
+        return directory
+
+    def patch_of(self, mod: str, total: str = TOY_BUMPED_SUM) -> str:
+        """What `git diff --full-index` writes for the toy files changed so."""
+        directory = self.repository()
+        (directory / "go.mod").write_text(mod)
+        (directory / "go.sum").write_text(total)
+        diff = self.git(directory, "diff", "--full-index")
+        self.assertEqual(diff.returncode, 0, diff.stderr)
+        self.assertTrue(diff.stdout.startswith("diff --git a/go.mod b/go.mod\n"))
+        return diff.stdout
+
+    def applies_as(self, patch: str, mod: str) -> None:
+        """Git applies the patch to the toy files and go.mod becomes `mod`."""
+        directory = self.repository()
+        done = self.git(directory, "apply", "--index", "-", stdin=patch)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((directory / "go.mod").read_text(), mod)
+
+    def read_by_git(self, patch: str) -> list[str] | None:
+        """The files git reads in the patch, one per section it finds."""
+        done = self.git(self.home, "apply", "--numstat", "-", stdin=patch)
+        if done.returncode != 0:
+            return None
+        return [line.split("\t")[2] for line in done.stdout.splitlines()]
+
+    def files_of(self, patch: str) -> list[str]:
+        files = self.read_by_git(patch)
+        self.assertIsNotNone(files, "git does not read the patch")
+        return files or []
+
+    def test_the_patch_of_a_bump_is_what_git_and_the_validator_both_accept(
+        self,
+    ) -> None:
+        bumped = TOY_MOD.replace("a v1.0.0", "a v1.1.0")
+        patch = self.patch_of(bumped)
+        self.applies_as(patch, bumped)
+        self.assertEqual(self.files_of(patch), ["go.mod", "go.sum"])
+        VALIDATOR.validate_gomod_patch_text(patch.encode(), "toy")
+
+    def test_a_module_that_starts_like_a_directive_is_not_one(self) -> None:
+        # Bumps of go.uber.org/atomic, and a new requirement: a module may be
+        # added, as the relock patches do for what `go get` raised.
+        for label, mod, total in (
+            (
+                "go.uber.org/atomic",
+                TOY_MOD.replace("atomic v1.11.0", "atomic v1.12.0"),
+                TOY_SUM.replace("atomic v1.11.0", "atomic v1.12.0"),
+            ),
+            (
+                "a new requirement",
+                TOY_MOD.replace(")\n", "\ttoolchain.example/x v1.0.0\n)\n"),
+                TOY_SUM + "toolchain.example/x v1.0.0 h1:" + "D" * 43 + "=\n",
+            ),
+        ):
+            with self.subTest(case=label):
+                patch = self.patch_of(mod, total)
+                self.applies_as(patch, mod)
+                VALIDATOR.validate_gomod_patch_text(patch.encode(), "toy")
+
+    def test_every_refused_directive_would_otherwise_apply(self) -> None:
+        message = "adds a replace, exclude, go, toolchain, godebug, tool"
+        for label, mod in (
+            ("replace", TOY_MOD + "replace example.com/a => ../a\n"),
+            (
+                "a replace block",
+                TOY_MOD
+                + "replace (\n\texample.com/a v1.0.0 => example.com/b v1.0.0\n)\n",
+            ),
+            ("exclude", TOY_MOD + "exclude example.com/a v1.0.0\n"),
+            ("go", TOY_MOD.replace("go 1.27.0", "go 1.20")),
+            ("go and a tab", TOY_MOD.replace("go 1.27.0", "go\t1.20")),
+            ("toolchain", TOY_MOD + "toolchain go1.99.0\n"),
+            ("godebug", TOY_MOD + "godebug default=go1.20\n"),
+            ("a godebug block", TOY_MOD + "godebug (\n\tdefault=go1.20\n)\n"),
+            ("tool", TOY_MOD + "tool example.com/x/cmd/y\n"),
+            ("ignore", TOY_MOD + "ignore ./vendor\n"),
+            ("retract", TOY_MOD + "retract v1.0.0\n"),
+        ):
+            with self.subTest(directive=label):
+                patch = self.patch_of(mod)
+                self.applies_as(patch, mod)
+                self.assertEqual(self.files_of(patch), ["go.mod", "go.sum"])
+                with self.assertRaisesRegex(VALIDATOR.AxLabError, message):
+                    VALIDATOR.validate_gomod_patch_text(patch.encode(), "toy")
+
+    def test_a_stray_line_makes_git_read_another_patch(self) -> None:
+        # Between the index and the --- line git takes the section for a patch
+        # of go.mod of its own (or refuses the patch): it never reads the two
+        # files the validator took it for.
+        bumped = TOY_MOD.replace("a v1.0.0", "a v1.1.0")
+        lines = self.patch_of(bumped).split("\n")
+        stray = "\n".join([*lines[:2], "+x", *lines[2:]])
+        self.assertNotEqual(self.read_by_git(stray), ["go.mod", "go.sum"])
+        with self.assertRaisesRegex(VALIDATOR.AxLabError, "then hunks"):
+            VALIDATOR.validate_gomod_patch_text(stray.encode(), "toy")
+        # The pair of headers and the hunk of go.mod again before go.sum.
+        sum_section = lines.index("diff --git a/go.sum b/go.sum")
+        again = "\n".join([*lines[:sum_section], *lines[2:]])
+        self.assertNotEqual(self.read_by_git(again), ["go.mod", "go.sum"])
+        with self.assertRaisesRegex(VALIDATOR.AxLabError, "second file header"):
+            VALIDATOR.validate_gomod_patch_text(again.encode(), "toy")
+
+    def test_whatever_the_validator_accepts_git_reads_as_go_mod_and_go_sum(
+        self,
+    ) -> None:
+        # The real patch with each of its lines taken out, repeated, or
+        # preceded by a stray line of each kind.
+        bumped = TOY_MOD.replace("a v1.0.0", "a v1.1.0")
+        real = self.patch_of(bumped).rstrip("\n").split("\n")
+        marker = "\\ No newline at end of file"
+        strays = ("+x", "-x", " x", "@@ -1 +1 @@", "index", marker)
+        mutants = []
+        for number in range(len(real)):
+            mutants.append(("taken out", [*real[:number], *real[number + 1 :]]))
+            mutants.append(("repeated", [*real[: number + 1], *real[number:]]))
+            mutants.extend(
+                (stray, [*real[:number], stray, *real[number:]]) for stray in strays
+            )
+        accepted = []
+        for label, mutant in mutants:
+            text = "\n".join(mutant) + "\n"
+            try:
+                VALIDATOR.validate_gomod_patch_text(text.encode(), "toy")
+            except VALIDATOR.AxLabError:
+                continue
+            accepted.append(label)
+            with self.subTest(mutant=mutant):
+                self.assertEqual(self.files_of(text), ["go.mod", "go.sum"])
+        # Only a no-newline marker after a line of a hunk gets through.
+        self.assertEqual(set(accepted), {marker})
 
 
 class ModulesPatchSourceTests(RelockCase):
@@ -597,7 +1079,10 @@ class ModulesPatchSourceTests(RelockCase):
         ):
             for data, message in (
                 (patch_bytes(other, GOSUM), "go.mod and then go.sum"),
-                (patch_bytes(replacing, GOSUM), "adds a replace or exclude"),
+                (
+                    patch_bytes(replacing, GOSUM),
+                    "adds a replace, exclude, go, toolchain",
+                ),
                 (b"", "must hold 1 to 65536 bytes"),
             ):
                 with self.subTest(source=name, message=message):
@@ -759,6 +1244,36 @@ class PlanTests(RelockCase):
 
     def test_the_command_line_prints_the_plans_as_json(self) -> None:
         lab = VALIDATOR.validate_catalog(document(), self.reserved)
+        sources = document()["ax_lab"]["sources"]
+        # The shape is spelled out, not read back from the functions that
+        # make it; the relock adds one key, once the config sets it.
+        keys = {
+            "--ax-plan": {
+                "commit",
+                "repository",
+                "patch",
+                "substrate_commit",
+                "toolbox_image",
+                "runner_toolbox_image",
+                "tag",
+                "ko_base_image",
+                "ko_images",
+                "ko_manifests",
+                "cli_sha256",
+                "task_runner_binary_sha256",
+                *({"modules_patch"} & set(sources["ax"])),
+            },
+            "--substrate-plan": {
+                "version",
+                "commit",
+                "repository",
+                "toolbox_image",
+                "registry_image",
+                "build",
+                "images",
+                *({"modules_patch"} & set(sources["substrate"])),
+            },
+        }
         for flag, plan in (
             ("--ax-plan", VALIDATOR.ax_plan(lab)),
             ("--substrate-plan", VALIDATOR.substrate_plan(lab)),
@@ -772,13 +1287,9 @@ class PlanTests(RelockCase):
             )
             with self.subTest(flag=flag):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertEqual(
-                    json.loads(completed.stdout), json.loads(json.dumps(plan))
-                )
-        self.assertEqual(
-            "modules_patch" in VALIDATOR.ax_plan(lab),
-            "modules_patch" in document()["ax_lab"]["sources"]["ax"],
-        )
+                printed = json.loads(completed.stdout)
+                self.assertEqual(set(printed), keys[flag])
+                self.assertEqual(printed, json.loads(json.dumps(plan)))
 
 
 if __name__ == "__main__":
