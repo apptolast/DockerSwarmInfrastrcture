@@ -126,7 +126,17 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   CLI) se decide con una comprobación previa, porque una rechazada deja
   `/run/lock/dockerswarm-direct.marker` y bloquea la siguiente; las
   guardas detienen la ventana y el marker retenido se recupera con el
-  procedimiento de `CLAUDE.md`. Las imágenes `ax-task-runner` y `ax-agents` no
+  procedimiento de `CLAUDE.md`. Tras las dos auditorías de lo que hará en el
+  host, la ventana congela desde el paso 0 y nombra a todos los que toman el
+  lock host-global, pausa la cola de la Oficina y la lee de vuelta antes del
+  apply y de la marcha atrás, guarda `PR_HEAD`, `PREV`, el commit de fusión y
+  los planes en `${RELOCK}` para retomarse en una shell nueva («Recuperar la
+  shell»), describe el `--check` que el rol imprime de verdad, exige el
+  rollout y un pod del worker nuevo y una prueba de humo antes de cerrar, mide
+  `ate-setup` bajo su tope de 192 MiB antes de correrlo, compara una línea
+  base de `memory.events` y de reinicios, y da a la marcha atrás posterior al
+  apply sus propios comandos, la guarda de contenedores transitorios y el fin
+  de su congelación. Las imágenes `ax-task-runner` y `ax-agents` no
   se recompilan
   (Rama K): siguen con Go 1.27.1 y sus módulos, y sus hallazgos de
   `govulncheck` permanecen. Las imágenes y la CLI nuevas se ejecutan por
