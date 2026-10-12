@@ -56,9 +56,10 @@ NAMES = (
     "ate-setup",
 )
 INSTALLED = ["ateapi", "atecontroller", "atelet", "atenet", "podcertcontroller"]
-# Read from the manual lab's registry with `curl -I` on 2026-09-25: the
-# Docker-Content-Digest of each repository's `latest`.
-MANUAL_LAB_DIGESTS = {
+# What the manual lab's registry served on 2026-09-25 (`curl -I`, the
+# Docker-Content-Digest of each repository's `latest`): the digests the docs
+# still show in the historical seed command.
+HISTORIC_MANUAL_LAB_DIGESTS = {
     "ateapi": "sha256:c1422c85315e87c0710ec9e22447ea68185f96cd47e10473b75966f79c2d30f3",
     "atecontroller": (
         "sha256:0893131c560ee326933dc06494c86d31011f48c0c60e8dbebb40aaaed4c80c14"
@@ -72,11 +73,38 @@ MANUAL_LAB_DIGESTS = {
         "sha256:fdd1d0ad3b30578d86f11aaa67740448a8477ce706e70207b8b51a96646592e7"
     ),
 }
-ATE_SETUP = "sha256:" + "e" * 64
 # Built by the ax-lab-reproducibility workflow from the pinned commit
-# (run 36187353468); the manual lab never built ate-setup.
-REVIEWED_ATE_SETUP = (
+# (run 36187353468); the manual lab never built ate-setup. Kept for the docs
+# test of the historical export command: the config no longer pins them.
+HISTORIC_ATE_SETUP = (
     "sha256:43c9e2db7a2cdacedcd8515fb7abb561b4b7de60d8e5ef9df3b9d0300c7a1098"
+)
+# Built in CI from the pinned commit with the modules patch and the toolbox
+# images.toolbox: the ax-lab-reproducibility and ax-lab-images workflows both
+# produce exactly these (the pull request that pinned them, run logs).
+PINNED_SUBSTRATE_DIGESTS = {
+    "ateapi": (
+        "sha256:fd51016ea8d7f00de8d3bf633b9d97923f2d75111e363751380259fc163ec84a"
+    ),
+    "atecontroller": (
+        "sha256:ff974c46eb5db1f6c6d9c95aab0affefde9bca61fd0a7a19cb1f6cf2b05834db"
+    ),
+    "atelet": (
+        "sha256:d585c82392d034b829ef0775494281787b4cc85ca5100356445a3c1ce1d11837"
+    ),
+    "atenet": (
+        "sha256:6459768dc75a80d375ec76cf06ee4f01c6f402ce288e45d4be72e67266d7b14d"
+    ),
+    "podcertcontroller": (
+        "sha256:7cc783627524599a63717d19823d666e6d2e7ee71fc3ed8dae3f98d6a6476cad"
+    ),
+    "ateom-gvisor": (
+        "sha256:a5044e4ca1d23fdf8e6e9cdea37965977d1e8bc3c2bfa0a58008fed3f3585554"
+    ),
+}
+ATE_SETUP = "sha256:" + "e" * 64
+REVIEWED_ATE_SETUP = (
+    "sha256:f3944a8b00ef94a22a414bbb2b1de2313038ab7c7ff72e1d35e0b65a557a8f69"
 )
 NODE_ID = "b" * 64
 CREATE_ONCE = [
@@ -131,7 +159,7 @@ def expected_identity() -> dict[str, Any]:
         "schema_version": 1,
         "version": "67253354",
         "images": {
-            **{name: MANUAL_LAB_DIGESTS[name] for name in INSTALLED},
+            **{name: PINNED_SUBSTRATE_DIGESTS[name] for name in INSTALLED},
             "ate-setup": ATE_SETUP,
         },
         "install": {"atenet_router": "envoy", "rollout_timeout_seconds": 600},
@@ -236,7 +264,7 @@ class SubstrateValidatorTests(unittest.TestCase):
         self.assertEqual(substrate["version"], "67253354")
         self.assertEqual(
             substrate["images"],
-            {**MANUAL_LAB_DIGESTS, "ate-setup": REVIEWED_ATE_SETUP},
+            {**PINNED_SUBSTRATE_DIGESTS, "ate-setup": REVIEWED_ATE_SETUP},
         )
         self.assertEqual(
             substrate["backup_directory"], "/var/backups/dockerswarm/ax-lab/images"
@@ -447,7 +475,7 @@ class SubstrateValidatorTests(unittest.TestCase):
         for value, message in (
             (
                 "docker.io/library/golang:1.26.0@sha256:" + "a" * 64,
-                "toolbox must be golang 1.27.1",
+                "toolbox must be golang 1.27.2",
             ),
             (
                 "docker.io/library/debian:1.27.1@sha256:" + "a" * 64,
@@ -492,10 +520,19 @@ class SubstrateValidatorTests(unittest.TestCase):
             document.update(ax_lab_substrate_fallback_builds=["ate-setup"])
 
         self.rejected(pending_fallback, "no pinned digest to reproduce")
-        allowed = copy.deepcopy(self.document)
-        allowed["ax_lab"]["substrate"]["images"]["ate-setup"] = ATE_SETUP
-        allowed["ax_lab_substrate_fallback_builds"] = ["ate-setup"]
-        self.module.validate_catalog(allowed, self.reserved)
+
+        # Once the modules patches are configured the host never builds a
+        # Substrate image: its pristine checkout cannot reproduce a patched,
+        # vendored digest. tests/test_ax_lab_relock_contract.py covers the
+        # legacy state, where a pinned fallback build is still accepted.
+        def fallback_on_a_relocked_lab(document: dict[str, Any]) -> None:
+            document["ax_lab"]["substrate"]["images"]["ate-setup"] = ATE_SETUP
+            document.update(ax_lab_substrate_fallback_builds=["ate-setup"])
+
+        self.rejected(
+            fallback_on_a_relocked_lab,
+            "must be empty while sources.substrate.modules_patch is set",
+        )
         self.rejected(
             lambda document: document.pop("ax_lab_substrate_fallback_builds"),
             "config: unexpected",
@@ -581,6 +618,7 @@ class SubstrateValidatorTests(unittest.TestCase):
                 "registry_image": lab["images"]["registry"],
                 "build": lab["substrate"]["build"],
                 "images": lab["substrate"]["images"],
+                "modules_patch": lab["sources"]["substrate"]["modules_patch"],
             },
         )
 
@@ -655,12 +693,12 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             expected_args=[
                 f"--image={name}={digest}"
                 for name, digest in {
-                    **MANUAL_LAB_DIGESTS,
+                    **PINNED_SUBSTRATE_DIGESTS,
                     "ate-setup": ATE_SETUP,
                 }.items()
             ],
             expected_installed_args=[
-                f"--image={name}={MANUAL_LAB_DIGESTS[name]}" for name in INSTALLED
+                f"--image={name}={PINNED_SUBSTRATE_DIGESTS[name]}" for name in INSTALLED
             ],
         )
 
@@ -1220,7 +1258,7 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                         "/var/backups/dockerswarm/ax-lab/images",
                         "--tag",
                         "67253354",
-                        f"--image=ateapi={MANUAL_LAB_DIGESTS['ateapi']}",
+                        f"--image=ateapi={PINNED_SUBSTRATE_DIGESTS['ateapi']}",
                     ],
                 )
 
@@ -1310,7 +1348,7 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "--node", "kind-control-plane",
                 "--registry-port", "5001",
                 "--tag", "67253354",
-                *[f"--image={name}={MANUAL_LAB_DIGESTS[name]}" for name in INSTALLED],
+                *[f"--image={name}={PINNED_SUBSTRATE_DIGESTS[name]}" for name in INSTALLED],
             ],
         )  # fmt: skip
         # M5: a stopped node or a first run reads nothing and decides nothing.
@@ -1594,7 +1632,7 @@ class SubstrateRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "--timeout-seconds", "6480",
                 "--min-mem-available-mib", "704",
                 "--mem-available-floor-mib", "512",
-                *[f"--image={name}={MANUAL_LAB_DIGESTS[name]}" for name in INSTALLED],
+                *[f"--image={name}={PINNED_SUBSTRATE_DIGESTS[name]}" for name in INSTALLED],
             ],
         )  # fmt: skip
         health = self.substrate["Wait for every Substrate workload to be ready"]
@@ -1949,7 +1987,7 @@ class SubstrateRegistrationTests(unittest.TestCase):
         text = " ".join(docs.replace("\\\n", " ").split())
         self.assertIn("manage-ax-lab-substrate.py export", text)
         self.assertIn("--source-naming ko-md5", text)
-        for name, digest in MANUAL_LAB_DIGESTS.items():
+        for name, digest in HISTORIC_MANUAL_LAB_DIGESTS.items():
             with self.subTest(image=name):
                 self.assertIn(f"--image={name}={digest}", text)
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

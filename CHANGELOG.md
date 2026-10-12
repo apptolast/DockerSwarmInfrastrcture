@@ -1117,8 +1117,19 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   estándar corregidas en 1.27.2 y GO-2026-6617, 6612, 6611, 6610 y 6603 en
   `x/net` v0.58.0. La imagen de la caja de herramientas de `ax-web` se fija
   por digest en `images.web_toolbox` de `config/ax-lab.yml` y en el workflow
-  `ax-web`. La caja de herramientas del laboratorio (Substrate y las
-  imágenes de AX) sigue en Go 1.27.1, con el que se fijaron sus digests.
+  `ax-web`.
+
+- Las imágenes del laboratorio se recompilan en la CI con Go 1.27.2 y con
+  `golang.org/x/net` v0.60.0 (y los módulos que arrastra) en AX y en
+  Substrate: `images.toolbox` pasa a Go 1.27.2, `images.runner_toolbox` guarda
+  la 1.27.1 con la que se compiló el binario de `ax-task-runner` y
+  `ax-agents`, y `sources.ax.modules_patch` y `sources.substrate.
+  modules_patch` fijan dos parches de solo `go.mod` y `go.sum`. Se fijan los
+  siete digests de Substrate, los de `ax-controller` y `ax-server` y la CLI
+  `ax`, que `ax-lab-reproducibility` y `ax-lab-images` reproducen por
+  separado, y los manifiestos de ko vendorizados son los de la CI. Los
+  hallazgos de `govulncheck` de `ax-task-runner` y `ax-agents` permanecen
+  (Rama K). Entra en producción en una ventana (ver `docs/AX.md`).
 
 - El secreto de acceso de la Oficina pasa a `edge-basicauth-ax-v2`, con el
   usuario y la contraseña que fija el propietario. Se crea con el hash
