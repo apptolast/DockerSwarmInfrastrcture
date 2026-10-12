@@ -586,24 +586,27 @@ cada imagen, que ko construye de `./cmd/<nombre>` para una sola plataforma
 
 | Imagen | Digest | Uso |
 | --- | --- | --- |
-| `ateapi` | `sha256:c1422c85…30f3` | `ate-api-server` |
-| `atecontroller` | `sha256:0893131c…0c14` | `ate-controller` |
-| `atelet` | `sha256:8e88c4e0…0f7b` | DaemonSet `atelet-67253354` |
-| `atenet` | `sha256:929ca468…fcd9` | `atenet-router` y `atenet-egress` |
-| `podcertcontroller` | `sha256:2baed2f1…8f99` | `podcertificate-controller` |
-| `ateom-gvisor` | `sha256:fdd1d0ad…92e7` | Imagen de los workers del WorkerPool (ver «WorkerPool y capacidad dentro del nodo») |
-| `ate-setup` | `sha256:43c9e2db…1098` | El instalador (ver «Reproducibilidad») |
+| `ateapi` | `sha256:fd51016e…c84a` | `ate-api-server` |
+| `atecontroller` | `sha256:ff974c46…34db` | `ate-controller` |
+| `atelet` | `sha256:d585c823…1837` | DaemonSet `atelet-67253354` |
+| `atenet` | `sha256:6459768d…b14d` | `atenet-router` y `atenet-egress` |
+| `podcertcontroller` | `sha256:7cc78362…6cad` | `podcertificate-controller` |
+| `ateom-gvisor` | `sha256:a5044e4c…5554` | Imagen de los workers del WorkerPool (ver «WorkerPool y capacidad dentro del nodo») |
+| `ate-setup` | `sha256:f3944a8b…8f69` | El instalador (ver «Reproducibilidad») |
 
 <!-- markdownlint-enable MD013 -->
 
-Los seis primeros son los que sirve el registro del laboratorio manual,
-leídos el 2026-09-25 con `curl -I` de su `Docker-Content-Digest`. El
-registro local los guarda como `<nombre>:67253354`, el nombre que busca
-`ate-setup --image-repo` (el de `--base-import-paths` de ko,
-`cmd/ate-setup/differences.md`, «Image sources», en el commit fijado). El
-laboratorio manual usó el nombrador por defecto de ko, con el md5 de la
-ruta de importación (`ateapi-752889f8…`); el nombre del repositorio no
-forma parte del manifiesto, así que el digest es el mismo.
+Son los que compila la CI con el parche de módulos (`sources.substrate.
+modules_patch`) y Go 1.27.2: `ax-lab-reproducibility.yml` y
+`ax-lab-images.yml` los construyen por separado y los dos dan exactamente
+estos digests. Sustituyen a los del laboratorio manual (los seis primeros,
+leídos el 2026-09-25 con `curl -I` de su `Docker-Content-Digest`, más el
+`ate-setup` que la CI compiló entonces), que la semilla histórica de
+abajo muestra y que ya no se fijan. El registro local los guarda como
+`<nombre>:67253354`, el nombre que busca `ate-setup --image-repo` (el de
+`--base-import-paths` de ko, `cmd/ate-setup/differences.md`, «Image
+sources», en el commit fijado). El nombre del repositorio no forma parte del
+manifiesto, así que el digest no depende de él.
 
 Las imágenes solo se mueven por la API HTTP del registro, nunca con
 `docker pull` y `docker push`, que guardan el manifiesto en el almacén de
@@ -685,6 +688,11 @@ tag movido y lo restaura desde la copia.
 
 ### Semilla desde el laboratorio manual
 
+Es la semilla histórica de la primera ventana, con los digests del
+laboratorio manual. Los pines actuales no salen de aquí: llegan desde los
+artefactos de la CI (ver «Imágenes compiladas en la CI y ventana de
+resiembra»).
+
 El registro codificado y el manual se llaman igual (`kind-registry`) y
 publican el mismo `127.0.0.1:5001`, así que no pueden convivir y no hay
 copia directa de uno a otro. La semilla pasa por la copia de seguridad: con
@@ -756,7 +764,8 @@ Solo compila una imagen que cumpla todo esto:
   lugar de prometer la compilación.
 
 Cada imagen se compila sola, una tras otra, en un contenedor de la imagen
-oficial `golang:1.27.1` fijada por digest (`images.toolbox`), con el
+oficial de Go fijada por digest (`images.toolbox`: 1.27.1 antes de los
+parches de módulos y 1.27.2 con ellos), con el
 `make build-images` de upstream (`Makefile`, líneas 72 a 75) e
 `IMAGES=./cmd/<nombre>`, `VERSION=67253354`, `KO_DOCKER_REPO` en la línea
 de make (la línea 19 exporta el suyo) y `KO_FLAGS=--push=false
@@ -1070,18 +1079,21 @@ guarda como `<nombre>:f009cc8-issue375` (`ax.tag`):
 
 <!-- markdownlint-disable MD013 -->
 
-| Imagen | Digest | Origen en el laboratorio manual | Uso |
+| Imagen | Digest | Origen | Uso |
 | --- | --- | --- | --- |
-| `ax-controller` | `sha256:2a744737…51d2` | ko, `ax-controller-7ebf6094…` | Deployment `ax-controller` |
-| `ax-server` | `sha256:621ce24e…67f1` | ko, `ax-server-340c3583…` | Deployment `ax-server` |
-| `ax-task-runner` | `sha256:a5f9ee65…0bd4` | buildx, índice `5d536baa…` | Base de la imagen de agentes |
-| `ax-agents` | `sha256:d136aebb…2682` | buildx, índice `f82e9848…` | Imagen de cada Task de `ax-tarea` |
+| `ax-controller` | `sha256:da767125…3805` | ko, compilado en la CI | Deployment `ax-controller` |
+| `ax-server` | `sha256:d679ea4a…0556` | ko, compilado en la CI | Deployment `ax-server` |
+| `ax-task-runner` | `sha256:a5f9ee65…0bd4` | laboratorio manual, buildx, índice `5d536baa…` | Base de la imagen de agentes |
+| `ax-agents` | `sha256:d136aebb…2682` | laboratorio manual, buildx, índice `f82e9848…` | Imagen de cada Task de `ax-tarea` |
 
 <!-- markdownlint-enable MD013 -->
 
-Los dos primeros son exactamente los manifiestos que ko subió, y sus bytes
-están en `images/ax/manifests/`: el validador exige que den el digest
-fijado. De los otros dos, el laboratorio manual subió un índice de buildx
+Los dos primeros son los manifiestos que ko escribe en la CI con los dos
+parches (antes, los que subió el laboratorio manual), y sus bytes están en
+`images/ax/manifests/`: el validador exige que den el digest fijado. Su
+anotación `org.opencontainers.image.base.name` nombra la base por digest
+(`ax.ko_base_image`), no por el tag `latest` que usó el laboratorio
+manual. De los otros dos, el laboratorio manual subió un índice de buildx
 con dos entradas: el manifiesto `linux/amd64` y una atestación de
 procedencia (`vnd.docker.reference.type: attestation-manifest`). El gestor
 solo copia manifiestos de una plataforma, así que se fija ese manifiesto y
@@ -1109,10 +1121,17 @@ un directorio `0700`), y el rol la instala en
 difiere, después de exigir que la copia tenga el sha256 fijado
 (`ax.cli_sha256`). Está enlazada dinámicamente (`CGO_ENABLED=1`, `Makefile`
 de AX, línea 36) contra la glibc de la imagen de herramientas con la que se
-compila (la 2.41 en `golang:1.27.1`); el host tiene la 2.43, y
-`ax-lab-images.yml` falla si la CLI que sube necesita una glibc más nueva.
+compila (la 2.41 en `golang:1.27.1`; la CLI que compila la CI en
+`golang:1.27.2` necesita como mucho la 2.34, medido con `objdump -T`); el
+host tiene la 2.43, y `ax-lab-images.yml` falla si la CLI que sube necesita
+una glibc más nueva.
 
 ### Semilla de AX
+
+Es la semilla histórica de la primera ventana, con los digests y la CLI del
+laboratorio manual. Las imágenes ko y la CLI actuales las compila la CI con
+los dos parches (ver «Imágenes compiladas en la CI y ventana de
+resiembra»); las de buildx siguen siendo las de entonces.
 
 Se siembra en la ventana de los cambios 2 y 3, con el laboratorio manual
 todavía en marcha (ver «Ventana del laboratorio»): son copias inofensivas,
@@ -1159,7 +1178,8 @@ La salida de cada `export` dice `exported` para cada imagen, y
 las cuatro `--image` tiene que decir `complete` para las cuatro. El
 `sha256sum` de la CLI tiene que ser
 `acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7`, el de
-`ax.cli_sha256`. Solo entonces se sigue con la retirada.
+`ax.cli_sha256` de entonces (la CLI actual la compila la CI y su sha256 es el
+del contrato). Solo entonces se sigue con la retirada.
 
 Esa semilla es la del laboratorio manual y ya está hecha. Un re-pin posterior
 de las imágenes de ko o de la CLI no vuelve a usar `export`, porque el
@@ -2791,7 +2811,7 @@ laboratorio» (ver «Verificación»).
 | kind | v0.33.0 | El que fija Substrate en `hack/tools/kind/go.mod` (línea 19) |
 | Kubernetes | v1.37.0 | La imagen por defecto de kind v0.33.0, con el mismo digest (`pkg/apis/config/defaults/image.go`, línea 21) |
 | gVisor | nightly 2026-09-02 | El que fija Substrate en `manifests/ate-install/sandboxconfig-gvisor.yaml` (línea 34) |
-| Go | 1.27.1 (`golang@sha256:3680233e…`) | Con el que el laboratorio manual compiló las imágenes; `go.mod` de Substrate pide `go 1.27.0` |
+| Go | 1.27.2 (`golang@sha256:5bc7f572…`) | Con el que la CI compila las imágenes de Substrate y de ko y la CLI de AX (`images.toolbox`); 1.27.1 (`golang@sha256:3680233e…`, `images.runner_toolbox`) es el del binario que llevan las imágenes del runner y de agentes, que se siembran tal cual; `go.mod` de Substrate pide `go 1.27.0` |
 | ko | v0.19.1 | El que fija Substrate en `hack/tools/ko/go.mod` (línea 89), compilado con `go tool` desde su `go.sum` |
 
 <!-- markdownlint-enable MD013 -->
