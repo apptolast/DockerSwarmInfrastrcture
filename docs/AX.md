@@ -854,9 +854,10 @@ explícita.
 
 `ate-setup` corre desde su propia imagen fijada, no como binario del host:
 `docker run` de `localhost:5001/ate-setup@<digest>` con red del host (para
-la API en `127.0.0.1:6443` y el registro), 256 MiB sin swap, 0,5 CPU,
-256 PIDs, sin capacidades, raíz de solo lectura con un tmpfs de 16 MiB en
-`/tmp`, el checkout y el kubeconfig montados de solo lectura y:
+la API en `127.0.0.1:6443` y el registro), 192 MiB sin swap (96 MiB
+reservados), 0,5 CPU, 256 PIDs, sin capacidades, raíz de solo lectura con un
+tmpfs de 16 MiB en `/tmp`, el checkout y el kubeconfig montados de solo
+lectura y:
 
 ```bash
 ate-setup --kind --no-dev-env --kubeconfig /kubeconfig --context kind-kind \
@@ -879,6 +880,17 @@ de los trust bundles (`csi.go`, líneas 61 a 104); después vienen seis
 despliegues (`deploy.go`, líneas 150 a 174). Con `--rollout-timeout`, esa
 cota alcanza a todas (`internal/config/config.go`, líneas 343 a 347).
 Ansible le concede 300 s más que al gestor.
+
+En este host su consumo real no se ha medido nunca. La única instalación
+real, la del 2026-09-26, corrió con 256 MiB y no se conservó su resultado: un
+`ate-setup` correcto no imprime nada en el apply, y solo el que falla deja
+a la vista el JSON del gestor (ver «Criterios de aborto»). El tope bajó a
+224 MiB ese mismo día y a 192 MiB el 2026-10-08, y desde entonces no ha
+corrido ninguna instalación aquí. Sí se midió, el 2026-10-12, en una
+ejecución desechable de la CI en un clúster kind con los pines de la
+resiembra y estos mismos límites: el peor pico fue de 56,0 MiB, el 29,2 % del
+tope, sin OOM (el detalle, lo que prueba y lo que no, está en el paso 0 de
+«Precondiciones de la ventana de resiembra»).
 
 Solo se ejecuta si hay deriva:
 
@@ -985,6 +997,11 @@ detiene si existe alguno:
 
 El propio gestor repite la comprobación para el nombre que va a usar, con
 el mismo mensaje.
+
+Lo que sí borra el gestor, porque lee su estado y su salida antes de
+informar, es un contenedor que el kernel mató por memoria (`oom_killed`) o
+que venció su tiempo: ese fallo no deja contenedor, solo el marker del
+wrapper y el estado `installing` (ver «Criterios de aborto»).
 
 ### Versión de Substrate y etiqueta del nodo
 
@@ -1821,10 +1838,19 @@ revisado.
 
 Las imágenes y la CLI que salen de la CI se ejecutan por primera vez en
 producción: la CI las compila, comprueba sus digests y prueba que la copia
-puede sembrarse con ellas, pero nada las arranca antes (la prueba de extremo
-a extremo en kind sigue sin existir; ver «Reproducibilidad»). La única red de
-seguridad es la marcha atrás desde la instantánea del paso 2, y el
-propietario aceptó este riesgo.
+puede sembrarse con ellas, y nada las arranca antes con AX encima (la prueba
+de extremo a extremo en kind sigue sin existir en el repositorio; ver
+«Reproducibilidad»). La única red de seguridad es la marcha atrás desde la
+instantánea del paso 2, y el propietario aceptó este riesgo.
+
+Dentro de ese riesgo, `ate-setup` corre por primera vez en este host bajo el
+tope de 192 MiB (ver «Instalación de Substrate»), y con un binario nuevo. Una
+ejecución desechable de la CI, el 2026-10-12, lo midió en un clúster kind con
+los pines nuevos y los límites del laboratorio: su pico más alto fue el
+29,2 % del tope. El paso 0 dice qué prueba esa medida y qué no, y exige que
+el propietario acepte, en el registro de la ventana, que vale para este
+host. Lo que ninguna prueba ha visto es el relevo de `atelet` con workers
+vivos, y es el riesgo operativo principal de la ventana.
 
 ### Reglas de la ventana de resiembra
 
@@ -1833,7 +1859,11 @@ propietario aceptó este riesgo.
   anteriores, de los mismos planes en el commit que
   `/opt/dockerswarm/deployments/ax-lab.yml` registra como último aplicado,
   que es el que describe lo que guarda la copia. Nada se teclea: el paso 1 lo
-  calcula y lo comprueba.
+  calcula y lo comprueba. Ese registro se lee una sola vez, en el paso 1: el
+  paso 2 guarda el commit y los planes en `${RELOCK}` (ver «Recuperar la
+  shell»), porque cada apply correcto reescribe el registro con su propio
+  commit (`deployment_metadata`) y desde el paso 11 ya no describe la copia.
+  Después solo se compara con lo guardado, para notar un apply ajeno.
 - **Nada lee la copia viva con el contrato nuevo antes del `forget`.** Ni el
   `--check` del playbook ni `image-status`: la copia nombra los mismos
   `<nombre>:<tag>` con otro digest, `image-status` se detiene con «names …
@@ -1847,7 +1877,9 @@ propietario aceptó este riesgo.
   se fusiona en la ventana» y «Semilla de AX»): con los pines nuevos en
   `main` y la copia aún con los anteriores, todo apply de `ax-lab` y todo
   release de `ax-web`, que usan el mismo fichero y el mismo playbook, se
-  detienen en `image-status`.
+  detienen en `image-status`. Fusionarlo no se deshace solo: abortar una vez
+  fusionado (desde el paso 9) pide además el PR que lo revierta (ver «Marcha
+  atrás»).
 - **La siembra sale del head verde del PR, desacoplado**
   (`git checkout --detach`), con los artefactos de una ejecución
   `workflow_dispatch` de `ax-lab-images.yml` sobre ese head exacto. Si los
@@ -1860,13 +1892,60 @@ propietario aceptó este riesgo.
   ya en `main` (el PR del mecanismo, fusionado) antes de esa ejecución, y el
   propietario comprueba, antes de la congelación, que «Run workflow» ofrece
   la rama del PR de pines.
-- **Congelación.** Desde el `forget` hasta el último `changed=0`, ningún
+- **Congelación.** Desde el paso 0 hasta el último `changed=0`, ningún
   release de `ax-web` se fusiona y ningún `ax-lab` corre (`--check`
   incluido) salvo los de esta ventana. Se avisa antes a quien publica
-  releases.
+  releases y a toda sesión de agente del host. No empieza en el `forget`: el
+  paso 1 lee el commit que la marcha atrás restaura de
+  `/opt/dockerswarm/deployments/ax-lab.yml`, y un apply de `ax-lab` o un
+  release de `ax-web` entre el paso 0 y el 5 lo mueve, de modo que volver a
+  un `PREV` viejo bajaría de versión la Oficina sin que nada lo dijera. Las
+  guardas de los pasos 5 y 11 y del apply de la marcha atrás comprueban que
+  el registro sigue nombrando lo que la ventana guardó (`record_is`).
+- **Quién toma el lock host-global.** No solo los playbooks. Lo toman todos
+  los playbooks (`ax-lab`, los releases de `ax-web`, `edge`, `platform` y
+  los demás), `validate-iac.sh` y `lint.sh` (operaciones directas bajo el lock
+  de validación de Docker), los tests del repositorio que corren bajo ese
+  lock, las sondas que las sesiones de agente lanzan sobre la Oficina
+  (operaciones `ax-office-*`: la Oficina es un pod y no toma el lock) y toda
+  sesión de agente del host que use cualquiera de ellos; en este host corren
+  varias a la vez. Durante la ventana no corre ninguno. Un titular
+  concurrente hace fallar la orden con lock de la ventana (sin marker: no
+  obtuvo el lock), y uno que falla deja `/run/lock/dockerswarm-direct.marker`,
+  que rechaza toda orden con lock de la ventana y de la marcha atrás. Las
+  lecturas de partida lo comprueban sin tocarlo: `lock_free` mira con
+  `fuser` que nadie tiene abierto `/run/lock/dockerswarm-iac.lock`, y se
+  detiene si `fuser` falta o sale con algo distinto de 0 y 1, en lugar de dar
+  el lock por libre. Además, `deployment_metadata` guarda un único registro
+  de la última invocación, que reescribe cualquier playbook: un apply ajeno
+  entre el apply y el último `--check` impide el `changed=0`, y uno anterior
+  a la ventana lo impide en el `--check` de la marcha atrás desde `${PREV}`
+  (`deployed_last` lo lee en el paso 0).
+- **El clon operativo es solo de la ventana.** Nadie más hace `checkout`,
+  `pull` ni edita nada en él, y ninguna otra sesión lo usa: el wrapper
+  retiene el marker aunque el apply salga bien si el commit o el árbol
+  cambian mientras corre («source HEAD changed during deployment»).
+- **La Oficina, en pausa durante toda la ventana, no solo vacía al
+  empezar.** La Oficina despacha sola desde su cola, por prioridad y
+  antigüedad, y su planificador dispara los horarios que estén activos; las
+  guardas del rol solo ven los scopes `ax-tarea-*` y `ax-cli-*`, no lo que
+  despacha por `ax-server`. Pausar la cola (`POST /api/queue/pause`; en la
+  interfaz, «Pausar cola» en la cabecera o «Pausar la cola» en Ajustes)
+  impide que arranque ningún trabajo nuevo, y el que está en curso sigue.
+  Se pausa en el paso 0, se lee de vuelta en `office.json` (`queue_paused`
+  y los horarios) y en `jobs.json` (ningún trabajo en `preparando`,
+  `en_curso` ni `limpiando`), y esa misma lectura se repite justo antes del
+  paso 11 y del apply de la marcha atrás (`office_idle`). Un trabajo en
+  marcha en ese momento es un `STOP`: se espera a que termine, no se aplica.
+  La persona que usa la Oficina no encola nada hasta el final. La cola se
+  reanuda al final del paso 13, o cuando la marcha atrás está verificada, o
+  al abortar antes del `forget`, donde no hay marcha atrás (ver «Criterios de
+  aborto»).
 - **Exclusiva**, de un solo operador, fuera de las ventanas de medida del
   Observatorio y en una sola sesión de `tmux`, para que un corte de SSH no
-  deje un apply a medias; todas las órdenes corren en esa misma shell.
+  deje un apply a medias; todas las órdenes corren en esa misma shell. Si
+  la shell se pierde (un panel nuevo, el servidor de `tmux`, un reinicio),
+  la ventana se retoma con «Recuperar la shell», no de memoria.
 - **Cada orden con lock se decide antes con una lectura.** `forget` y
   `seed-layout` (como `export`, `import`, `build` e `install`: son los
   `MUTATING_COMMANDS` del gestor) toman el lock host-global, y en este host,
@@ -1890,78 +1969,495 @@ propietario aceptó este riesgo.
   seguir, o la marcha atrás). Toda orden con efecto va por `must` o por
   `out`, toda comprobación termina en `|| stop '...'` (o es `expect_*`, que
   llama a `stop`) y la comprobación de la CLI es una sola cadena con `&&`.
-  Aun así se pega un bloque cada vez y, tras un `STOP:`, ningún otro.
+  Las funciones de lectura de las definiciones del paso 0 (`record_is`,
+  `deployed_last`, `lock_free`, `office_idle`, `lab_scopes`, `lab_idle`,
+  `host_memory`, `no_transient` y `worker_gate`)
+  hacen lo mismo: llaman a `stop`. Aun así se pega un bloque cada vez y, tras
+  un `STOP:`, ningún otro.
+- **Cómo se pega un bloque.** Un pegado simple en `tmux` pierde, sin ningún
+  aviso, las líneas que siguen a la primera orden con `sudo`: `sudo` consume
+  la entrada pendiente de la terminal y esas líneas, guardas incluidas, no
+  llegan a ejecutarse. Un bloque se pega con pegado entre corchetes
+  (`tmux paste-buffer -p`) o se guarda en un fichero y se ejecuta con
+  `source` en la misma shell, que además conserva las variables. Tras pegar
+  uno, se comprueba que la última línea del bloque se ejecutó (por ejemplo,
+  leyendo `HALT` con `echo "[${HALT}]"`) antes de seguir.
 
 ### Precondiciones de la ventana de resiembra
 
-Paso 0, antes de tocar nada:
+Paso 0, antes de tocar nada. La congelación rige desde aquí (ver «Reglas de
+la ventana de resiembra»): se avisa a quien publica releases y a las demás
+sesiones del host, y el clon operativo es de la ventana.
 
-- Sin trabajo de AX en marcha: `sudo ax get tasks -a default` y
-  `sudo ax tunnel list` no listan ninguna Task ni ningún túnel (se suspenden
-  o se borran antes), y
+Primero, una sesión de `tmux` abierta, con los ayudantes de parada pegados en
+ella antes de nada (ver «Las guardas detienen la ventana»):
+
+```bash
+HALT=
+OUTFILE=$(mktemp)
+stop() { # texto: deja constancia del fallo y frena lo que sigue
+  HALT=${HALT:-$*}
+  printf 'STOP: %s\n' "$*" >&2
+  return 1
+}
+must() { # orden...: no corre tras un STOP, y su fallo es un STOP
+  if [[ -n "${HALT}" ]]; then
+    printf 'STOP previo, no se ejecuta: %s\n' "$*" >&2
+    return 1
+  fi
+  "$@" || stop "$*"
+}
+out() { # orden...: como must, y deja su salida en OUT (si falla, la muestra)
+  local status=0
+  must "$@" >"${OUTFILE}" || status=$?
+  OUT=$(<"${OUTFILE}")
+  if [[ "${status}" -ne 0 ]]; then
+    printf '%s\n' "${OUT}" >&2
+  fi
+  return "${status}"
+}
+```
+
+Después, las definiciones, en tres bloques que solo definen y no ejecutan
+nada. Con los ayudantes, son lo único que «Recuperar la shell» vuelve a
+pegar, así que cada función vive aquí, una sola vez. El primero guarda las
+rutas, las funciones que calculan los pines de los planes y las que escriben
+y comprueban lo que la ventana guarda en `${RELOCK}`: `window.env` (el
+commit del head del PR, el aplicado antes y, tras el paso 9, el de fusión) y
+los planes. `load_plans` y `load_facts` leen un directorio con los cuatro
+planes y el contrato anterior: el paso 1 les da el de trabajo y la
+recuperación, una copia de lo guardado. `record_is` y `deployed_last` leen
+los dos registros que escribe `deployment_metadata`: el de `ax-lab` y el de
+la última invocación de cualquier playbook:
+
+```bash
+RELOCK=/var/backups/dockerswarm/ax-lab-relock
+LAYOUT=/var/backups/dockerswarm/ax-lab/images
+CLI_BACKUP=/var/backups/dockerswarm/ax-lab/binaries/ax
+SNAP_LAYOUT=${RELOCK}/images
+SNAP_CLI=${RELOCK}/ax
+IN=${RELOCK}/in
+REH=${RELOCK}/rehearsal
+RECORD=/opt/dockerswarm/deployments/ax-lab.yml
+DEPLOYED=/opt/dockerswarm/DEPLOYED_VERSION.yml
+cfg() { # contrato [clave...]: un valor del contrato `ax_lab` de ese fichero
+  .venv/bin/python -c '
+import functools, sys, yaml
+node = yaml.safe_load(open(sys.argv[1]))["ax_lab"]
+print(functools.reduce(lambda part, key: part[key], sys.argv[2:], node))
+' "$@"
+}
+plan() { .venv/bin/python "$1/scripts/validate-ax-lab.py" "$2"; }
+pins() {
+  jq -r --arg key "$2" '.[$key] | to_entries[] | select(.value != null)
+    | "--image=\(.key)=\(.value)"' "$1"
+}
+sorted() { printf '%s\n' "$@" | LC_ALL=C sort; }
+load_plans() { # directorio: los pines de los cuatro planes que hay en él
+  mapfile -t NEW_SUB < <(pins "$1/sub-new.json" images)
+  mapfile -t OLD_SUB < <(pins "$1/sub-old.json" images)
+  mapfile -t NEW_KO < <(pins "$1/ax-new.json" ko_images)
+  mapfile -t OLD_KO < <(pins "$1/ax-old.json" ko_images)
+  mapfile -t STALE_SUB < <(LC_ALL=C comm -23 \
+    <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
+  mapfile -t MOVED_SUB < <(LC_ALL=C comm -13 \
+    <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
+  mapfile -t STALE_KO < <(LC_ALL=C comm -23 \
+    <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
+  mapfile -t MOVED_KO < <(LC_ALL=C comm -13 \
+    <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
+  [[ ${#NEW_SUB[@]} -eq 7 && ${#OLD_SUB[@]} -eq 7 ]] \
+    || stop 'faltan pines de Substrate'
+  [[ ${#NEW_KO[@]} -eq 2 && ${#OLD_KO[@]} -eq 2 ]] \
+    || stop 'faltan pines de las imágenes ko'
+  [[ ${#STALE_SUB[@]} -gt 0 && ${#STALE_SUB[@]} -eq ${#MOVED_SUB[@]} ]] \
+    || stop 'los pines de Substrate no cambian por pares'
+  [[ ${#STALE_KO[@]} -gt 0 && ${#STALE_KO[@]} -eq ${#MOVED_KO[@]} ]] \
+    || stop 'los pines de las imágenes ko no cambian por pares'
+}
+load_facts() { # directorio contrato-anterior: etiquetas, CLI y pines fijos
+  local name
+  TAG_SUB=$(jq -r .version "$1/sub-new.json")
+  TAG_AX=$(jq -r .tag "$1/ax-new.json")
+  CLI_NEW=$(jq -r .cli_sha256 "$1/ax-new.json")
+  CLI_OLD=$(jq -r .cli_sha256 "$1/ax-old.json")
+  [[ -n "${TAG_SUB}" && -n "${TAG_AX}" && -n "${CLI_NEW}" \
+    && -n "${CLI_OLD}" ]] \
+    || stop 'los planes no traen la versión, el tag o el sha256 de la CLI'
+  [[ "${TAG_SUB}" == "$(jq -r .version "$1/sub-old.json")" ]] \
+    || stop 'cambia el tag de Substrate: esta ventana no hace falta'
+  [[ "${TAG_AX}" == "$(cfg "$2" ax tag)" ]] \
+    || stop 'cambia el tag de AX: esta ventana no hace falta'
+  BUILDX=()
+  for name in ax-task-runner ax-agents; do
+    BUILDX+=("--image=${name}=$(cfg "$2" ax images "${name}")")
+  done
+  WEB_TAG=$(cfg "$2" web image tag)
+  WEB_PIN="--image=ax-web=$(cfg "$2" web image digest)"
+  WORKER_OLD=$(printf '%s\n' "${OLD_SUB[@]}" \
+    | sed -n 's/^--image=ateom-gvisor=//p')
+  WORKER_NEW=$(printf '%s\n' "${NEW_SUB[@]}" \
+    | sed -n 's/^--image=ateom-gvisor=//p')
+  [[ "${WORKER_OLD}" == sha256:* && "${WORKER_NEW}" == sha256:* ]] \
+    || stop 'los planes no traen el pin de ateom-gvisor'
+}
+save_window() { # escribe window.env en ${RELOCK}, de root y 0600
+  printf 'PR_HEAD=%s\nPREV=%s\n' "${PR_HEAD:?}" "${PREV:?}" \
+    >"${WORK:?}/window.env"
+  if [[ -n "${MERGE:-}" ]]; then
+    printf 'MERGE=%s\n' "${MERGE}" >>"${WORK}/window.env"
+  fi
+  must sudo -- install -m 0600 -o root -g root "${WORK}/window.env" \
+    "${RELOCK}/window.env"
+}
+record_is() { # commit...: el registro de ax-lab.yml nombra uno de ellos
+  local now want
+  now=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${RECORD}")
+  for want in "$@"; do
+    if [[ "${now}" == "${want}" ]]; then
+      return 0
+    fi
+  done
+  stop "ax-lab.yml nombra '${now}', no '$*': un apply ajeno movió el registro"
+}
+deployed_last() { # el último playbook fue ax-lab, en el commit del registro
+  local playbook revision recorded
+  playbook=$(sed -n 's/^playbook: "\([a-z-]*\)"$/\1/p' "${DEPLOYED}")
+  revision=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${DEPLOYED}")
+  recorded=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${RECORD}")
+  if [[ -z "${playbook}" || -z "${recorded}" ]]; then
+    stop "${DEPLOYED} sin playbook, o ${RECORD} sin commit"
+  elif [[ "${playbook}" != ax-lab || "${revision}" != "${recorded}" ]]; then
+    stop "${DEPLOYED} nombra ${playbook} en ${revision}, no ax-lab en" \
+      "${recorded}: otro playbook corrió el último"
+  fi
+}
+```
+
+El segundo, las lecturas y las órdenes por imagen de la copia de seguridad.
+`image_state` lee una sola imagen de una copia con `image-status`, que no
+toma lock, y dice `complete`, `missing` u `other`: la copia nombra ese
+`<nombre>:<tag>` con otro digest, el único fallo que espera y que
+interpreta; cualquier otro es un `STOP`. Una por llamada, porque basta una
+entrada con otro digest para que `image-status` se detenga con las demás.
+`forget_one` retira la entrada solo si está `complete` con ese pin, así que
+el gestor nunca se niega. `seed_one` siembra solo si falta y se niega él
+mismo, sin pedir el lock, si la copia nombra otro digest (falta el
+`forget`):
+
+```bash
+expect_all() { # n valor salida: n entradas, todas con ese valor
+  printf '%s\n' "$3"
+  jq -e --argjson n "$1" --arg v "$2" \
+    'length == $n and all(.[]; . == $v)' <<<"$3" >/dev/null \
+    || stop "se esperaban $1 entradas con el valor $2"
+}
+expect_complete() { # n salida: n imágenes, todas completas en la copia
+  printf '%s\n' "$2"
+  jq -e --argjson n "$1" \
+    '.backup | length == $n and all(.[]; . == "complete")' \
+    <<<"$2" >/dev/null \
+    || stop "se esperaban $1 imágenes completas en la copia"
+}
+expect_pinned() { # n salida: como expect_complete, y fijadas en el registro
+  printf '%s\n' "$2"
+  jq -e --argjson n "$1" '
+    (.registry | length == $n and all(.[]; . == "pinned"))
+    and (.backup | length == $n and all(.[]; . == "complete"))
+  ' <<<"$2" >/dev/null \
+    || stop "se esperaban $1 imágenes fijadas en el registro y completas"
+}
+image_state() { # conjunto capa tag pin: complete, missing u other
+  local json name=${4#--image=}
+  name=${name%%=*}
+  if json=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+    image-status --image-set "$1" --layout "$2" --tag "$3" "$4" 2>&1); then
+    jq -er '.backup | to_entries[0].value' <<<"${json}"
+  elif [[ "${json}" == *"names ${name}:$3 with another digest"* ]]; then
+    echo other
+  else
+    printf '%s\n' "${json}" >&2
+    return 1
+  fi
+}
+forget_one() { # conjunto capa tag pin: retira la entrada de ese pin
+  local state name=${4#--image=}
+  name=${name%%=*}
+  state=$(image_state "$1" "$2" "$3" "$4") \
+    || { stop "image-status de ${name} en $2"; return 1; }
+  if [[ "${state}" == complete ]]; then
+    out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+      forget --image-set "$1" --layout "$2" --tag "$3" "$4" \
+      && expect_all 1 forgotten "${OUT}"
+  else
+    printf '%s: nada que retirar en %s (%s)\n' "${name}" "$2" "${state}"
+  fi
+}
+seed_one() { # conjunto fuente capa tag pin: siembra solo lo que falta
+  local state name=${5#--image=}
+  name=${name%%=*}
+  state=$(image_state "$1" "$3" "$4" "$5") \
+    || { stop "image-status de ${name} en $3"; return 1; }
+  case "${state}" in
+    complete) printf '%s: ya está en %s\n' "${name}" "$3" ;;
+    missing)
+      out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+        seed-layout --image-set "$1" --source "$2" --layout "$3" \
+        --tag "$4" "$5" \
+        && expect_all 1 seeded "${OUT}"
+      ;;
+    *) stop "$3 nombra ${name} con otro digest: falta el forget" ;;
+  esac
+}
+```
+
+El tercero, las lecturas del laboratorio y de la Oficina que usan las
+guardas, la línea base y la verificación. Todas llaman a `stop` y no
+escriben nada fuera de `${OUTFILE}`. `KUBECTL` lleva `--request-timeout
+10s`, que corta toda espera larga a los 10 s (un `get --watch` termina a los
+10 s), así que lo que espera usa `KUBECTL_WAIT`, sin él y acotado por su
+propio `--timeout`. `office_path` saca del propio PV la ruta del volumen de
+la Oficina, dentro del nodo, sin suponerla. `lab_memory` lee de los cgroups
+del nodo y del registro lo que la línea base compara, y `pod_table` los
+reinicios de los pods que el apply no sustituye (`REPLACED` nombra los que
+sí):
+
+```bash
+KUBECTL=(sudo -- /usr/bin/env HOME=/opt/dockerswarm/ax-lab/home
+  /opt/dockerswarm/ax-lab/bin/kubectl
+  --kubeconfig /opt/dockerswarm/ax-lab/home/.kube/config
+  --context kind-kind --request-timeout 10s)
+# Sin --request-timeout: con él, el cliente corta cada espera a los 10 s.
+KUBECTL_WAIT=(sudo -- /usr/bin/env HOME=/opt/dockerswarm/ax-lab/home
+  /opt/dockerswarm/ax-lab/bin/kubectl
+  --kubeconfig /opt/dockerswarm/ax-lab/home/.kube/config
+  --context kind-kind)
+# Los pods que el apply sustituye, como espacio-de-nombres/pod.
+REPLACED='^(ate-system/(ate-api-server|ate-controller|atelet'
+REPLACED+='|atenet-router|atenet-egress)-'
+REPLACED+='|podcertificate-controller-system/podcertificate-controller-'
+REPLACED+='|ax-system/(ax-controller|ax-server)-|ax-workers/)'
+office_path() { # fija PV_PATH: la ruta del volumen de la Oficina en el nodo
+  local pv
+  pv=$("${KUBECTL[@]}" --namespace ax-web get pvc ax-web-state \
+    --output jsonpath='{.spec.volumeName}') || stop 'pvc de ax-web-state'
+  PV_PATH=$("${KUBECTL[@]}" get pv "${pv:?}" \
+    --output jsonpath='{.spec.hostPath.path}{.spec.local.path}') \
+    || stop 'pv de ax-web-state'
+  [[ "${PV_PATH}" == /?* ]] || stop 'el PV de ax-web-state no trae ruta'
+}
+office_idle() { # la cola en pausa, ningún trabajo en marcha, ningún horario
+  office_path || return 1
+  out sudo -- /usr/bin/docker exec kind-control-plane cat \
+    "${PV_PATH}/office.json" || return 1
+  jq -e '.settings.queue_paused == true
+    and ([(.schedules // [])[] | select(.enabled)] | length == 0)' \
+    <<<"${OUT}" >/dev/null \
+    || stop 'la cola de la Oficina no está en pausa, o hay un horario activo'
+  out sudo -- /usr/bin/docker exec kind-control-plane cat \
+    "${PV_PATH}/jobs.json" || return 1
+  jq -e '[(.jobs // [])[] | select(.status
+    | IN("preparando", "en_curso", "limpiando"))] | length == 0' \
+    <<<"${OUT}" >/dev/null \
+    || stop 'la Oficina tiene un trabajo en marcha: se espera a que termine'
+}
+lab_scopes() { # sin ax-tarea ni ax en marcha: una lectura local de systemd
+  out systemctl list-units --type=scope --state=active --plain --no-legend \
+    --no-pager 'ax-tarea-*' 'ax-cli-*' || return 1
+  [[ -z "${OUT}" ]] || stop 'hay un ax-tarea o un ax en marcha'
+}
+lab_idle() { # además, sin Tasks: eso lo lee ax-server
+  lab_scopes || return 1
+  out sudo -- /usr/local/sbin/ax get tasks -a default || return 1
+  [[ -z "$(sed 1d <<<"${OUT}")" ]] || stop 'AX tiene Tasks'
+}
+host_memory() { # MemAvailable de al menos 3 GiB (3 145 728 kB)
+  local available
+  available=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+  [[ "${available:-0}" -ge 3145728 ]] \
+    || stop "MemAvailable ${available:-0} kB: faltan 3 GiB para la ventana"
+}
+lock_free() { # nadie tiene abierto el lock host-global (solo lectura)
+  local status=0
+  if ! sudo -- test -x /usr/bin/fuser; then
+    stop 'falta /usr/bin/fuser (paquete psmisc): no se puede leer el lock'
+    return 1
+  fi
+  sudo -- /usr/bin/fuser /run/lock/dockerswarm-iac.lock >/dev/null 2>&1 \
+    || status=$?
+  case "${status}" in
+  0)
+    stop 'alguien tiene el lock host-global: otra sesión, validate-iac o lint'
+    ;;
+  1) ;;
+  *) stop "fuser salió con ${status}: no se puede leer el lock" ;;
+  esac
+}
+no_transient() { # sin contenedores transitorios del gestor
+  out sudo -- /usr/bin/docker ps --all --format '{{.Names}} {{.Status}}' \
+    --filter 'name=^ax-lab-ate-setup$' --filter 'name=^ax-lab-build-' \
+    || return 1
+  [[ -z "${OUT}" ]] || stop "contenedor transitorio del gestor: ${OUT}"
+}
+lab_memory() { # la memoria del nodo y del registro, una lectura por línea
+  local name id dir file
+  for name in kind-control-plane kind-registry; do
+    out sudo -- /usr/bin/docker inspect --format '{{.Id}}' "${name}" \
+      || return 1
+    id=${OUT}
+    [[ "${id}" =~ ^[0-9a-f]{64}$ ]] || stop "ID de ${name}"
+    dir=/sys/fs/cgroup/system.slice/docker-${id}.scope
+    for file in memory.events memory.events.local; do
+      out sudo -- cat "${dir}/${file}" || return 1
+      awk -v prefix="${name} ${file}" '{print prefix " " $0}' <<<"${OUT}"
+    done
+    out sudo -- grep -E '^anon ' "${dir}/memory.stat" || return 1
+    awk -v prefix="${name} memory.stat" '{print prefix " " $0}' <<<"${OUT}"
+    out sudo -- cat "${dir}/memory.current" || return 1
+    printf '%s memory.current %s\n' "${name}" "${OUT}"
+  done
+}
+oom_lines() { grep -E ' memory\.events(\.local)? oom'; }
+pod_table() { # unreplaced|replaced: los pods que el apply no sustituye, o sí
+  out "${KUBECTL[@]}" get pods --all-namespaces --output json || return 1
+  jq -r --arg replaced "${REPLACED}" --arg which "$1" '
+    .items[] | select(.metadata.deletionTimestamp == null)
+    | "\(.metadata.namespace)/\(.metadata.name)" as $pod
+    | select(($pod | test($replaced)) == ($which == "replaced"))
+    | "\($pod) \([.status.containerStatuses[]?.restartCount] | add // 0)"
+  ' <<<"${OUT}" | LC_ALL=C sort
+}
+worker_gate() { # digest: el rollout del worker, y un solo pod, el de ese digest
+  local try
+  must "${KUBECTL_WAIT[@]}" --namespace ax-workers rollout status \
+    deployment/ax --timeout=300s
+  # El rol del WorkerPool puede cambiar el despliegue después de que el
+  # rollout de arriba diga que terminó: el pod se relee hasta 30 veces, con
+  # 10 s de pausa (unos 5 minutos, lo que el rollout), antes de la guarda.
+  for try in {1..30}; do
+    if [[ "${try}" -gt 1 ]]; then
+      sleep 10
+    fi
+    out "${KUBECTL[@]}" --namespace ax-workers get pods \
+      --selector ate.dev/worker-pool=ax --output json || return 1
+    if jq -e --arg digest "$1" '
+      [.items[] | select(.metadata.deletionTimestamp == null)]
+      | length == 1 and all(.[];
+        (.spec.containers[0].image | endswith("@" + $digest))
+        and ([.status.conditions[]? | select(.type == "Ready"
+          and .status == "True")] | length == 1))
+    ' <<<"${OUT}" >/dev/null; then
+      return 0
+    fi
+  done
+  stop "no hay un único pod de worker listo con la imagen de ${1}"
+}
+```
+
+Con eso pegado, las precondiciones:
+
+- La cola de la Oficina, en pausa y leída de vuelta, y avisada la persona que
+  la use de que no encole nada hasta el final de la ventana: pulsa «Pausar
+  cola» en la cabecera de la Oficina (el trabajo que esté en curso sigue, y
+  se espera a que termine). Es lo que impide que arranque un trabajo nuevo,
+  que el apply cortaría (ver [AX_WEB.md](AX_WEB.md), «Ventana de la
+  Oficina»). Se comprueba con `office_idle` en las lecturas de abajo:
+  `queue_paused` verdadero, ningún horario activo y ningún trabajo en
+  `preparando`, `en_curso` ni `limpiando`.
+- Sin trabajo de AX en marcha: `sudo ax get tasks -a default` no lista
+  ninguna Task (se suspenden o se borran antes), y
   `systemctl list-units --type=scope --state=active --plain --no-legend
-  'ax-tarea-*' 'ax-cli-*'` no imprime nada. Las guardas del rol solo miran
-  esos scopes, no lo que la Oficina despacha por `ax-server`.
-- La cola de la Oficina, vacía y releída justo antes, y avisada la persona
-  que la use: el apply puede cortar su conexión con AX (ver
-  [AX_WEB.md](AX_WEB.md), «Ventana de la Oficina»).
+  --no-pager 'ax-tarea-*' 'ax-cli-*'` no imprime nada (`lab_idle`). Un túnel
+  de `sudo ax` es un scope `ax-cli-*`: `ax tunnel list` no sirve de guarda,
+  porque el wrapper abre un `AX_HOME` nuevo en cada llamada y siempre sale
+  vacío, a propósito. Las guardas del rol solo miran esos scopes, no lo que
+  la Oficina despacha por `ax-server`: de ahí la pausa.
+- `fuser` (`/usr/bin/fuser`, del paquete `psmisc`), que `lock_free` necesita
+  y que ningún rol de este repositorio instala: este host lo tiene, uno
+  reconstruido puede no tenerlo, y codificarlo es un cambio revisado aparte,
+  no algo que se instale a mano dentro de la ventana. Sin él, `lock_free` es
+  un `STOP`, no un «libre».
+- La memoria del host: `MemAvailable` de al menos 3 GiB, unos 3 145 728 kB
+  (`grep MemAvailable /proc/meminfo`, `host_memory`), y ninguna otra sesión
+  pesada ni compilación durante los pasos 10 a 12. El 2026-10-09 un
+  análisis sin límite agotó la memoria del host y el kernel mató Postgres,
+  `ateapi` y otros dentro del nodo (ver
+  [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)); los mínimos del gestor
+  (704 y 512 MiB) paran solo a `ate-setup`. Se lee de nuevo con las demás
+  lecturas, justo antes del paso 11.
+- Las lecturas de partida, que se repiten justo antes del paso 11 y antes
+  del apply de la marcha atrás (con `record_is`, que nombra lo que la
+  ventana guardó). Sin ningún marker retenido. `deployed_last`, que solo
+  va aquí y antes del `--check` de la marcha atrás anterior al apply, lee
+  `DEPLOYED_VERSION.yml`, que cada playbook reescribe, y se detiene si el
+  último fue otro que `ax-lab` o no está en el commit del registro: el
+  `--check` de la marcha atrás desde `${PREV}` contaría entonces un
+  `changed` más (ese fichero), y seguir con `HALT=` es aceptarlo sabiéndolo
+  (ver «Marcha atrás»):
+
+  ```bash
+  must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+  lock_free
+  office_idle
+  lab_idle
+  host_memory
+  deployed_last
+  ```
+
 - `ax-lab-images.yml` ya en `main` y «Run workflow» comprobado: ver la
   regla de la siembra. Sin eso, la ejecución sobre el head del PR de pines
   no existe.
-- Una sesión de `tmux` abierta, con los ayudantes de parada pegados en ella
-  antes de nada (ver «Las guardas detienen la ventana»):
-
-  ```bash
-  HALT=
-  OUTFILE=$(mktemp)
-  stop() { # texto: deja constancia del fallo y frena lo que sigue
-    HALT=${HALT:-$*}
-    printf 'STOP: %s\n' "$*" >&2
-    return 1
-  }
-  must() { # orden...: no corre tras un STOP, y su fallo es un STOP
-    if [[ -n "${HALT}" ]]; then
-      printf 'STOP previo, no se ejecuta: %s\n' "$*" >&2
-      return 1
-    fi
-    "$@" || stop "$*"
-  }
-  out() { # orden...: como must, y deja su salida en OUT (si falla, la muestra)
-    local status=0
-    must "$@" >"${OUTFILE}" || status=$?
-    OUT=$(<"${OUTFILE}")
-    if [[ "${status}" -ne 0 ]]; then
-      printf '%s\n' "${OUT}" >&2
-    fi
-    return "${status}"
-  }
-  ```
-
 - Las dos descargas de la ejecución sobre el head del PR (los zip de
   `ax-lab-substrate-oci-layout` y de `ax-lab-ax-artifacts`) en un directorio
   del propietario, no en un tmpfs.
-- La línea base, para compararla al final: los reinicios de los pods de
-  `kube-system`, `ate-system` y `ax-system`, el `memory.peak` y el
-  `memory.events.local` del nodo (las lecturas del paso 6 de «Ventana del
-  cambio 4») y `grep MemAvailable /proc/meminfo`.
+- El pico de memoria de `ate-setup` bajo el tope de 192 MiB. Es la primera
+  vez que corre bajo ese tope en este host, con un binario nuevo, y la
+  marcha atrás vuelve a ejecutar el anterior bajo el mismo. Hay una medida,
+  del 2026-10-12, de una ejecución desechable de la CI en un clúster kind con
+  los pines nuevos y los límites del laboratorio (192 MiB sin swap, 0,5 CPU,
+  256 PIDs, 600 s por rollout y 6 480 s en total), que no se fusionó ni es
+  una receta: sus ejecuciones, 38249431882, 38251504380 y 38254971937 de
+  `apptolast/DockerSwarmInfrastrcture`, son solo la evidencia. El peor pico
+  de cualquier instalación (nueva, repetida o sobre una con los pines
+  anteriores) fue de 58 765 312 bytes (56,0 MiB, el 29,2 % del tope), contra
+  49,6 y 51,9 MiB con los pines anteriores en las mismas condiciones, sin OOM,
+  con el contador `max` de `memory.events` a 0, un margen de 3,4 veces, seis
+  cargas sustituidas al actualizar y las doce listas. No hubo reinicios en la
+  última ejecución; en las otras, un reinicio de `postgres-0` por una carrera
+  de arranque que también se vio con los pines anteriores. Es el
+  `memory_peak_bytes` que imprime el gestor (ver «Criterios de aborto»).
+- Lo que esa medida no prueba: ningún worker vivo durante el relevo de
+  `atelet`, ni AX sobre Substrate, ni un clúster poblado con los objetos de
+  AX y de semanas de antigüedad, ni este kernel ni este Docker, ni la marcha
+  atrás (instalar el `ate-setup` anterior sobre el nuevo no se midió). Por
+  eso la comprobación que sí se puede hacer es la aceptación explícita del
+  propietario: acepta, en el registro de la ventana, que la medida vale para
+  este host, para el `ate-setup` nuevo y para el anterior de la marcha atrás,
+  y sin ella no se pasa del paso 0. El listón de la ventana sigue siendo
+  como mucho 134 MiB (140 509 184 bytes), es decir, un margen de al menos
+  58 MiB, el 30 % del tope, y la medida de la CI lo cumple de sobra. El
+  apartado «Pico de `ate-setup`» del registro lleva la medida de la CI
+  (56,0 MiB), la aceptación (quién y cuándo) y el `memory_peak_bytes` que
+  informe la instalación real: en un apply correcto el rol no lo imprime y se
+  anota «no informado», y solo un fallo lo deja a la vista.
+- La línea base no se anota aquí sino justo antes del paso 11, con todo ya
+  sembrado y comprobado (ver el paso 11). El `memory.peak` del nodo no sirve
+  para eso: está saturado por la caché de página (supera su propio
+  `memory.max`), así que no informa y no se anota. Lo que sí se compara son
+  los contadores `oom` de `memory.events` y `memory.events.local` y los
+  reinicios de los pods.
 - Una copia del estado del PVC de la Oficina (`ax-web-state`) en un
   directorio de root `0700` bajo `/var/backups/dockerswarm/`, como en las
-  ventanas anteriores (ver [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)). La
-  ruta del volumen sale del propio PV, no se supone, y la copia corre bajo
-  el lock como las demás; con la cola vacía es una copia en caliente de un
-  volumen sin trabajos en marcha. No hay ningún marker retenido antes de
-  empezar, y si la copia falla deja el suyo (ver «Un marker retenido»):
+  ventanas anteriores (ver [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)),
+  tomada después de pausar la cola y de las lecturas de arriba. La ruta del
+  volumen sale del propio PV (`office_path`), no se supone, y la copia corre
+  bajo el lock como las demás; con la cola en pausa y sin trabajos en marcha
+  es una copia en caliente de un volumen sin trabajos en marcha. No hay
+  ningún marker retenido antes de empezar, y si la copia falla deja el suyo
+  (ver «Un marker retenido»):
 
   ```bash
-  KUBECTL=(sudo -- /usr/bin/env HOME=/opt/dockerswarm/ax-lab/home
-    /opt/dockerswarm/ax-lab/bin/kubectl
-    --kubeconfig /opt/dockerswarm/ax-lab/home/.kube/config
-    --context kind-kind --request-timeout 10s)
-  PV=$("${KUBECTL[@]}" --namespace ax-web get pvc ax-web-state \
-    --output jsonpath='{.spec.volumeName}')
-  PV_PATH=$("${KUBECTL[@]}" get pv "${PV:?}" \
-    --output jsonpath='{.spec.hostPath.path}{.spec.local.path}')
-  [[ "${PV_PATH}" == /?* ]] || stop 'el PV de ax-web-state no trae ruta'
+  office_path
   STATE=/var/backups/dockerswarm/ax-web-state-$(date -u +%Y%m%dT%H%M%SZ)
   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
   must sudo -- install -d -o root -g root -m 0700 "${STATE}" "${STATE}/data"
@@ -1971,8 +2467,8 @@ Paso 0, antes de tocar nada:
   must test -n "$(sudo -- ls -A "${STATE}/data")"
   ```
 
-  El volumen de Redis (`ax-redis-data`) no se copia. La primera precondición
-  deja el laboratorio sin Tasks, que es lo único que Redis guarda (las
+  El volumen de Redis (`ax-redis-data`) no se copia. Las lecturas de partida
+  dejan el laboratorio sin Tasks, que es lo único que Redis guarda (las
   claves `ax:task:default:<nombre>`, ver «Redis»), la ventana no cambia ni
   la imagen de Redis ni su volumen, y la marcha atrás restaura imágenes de
   la copia, no datos de Redis.
@@ -1981,25 +2477,30 @@ Paso 0, antes de tocar nada:
 
 ### Pasos de la ventana de resiembra
 
-Las variables y las funciones de los pasos 1 y 2 viven en la shell de
-`tmux`, así que el resto de los pasos las usa tal cual, igual que los
-ayudantes del paso 0. Una guarda o una orden que falla imprime `STOP:` y
-deja `HALT` puesto: se decide entonces entre seguir (`HALT=`) y la marcha
-atrás, según los criterios de aborto. Si lo que falló fue una orden con
-lock, su marker se recupera antes (ver «Un marker retenido»).
+Las variables y las funciones viven en la shell de `tmux`, así que los pasos
+las usan tal cual, igual que los ayudantes del paso 0. Lo que esa shell no
+puede perder está además en disco, en `${RELOCK}`, de root y fuera de `/tmp`
+(un tmpfs en este host): `window.env`, los planes y la línea base. Si la
+shell se pierde, ver «Recuperar la shell». Una guarda o una orden que falla
+imprime `STOP:` y deja `HALT` puesto: se decide entonces entre seguir
+(`HALT=`) y la marcha atrás, según los criterios de aborto. Si lo que falló
+fue una orden con lock, su marker se recupera antes (ver «Un marker
+retenido»).
 
 1. En el clon operativo, como `admin` (uid y gid 1001) y sin `sudo`, desde
    el head del PR y sin tocar nada: calcular los pines y comprobarlos.
-   `PR_HEAD` es el commit completo sobre el que corrió `ax-lab-images.yml`.
+   `PR_HEAD` es el commit completo sobre el que corrió `ax-lab-images.yml`, y
+   se asigna aquí, una sola vez, pegando el suyo entre las comillas; la guarda
+   que sigue se detiene si lo que hay no es un commit completo:
 
    ```bash
-   [[ "${PR_HEAD:-}" =~ ^[0-9a-f]{40}$ ]] \
+   PR_HEAD='PEGAR_AQUÍ_EL_COMMIT_COMPLETO_DEL_HEAD_DEL_PR'
+   [[ "${PR_HEAD}" =~ ^[0-9a-f]{40}$ ]] \
      || stop 'PR_HEAD no es un commit completo'
    must git fetch origin
    must git checkout --detach "${PR_HEAD:?}"
    must test -z "$(git status --porcelain --untracked-files=normal)"
-   PREV=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' \
-     /opt/dockerswarm/deployments/ax-lab.yml)
+   PREV=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${RECORD}")
    [[ "${PREV}" =~ ^[0-9a-f]{40}$ ]] \
      || stop 'ax-lab.yml no registra ningún commit aplicado'
    must git merge-base --is-ancestor "${PREV}" HEAD
@@ -2008,36 +2509,11 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    must tar -x -C "${WORK}/prev" < <(git archive "${PREV}")
    [[ -f "${WORK}/prev/scripts/validate-ax-lab.py" ]] \
      || stop 'git archive no dejó el commit aplicado'
-   plan() { .venv/bin/python "$1/scripts/validate-ax-lab.py" "$2"; }
    must plan . --substrate-plan >"${WORK}/sub-new.json"
    must plan . --ax-plan >"${WORK}/ax-new.json"
    must plan "${WORK}/prev" --substrate-plan >"${WORK}/sub-old.json"
    must plan "${WORK}/prev" --ax-plan >"${WORK}/ax-old.json"
-   pins() {
-     jq -r --arg key "$2" '.[$key] | to_entries[] | select(.value != null)
-       | "--image=\(.key)=\(.value)"' "$1"
-   }
-   sorted() { printf '%s\n' "$@" | LC_ALL=C sort; }
-   mapfile -t NEW_SUB < <(pins "${WORK}/sub-new.json" images)
-   mapfile -t OLD_SUB < <(pins "${WORK}/sub-old.json" images)
-   mapfile -t NEW_KO < <(pins "${WORK}/ax-new.json" ko_images)
-   mapfile -t OLD_KO < <(pins "${WORK}/ax-old.json" ko_images)
-   mapfile -t STALE_SUB < <(LC_ALL=C comm -23 \
-     <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
-   mapfile -t MOVED_SUB < <(LC_ALL=C comm -13 \
-     <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
-   mapfile -t STALE_KO < <(LC_ALL=C comm -23 \
-     <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
-   mapfile -t MOVED_KO < <(LC_ALL=C comm -13 \
-     <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
-   [[ ${#NEW_SUB[@]} -eq 7 && ${#OLD_SUB[@]} -eq 7 ]] \
-     || stop 'faltan pines de Substrate'
-   [[ ${#NEW_KO[@]} -eq 2 && ${#OLD_KO[@]} -eq 2 ]] \
-     || stop 'faltan pines de las imágenes ko'
-   [[ ${#STALE_SUB[@]} -gt 0 && ${#STALE_SUB[@]} -eq ${#MOVED_SUB[@]} ]] \
-     || stop 'los pines de Substrate no cambian por pares'
-   [[ ${#STALE_KO[@]} -gt 0 && ${#STALE_KO[@]} -eq ${#MOVED_KO[@]} ]] \
-     || stop 'los pines de las imágenes ko no cambian por pares'
+   load_plans "${WORK}"
    ```
 
    `STALE_*` son los pines anteriores de las imágenes que cambian y
@@ -2045,132 +2521,28 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    segundos. Las dos imágenes de buildx y la del panel no cambian en esta
    ventana, y las aserciones del bloque siguiente lo comprueban. Las
    etiquetas y los sha256 de la CLI salen de los planes y, lo que el plan
-   anterior no trae, del contrato anterior (`cfg`):
+   anterior no trae, del contrato anterior (`cfg`); el digest de
+   `ateom-gvisor`, el del worker, sale de los mismos pines (`WORKER_OLD` y
+   `WORKER_NEW`):
 
    ```bash
-   cfg() {
-     .venv/bin/python -c '
-   import functools, sys, yaml
-   node = yaml.safe_load(open(sys.argv[1]))["ax_lab"]
-   print(functools.reduce(lambda part, key: part[key], sys.argv[2:], node))
-   ' "$@"
-   }
    OLD_CFG=${WORK}/prev/config/ax-lab.yml
-   TAG_SUB=$(jq -r .version "${WORK}/sub-new.json")
-   TAG_AX=$(jq -r .tag "${WORK}/ax-new.json")
-   CLI_NEW=$(jq -r .cli_sha256 "${WORK}/ax-new.json")
-   CLI_OLD=$(jq -r .cli_sha256 "${WORK}/ax-old.json")
-   [[ -n "${TAG_SUB}" && -n "${TAG_AX}" && -n "${CLI_NEW}" \
-     && -n "${CLI_OLD}" ]] \
-     || stop 'los planes no traen la versión, el tag o el sha256 de la CLI'
-   [[ "${TAG_SUB}" == "$(jq -r .version "${WORK}/sub-old.json")" ]] \
-     || stop 'cambia el tag de Substrate: esta ventana no hace falta'
-   [[ "${TAG_AX}" == "$(cfg "${OLD_CFG}" ax tag)" ]] \
-     || stop 'cambia el tag de AX: esta ventana no hace falta'
-   BUILDX=()
+   load_facts "${WORK}" "${OLD_CFG}"
    for name in ax-task-runner ax-agents; do
-     BUILDX+=("--image=${name}=$(cfg config/ax-lab.yml ax images "${name}")")
-     [[ "${BUILDX[-1]}" == \
-       "--image=${name}=$(cfg "${OLD_CFG}" ax images "${name}")" ]] \
+     [[ "$(cfg config/ax-lab.yml ax images "${name}")" \
+       == "$(cfg "${OLD_CFG}" ax images "${name}")" ]] \
        || stop "${name} cambia, y la ventana no la toca"
    done
-   WEB_TAG=$(cfg "${OLD_CFG}" web image tag)
-   WEB_PIN="--image=ax-web=$(cfg "${OLD_CFG}" web image digest)"
-   [[ "${WEB_TAG}" == "$(cfg config/ax-lab.yml web image tag)" ]] \
+   [[ "$(cfg config/ax-lab.yml web image tag)" == "${WEB_TAG}" ]] \
      || stop 'cambia el tag del panel'
-   [[ "${WEB_PIN}" == \
-     "--image=ax-web=$(cfg config/ax-lab.yml web image digest)" ]] \
-     || stop 'cambia el digest del panel'
+   [[ "--image=ax-web=$(cfg config/ax-lab.yml web image digest)" \
+     == "${WEB_PIN}" ]] || stop 'cambia el digest del panel'
    ```
 
    Si el tag de Substrate o el de AX cambiara, la copia no tendría dos
    digests bajo un mismo nombre y esta ventana no haría falta; las guardas
-   de las etiquetas la detienen entonces. Lo último del paso son las rutas y
-   las funciones que usan los demás pasos: las tres aserciones, que llaman a
-   `stop`, y las tres lecturas y órdenes por imagen:
-
-   ```bash
-   RELOCK=/var/backups/dockerswarm/ax-lab-relock
-   LAYOUT=/var/backups/dockerswarm/ax-lab/images
-   CLI_BACKUP=/var/backups/dockerswarm/ax-lab/binaries/ax
-   SNAP_LAYOUT=${RELOCK}/images
-   SNAP_CLI=${RELOCK}/ax
-   IN=${RELOCK}/in
-   REH=${RELOCK}/rehearsal
-   expect_all() { # n valor salida: n entradas, todas con ese valor
-     printf '%s\n' "$3"
-     jq -e --argjson n "$1" --arg v "$2" \
-       'length == $n and all(.[]; . == $v)' <<<"$3" >/dev/null \
-       || stop "se esperaban $1 entradas con el valor $2"
-   }
-   expect_complete() { # n salida: n imágenes, todas completas en la copia
-     printf '%s\n' "$2"
-     jq -e --argjson n "$1" \
-       '.backup | length == $n and all(.[]; . == "complete")' \
-       <<<"$2" >/dev/null \
-       || stop "se esperaban $1 imágenes completas en la copia"
-   }
-   expect_pinned() { # n salida: como expect_complete, y fijadas en el registro
-     printf '%s\n' "$2"
-     jq -e --argjson n "$1" '
-       (.registry | length == $n and all(.[]; . == "pinned"))
-       and (.backup | length == $n and all(.[]; . == "complete"))
-     ' <<<"$2" >/dev/null \
-       || stop "se esperaban $1 imágenes fijadas en el registro y completas"
-   }
-   image_state() { # conjunto capa tag pin: complete, missing u other
-     local json name=${4#--image=}
-     name=${name%%=*}
-     if json=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-       image-status --image-set "$1" --layout "$2" --tag "$3" "$4" 2>&1); then
-       jq -er '.backup | to_entries[0].value' <<<"${json}"
-     elif [[ "${json}" == *"names ${name}:$3 with another digest"* ]]; then
-       echo other
-     else
-       printf '%s\n' "${json}" >&2
-       return 1
-     fi
-   }
-   forget_one() { # conjunto capa tag pin: retira la entrada de ese pin
-     local state name=${4#--image=}
-     name=${name%%=*}
-     state=$(image_state "$1" "$2" "$3" "$4") \
-       || { stop "image-status de ${name} en $2"; return 1; }
-     if [[ "${state}" == complete ]]; then
-       out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-         forget --image-set "$1" --layout "$2" --tag "$3" "$4" \
-         && expect_all 1 forgotten "${OUT}"
-     else
-       printf '%s: nada que retirar en %s (%s)\n' "${name}" "$2" "${state}"
-     fi
-   }
-   seed_one() { # conjunto fuente capa tag pin: siembra solo lo que falta
-     local state name=${5#--image=}
-     name=${name%%=*}
-     state=$(image_state "$1" "$3" "$4" "$5") \
-       || { stop "image-status de ${name} en $3"; return 1; }
-     case "${state}" in
-       complete) printf '%s: ya está en %s\n' "${name}" "$3" ;;
-       missing)
-         out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-           seed-layout --image-set "$1" --source "$2" --layout "$3" \
-           --tag "$4" "$5" \
-           && expect_all 1 seeded "${OUT}"
-         ;;
-       *) stop "$3 nombra ${name} con otro digest: falta el forget" ;;
-     esac
-   }
-   ```
-
-   `image_state` lee una sola imagen de una copia con `image-status`, que no
-   toma lock, y dice `complete`, `missing` u `other`: la copia nombra ese
-   `<nombre>:<tag>` con otro digest, el único fallo que espera y que
-   interpreta; cualquier otro es un `STOP`. Una por llamada, porque basta una
-   entrada con otro digest para que `image-status` se detenga con las demás.
-   `forget_one` retira la entrada solo si está `complete` con ese pin, así
-   que el gestor nunca se niega. `seed_one` siembra solo si falta y se niega
-   él mismo, sin pedir el lock, si la copia nombra otro digest (falta el
-   `forget`).
+   de las etiquetas la detienen entonces. Las rutas y las funciones que usan
+   los demás pasos son las definiciones del paso 0.
 
 2. La instantánea, antes de que nada se mute. Se copia la copia de seguridad
    entera y la CLI con `cp -a`, bajo el lock host-global y nunca con
@@ -2178,12 +2550,15 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    prueba con `image-status` sobre la instantánea, con los pines anteriores,
    en los tres conjuntos: Substrate, AX y el panel. `df` tiene que mostrar
    espacio para la copia (unos 250 MB de Substrate y 480 MB de AX, ver
-   «Copia de seguridad» e «Imágenes de AX»), los artefactos y el ensayo. Si
-   `${RELOCK}` existe, es de un intento anterior y puede guardar la única
-   copia de antes de la ventana: no se borra ni se reutiliza, porque un
-   `cp -a` encima anidaría la instantánea y el `image-status` leería la
-   antigua. Si aquel intento llegó al paso 5, se termina primero su marcha
-   atrás con ella; después, o si no llegó, se aparta con
+   «Copia de seguridad» e «Imágenes de AX»), los artefactos y el ensayo. Lo
+   primero que entra en `${RELOCK}` son los hechos de la ventana, ya de root
+   y fuera de `/tmp`: `window.env` y `plans/` (los cuatro planes y el contrato
+   anterior), que son lo único que «Recuperar la shell» lee. Si `${RELOCK}`
+   existe, es de un intento anterior y puede guardar la única copia de antes
+   de la ventana: no se borra ni se reutiliza, porque un `cp -a` encima
+   anidaría la instantánea y el `image-status` leería la antigua. Si aquel
+   intento llegó al paso 5, se termina primero su marcha atrás con ella;
+   después, o si no llegó, se aparta con
    `sudo -- mv "${RELOCK}" "${RELOCK}.<fecha>"` y se repite el paso. Un
    `cp -a` que falla deja el marker (ver «Un marker retenido»): se recupera,
    se aparta la instantánea a medias del mismo modo y se repite el paso:
@@ -2193,7 +2568,15 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    sudo -- test ! -e "${RELOCK}" \
      || stop "${RELOCK} existe: es de un intento anterior, no se pisa"
    must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
-   must sudo -- install -d -o root -g root -m 0700 "${RELOCK}"
+   must sudo -- install -d -o root -g root -m 0700 "${RELOCK}" \
+     "${RELOCK}/plans"
+   save_window
+   for file in sub-old sub-new ax-old ax-new; do
+     must sudo -- install -m 0600 -o root -g root "${WORK}/${file}.json" \
+       "${RELOCK}/plans/"
+   done
+   must sudo -- install -m 0600 -o root -g root "${OLD_CFG}" \
+     "${RELOCK}/plans/ax-lab-old.yml"
    must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
      --operation ax-lab-seed -- /usr/bin/cp -a "${LAYOUT}" "${SNAP_LAYOUT}"
    must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
@@ -2214,20 +2597,24 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
      || stop 'la CLI de la instantánea no es la anterior'
    ```
 
-   Sin una instantánea completa y legible por el gestor, no se sigue.
+   Sin una instantánea completa y legible por el gestor, no se sigue. Los
+   ficheros de `${RELOCK}` los crea root con `install -m 0600` (el `umask`
+   de `sudo` en este host es `0027`, y no se confía en él para el modo).
 
 3. Extraer los artefactos como root en directorios de root `0700`, nunca
    bajo `/home` ni en un tmpfs, porque el gestor rechaza lo que no es de
    root o es escribible por otros. `SUBSTRATE_ZIP` y `AX_ZIP` son los zip
-   descargados. Después, la CLI, que se comprueba antes de instalarla, en
-   una sola cadena con `&&` para que nada la ejecute tras una comprobación
-   fallida: su sha256 contra el pin, que nada de lo extraído sea escribible
-   por otros ni de otro dueño, `chmod 0700` (la extracción no conserva el
-   bit de ejecución), que `ldd` no diga `not found` y `ax help`, que sale
-   con 0 en una CLI sana (`--help` sale con 1 y no comprueba nada). Después,
-   la glibc del host. La ejecución de la CI ya falló si la CLI pedía una
-   glibc más nueva que la 2.43, pero solo esta ejecución prueba el binario
-   en el host:
+   descargados. Con el `umask` `0007` de `admin`, `sudo` corre con el `0027`
+   de root: lo extraído queda `0640` y `0750`, sin bits de escritura para
+   nadie más, que es lo que la comprobación siguiente y el gestor piden.
+   Después, la CLI, que se comprueba antes de instalarla, en una sola cadena
+   con `&&` para que nada la ejecute tras una comprobación fallida: su
+   sha256 contra el pin, que nada de lo extraído sea escribible por otros ni
+   de otro dueño, `chmod 0700` (la extracción no conserva el bit de
+   ejecución), que `ldd` no diga `not found` y `ax help`, que sale con 0 en
+   una CLI sana (`--help` sale con 1 y no comprueba nada). Después, la glibc
+   del host. La ejecución de la CI ya falló si la CLI pedía una glibc más
+   nueva que la 2.43, pero solo esta ejecución prueba el binario en el host:
 
    ```bash
    must sudo -- install -d -o root -g root -m 0700 "${IN}" "${IN}/substrate" \
@@ -2261,6 +2648,7 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    tiene que ver restos del anterior:
 
    ```bash
+   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
    must sudo -- rm -rf "${REH:?}"
    must sudo -- install -d -o root -g root -m 0700 "${REH}"
    for pin in "${MOVED_SUB[@]}"; do
@@ -2284,18 +2672,24 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    ```
 
 5. El `forget`, por los digests anteriores literales de los planes del
-   commit aplicado, para que la guarda de digest exacto compruebe algo. Cada
-   imagen se decide antes con `image-status` y su pin anterior: solo se
-   retira la que sigue completa con él, así que el gestor no se niega nunca,
-   y la que ya no está (un paso repetido) se salta. Si un `forget` falla de
-   verdad, deja el marker (ver «Un marker retenido»), el bucle se detiene y
-   las anteriores en orden alfabético ya están retiradas: tras recuperar el
-   marker se repite el bloque, que solo toca lo que falta, o se hace la
-   marcha atrás. Los blobs se quedan, y no hay orden que vuelva a añadir una
-   entrada salvo `seed-layout` desde una fuente que la liste: la instantánea
-   es el camino de vuelta. Desde aquí rige la congelación:
+   commit aplicado, para que la guarda de digest exacto compruebe algo. Antes,
+   dos guardas: ningún marker, y que el registro del último apply sigue
+   nombrando el commit que la ventana guardó (ningún `ax-lab` ni release de
+   `ax-web` aplicó entre el paso 0 y aquí, que mueve ese registro y deja
+   `PREV` viejo). Cada imagen se decide antes con `image-status` y su pin
+   anterior: solo se retira la que sigue completa con él, así que el gestor
+   no se niega nunca, y la que ya no está (un paso repetido) se salta. Si un
+   `forget` falla de verdad, deja el marker (ver «Un marker retenido»), el
+   bucle se detiene y las anteriores en orden alfabético ya están retiradas:
+   tras recuperar el marker se repite el bloque, que solo toca lo que falta,
+   o se hace la marcha atrás. Los blobs se quedan, y no hay orden que vuelva
+   a añadir una entrada salvo `seed-layout` desde una fuente que la liste: la
+   instantánea es el camino de vuelta. Desde aquí rige, más estrictamente, la
+   congelación:
 
    ```bash
+   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+   record_is "${PREV:?}"
    for old in "${STALE_SUB[@]}"; do
      forget_one substrate "${LAYOUT}" "${TAG_SUB}" "${old}" || break
    done
@@ -2318,6 +2712,7 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    repetición, que ya no ve `seeded` en todas:
 
    ```bash
+   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
    for pin in "${MOVED_SUB[@]}"; do
      seed_one substrate "${IN}/substrate" "${LAYOUT}" "${TAG_SUB}" \
        "${pin}" || break
@@ -2355,6 +2750,7 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    `install` que falla deja el marker (ver «Un marker retenido»):
 
    ```bash
+   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
    if [[ "$(sudo -- sha256sum "${CLI_BACKUP}" | cut -d' ' -f1)" \
      == "${CLI_NEW}" ]]; then
      echo 'la copia de la CLI ya es la nueva'
@@ -2369,7 +2765,10 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
 
 9. Fusionar el PR de pines, ahora y no antes, con `main` congelado, y dejar
    el clon operativo en el commit de fusión, limpio y con los mismos planes
-   que se sembraron. A partir de aquí, `main` y la copia coinciden:
+   que se sembraron. El commit de fusión (`MERGE`) se guarda en
+   `window.env`, junto a los otros dos: tras el apply el registro del último
+   apply lo nombra, y es el único sitio donde la recuperación lo encuentra.
+   A partir de aquí, `main` y la copia coinciden:
 
    ```bash
    must git fetch origin
@@ -2377,17 +2776,57 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
    must test -z "$(git status --porcelain --untracked-files=normal)"
    must diff <(plan . --substrate-plan) "${WORK}/sub-new.json"
    must diff <(plan . --ax-plan) "${WORK}/ax-new.json"
+   MERGE=$(git rev-parse HEAD)
+   [[ "${MERGE}" =~ ^[0-9a-f]{40}$ ]] || stop 'MERGE no es un commit completo'
+   save_window
+   git diff --stat "${PREV}" "${MERGE}" -- ansible
    ```
+
+   El último comando solo lee: lista lo que cambió en el rol, sus plantillas y
+   sus ficheros entre lo aplicado y la fusión. Lo normal es que no imprima
+   nada, y el `--check` siguiente cuenta con eso (ver su `changed=3`).
 
 10. `--check`, con el wrapper como `admin` y sin `sudo` (`--local` ejecuta
     Ansible por `sudo` él mismo). Leerlo entero: `image-status` no se
-    detiene, cada imagen re-fijada aparece movida en el registro y completa
-    en la copia (se importa), nada está perdido, la deriva de Substrate
-    muestra su reinstalación, el rol anuncia el despliegue de `ax-controller`
-    y de `ax-server`, y el sha256 de la CLI coincide. Qué pods se reinician
-    exactamente no se ha medido. Un `--check` que falla retiene el marker del
-    wrapper, `/run/lock/dockerswarm-ansible.marker` (ver «Un marker
-    retenido»):
+    detiene y los informes del plan, las tareas `debug` que el rol ejecuta
+    solo en `--check`, son estos, en este orden, y ningún otro:
+
+    - el del nodo, una línea: `the existing node has its reviewed preboot
+      sysctl mask`;
+    - el plan del clúster, una sola línea: `then, only where they differ:
+      proxy_arp, proxy_ndp, the registry mirror and the local-registry-hosting
+      ConfigMap inside the node`;
+    - el de Substrate: una línea `restore into the registry: <imagen>` por
+      cada pin de `MOVED_SUB` (cada imagen re-fijada aparece movida en el
+      registro y completa en la copia: se importa; en esta ventana, las siete,
+      `ate-setup` incluida), y `install Substrate with ate-setup: state,
+      workloads`: la deriva de Substrate es el estado y las cargas;
+    - el de AX: una línea `restore into the registry: <imagen>` por cada pin
+      de `MOVED_KO` (las dos de ko), y `AX is read once the lab node runs and
+      Substrate matches its pinned install`;
+    - el del panel: `the web panel is read once AX matches its pinned
+      install` y `ax-web-edge runs as reviewed`;
+    - en el resumen, `changed=3`: la CLI («Install the AX CLI from its backup
+      only when it differs», porque la copia ya tiene el sha256 nuevo y el
+      instalado no) y los dos ficheros de `deployment_metadata`, que llevan
+      el commit. Esos tres suponen que de `PREV` a la fusión no cambia nada de
+      lo que el rol instala en `--check` (los binarios fijados, el sysctl, las
+      herramientas del operador y los ejemplos): si el `git diff --stat` del
+      paso 9 listó algo del rol, saldrán más `changed` por eso, y se leen
+      contra esa lista, no se toman por un fallo.
+
+    Ni una línea `back up from the registry` ni `in neither backup nor
+    registry`, ni ninguna `the apply stops`, ni `clone`, `build with the
+    fallback toolbox` o `kind create cluster`. Lo que este `--check` no
+    muestra, porque el rol solo lee AX cuando Substrate ya coincide con lo
+    fijado: el diff de AX, el WorkerPool, el `--route-timeout` del router y
+    los workers obsoletos se evalúan solo dentro del apply (la prueba del
+    paso 12 los cubre). Qué pods se reinician exactamente no se ha medido.
+    Un `--check` que falla retiene el marker del wrapper,
+    `/run/lock/dockerswarm-ansible.marker` (ver «Un marker retenido»). El PR
+    de pines ya está fusionado (paso 9, como manda la regla del repositorio):
+    abortar a partir de aquí exige además el PR que lo revierta (ver «Marcha
+    atrás»).
 
     ```bash
     must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
@@ -2395,54 +2834,267 @@ lock, su marker se recupera antes (ver «Un marker retenido»).
 
 11. El apply. El rol importa los tags movidos desde la copia (la
     importación sobrescribe un tag movido), reinstala Substrate si sus
-    cargas derivan y despliega las dos imágenes de AX con su digest. Un
-    apply fallido retiene el marker del wrapper, que hay que recuperar antes
-    de la marcha atrás (ver «Un marker retenido»):
+    cargas derivan, despliega las dos imágenes de AX con su digest y, como
+    el WorkerPool lleva el digest de `ateom-gvisor`, sustituye también el
+    worker (el despliegue `ax` de `ax-workers`). Entre el paso 0 y aquí
+    pasaron la CI, la fusión y dos `--check`: antes de nada se leen otra vez
+    la Oficina (en pausa y sin trabajo en marcha: uno es un `STOP`, se
+    espera a que termine y no se aplica), AX, la memoria, los contenedores
+    transitorios y el registro del último apply, que no puede haber cambiado:
+
+    ```bash
+    must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+    lock_free
+    record_is "${PREV:?}"
+    office_idle
+    lab_idle
+    host_memory
+    no_transient
+    ```
+
+    Después, la línea base, que compara el paso 12 y la marcha atrás: los
+    contadores de `memory.events` y de `memory.events.local` del nodo y del
+    registro, `anon` de `memory.stat` y `memory.current`, la tabla de
+    reinicios de los pods que el apply no sustituye y la lista de los que
+    sí. Que `memory.events` jerárquico ya lea `oom_kill` distinto de cero
+    (el incidente del 2026-10-09 lo dejó así) no cuenta: el criterio es que
+    no se mueva del valor que se anota ahora. Se guarda en
+    `${RELOCK}/baseline/`, de root, y se anota en el registro de la ventana:
+
+    ```bash
+    must sudo -- install -d -o root -g root -m 0700 "${RELOCK}/baseline"
+    lab_memory >"${WORK}/memory.txt" || stop 'la línea base de memoria'
+    pod_table unreplaced >"${WORK}/restarts.txt" || stop 'los reinicios'
+    pod_table replaced >"${WORK}/replaced.txt" || stop 'los pods sustituidos'
+    for file in memory restarts replaced; do
+      must sudo -- install -m 0600 -o root -g root "${WORK}/${file}.txt" \
+        "${RELOCK}/baseline/"
+    done
+    must cat "${WORK}/memory.txt" "${WORK}/restarts.txt"
+    ```
+
+    El apply no se interrumpe con `Ctrl-C` ni cerrando la terminal (ver «Lo
+    que se ve durante el apply» y «Criterios de aborto»). Un apply fallido
+    retiene el marker del wrapper, que hay que recuperar antes de la marcha
+    atrás (ver «Un marker retenido»):
 
     ```bash
     must ./scripts/deploy-ansible.sh --playbook ax-lab --local \
       --confirm-production
     ```
 
-12. Verificar, con el registro, sin dar nada por bueno hasta tener todo:
+12. Verificar, con el registro, sin dar nada por bueno hasta tener todo. El
+    registro se nombra por `127.0.0.1:5001`, nunca por `localhost`: en este
+    host `localhost` resuelve primero a `::1`, el oyente IPv6 lo cortan las
+    reglas del cortafuegos y el gestor espera 120 s de conexión por imagen,
+    unos 22 minutos sin imprimir nada:
 
     ```bash
     out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-      image-status --image-set substrate --registry localhost:5001 \
+      image-status --image-set substrate --registry 127.0.0.1:5001 \
       --layout "${LAYOUT}" --tag "${TAG_SUB}" "${NEW_SUB[@]}"
     expect_pinned 7 "${OUT}"
     out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-      image-status --image-set ax --registry localhost:5001 \
+      image-status --image-set ax --registry 127.0.0.1:5001 \
       --layout "${LAYOUT}" --tag "${TAG_AX}" "${NEW_KO[@]}" "${BUILDX[@]}"
     expect_pinned 4 "${OUT}"
     for cli in /opt/dockerswarm/ax-lab/bin/ax "${CLI_BACKUP}"; do
       [[ "$(sudo -- sha256sum "${cli}" | cut -d' ' -f1)" == "${CLI_NEW}" ]] \
         || stop "${cli} no es la CLI nueva"
     done
-    must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
     ```
 
-    Las dos CLI tienen que dar `ax.cli_sha256` (la aserción lo exige) y el
-    último `--check` tiene que informar `changed=0`; si se detiene, retiene
-    el marker del wrapper (ver «Un marker retenido»). Después, el resto de
-    «Verificación» (nodo `Ready`, DaemonSet `atelet`, `sudo ax get tasks -a
-    default`) y la línea base del paso 0: los mismos reinicios de pods,
-    `oom 0` en el `memory.events.local` del nodo y `oom_kill 0` en el del
-    registro, y el `memory.peak` y el `MemAvailable` anotados para
-    [CAPACITY.md](CAPACITY.md).
+    Las dos CLI tienen que dar `ax.cli_sha256` (la aserción lo exige). Ni el
+    apply ni el último `--check` ven el worker nuevo: la espera del rol por
+    el WorkerPool lee `readyReplicas`, que durante el relevo cuenta el
+    pod viejo y pasa al instante, y `cluster-status` solo mira `ate-system`,
+    `otel-system` y `podcertificate-controller-system`. Por eso, antes de
+    cerrar, el rollout del despliegue `ax` de `ax-workers` (hasta 300 s),
+    exactamente un pod de worker que no se esté terminando, con el digest
+    nuevo de `ateom-gvisor` y listo (si el rollout pasó antes de que el rol
+    cambiara el despliegue, el pod se relee hasta 30 veces, con 10 s de
+    pausa, unos 5 minutos como el rollout, antes de dar la guarda por
+    fallida), y una prueba de humo de solo
+    lectura, como la del cambio 4 (ver «Ventana del cambio 4»): `ax-tarea`
+    crea un Workspace con `octocat/Hello-World` y una Task con Claude (como
+    mucho 4 turnos, `TURNOS=4`; la del 2026-09-26 sobre ese repositorio gastó
+    3 y 0,0358 USD, en la cuota de Claude), con el token de
+    `/etc/dockerswarm/ax/claude-oauth-token`, y las borra al terminar; con
+    `lab_idle` se comprueba que no queda ninguna Task ni ningún `ax` en
+    marcha. El worker viejo puede seguir en `Terminating` mucho tiempo (su
+    gracia es de 3 600 s) y no es un error; tampoco que `readyReplicas` valga
+    2 un momento.
+    `ax-tarea` se niega a empezar con un marker retenido, así que corre con el
+    apply ya cerrado, y antes del último `--check`, que prueba que no dejó
+    nada:
+
+    ```bash
+    worker_gate "${WORKER_NEW}"
+    must sudo -- /usr/bin/env TURNOS=4 RAMA=master /usr/local/sbin/ax-tarea \
+      https://github.com/octocat/Hello-World \
+      'Lee el README y resume en una frase qué contiene. No modifiques nada.' \
+      claude
+    lab_idle
+    ```
+
+    El último `--check` tiene que informar `changed=0`; si se detiene,
+    retiene el marker del wrapper (ver «Un marker retenido»). Con él, la
+    comparación con la línea base del paso 11: los contadores `oom`,
+    `oom_kill` y `oom_group_kill` de los dos `memory.events` del nodo y del
+    registro, y los reinicios de los pods que el apply no sustituyó:
+
+    ```bash
+    must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+    must diff <(sudo -- cat "${RELOCK}/baseline/memory.txt" | oom_lines) \
+      <(lab_memory | oom_lines)
+    must diff <(sudo -- cat "${RELOCK}/baseline/restarts.txt") \
+      <(pod_table unreplaced)
+    ```
+
+    Después, el resto de «Verificación» (nodo `Ready`, DaemonSet `atelet`,
+    `sudo ax get tasks -a default`) y las cifras para
+    [CAPACITY.md](CAPACITY.md): `anon` y `memory.current` del nodo, que
+    informan donde el `memory.peak` saturado no, y el `MemAvailable`.
 
 13. Cerrar. Solo con el último `changed=0` termina la congelación. Se
-    borran los artefactos extraídos y los planes; la instantánea
-    (`${SNAP_LAYOUT}` y `${SNAP_CLI}`) se conserva hasta que el propietario
-    acepte la resiembra, y entonces se borra `${RELOCK}`. El fichero
+    borran los artefactos extraídos y los planes de trabajo, `${IN}` y
+    `${WORK}` y nada más: lo que «Recuperar la shell» lee (`window.env`,
+    `plans/` y `baseline/`, dentro de `${RELOCK}`) se queda con la
+    instantánea (`${SNAP_LAYOUT}` y `${SNAP_CLI}`) hasta que el propietario
+    acepte la resiembra, y entonces se borra `${RELOCK}` entera. El fichero
     temporal de `out` (`${OUTFILE}`) se queda mientras la marcha atrás siga
     siendo posible. La ventana se registra como las anteriores (ver
-    [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)):
+    [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)), con el pico de
+    `ate-setup` (el de la CI, la aceptación del propietario y el que informó
+    la instalación real, si lo hizo), la línea base y la final, el resultado
+    de la prueba de humo y la hora de la pausa y de la reanudación de la
+    cola:
 
     ```bash
     must sudo -- rm -rf "${IN:?}"
     must rm -rf "${WORK:?}"
     ```
+
+    Lo último, y solo ahora, la cola de la Oficina: quien la usa pulsa
+    «Reanudar la cola» y se lee de vuelta:
+
+    ```bash
+    office_path
+    out sudo -- /usr/bin/docker exec kind-control-plane cat \
+      "${PV_PATH}/office.json"
+    jq -e '.settings.queue_paused == false' <<<"${OUT}" >/dev/null \
+      || stop 'la cola de la Oficina sigue en pausa'
+    ```
+
+### Lo que se ve durante el apply
+
+Lo normal, para no abortar un apply sano ni esperar a uno atascado (los
+tiempos son estimaciones de los applies anteriores, no se han medido con
+estas imágenes):
+
+- La CLI de `/opt/dockerswarm/ax-lab/bin/ax` se sustituye al empezar.
+- `ate-setup` corre en el contenedor `ax-lab-ate-setup`, que solo dura lo que
+  dura la instalación, y sustituye en este orden `podcertificate-controller`
+  y, de una vez, `ate-api-server` (tres pods a la vez: dos réplicas y una de
+  sobrecarga), `ate-controller`, `atenet-router`, `atenet-egress` y `atelet`.
+  `atelet`, un DaemonSet que sustituye de uno en uno, desaparece entre 10 y
+  60 s, y hasta 330 s mientras drena.
+- `ax-server` se sustituye con sonda de readiness (el viejo sirve hasta que
+  el nuevo está listo); `ax-controller` no tiene sonda: hay un hueco de unos
+  10 a 20 s en que se salta eventos (google/ax#354), y el rol espera a que el
+  nuevo diga «starting AX task worker».
+- `atenet-router` se sustituye dos veces: la de `ate-setup` y la que le
+  vuelve a poner `--route-timeout=1h`.
+- El worker se sustituye (despliegue `ax` de `ax-workers`, con un pod más
+  mientras dura): el viejo se queda `Terminating` mucho tiempo, y
+  `readyReplicas` del WorkerPool puede valer 2 un momento.
+- Un pod nuevo puede reiniciarse una o dos veces mientras espera sus
+  certificados de pod.
+- `postgres-0`, que el apply no sustituye, reinició una vez por
+  `FailedPostStartHook` (el paquete de certificados del pod aún sin emitir)
+  en algunas instalaciones nuevas de la CI, también con los pines anteriores,
+  y ninguna actualización de un clúster asentado añadió otro. Si pasa aquí,
+  es un reinicio más que la línea base y se lee su causa antes de decidir
+  (ver «Criterios de aborto»).
+- La Oficina sigue sirviendo (su pod no se toca), pero lo que despacha por
+  `ax-server` falla mientras este se sustituye: unos 5 a 12 minutos con el
+  plano de control de AX degradado. Con la cola en pausa no hay nada en
+  vuelo.
+- En total, de 8 a 15 minutos (sin medir).
+
+Para mirar sin tocar, en un segundo panel de `tmux`, solo lecturas:
+
+```bash
+sudo -- /usr/bin/env HOME=/opt/dockerswarm/ax-lab/home \
+  /opt/dockerswarm/ax-lab/bin/kubectl \
+  --kubeconfig /opt/dockerswarm/ax-lab/home/.kube/config \
+  --context kind-kind get pods --all-namespaces --watch
+```
+
+y, en otro, `kubectl get events --all-namespaces --watch` con el mismo
+prefijo, `sudo -- /usr/bin/docker ps --all --filter name=ax-lab-` para el
+contenedor transitorio y, durante `ate-setup`, `sudo -- /usr/bin/docker
+stats --no-stream ax-lab-ate-setup` (una muestra del uso, no el pico: en un
+apply correcto el rol no imprime el resultado del gestor). Lo que decide el
+aborto es que el rol falle, no el reloj: por debajo de unos 10 minutos por
+Deployment no se interrumpe nada (ver «Criterios de aborto»).
+
+### Recuperar la shell
+
+Si la shell de `tmux` se pierde después del paso 2 (un panel abierto por
+error, el servidor de `tmux`, una desconexión que lo mata, un reinicio), la
+ventana no se retoma de memoria. Las variables, los arrays y las funciones
+mueren con ella, y `${WORK}` también: vive en `/tmp`, que aquí es un tmpfs.
+Tampoco se reconstruyen del registro del último apply
+(`/opt/dockerswarm/deployments/ax-lab.yml`): `deployment_metadata` lo
+reescribe con cada apply correcto, así que desde el paso 11 nombra el commit
+de fusión y no el de la copia. Todo sale de `${RELOCK}`, que es de root y está
+en `/var/backups`: `window.env` (`PR_HEAD`, `PREV` y, desde el paso 9,
+`MERGE`), `plans/` (los cuatro planes y el contrato anterior) y `baseline/`.
+Antes del paso 2 no hay nada que recuperar: se repite desde el paso 1. Tras
+un `STOP` o un corte, antes de nada, `ls /run/lock/dockerswarm-*.marker` y la
+guarda de contenedores transitorios (ver «Un marker retenido»). Después,
+desde el clon operativo, en una `tmux` nueva, se pegan por este orden: los
+ayudantes y los tres bloques de definiciones del paso 0 (sin tocar nada de
+los pasos 1 a 13) y este bloque, que no repite ninguna función:
+
+```bash
+sudo -- test -f "${RELOCK}/window.env" \
+  || stop "falta ${RELOCK}/window.env: el paso 2 no llegó a guardarlo"
+PR_HEAD='' PREV='' MERGE=''
+while IFS='=' read -r key value; do
+  case "${key}" in
+  PR_HEAD | PREV | MERGE) printf -v "${key}" '%s' "${value}" ;;
+  *) stop "window.env trae una clave desconocida: ${key}" ;;
+  esac
+done < <(sudo -- cat "${RELOCK}/window.env")
+[[ "${PR_HEAD}" =~ ^[0-9a-f]{40}$ && "${PREV}" =~ ^[0-9a-f]{40}$ ]] \
+  || stop 'window.env no trae PR_HEAD y PREV completos'
+[[ -z "${MERGE}" || "${MERGE}" =~ ^[0-9a-f]{40}$ ]] \
+  || stop 'el MERGE de window.env no es un commit completo'
+must git cat-file -e "${PREV}^{commit}"
+must git merge-base --is-ancestor "${PREV}" "${PR_HEAD}"
+WORK=$(mktemp -d) || stop 'mktemp'
+for file in sub-old sub-new ax-old ax-new; do
+  must sudo -- cat "${RELOCK}/plans/${file}.json" >"${WORK}/${file}.json"
+done
+must mkdir -p "${WORK}/prev/config"
+must sudo -- cat "${RELOCK}/plans/ax-lab-old.yml" \
+  >"${WORK}/prev/config/ax-lab.yml"
+OLD_CFG=${WORK}/prev/config/ax-lab.yml
+load_plans "${WORK}"
+load_facts "${WORK}" "${OLD_CFG}"
+printf 'PR_HEAD=%s PREV=%s MERGE=%s HALT=[%s]\n' \
+  "${PR_HEAD}" "${PREV}" "${MERGE}" "${HALT}"
+```
+
+El bloque lee solo `${RELOCK}`: un `${WORK}` nuevo con una copia de lo
+guardado, para que el paso 9 y el paso 13 sigan valiendo. Después de esto, se
+sigue desde el principio del paso que estaba en marcha (las guardas piden
+solo lo que falta) o se hace la marcha atrás, que usa las mismas variables.
+No lee `${IN}` ni el registro del último apply, y el paso 13, que solo
+borra `${IN}` y `${WORK}`, no borra nada de lo que lee; `${RELOCK}` entera
+se borra solo al aceptar el propietario la resiembra.
 
 ### Un marker retenido
 
@@ -2459,6 +3111,9 @@ recupere. Un `deploy-ansible.sh` fallido, también en `--check`, retiene el
 suyo, `/run/lock/dockerswarm-ansible.marker`, y cada uno rechaza también las
 órdenes con lock del otro tipo. Una vez retenido, nada de la ventana lo
 evita: ni repetir la orden ni la marcha atrás, que usa las mismas órdenes.
+Nada avisa de un marker retenido (ningún servicio lo lee, ni la monitorización
+ni una alerta): después de cada `STOP` se lista a mano
+`ls /run/lock/dockerswarm-*.marker`.
 
 Se recupera con el procedimiento de «Stale marker recovery» en `CLAUDE.md`
 (y «Recuperar un marker abandonado» en [OPERATIONS.md](OPERATIONS.md)), sin
@@ -2496,11 +3151,64 @@ sudo -- /usr/bin/python3 scripts/ansible-operation-lock.py recover \
   --operation-id "${ID}" --apply --confirm 'CONFIRMACION_EXACTA_MOSTRADA'
 ```
 
-Con el marker recuperado, el paso que falló se repite desde su principio,
-con `HALT=` (las guardas piden solo lo que falta; el paso 2, solo tras
-apartar `${RELOCK}`), o se hace la marcha atrás, según los criterios de
-aborto. Siempre que se pueda, el helper de recuperación de un apply fallido
-se ejecuta desde el commit que su marker registra como `source_revision`.
+Dos salvedades. Si el dry-run se niega y lista un proceso que muta (otro
+`ansible-playbook`, `apt` o `dpkg`, un `AnsiballZ_`, un `docker stack`,
+`service`, `swarm` o `node` de cualquier proceso del host, también de un
+contenedor, como el del autoupdater), no hay nada roto: se espera a que
+termine y se repite el dry-run al cabo de un minuto, sin forzar. Y la
+recuperación con éxito no prueba que el apply esté muerto: la herramienta
+solo mira esos procesos, no ve una `install` del gestor, un contenedor de
+`ate-setup` ni una tarea asíncrona de Ansible que sigan en el host.
+
+Por eso, con el marker recuperado y antes de repetir nada, la guarda de
+contenedores transitorios (ver «Contenedores transitorios»): el gestor deja
+`ax-lab-ate-setup` y `ax-lab-build-*` parados, con sus logs, ante cualquier
+interrupción, y el rol se niega a correr mientras exista uno, así que el
+apply siguiente, o el de la marcha atrás, retendría un segundo marker. Se
+pega sola, y su salida dice el nombre del contenedor; en un host limpio no
+imprime nada y no hace falta nada más:
+
+```bash
+no_transient
+```
+
+Si imprime un contenedor en marcha, se espera a que termine: lo acota su
+propio tiempo máximo, 6 480 s la instalación y 3 600 s una compilación (no
+se mata ni se quita en marcha). Si está parado, se pega este segundo bloque,
+solo entonces y con ese nombre en lugar del marcador: se leen sus logs y se
+borra con el lock host-global y la operación `ax-lab-transient`, la de
+«Contenedores transitorios»: `host_global_operation_lock.py` solo valida la
+forma del nombre de la operación, no hay lista. `LEFTOVER` es el nombre que
+imprimió la guarda, y `HALT=` levanta su `STOP` (es la decisión de borrarlo),
+pero solo si el nombre es el de un transitorio del gestor: con el marcador
+sin cambiar, o con otro nombre, el `STOP` sigue y nada de lo que viene
+después corre. Un `docker rm` que falla, como el de un contenedor en marcha,
+deja el marker directo, así que antes se comprueba que está parado:
+
+```bash
+LEFTOVER='NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA'
+if [[ "${LEFTOVER}" =~ ^ax-lab-(ate-setup|build-[a-z-]+)$ ]]; then
+  HALT=
+else
+  stop 'LEFTOVER no es un contenedor transitorio del gestor'
+fi
+out sudo -- /usr/bin/docker ps --all --filter "name=^${LEFTOVER}\$" \
+  --filter status=exited --format '{{.Names}}'
+if [[ -z "${HALT}" && "${OUT}" != "${LEFTOVER}" ]]; then
+  stop "${LEFTOVER} no está parado: se espera"
+fi
+must sudo -- /usr/bin/docker logs --tail 200 "${LEFTOVER}"
+must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation ax-lab-transient -- /usr/bin/docker rm "${LEFTOVER}"
+no_transient
+```
+
+Con el marker recuperado y sin contenedores transitorios, el paso que falló
+se repite desde su principio, con `HALT=` (las guardas piden solo lo que
+falta; el paso 2, solo tras apartar `${RELOCK}`), o se hace la marcha atrás,
+según los criterios de aborto. Siempre que se pueda, el helper de
+recuperación de un apply fallido se ejecuta desde el commit que su marker
+registra como `source_revision`.
 
 ### Criterios de aborto
 
@@ -2508,27 +3216,94 @@ La ventana se detiene, y según dónde pare se recorre la marcha atrás, cuando:
 
 - falla una orden o una aserción de los pasos 1 a 8, o de los ayudantes del
   paso 0 (un `STOP:`). Antes del `forget` (pasos 1 a 4) la copia viva no se
-  ha tocado y solo se borran el ensayo y los artefactos extraídos; desde el
-  paso 5 se deshace por imagen, desde la instantánea;
+  ha tocado y solo se borran el ensayo y los artefactos extraídos; no hay
+  marcha atrás que reanude la cola, así que hay que reanudar la cola y
+  leerla de vuelta (el último bloque del paso 13); desde el paso 5 se deshace
+  por imagen, desde la instantánea;
 - una orden con lock (el gestor en `forget` y `seed-layout`, el `cp -a`, el
   `install` o el `docker cp`) falla o se rechaza: deja
   `/run/lock/dockerswarm-direct.marker`, y ninguna orden con lock vuelve a
   correr mientras exista, tampoco las de la marcha atrás. Se recupera antes
   de seguir o de volver atrás (ver «Un marker retenido»);
-- el `--check` del paso 10 se detiene, informa algo perdido o un plan que no
-  es el descrito, o el apply del paso 11 falla. Un `deploy-ansible.sh`
+- la lectura de partida del paso 0 o la de justo antes del paso 11 se
+  detiene: la Oficina sin pausa, con un trabajo en marcha o con un horario
+  activo; una Task, un `ax-tarea` o un `ax` en marcha (un túnel es un scope
+  `ax-cli-*`); `MemAvailable` por debajo de 3 GiB; `fuser` ausente; un
+  contenedor transitorio del gestor; `DEPLOYED_VERSION.yml` con otro playbook
+  que `ax-lab` como último; o el registro del último apply con un
+  commit que no es el que la ventana guardó, que es un apply ajeno. Un
+  trabajo en marcha se espera, no se interrumpe: no se aplica con él. Un
+  apply ajeno de `ax-lab` no se arregla repitiendo la lectura: `PREV` ya no
+  describe lo que hay. Si la ventana no sigue, la cola se reanuda como en el
+  primer punto;
+- el `--check` del paso 10 se detiene (el rol falla), informa algo perdido
+  (`in neither backup nor registry`), una línea `the apply stops` o
+  `back up from the registry`, otras imágenes en `restore into the registry`
+  que las de `MOVED_SUB` y `MOVED_KO`, o un `changed` que no es el de los tres
+  ficheros descritos (la CLI y los dos de `deployment_metadata`) y que el
+  `git diff --stat` del paso 9 no explica, o el apply
+  del paso 11 falla. Como el PR de pines ya está fusionado desde el paso 9,
+  abortar aquí exige además el PR que lo revierta. Un `deploy-ansible.sh`
   fallido retiene `/run/lock/dockerswarm-ansible.marker`, que se recupera
   con `ansible-operation-lock.py` antes de la marcha atrás y antes de volver
   a usar el wrapper, porque también rechaza las órdenes con lock directo (ver
   «Un marker retenido»);
-- una carga no está lista dentro del tiempo de espera de rollout del rol: los
-  600 s de `substrate.install.rollout_timeout_seconds` para Substrate y los
-  treinta intentos de diez segundos de `kubectl rollout status` para los
-  Deployments de `ax-system`. Es marcha atrás y no un reintento, porque esa
-  imagen no se ha ejecutado nunca antes;
-- tras el apply, un `oom` u `oom_kill` distinto de cero, más reinicios que
-  la línea base en `kube-system` o en una carga que el apply no sustituyó, o
-  una CLI que no responde.
+- una carga no está lista dentro del tiempo de espera de rollout del rol. Es
+  marcha atrás y no un reintento, porque esa imagen no se ha ejecutado nunca
+  antes. Los tiempos reales, que son más largos de lo que parecen: `ate-setup`
+  espera hasta 600 s por rollout (`substrate.install.rollout_timeout_seconds`)
+  y tiene 6 480 s en total, más los 300 s que le añade Ansible; cada
+  Deployment de `ax-system` (`ax-redis`, `ax-server`, `ax-controller`) tiene
+  treinta intentos de `kubectl rollout status --timeout=10s` más diez
+  segundos de pausa, unos 20 s cada uno, es decir, unos 10 minutos por
+  Deployment y hasta unos 30 los tres; el router, lo mismo (10 minutos); el
+  WorkerPool, treinta lecturas con diez segundos de pausa (5 minutos, y puede
+  pasar al instante, ver el paso 12); la salud de Substrate, sesenta lecturas
+  con diez segundos (10 minutos); y el log de cada controlador nuevo, 18 × 5 s.
+  Lo que aborta es que el rol falle, no el reloj: por debajo de unos 10
+  minutos por Deployment (o de los 6 480 s de `ate-setup`) no se interrumpe
+  nada. Tampoco se interrumpe el apply con `Ctrl-C` ni cerrando la terminal:
+  el gestor deja entonces `ax-lab-ate-setup` parado, o en marcha si el
+  controlador murió sin avisar, y el apply de la marcha atrás se negaría con
+  un segundo marker (ver «Un marker retenido»);
+- `ate-setup` muere por memoria o se aborta. Su resultado es la línea JSON del
+  gestor, en el campo `stdout` de la tarea fallida «Install Substrate with the
+  pinned ate-setup only on drift» del apply (el motivo, `ERROR: ate-setup
+  failed: …`, va en `stderr`): `exit_code`, `oom_killed`, `memory_peak_bytes`,
+  `oom_kill_events`, `seconds` y `aborted` (`timeout` o `mem_available_floor`
+  cuando no fue el kernel). `oom_killed` verdadero, con `memory_peak_bytes`
+  cerca de los 201 326 592 bytes del tope de 192 MiB, es que no le bastó. En un
+  apply correcto el rol no imprime ese resultado ni lo guarda
+  (`/root/.ansible_async` queda vacío y el wrapper no lleva `-v`), así que el
+  pico real de una instalación sana no se ve: de ahí que el paso 0 se apoye en
+  la medida de la CI y en la aceptación del propietario. Un fallo así no deja
+  contenedor (el gestor lo borra tras leerlo), pero sí `installing` en
+  `state/substrate.json` y el marker del wrapper. No se reintenta a ciegas: es
+  el mismo binario con los mismos datos y el mismo tope, y `ate-setup` conserva
+  lo que ya creó, de modo que otro intento llega al mismo pico. La marcha atrás
+  es la de siempre, y su apply desde `${PREV}` vuelve a ejecutar `ate-setup`, el
+  anterior, bajo el mismo tope de 192 MiB (la CI lo midió en una instalación
+  nueva, no sobre el nuevo). Si también muere por memoria, no hay un tercer
+  intento en la ventana: `STOP`, con el laboratorio como lo dejó el último
+  rollout correcto (`installing`, cargas de las dos versiones), y el propietario
+  decide en un cambio revisado (subir `memory_limit_mib` exige liberar
+  presupuesto en el perfil de capacidad, que hoy no deja margen);
+- tras el apply, el rollout del despliegue `ax` de `ax-workers` no termina en
+  300 s, no hay exactamente un pod de worker, sin terminarse, con el digest
+  nuevo de `ateom-gvisor` y listo tras las 30 lecturas del paso 12, o la prueba
+  de humo falla (salida distinta de 0, una Task que no llega a listo, un `ax
+  ssh` que falla). Es marcha atrás, salvo que el propio mensaje de `ax-tarea`
+  achaque el fallo a un tercero (la cuota de Claude, GitHub): entonces decide el
+  propietario si se repite. Un worker viejo en `Terminating` no es un fallo;
+- tras el apply, un `oom`, `oom_kill` u `oom_group_kill` que se mueva del valor
+  de la línea base en `memory.events` o en `memory.events.local` del nodo o del
+  registro (el `memory.events` jerárquico ya leía `oom_kill` distinto de cero
+  tras el incidente del 2026-10-09: el criterio es que no se mueva, no que sea
+  cero; el `memory.peak` no informa, está saturado por la caché), más reinicios
+  que la línea base en `kube-system` o en una carga que el apply no sustituyó
+  (un reinicio de `postgres-0` por `FailedPostStartHook` es una carrera de
+  arranque que la CI vio también con los pines anteriores: se lee su causa
+  antes de decidir), o una CLI que no responde.
 
 ### Marcha atrás de la ventana de resiembra
 
@@ -2545,13 +3320,19 @@ tras una marcha atrás interrumpida, en cualquier estado en que la ventana
 parara: con todas las imágenes anteriores, con algunas nuevas o con todas
 nuevas. Antes del bucle no puede haber ningún marker, porque sus órdenes
 (`forget`, `seed-layout`, `install`) se rechazarían: el de Ansible de un
-apply fallido incluido (ver «Un marker retenido»). Con las variables de los
-pasos 1 y 2 todavía en la shell, y con la decisión de volver atrás, que
-levanta el `STOP`:
+apply fallido incluido (ver «Un marker retenido»). Tampoco ningún contenedor
+transitorio del gestor (`ax-lab-ate-setup`, `ax-lab-build-*`): si un apply se
+interrumpió, o murió su controlador, el rol del apply de esta marcha atrás se
+negaría a correr y dejaría un segundo marker. `no_transient` lo comprueba
+entre la recuperación del marker y el bucle, y lo que hace falta si imprime
+algo (esperar, o leer los logs y borrarlo con el lock) está en «Un marker
+retenido». Con las variables de la shell (si se perdió, antes «Recuperar la
+shell»), y con la decisión de volver atrás, que levanta el `STOP`:
 
 ```bash
 HALT=
 must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+no_transient
 for old in "${STALE_SUB[@]}"; do
   name=${old#--image=}; name=${name%%=*}
   new=$(printf '%s\n' "${MOVED_SUB[@]}" | grep -F -- "--image=${name}=")
@@ -2585,16 +3366,66 @@ fi
   == "${CLI_OLD}" ]] || stop 'la CLI de la copia no es la anterior'
 ```
 
+Si una imagen no se deja restaurar, hay dos recursos, los dos con el lock y
+sin ninguna orden más de las de arriba:
+
+- Un blob corrupto en la copia viva. `seed-layout` verifica el blob que ya
+  existe y no lo repara, así que `seed_one` se detiene y la instantánea, que
+  el bucle solo usa para las entradas, sirve entera: se aparta la copia viva
+  (se conserva, por si hay que mirarla), se restaura la instantánea
+  completa, se comprueban los tres conjuntos con los pines anteriores y se
+  repite el bloque de arriba, que ya solo tiene que dejar la CLI. Es la
+  marcha atrás de todo lo de la copia, no de una imagen. Se llega aquí tras
+  un `STOP`, así que el bloque empieza por `HALT=`: la decisión de volver
+  atrás levanta el `STOP`, como en el bloque de la marcha atrás:
+
+  ```bash
+  HALT=
+  ASIDE=${LAYOUT}.aparte-$(date -u +%Y%m%dT%H%M%SZ)
+  must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+    --operation ax-lab-seed -- /usr/bin/mv "${LAYOUT}" "${ASIDE}"
+  must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+    --operation ax-lab-seed -- /usr/bin/cp -a "${SNAP_LAYOUT}" "${LAYOUT}"
+  out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+    image-status --image-set substrate --layout "${LAYOUT}" \
+    --tag "${TAG_SUB}" "${OLD_SUB[@]}"
+  expect_complete 7 "${OUT}"
+  out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+    image-status --image-set ax --layout "${LAYOUT}" \
+    --tag "${TAG_AX}" "${OLD_KO[@]}" "${BUILDX[@]}"
+  expect_complete 4 "${OUT}"
+  out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+    image-status --image-set web --layout "${LAYOUT}" \
+    --tag "${WEB_TAG}" "${WEB_PIN}"
+  expect_complete 1 "${OUT}"
+  ```
+
+- Una entrada nueva corrupta en la copia viva. `forget_one` se detiene
+  porque `image_state` lee la copia en modo estricto y falla por algo que no
+  es «another digest». `forget` no lee los blobs: solo reescribe
+  `index.json`, y solo donde el nombre apunta a ese digest exacto. Se
+  confirma antes, con `sudo -- jq -r '.manifests[] |
+  select(.annotations["org.opencontainers.image.ref.name"] == "<nombre>:<tag>")
+  | .digest' "${LAYOUT}/index.json"`, que la entrada nombra el pin nuevo, y se
+  llama a `sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget
+  --image-set <conjunto> --layout "${LAYOUT}" --tag <tag> <pin nuevo>`
+  directamente, sin la lectura previa de `forget_one`: es la única orden con
+  lock de la ventana que se pide sin ella, y la única razón es que esa lectura
+  es la que falla. Si el gestor se niega, deja el marker (ver «Un marker
+  retenido»).
+
 Hay dos variantes, según hasta dónde llegó la ventana:
 
 - **Antes del apply** (de los pasos 5 a 10, con nada aplicado): solo la copia
   y la CLI se movieron, y el registro y el nodo siguen con lo anterior. El
-  bucle y la restauración de la CLI bastan, y no hace falta ningún apply.
+  bucle y la restauración de la CLI bastan, y no hace falta ningún apply:
+  basta un `--check` desde `${PREV}` que informe `changed=0` (más abajo).
 - **Después del apply** (desde el paso 11): además del bucle y de la CLI,
   desde `${PREV}` (el siguiente bloque deja el clon en ese commit), `--check`
-  y `--confirm-production` de `ax-lab`. El apply ve los tags del registro
-  movidos a los digests nuevos, importa los anteriores desde la copia
-  restaurada y las cargas vuelven a ellos. No se ha comprobado que el
+  y `--confirm-production` de `ax-lab`, con las mismas lecturas y
+  verificaciones que los pasos 10 a 12, más abajo. El apply ve los tags del
+  registro movidos a los digests nuevos, importa los anteriores desde la
+  copia restaurada y las cargas vuelven a ellos. No se ha comprobado que el
   registro siga sirviendo por digest los manifiestos anteriores una vez
   movidos sus tags: no se usa `export` desde él, la fuente es la copia
   restaurada.
@@ -2608,17 +3439,132 @@ must git checkout --detach "${PREV:?}"
 must test -z "$(git status --porcelain --untracked-files=normal)"
 ```
 
+Solo en la variante anterior al apply, con el clon en `${PREV}` y limpio, el
+registro del último apply tiene que seguir nombrándolo, y un `--check` lo
+comprueba, con la copia ya restaurada y nada aplicado: tiene que informar
+`changed=0` (el registro nombra `${PREV}` y los dos ficheros de
+`deployment_metadata` no cambian), o `changed=1` si en el paso 0 se aceptó
+con `HALT=` que `DEPLOYED_VERSION.yml` nombraba a otro playbook: ese fichero
+es el único que cambia. `deployed_last` lo vuelve a leer antes (si se acepta,
+se levanta con `HALT=` y se pega solo la última orden del bloque):
+
+```bash
+must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+record_is "${PREV:?}"
+deployed_last
+must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+```
+
+Solo en la variante posterior al apply, con el clon en `${PREV}`, limpio, y
+la cola de la Oficina todavía en pausa. Primero las guardas, que son las del
+paso 11 con dos diferencias. El registro: tras un apply correcto nombra el
+commit de fusión (`MERGE`), y tras uno que falló antes de registrarse,
+`PREV`; cualquier otro es un apply ajeno. Y no leen las Tasks (`lab_scopes` en
+lugar de `lab_idle`): `ax get tasks` depende de `ax-server`, que puede ser lo
+que falló y lo que obliga a volver atrás, y la marcha atrás no puede
+depender de él; los scopes son locales y no ejecutan la CLI de AX, que tras
+el paso 11 es la nueva, y sin ellos nada de la sesión del operador corre.
+`host_memory` sí se mantiene: si se detiene, se
+liberan las otras sesiones del host y se repite la lectura, sin un `HALT=`
+a ciegas (el OOM del 2026-10-09 mató servicios dentro del nodo), y
+`no_transient` también, por si el apply fallido dejó su contenedor. Después,
+el `--check`:
+
+```bash
+must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
+lock_free
+record_is "${PREV:?}" ${MERGE:+"${MERGE}"}
+office_idle
+lab_scopes
+host_memory
+no_transient
+must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+```
+
+Lo que este `--check` imprime depende de cuánto llegó a aplicar el apply de
+antes. Tras uno que terminó bien es el del paso 10 al revés: una línea
+`restore into the registry: <imagen>` por cada pin de `STALE_SUB` y de
+`STALE_KO` (los tags del registro siguen en los digests nuevos y la copia
+restaurada tiene los anteriores), `install Substrate with ate-setup: state,
+workloads`, las dos líneas de que AX y el panel se leen cuando Substrate y AX
+coincidan, `ax-web-edge runs as reviewed` y `changed=3`: la CLI (el instalado
+es el nuevo y la copia restaurada, el anterior) y los dos ficheros de
+`deployment_metadata`. Tras uno que falló, que es el motivo habitual de
+volver atrás, es un subconjunto y algo más: `deployment_metadata` no llegó a
+correr, así que el registro sigue nombrando `${PREV}` y los dos ficheros no
+cambian (`changed=1`, solo la CLI, si el apply ya la había copiado, que es lo
+primero que hace, y uno más si en el paso 0 se aceptó lo de
+`DEPLOYED_VERSION.yml`); solo salen `restore into the registry` de las imágenes
+que ya se importaron, y si `ate-setup` no llegó a arrancar, Substrate
+coincide y AX se lee y puede informar de lo suyo (`apply AX server-side`, el
+`--route-timeout`, workers). Lo que nunca es aceptable, en ningún caso, es
+`in neither backup nor registry`, `back up from the registry`, una línea
+`the apply stops` o una imagen que no sea de `STALE_SUB` ni de `STALE_KO`:
+eso es parar. Después, el apply desde `${PREV}`: vuelve a ejecutar
+`ate-setup`, el anterior, y
+sustituye otra vez el worker (el WorkerPool lleva el digest de
+`ateom-gvisor`); un apply fallido retiene el marker y, antes de repetirlo, se
+recupera y se pasa la guarda de contenedores transitorios (ver «Un marker
+retenido»), y nunca se avanza hacia el head del PR ni hacia el commit de
+fusión:
+
+```bash
+must ./scripts/deploy-ansible.sh --playbook ax-lab --local \
+  --confirm-production
+```
+
+Y la verificación, la de los pasos 12 y 13 con los pines anteriores: el
+registro con las imágenes anteriores fijadas, las dos CLI iguales a la
+anterior, el worker, el `--check` final y la línea base:
+
+```bash
+out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+  image-status --image-set substrate --registry 127.0.0.1:5001 \
+  --layout "${LAYOUT}" --tag "${TAG_SUB}" "${OLD_SUB[@]}"
+expect_pinned 7 "${OUT}"
+out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+  image-status --image-set ax --registry 127.0.0.1:5001 \
+  --layout "${LAYOUT}" --tag "${TAG_AX}" "${OLD_KO[@]}" "${BUILDX[@]}"
+expect_pinned 4 "${OUT}"
+for cli in /opt/dockerswarm/ax-lab/bin/ax "${CLI_BACKUP}"; do
+  [[ "$(sudo -- sha256sum "${cli}" | cut -d' ' -f1)" == "${CLI_OLD}" ]] \
+    || stop "${cli} no es la CLI anterior"
+done
+worker_gate "${WORKER_OLD}"
+must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+must diff <(sudo -- cat "${RELOCK}/baseline/memory.txt" | oom_lines) \
+  <(lab_memory | oom_lines)
+must diff <(sudo -- cat "${RELOCK}/baseline/restarts.txt") \
+  <(pod_table unreplaced)
+```
+
+Este último `--check`, desde `${PREV}`, tiene que informar `changed=0`: ni
+el instalado ni los registros difieren ya de lo aplicado. La prueba de humo
+del paso 12 se repite, con el mismo comando, si el propietario quiere cerrar
+la marcha atrás con ella. Si el apply desde `${PREV}` falla, no se avanza: se
+recupera el marker, se pasa la guarda de contenedores transitorios y se
+repite el `--check` y el apply; si vuelve a fallar, es un `STOP` y decide el
+propietario, con el laboratorio en lo que dejó el último rollout correcto.
+
 Después de una marcha atrás no puede correr ningún apply desde el head del PR
 de pines ni desde el commit de fusión, en ninguna de las dos variantes: solo
 `${PREV}` describe lo que la copia guarda, y solo la variante posterior al
 apply aplica algo, desde ahí. En las dos variantes, desde el `forget` hasta
 que la marcha atrás termina no corre ningún apply de `ax-lab` ni de `ax-web`
 desde `main`. Si el PR de pines ya estaba fusionado (pasos 9 en adelante), se
-fusiona ese mismo día un PR que lo revierta, y hasta entonces `main` sigue
-sin servir para aplicar nada, porque pide digests que la copia ya no guarda:
-la congelación termina cuando el revert está fusionado y un `--check` desde
-`main` informa `changed=0`. Si el PR de pines no llegó a fusionarse, se queda
-sin fusionar hasta repetir la ventana.
+fusiona ese mismo día un PR que lo revierta (`R`), y hasta entonces `main`
+sigue sin servir para aplicar nada, porque pide digests que la copia ya no
+guarda. La congelación termina con un apply desde `R`, cuyos pines son los de
+`${PREV}`, y un `--check` posterior que informe `changed=0`. El `--check`
+desde `R` que va antes de ese apply informa `changed=2`, solo los dos
+ficheros de `deployment_metadata`, que llevan el commit y por eso difieren
+tras la marcha atrás (el registro nombra `${PREV}`, y `main`, `R`): es lo
+esperado y se acepta, y cualquier otro `changed` no. Si el PR de pines no
+llegó a fusionarse, se queda sin fusionar hasta repetir la ventana, y la
+congelación termina con el `--check` desde `${PREV}` que informa
+`changed=0` (o `changed=1`, lo de `DEPLOYED_VERSION.yml` aceptado en el
+paso 0). La cola de la Oficina se reanuda solo entonces, con la marcha
+atrás verificada (ver el paso 13).
 
 ## Retirar el laboratorio manual
 
