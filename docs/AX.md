@@ -881,13 +881,16 @@ despliegues (`deploy.go`, líneas 150 a 174). Con `--rollout-timeout`, esa
 cota alcanza a todas (`internal/config/config.go`, líneas 343 a 347).
 Ansible le concede 300 s más que al gestor.
 
-Su consumo real no se ha medido nunca. La única instalación real, la del
-2026-09-26, corrió con 256 MiB y no se conservó su resultado: un
+En este host su consumo real no se ha medido nunca. La única instalación
+real, la del 2026-09-26, corrió con 256 MiB y no se conservó su resultado: un
 `ate-setup` correcto no imprime nada en el apply, y solo el que falla deja
 a la vista el JSON del gestor (ver «Criterios de aborto»). El tope bajó a
 224 MiB ese mismo día y a 192 MiB el 2026-10-08, y desde entonces no ha
-corrido ninguna instalación ([WINNEST.md](WINNEST.md) lo dice igual: nada
-mide aún su consumo real).
+corrido ninguna instalación aquí. Sí se midió, el 2026-10-12, en una
+ejecución desechable de la CI en un clúster kind con los pines de la
+resiembra y estos mismos límites: el peor pico fue de 56,0 MiB, el 29,2 % del
+tope, sin OOM (el detalle, lo que prueba y lo que no, está en el paso 0 de
+«Precondiciones de la ventana de resiembra»).
 
 Solo se ejecuta si hay deriva:
 
@@ -1835,15 +1838,19 @@ revisado.
 
 Las imágenes y la CLI que salen de la CI se ejecutan por primera vez en
 producción: la CI las compila, comprueba sus digests y prueba que la copia
-puede sembrarse con ellas, pero nada las arranca antes (la prueba de extremo
-a extremo en kind sigue sin existir; ver «Reproducibilidad»). La única red de
-seguridad es la marcha atrás desde la instantánea del paso 2, y el
-propietario aceptó este riesgo.
+puede sembrarse con ellas, y nada las arranca antes con AX encima (la prueba
+de extremo a extremo en kind sigue sin existir en el repositorio; ver
+«Reproducibilidad»). La única red de seguridad es la marcha atrás desde la
+instantánea del paso 2, y el propietario aceptó este riesgo.
 
-Dentro de ese riesgo, `ate-setup` corre por primera vez bajo el tope de
-192 MiB (ver «Instalación de Substrate»), y con un binario nuevo. Por eso el
-paso 0 exige haber medido su pico en un clúster kind desechable, o la
-aceptación explícita del propietario de no haberlo hecho.
+Dentro de ese riesgo, `ate-setup` corre por primera vez en este host bajo el
+tope de 192 MiB (ver «Instalación de Substrate»), y con un binario nuevo. Una
+ejecución desechable de la CI, el 2026-10-12, lo midió en un clúster kind con
+los pines nuevos y los límites del laboratorio: su pico más alto fue el
+29,2 % del tope. El paso 0 dice qué prueba esa medida y qué no, y exige que
+el propietario acepte, en el registro de la ventana, que vale para este
+host. Lo que ninguna prueba ha visto es el relevo de `atelet` con workers
+vivos, y es el riesgo operativo principal de la ventana.
 
 ### Reglas de la ventana de resiembra
 
@@ -1899,17 +1906,21 @@ aceptación explícita del propietario de no haberlo hecho.
   los playbooks (`ax-lab`, los releases de `ax-web`, `edge`, `platform` y
   los demás), `validate-iac.sh` y `lint.sh` (operaciones directas bajo el lock
   de validación de Docker), los tests del repositorio que corren bajo ese
-  lock, las sondas de la Oficina (operaciones `ax-office-*`) y toda sesión
-  de agente del host que use cualquiera de ellos; en este host corren varias
-  a la vez. Durante la ventana no corre ninguno. Un titular concurrente
-  hace fallar la orden con lock de la ventana (sin marker: no obtuvo el
-  lock), y uno que falla deja `/run/lock/dockerswarm-direct.marker`, que
-  rechaza toda orden con lock de la ventana y de la marcha atrás. Las
+  lock, las sondas que las sesiones de agente lanzan sobre la Oficina
+  (operaciones `ax-office-*`: la Oficina es un pod y no toma el lock) y toda
+  sesión de agente del host que use cualquiera de ellos; en este host corren
+  varias a la vez. Durante la ventana no corre ninguno. Un titular
+  concurrente hace fallar la orden con lock de la ventana (sin marker: no
+  obtuvo el lock), y uno que falla deja `/run/lock/dockerswarm-direct.marker`,
+  que rechaza toda orden con lock de la ventana y de la marcha atrás. Las
   lecturas de partida lo comprueban sin tocarlo: `lock_free` mira con
-  `fuser` que nadie tiene abierto `/run/lock/dockerswarm-iac.lock`. Además,
-  `deployment_metadata` guarda un único registro de la última invocación,
-  que reescribe cualquier playbook: un apply ajeno entre el apply y el
-  último `--check` impide el `changed=0`.
+  `fuser` que nadie tiene abierto `/run/lock/dockerswarm-iac.lock`, y se
+  detiene si `fuser` falta o sale con algo distinto de 0 y 1, en lugar de dar
+  el lock por libre. Además, `deployment_metadata` guarda un único registro
+  de la última invocación, que reescribe cualquier playbook: un apply ajeno
+  entre el apply y el último `--check` impide el `changed=0`, y uno anterior
+  a la ventana lo impide en el `--check` de la marcha atrás desde `${PREV}`
+  (`deployed_last` lo lee en el paso 0).
 - **El clon operativo es solo de la ventana.** Nadie más hace `checkout`,
   `pull` ni edita nada en él, y ninguna otra sesión lo usa: el wrapper
   retiene el marker aunque el apply salga bien si el commit o el árbol
@@ -1927,7 +1938,9 @@ aceptación explícita del propietario de no haberlo hecho.
   paso 11 y del apply de la marcha atrás (`office_idle`). Un trabajo en
   marcha en ese momento es un `STOP`: se espera a que termine, no se aplica.
   La persona que usa la Oficina no encola nada hasta el final. La cola se
-  reanuda al final del paso 13, o cuando la marcha atrás está verificada.
+  reanuda al final del paso 13, o cuando la marcha atrás está verificada, o
+  al abortar antes del `forget`, donde no hay marcha atrás (ver «Criterios de
+  aborto»).
 - **Exclusiva**, de un solo operador, fuera de las ventanas de medida del
   Observatorio y en una sola sesión de `tmux`, para que un corte de SSH no
   deje un apply a medias; todas las órdenes corren en esa misma shell. Si
@@ -1957,8 +1970,8 @@ aceptación explícita del propietario de no haberlo hecho.
   `out`, toda comprobación termina en `|| stop '...'` (o es `expect_*`, que
   llama a `stop`) y la comprobación de la CLI es una sola cadena con `&&`.
   Las funciones de lectura de las definiciones del paso 0 (`record_is`,
-  `lock_free`, `office_idle`, `lab_scopes`, `lab_idle`, `host_memory`,
-  `no_transient` y `worker_gate`)
+  `deployed_last`, `lock_free`, `office_idle`, `lab_scopes`, `lab_idle`,
+  `host_memory`, `no_transient` y `worker_gate`)
   hacen lo mismo: llaman a `stop`. Aun así se pega un bloque cada vez y, tras
   un `STOP:`, ningún otro.
 
@@ -2005,7 +2018,9 @@ y comprueban lo que la ventana guarda en `${RELOCK}`: `window.env` (el
 commit del head del PR, el aplicado antes y, tras el paso 9, el de fusión) y
 los planes. `load_plans` y `load_facts` leen un directorio con los cuatro
 planes y el contrato anterior: el paso 1 les da el de trabajo y la
-recuperación, una copia de lo guardado:
+recuperación, una copia de lo guardado. `record_is` y `deployed_last` leen
+los dos registros que escribe `deployment_metadata`: el de `ax-lab` y el de
+la última invocación de cualquier playbook:
 
 ```bash
 RELOCK=/var/backups/dockerswarm/ax-lab-relock
@@ -2016,6 +2031,7 @@ SNAP_CLI=${RELOCK}/ax
 IN=${RELOCK}/in
 REH=${RELOCK}/rehearsal
 RECORD=/opt/dockerswarm/deployments/ax-lab.yml
+DEPLOYED=/opt/dockerswarm/DEPLOYED_VERSION.yml
 cfg() { # contrato [clave...]: un valor del contrato `ax_lab` de ese fichero
   .venv/bin/python -c '
 import functools, sys, yaml
@@ -2095,6 +2111,18 @@ record_is() { # commit...: el registro de ax-lab.yml nombra uno de ellos
     fi
   done
   stop "ax-lab.yml nombra '${now}', no '$*': un apply ajeno movió el registro"
+}
+deployed_last() { # el último playbook fue ax-lab, en el commit del registro
+  local playbook revision recorded
+  playbook=$(sed -n 's/^playbook: "\([a-z-]*\)"$/\1/p' "${DEPLOYED}")
+  revision=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${DEPLOYED}")
+  recorded=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' "${RECORD}")
+  if [[ -z "${playbook}" || -z "${recorded}" ]]; then
+    stop "${DEPLOYED} sin playbook, o ${RECORD} sin commit"
+  elif [[ "${playbook}" != ax-lab || "${revision}" != "${recorded}" ]]; then
+    stop "${DEPLOYED} nombra ${playbook} en ${revision}, no ax-lab en" \
+      "${recorded}: otro playbook corrió el último"
+  fi
 }
 ```
 
@@ -2225,9 +2253,7 @@ office_idle() { # la cola en pausa, ningún trabajo en marcha, ningún horario
     <<<"${OUT}" >/dev/null \
     || stop 'la Oficina tiene un trabajo en marcha: se espera a que termine'
 }
-lab_scopes() { # sin túneles, sin ax-tarea ni ax en marcha: lecturas locales
-  out sudo -- /usr/local/sbin/ax tunnel list || return 1
-  [[ "${OUT}" == 'No active tunnels found'* ]] || stop 'AX tiene túneles'
+lab_scopes() { # sin ax-tarea ni ax en marcha: una lectura local de systemd
   out systemctl list-units --type=scope --state=active --plain --no-legend \
     --no-pager 'ax-tarea-*' 'ax-cli-*' || return 1
   [[ -z "${OUT}" ]] || stop 'hay un ax-tarea o un ax en marcha'
@@ -2244,9 +2270,20 @@ host_memory() { # MemAvailable de al menos 3 GiB (3 145 728 kB)
     || stop "MemAvailable ${available:-0} kB: faltan 3 GiB para la ventana"
 }
 lock_free() { # nadie tiene abierto el lock host-global (solo lectura)
-  if sudo -- /usr/bin/fuser /run/lock/dockerswarm-iac.lock >/dev/null 2>&1; then
-    stop 'alguien tiene el lock host-global: otra sesión, validate-iac o lint'
+  local status=0
+  if ! sudo -- test -x /usr/bin/fuser; then
+    stop 'falta /usr/bin/fuser (paquete psmisc): no se puede leer el lock'
+    return 1
   fi
+  sudo -- /usr/bin/fuser /run/lock/dockerswarm-iac.lock >/dev/null 2>&1 \
+    || status=$?
+  case "${status}" in
+  0)
+    stop 'alguien tiene el lock host-global: otra sesión, validate-iac o lint'
+    ;;
+  1) ;;
+  *) stop "fuser salió con ${status}: no se puede leer el lock" ;;
+  esac
 }
 no_transient() { # sin contenedores transitorios del gestor
   out sudo -- /usr/bin/docker ps --all --format '{{.Names}} {{.Status}}' \
@@ -2283,18 +2320,29 @@ pod_table() { # unreplaced|replaced: los pods que el apply no sustituye, o sí
   ' <<<"${OUT}" | LC_ALL=C sort
 }
 worker_gate() { # digest: el rollout del worker, y un solo pod, el de ese digest
+  local try
   must "${KUBECTL_WAIT[@]}" --namespace ax-workers rollout status \
     deployment/ax --timeout=300s
-  out "${KUBECTL[@]}" --namespace ax-workers get pods \
-    --selector ate.dev/worker-pool=ax --output json || return 1
-  jq -e --arg digest "$1" '
-    [.items[] | select(.metadata.deletionTimestamp == null)]
-    | length == 1 and all(.[];
-      (.spec.containers[0].image | endswith("@" + $digest))
-      and ([.status.conditions[]? | select(.type == "Ready"
-        and .status == "True")] | length == 1))
-  ' <<<"${OUT}" >/dev/null \
-    || stop "no hay un único pod de worker listo con la imagen de ${1}"
+  # El rol del WorkerPool puede cambiar el despliegue después de que el
+  # rollout de arriba diga que terminó: el pod se relee hasta 30 veces, con
+  # 10 s de pausa (unos 5 minutos, lo que el rollout), antes de la guarda.
+  for try in {1..30}; do
+    if [[ "${try}" -gt 1 ]]; then
+      sleep 10
+    fi
+    out "${KUBECTL[@]}" --namespace ax-workers get pods \
+      --selector ate.dev/worker-pool=ax --output json || return 1
+    if jq -e --arg digest "$1" '
+      [.items[] | select(.metadata.deletionTimestamp == null)]
+      | length == 1 and all(.[];
+        (.spec.containers[0].image | endswith("@" + $digest))
+        and ([.status.conditions[]? | select(.type == "Ready"
+          and .status == "True")] | length == 1))
+    ' <<<"${OUT}" >/dev/null; then
+      return 0
+    fi
+  done
+  stop "no hay un único pod de worker listo con la imagen de ${1}"
 }
 ```
 
@@ -2308,13 +2356,19 @@ Con eso pegado, las precondiciones:
   Oficina»). Se comprueba con `office_idle` en las lecturas de abajo:
   `queue_paused` verdadero, ningún horario activo y ningún trabajo en
   `preparando`, `en_curso` ni `limpiando`.
-- Sin trabajo de AX en marcha: `sudo ax get tasks -a default` y
-  `sudo ax tunnel list` no listan ninguna Task ni ningún túnel (se suspenden
-  o se borran antes), y
+- Sin trabajo de AX en marcha: `sudo ax get tasks -a default` no lista
+  ninguna Task (se suspenden o se borran antes), y
   `systemctl list-units --type=scope --state=active --plain --no-legend
-  'ax-tarea-*' 'ax-cli-*'` no imprime nada (`lab_idle`). Las guardas del rol
-  solo miran esos scopes, no lo que la Oficina despacha por `ax-server`: de
-  ahí la pausa.
+  --no-pager 'ax-tarea-*' 'ax-cli-*'` no imprime nada (`lab_idle`). Un túnel
+  de `sudo ax` es un scope `ax-cli-*`: `ax tunnel list` no sirve de guarda,
+  porque el wrapper abre un `AX_HOME` nuevo en cada llamada y siempre sale
+  vacío, a propósito. Las guardas del rol solo miran esos scopes, no lo que
+  la Oficina despacha por `ax-server`: de ahí la pausa.
+- `fuser` (`/usr/bin/fuser`, del paquete `psmisc`), que `lock_free` necesita
+  y que ningún rol de este repositorio instala: este host lo tiene, uno
+  reconstruido puede no tenerlo, y codificarlo es un cambio revisado aparte,
+  no algo que se instale a mano dentro de la ventana. Sin él, `lock_free` es
+  un `STOP`, no un «libre».
 - La memoria del host: `MemAvailable` de al menos 3 GiB, unos 3 145 728 kB
   (`grep MemAvailable /proc/meminfo`, `host_memory`), y ninguna otra sesión
   pesada ni compilación durante los pasos 10 a 12. El 2026-10-09 un
@@ -2325,7 +2379,13 @@ Con eso pegado, las precondiciones:
   lecturas, justo antes del paso 11.
 - Las lecturas de partida, que se repiten justo antes del paso 11 y antes
   del apply de la marcha atrás (con `record_is`, que nombra lo que la
-  ventana guardó). Sin ningún marker retenido:
+  ventana guardó). Sin ningún marker retenido. `deployed_last`, que solo
+  va aquí y antes del `--check` de la marcha atrás anterior al apply, lee
+  `DEPLOYED_VERSION.yml`, que cada playbook reescribe, y se detiene si el
+  último fue otro que `ax-lab` o no está en el commit del registro: el
+  `--check` de la marcha atrás desde `${PREV}` contaría entonces un
+  `changed` más (ese fichero), y seguir con `HALT=` es aceptarlo sabiéndolo
+  (ver «Marcha atrás»):
 
   ```bash
   must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
@@ -2333,6 +2393,7 @@ Con eso pegado, las precondiciones:
   office_idle
   lab_idle
   host_memory
+  deployed_last
   ```
 
 - `ax-lab-images.yml` ya en `main` y «Run workflow» comprobado: ver la
@@ -2341,17 +2402,36 @@ Con eso pegado, las precondiciones:
 - Las dos descargas de la ejecución sobre el head del PR (los zip de
   `ax-lab-substrate-oci-layout` y de `ax-lab-ax-artifacts`) en un directorio
   del propietario, no en un tmpfs.
-- El pico de memoria del `ate-setup` nuevo bajo el tope de 192 MiB, medido en
-  un clúster kind desechable con los pines nuevos: como mucho 134 MiB
-  (140 509 184 bytes), es decir, un margen de al menos 58 MiB, el 30 % del
-  tope. Es el `memory_peak_bytes` que imprime el gestor (ver «Criterios de
-  aborto»). O la aceptación explícita del propietario de correrlo sin
-  medir, o con menos margen. Es la primera vez que `ate-setup` corre bajo
-  ese tope, y la marcha atrás vuelve a ejecutar el `ate-setup` anterior bajo
-  el mismo, que tampoco corrió nunca bajo él: la aceptación cubre los dos.
-  El valor, el clúster donde se midió y la aceptación, si la hay, se
-  anotan en el registro de la ventana, en su apartado «Pico de `ate-setup`»
-  (valor medido: … MiB).
+- El pico de memoria de `ate-setup` bajo el tope de 192 MiB. Es la primera
+  vez que corre bajo ese tope en este host, con un binario nuevo, y la
+  marcha atrás vuelve a ejecutar el anterior bajo el mismo. Hay una medida,
+  del 2026-10-12, de una ejecución desechable de la CI en un clúster kind con
+  los pines nuevos y los límites del laboratorio (192 MiB sin swap, 0,5 CPU,
+  256 PIDs, 600 s por rollout y 6 480 s en total), que no se fusionó ni es
+  una receta: sus ejecuciones, 38249431882, 38251504380 y 38254971937 de
+  `apptolast/DockerSwarmInfrastrcture`, son solo la evidencia. El peor pico
+  de cualquier instalación (nueva, repetida o sobre una con los pines
+  anteriores) fue de 58 765 312 bytes (56,0 MiB, el 29,2 % del tope), contra
+  49,6 y 51,9 MiB con los pines anteriores en las mismas condiciones, sin OOM,
+  con el contador `max` de `memory.events` a 0, un margen de 3,4 veces, seis
+  cargas sustituidas al actualizar y las doce listas. No hubo reinicios en la
+  última ejecución; en las otras, un reinicio de `postgres-0` por una carrera
+  de arranque que también se vio con los pines anteriores. Es el
+  `memory_peak_bytes` que imprime el gestor (ver «Criterios de aborto»).
+- Lo que esa medida no prueba: ningún worker vivo durante el relevo de
+  `atelet`, ni AX sobre Substrate, ni un clúster poblado con los objetos de
+  AX y de semanas de antigüedad, ni este kernel ni este Docker, ni la marcha
+  atrás (instalar el `ate-setup` anterior sobre el nuevo no se midió). Por
+  eso la comprobación que sí se puede hacer es la aceptación explícita del
+  propietario: acepta, en el registro de la ventana, que la medida vale para
+  este host, para el `ate-setup` nuevo y para el anterior de la marcha atrás,
+  y sin ella no se pasa del paso 0. El listón de la ventana sigue siendo
+  como mucho 134 MiB (140 509 184 bytes), es decir, un margen de al menos
+  58 MiB, el 30 % del tope, y la medida de la CI lo cumple de sobra. El
+  apartado «Pico de `ate-setup`» del registro lleva la medida de la CI
+  (56,0 MiB), la aceptación (quién y cuándo) y el `memory_peak_bytes` que
+  informe la instalación real: en un apply correcto el rol no lo imprime y se
+  anota «no informado», y solo un fallo lo deja a la vista.
 - La línea base no se anota aquí sino justo antes del paso 11, con todo ya
   sembrado y comprobado (ver el paso 11). El `memory.peak` del nodo no sirve
   para eso: está saturado por la caché de página (supera su propio
@@ -2795,15 +2875,19 @@ retenido»).
       --confirm-production
     ```
 
-12. Verificar, con el registro, sin dar nada por bueno hasta tener todo:
+12. Verificar, con el registro, sin dar nada por bueno hasta tener todo. El
+    registro se nombra por `127.0.0.1:5001`, nunca por `localhost`: en este
+    host `localhost` resuelve primero a `::1`, el oyente IPv6 lo cortan las
+    reglas del cortafuegos y el gestor espera 120 s de conexión por imagen,
+    unos 22 minutos sin imprimir nada:
 
     ```bash
     out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-      image-status --image-set substrate --registry localhost:5001 \
+      image-status --image-set substrate --registry 127.0.0.1:5001 \
       --layout "${LAYOUT}" --tag "${TAG_SUB}" "${NEW_SUB[@]}"
     expect_pinned 7 "${OUT}"
     out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-      image-status --image-set ax --registry localhost:5001 \
+      image-status --image-set ax --registry 127.0.0.1:5001 \
       --layout "${LAYOUT}" --tag "${TAG_AX}" "${NEW_KO[@]}" "${BUILDX[@]}"
     expect_pinned 4 "${OUT}"
     for cli in /opt/dockerswarm/ax-lab/bin/ax "${CLI_BACKUP}"; do
@@ -2819,15 +2903,19 @@ retenido»).
     `otel-system` y `podcertificate-controller-system`. Por eso, antes de
     cerrar, el rollout del despliegue `ax` de `ax-workers` (hasta 300 s),
     exactamente un pod de worker que no se esté terminando, con el digest
-    nuevo de `ateom-gvisor` y listo, y una prueba de humo de solo lectura,
-    como la del cambio 4 (ver «Ventana del cambio 4»): `ax-tarea` crea un
-    Workspace con `octocat/Hello-World` y una Task con Claude (como mucho 4
-    turnos, `TURNOS=4`; la del 2026-09-26 sobre ese repositorio gastó 3 y
-    0,0358 USD, en la cuota de Claude), con el token de
+    nuevo de `ateom-gvisor` y listo (si el rollout pasó antes de que el rol
+    cambiara el despliegue, el pod se relee hasta 30 veces, con 10 s de
+    pausa, unos 5 minutos como el rollout, antes de dar la guarda por
+    fallida), y una prueba de humo de solo
+    lectura, como la del cambio 4 (ver «Ventana del cambio 4»): `ax-tarea`
+    crea un Workspace con `octocat/Hello-World` y una Task con Claude (como
+    mucho 4 turnos, `TURNOS=4`; la del 2026-09-26 sobre ese repositorio gastó
+    3 y 0,0358 USD, en la cuota de Claude), con el token de
     `/etc/dockerswarm/ax/claude-oauth-token`, y las borra al terminar; con
-    `lab_idle` se comprueba que no queda ninguna ni ningún túnel. El worker
-    viejo puede seguir en `Terminating` mucho tiempo (su gracia es de
-    3 600 s) y no es un error; tampoco que `readyReplicas` valga 2 un momento.
+    `lab_idle` se comprueba que no queda ninguna Task ni ningún `ax` en
+    marcha. El worker viejo puede seguir en `Terminating` mucho tiempo (su
+    gracia es de 3 600 s) y no es un error; tampoco que `readyReplicas` valga
+    2 un momento.
     `ax-tarea` se niega a empezar con un marker retenido, así que corre con el
     apply ya cerrado, y antes del último `--check`, que prueba que no dejó
     nada:
@@ -2868,10 +2956,11 @@ retenido»).
     acepte la resiembra, y entonces se borra `${RELOCK}` entera. El fichero
     temporal de `out` (`${OUTFILE}`) se queda mientras la marcha atrás siga
     siendo posible. La ventana se registra como las anteriores (ver
-    [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)), con el pico medido de
-    `ate-setup` y la aceptación del propietario si la hubo, la línea base y
-    la final, el resultado de la prueba de humo y la hora de la pausa y de
-    la reanudación de la cola:
+    [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)), con el pico de
+    `ate-setup` (el de la CI, la aceptación del propietario y el que informó
+    la instalación real, si lo hizo), la línea base y la final, el resultado
+    de la prueba de humo y la hora de la pausa y de la reanudación de la
+    cola:
 
     ```bash
     must sudo -- rm -rf "${IN:?}"
@@ -2913,6 +3002,12 @@ estas imágenes):
   `readyReplicas` del WorkerPool puede valer 2 un momento.
 - Un pod nuevo puede reiniciarse una o dos veces mientras espera sus
   certificados de pod.
+- `postgres-0`, que el apply no sustituye, reinició una vez por
+  `FailedPostStartHook` (el paquete de certificados del pod aún sin emitir)
+  en algunas instalaciones nuevas de la CI, también con los pines anteriores,
+  y ninguna actualización de un clúster asentado añadió otro. Si pasa aquí,
+  es un reinicio más que la línea base y se lee su causa antes de decidir
+  (ver «Criterios de aborto»).
 - La Oficina sigue sirviendo (su pod no se toca), pero lo que despacha por
   `ax-server` falla mientras este se sustituye: unos 5 a 12 minutos con el
   plano de control de AX degradado. Con la cola en pausa no hay nada en
@@ -3061,28 +3156,40 @@ Por eso, con el marker recuperado y antes de repetir nada, la guarda de
 contenedores transitorios (ver «Contenedores transitorios»): el gestor deja
 `ax-lab-ate-setup` y `ax-lab-build-*` parados, con sus logs, ante cualquier
 interrupción, y el rol se niega a correr mientras exista uno, así que el
-apply siguiente, o el de la marcha atrás, retendría un segundo marker. Si la
-guarda imprime un contenedor en marcha, se espera a que termine: lo acota su
-propio tiempo máximo, 6 480 s la instalación y 3 600 s una compilación (no
-se mata ni se quita en marcha). Si está parado, se leen sus logs y se borra
-con el lock host-global y la operación `ax-lab-transient`, la de
-«Contenedores transitorios»: `host_global_operation_lock.py` solo valida la
-forma del nombre de la operación, no hay lista. `LEFTOVER` es el nombre que
-imprimió la guarda, y `HALT=` levanta su `STOP` (es la decisión de borrarlo).
-Un `docker rm` que falla, como el de un contenedor en marcha, deja el marker
-directo, así que antes se comprueba que el nombre es de un transitorio del
-gestor y que está parado:
+apply siguiente, o el de la marcha atrás, retendría un segundo marker. Se
+pega sola, y su salida dice el nombre del contenedor; en un host limpio no
+imprime nada y no hace falta nada más:
 
 ```bash
 no_transient
+```
+
+Si imprime un contenedor en marcha, se espera a que termine: lo acota su
+propio tiempo máximo, 6 480 s la instalación y 3 600 s una compilación (no
+se mata ni se quita en marcha). Si está parado, se pega este segundo bloque,
+solo entonces y con ese nombre en lugar del marcador: se leen sus logs y se
+borra con el lock host-global y la operación `ax-lab-transient`, la de
+«Contenedores transitorios»: `host_global_operation_lock.py` solo valida la
+forma del nombre de la operación, no hay lista. `LEFTOVER` es el nombre que
+imprimió la guarda, y `HALT=` levanta su `STOP` (es la decisión de borrarlo),
+pero solo si el nombre es el de un transitorio del gestor: con el marcador
+sin cambiar, o con otro nombre, el `STOP` sigue y nada de lo que viene
+después corre. Un `docker rm` que falla, como el de un contenedor en marcha,
+deja el marker directo, así que antes se comprueba que está parado:
+
+```bash
 LEFTOVER='NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA'
-HALT=
-[[ "${LEFTOVER}" =~ ^ax-lab-(ate-setup|build-[a-z-]+)$ ]] \
-  || stop 'LEFTOVER no es un contenedor transitorio del gestor'
+if [[ "${LEFTOVER}" =~ ^ax-lab-(ate-setup|build-[a-z-]+)$ ]]; then
+  HALT=
+else
+  stop 'LEFTOVER no es un contenedor transitorio del gestor'
+fi
 out sudo -- /usr/bin/docker ps --all --filter "name=^${LEFTOVER}\$" \
   --filter status=exited --format '{{.Names}}'
-[[ "${OUT}" == "${LEFTOVER}" ]] || stop "${LEFTOVER} no está parado: se espera"
-sudo -- /usr/bin/docker logs --tail 200 "${LEFTOVER}"
+if [[ -z "${HALT}" && "${OUT}" != "${LEFTOVER}" ]]; then
+  stop "${LEFTOVER} no está parado: se espera"
+fi
+must sudo -- /usr/bin/docker logs --tail 200 "${LEFTOVER}"
 must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
   --operation ax-lab-transient -- /usr/bin/docker rm "${LEFTOVER}"
 no_transient
@@ -3101,8 +3208,10 @@ La ventana se detiene, y según dónde pare se recorre la marcha atrás, cuando:
 
 - falla una orden o una aserción de los pasos 1 a 8, o de los ayudantes del
   paso 0 (un `STOP:`). Antes del `forget` (pasos 1 a 4) la copia viva no se
-  ha tocado y solo se borran el ensayo y los artefactos extraídos; desde el
-  paso 5 se deshace por imagen, desde la instantánea;
+  ha tocado y solo se borran el ensayo y los artefactos extraídos; no hay
+  marcha atrás que reanude la cola, así que hay que reanudar la cola y
+  leerla de vuelta (el último bloque del paso 13); desde el paso 5 se deshace
+  por imagen, desde la instantánea;
 - una orden con lock (el gestor en `forget` y `seed-layout`, el `cp -a`, el
   `install` o el `docker cp`) falla o se rechaza: deja
   `/run/lock/dockerswarm-direct.marker`, y ninguna orden con lock vuelve a
@@ -3110,12 +3219,15 @@ La ventana se detiene, y según dónde pare se recorre la marcha atrás, cuando:
   de seguir o de volver atrás (ver «Un marker retenido»);
 - la lectura de partida del paso 0 o la de justo antes del paso 11 se
   detiene: la Oficina sin pausa, con un trabajo en marcha o con un horario
-  activo; una Task, un túnel, un `ax-tarea` o un `ax` en marcha;
-  `MemAvailable` por debajo de 3 GiB; o el registro del último apply con un
+  activo; una Task, un `ax-tarea` o un `ax` en marcha (un túnel es un scope
+  `ax-cli-*`); `MemAvailable` por debajo de 3 GiB; `fuser` ausente; un
+  contenedor transitorio del gestor; `DEPLOYED_VERSION.yml` con otro playbook
+  que `ax-lab` como último; o el registro del último apply con un
   commit que no es el que la ventana guardó, que es un apply ajeno. Un
   trabajo en marcha se espera, no se interrumpe: no se aplica con él. Un
   apply ajeno de `ax-lab` no se arregla repitiendo la lectura: `PREV` ya no
-  describe lo que hay;
+  describe lo que hay. Si la ventana no sigue, la cola se reanuda como en el
+  primer punto;
 - el `--check` del paso 10 se detiene (el rol falla), informa algo perdido
   (`in neither backup nor registry`), una línea `the apply stops` o
   `back up from the registry`, otras imágenes en `restore into the registry`
@@ -3152,35 +3264,38 @@ La ventana se detiene, y según dónde pare se recorre la marcha atrás, cuando:
   failed: …`, va en `stderr`): `exit_code`, `oom_killed`, `memory_peak_bytes`,
   `oom_kill_events`, `seconds` y `aborted` (`timeout` o `mem_available_floor`
   cuando no fue el kernel). `oom_killed` verdadero, con `memory_peak_bytes`
-  cerca de los 201 326 592 bytes del tope de 192 MiB, es que no le bastó. En
-  un apply correcto el rol no imprime ese resultado ni lo guarda
+  cerca de los 201 326 592 bytes del tope de 192 MiB, es que no le bastó. En un
+  apply correcto el rol no imprime ese resultado ni lo guarda
   (`/root/.ansible_async` queda vacío y el wrapper no lleva `-v`), así que el
-  pico real de una instalación sana no se ve: de ahí la medida previa del paso
-  0. Un fallo así no deja contenedor (el gestor lo borra tras leerlo), pero
-  sí `installing` en `state/substrate.json` y el marker del wrapper. No se
-  reintenta a ciegas: es el mismo binario con los mismos datos y el mismo
-  tope, y `ate-setup` conserva lo que ya creó, de modo que otro intento llega
-  al mismo pico. La marcha atrás es la de siempre, y su apply desde `${PREV}`
-  vuelve a ejecutar `ate-setup`, el anterior, bajo el mismo tope de 192 MiB
-  (que tampoco midió nadie). Si también muere por memoria, no hay un
-  tercer intento en la ventana: `STOP`, con el laboratorio como lo dejó el
-  último rollout correcto (`installing`, cargas de las dos versiones), y el
-  propietario decide en un cambio revisado (subir `memory_limit_mib` exige
-  liberar presupuesto en el perfil de capacidad, que hoy no deja margen);
+  pico real de una instalación sana no se ve: de ahí que el paso 0 se apoye en
+  la medida de la CI y en la aceptación del propietario. Un fallo así no deja
+  contenedor (el gestor lo borra tras leerlo), pero sí `installing` en
+  `state/substrate.json` y el marker del wrapper. No se reintenta a ciegas: es
+  el mismo binario con los mismos datos y el mismo tope, y `ate-setup` conserva
+  lo que ya creó, de modo que otro intento llega al mismo pico. La marcha atrás
+  es la de siempre, y su apply desde `${PREV}` vuelve a ejecutar `ate-setup`, el
+  anterior, bajo el mismo tope de 192 MiB (la CI lo midió en una instalación
+  nueva, no sobre el nuevo). Si también muere por memoria, no hay un tercer
+  intento en la ventana: `STOP`, con el laboratorio como lo dejó el último
+  rollout correcto (`installing`, cargas de las dos versiones), y el propietario
+  decide en un cambio revisado (subir `memory_limit_mib` exige liberar
+  presupuesto en el perfil de capacidad, que hoy no deja margen);
 - tras el apply, el rollout del despliegue `ax` de `ax-workers` no termina en
   300 s, no hay exactamente un pod de worker, sin terminarse, con el digest
-  nuevo de `ateom-gvisor` y listo, o la prueba de humo falla (salida distinta
-  de 0, una Task que no llega a listo, un `ax ssh` que falla). Es marcha
-  atrás, salvo que el propio mensaje de `ax-tarea` achaque el fallo a un
-  tercero (la cuota de Claude, GitHub): entonces decide el propietario si se
-  repite. Un worker viejo en `Terminating` no es un fallo;
-- tras el apply, un `oom`, `oom_kill` u `oom_group_kill` que se mueva del
-  valor de la línea base en `memory.events` o en `memory.events.local` del
-  nodo o del registro (el `memory.events` jerárquico ya leía `oom_kill`
-  distinto de cero tras el incidente del 2026-10-09: el criterio es que no
-  se mueva, no que sea cero; el `memory.peak` no informa, está saturado por la
-  caché), más reinicios que la línea base en `kube-system` o en una carga que
-  el apply no sustituyó, o una CLI que no responde.
+  nuevo de `ateom-gvisor` y listo tras las 30 lecturas del paso 12, o la prueba
+  de humo falla (salida distinta de 0, una Task que no llega a listo, un `ax
+  ssh` que falla). Es marcha atrás, salvo que el propio mensaje de `ax-tarea`
+  achaque el fallo a un tercero (la cuota de Claude, GitHub): entonces decide el
+  propietario si se repite. Un worker viejo en `Terminating` no es un fallo;
+- tras el apply, un `oom`, `oom_kill` u `oom_group_kill` que se mueva del valor
+  de la línea base en `memory.events` o en `memory.events.local` del nodo o del
+  registro (el `memory.events` jerárquico ya leía `oom_kill` distinto de cero
+  tras el incidente del 2026-10-09: el criterio es que no se mueva, no que sea
+  cero; el `memory.peak` no informa, está saturado por la caché), más reinicios
+  que la línea base en `kube-system` o en una carga que el apply no sustituyó
+  (un reinicio de `postgres-0` por `FailedPostStartHook` es una carrera de
+  arranque que la CI vio también con los pines anteriores: se lee su causa
+  antes de decidir), o una CLI que no responde.
 
 ### Marcha atrás de la ventana de resiembra
 
@@ -3317,11 +3432,15 @@ Solo en la variante anterior al apply, con el clon en `${PREV}` y limpio, el
 registro del último apply tiene que seguir nombrándolo, y un `--check` lo
 comprueba, con la copia ya restaurada y nada aplicado: tiene que informar
 `changed=0` (el registro nombra `${PREV}` y los dos ficheros de
-`deployment_metadata` no cambian):
+`deployment_metadata` no cambian), o `changed=1` si en el paso 0 se aceptó
+con `HALT=` que `DEPLOYED_VERSION.yml` nombraba a otro playbook: ese fichero
+es el único que cambia. `deployed_last` lo vuelve a leer antes (si se acepta,
+se levanta con `HALT=` y se pega solo la última orden del bloque):
 
 ```bash
 must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
 record_is "${PREV:?}"
+deployed_last
 must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
 ```
 
@@ -3332,11 +3451,13 @@ commit de fusión (`MERGE`), y tras uno que falló antes de registrarse,
 `PREV`; cualquier otro es un apply ajeno. Y no leen las Tasks (`lab_scopes` en
 lugar de `lab_idle`): `ax get tasks` depende de `ax-server`, que puede ser lo
 que falló y lo que obliga a volver atrás, y la marcha atrás no puede
-depender de él; los scopes y los túneles son locales, y sin ellos nada de
-la sesión del operador corre. `host_memory` sí se mantiene: si se detiene, se
+depender de él; los scopes son locales y no ejecutan la CLI de AX, que tras
+el paso 11 es la nueva, y sin ellos nada de la sesión del operador corre.
+`host_memory` sí se mantiene: si se detiene, se
 liberan las otras sesiones del host y se repite la lectura, sin un `HALT=`
-a ciegas (el OOM del 2026-10-09 mató servicios dentro del nodo). Después, el
-`--check`:
+a ciegas (el OOM del 2026-10-09 mató servicios dentro del nodo), y
+`no_transient` también, por si el apply fallido dejó su contenedor. Después,
+el `--check`:
 
 ```bash
 must test -z "$(compgen -G '/run/lock/dockerswarm-*.marker')"
@@ -3345,6 +3466,7 @@ record_is "${PREV:?}" ${MERGE:+"${MERGE}"}
 office_idle
 lab_scopes
 host_memory
+no_transient
 must ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
 ```
 
@@ -3360,7 +3482,8 @@ es el nuevo y la copia restaurada, el anterior) y los dos ficheros de
 volver atrás, es un subconjunto y algo más: `deployment_metadata` no llegó a
 correr, así que el registro sigue nombrando `${PREV}` y los dos ficheros no
 cambian (`changed=1`, solo la CLI, si el apply ya la había copiado, que es lo
-primero que hace); solo salen `restore into the registry` de las imágenes
+primero que hace, y uno más si en el paso 0 se aceptó lo de
+`DEPLOYED_VERSION.yml`); solo salen `restore into the registry` de las imágenes
 que ya se importaron, y si `ate-setup` no llegó a arrancar, Substrate
 coincide y AX se lee y puede informar de lo suyo (`apply AX server-side`, el
 `--route-timeout`, workers). Lo que nunca es aceptable, en ningún caso, es
@@ -3385,11 +3508,11 @@ anterior, el worker, el `--check` final y la línea base:
 
 ```bash
 out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-  image-status --image-set substrate --registry localhost:5001 \
+  image-status --image-set substrate --registry 127.0.0.1:5001 \
   --layout "${LAYOUT}" --tag "${TAG_SUB}" "${OLD_SUB[@]}"
 expect_pinned 7 "${OUT}"
 out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
-  image-status --image-set ax --registry localhost:5001 \
+  image-status --image-set ax --registry 127.0.0.1:5001 \
   --layout "${LAYOUT}" --tag "${TAG_AX}" "${OLD_KO[@]}" "${BUILDX[@]}"
 expect_pinned 4 "${OUT}"
 for cli in /opt/dockerswarm/ax-lab/bin/ax "${CLI_BACKUP}"; do
@@ -3428,7 +3551,8 @@ tras la marcha atrás (el registro nombra `${PREV}`, y `main`, `R`): es lo
 esperado y se acepta, y cualquier otro `changed` no. Si el PR de pines no
 llegó a fusionarse, se queda sin fusionar hasta repetir la ventana, y la
 congelación termina con el `--check` desde `${PREV}` que informa
-`changed=0`. La cola de la Oficina se reanuda solo entonces, con la marcha
+`changed=0` (o `changed=1`, lo de `DEPLOYED_VERSION.yml` aceptado en el
+paso 0). La cola de la Oficina se reanuda solo entonces, con la marcha
 atrás verificada (ver el paso 13).
 
 ## Retirar el laboratorio manual

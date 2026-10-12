@@ -132,11 +132,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   apply y de la marcha atrás, guarda `PR_HEAD`, `PREV`, el commit de fusión y
   los planes en `${RELOCK}` para retomarse en una shell nueva («Recuperar la
   shell»), describe el `--check` que el rol imprime de verdad, exige el
-  rollout y un pod del worker nuevo y una prueba de humo antes de cerrar, mide
-  `ate-setup` bajo su tope de 192 MiB antes de correrlo, compara una línea
+  rollout y un pod del worker nuevo y una prueba de humo antes de cerrar,
+  cita la medida de `ate-setup` bajo su tope de 192 MiB (una ejecución
+  desechable de la CI el 2026-10-12: 56,0 MiB, el 29,2 % del tope, con lo que
+  prueba y lo que no) y exige que el propietario acepte que vale para el host
+  antes de correrlo, compara una línea
   base de `memory.events` y de reinicios, y da a la marcha atrás posterior al
   apply sus propios comandos, la guarda de contenedores transitorios y el fin
-  de su congelación. Las imágenes `ax-task-runner` y `ax-agents` no
+  de su congelación. Una segunda ronda de revisión cierra que la guarda del
+  lock falle cerrada sin `fuser`, que `127.0.0.1:5001` sustituya a
+  `localhost` (que tardaba unos 22 minutos por el IPv6 cortado), que
+  `ax tunnel list` deje de ser guarda, que `DEPLOYED_VERSION.yml` se lea al
+  empezar, el bloque del contenedor transitorio partido en la guarda y el
+  borrado, y el reintento acotado del pod del worker. Las imágenes
+  `ax-task-runner` y `ax-agents` no
   se recompilan
   (Rama K): siguen con Go 1.27.1 y sus módulos, y sus hallazgos de
   `govulncheck` permanecen. Las imágenes y la CLI nuevas se ejecutan por

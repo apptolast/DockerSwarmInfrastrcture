@@ -18,6 +18,7 @@ against the real manager and the real direct lock on private paths.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -32,8 +33,9 @@ import textwrap
 import types
 import unittest
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from test_manage_ax_lab_substrate import (
     AX_TAG,
@@ -331,7 +333,10 @@ class WindowSafetyTests(unittest.TestCase):
         text = window()
         self.assertIsNone(re.search(r"\b[0-9a-f]{40,}\b", text), "a hash or digest")
         self.assertIsNone(re.search(r"sha256:[0-9a-f]{8}", text), "a digest")
-        self.assertIsNone(re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", text), "an address")
+        # The one address the window names is the registry's loopback, which
+        # the image-status reads use (see the test of the registry argument).
+        addresses = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)
+        self.assertLessEqual(set(addresses), {"127.0.0.1"}, "an address")
         self.assertIn("ningún digest", text.replace("\n", " "))
 
     def test_every_bash_block_of_the_window_parses(self) -> None:
@@ -653,9 +658,16 @@ class WindowProcedureTests(unittest.TestCase):
         step_zero = text.split("### Precondiciones de la ventana de resiembra", 1)[1]
         step_zero = step_zero.split("### Pasos de la ventana de resiembra", 1)[0]
         for fragment in (
-            "`sudo ax get tasks -a default`",
-            "`sudo ax tunnel list`",
+            "`sudo ax get tasks -a default` no lista ninguna Task",
             "'ax-tarea-*' 'ax-cli-*'",
+            "Un túnel de `sudo ax` es un scope `ax-cli-*`",
+            "`ax tunnel list` no sirve de guarda",
+            "siempre sale vacío, a propósito",
+            "`fuser` (`/usr/bin/fuser`, del paquete `psmisc`)",
+            "que ningún rol de este repositorio instala",
+            "`lock_free` es un `STOP`, no un «libre»",
+            "codificarlo es un cambio revisado aparte",
+            "no algo que se instale a mano dentro de la ventana",
             "La cola de la Oficina, en pausa y leída de vuelta",
             "avisada la persona que la use",
             "`tmux`",
@@ -1019,7 +1031,16 @@ elif args[:2] == ["get", "pv"] and args[2] == "pvc-office":
 elif args[:2] == ["get", "pods"] and "--all-namespaces" in args:
     sys.stdout.write((WORLD / "pods.json").read_text())
 elif args[:3] == ["--namespace", "ax-workers", "get"] and args[3] == "pods":
-    sys.stdout.write((WORLD / "worker-pods.json").read_text())
+    # Every read is counted. With worker-pods.d/ the n-th read gets the n-th
+    # file (the last one from then on): a rollout that is not done yet.
+    counter = WORLD / "worker-reads"
+    reads = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(reads + 1))
+    sequence = sorted((WORLD / "worker-pods.d").glob("*.json"))
+    if sequence:
+        sys.stdout.write(sequence[min(reads, len(sequence) - 1)].read_text())
+    else:
+        sys.stdout.write((WORLD / "worker-pods.json").read_text())
 elif args[:3] == ["--namespace", "ax-workers", "rollout"]:
     assert args[3:6] == ["status", "deployment/ax", "--timeout=300s"], args
     code = int((WORLD / "rollout.rc").read_text())
@@ -1029,7 +1050,11 @@ else:
     sys.exit(f"unexpected kubectl call: {args}")
 """
 
-# `sudo ax`, the CLI of the lab with its own scope: tasks and tunnels.
+# `sudo ax`, the CLI of the lab with its own scope: it only lists the Tasks.
+# `ax tunnel list` is not here on purpose: it always prints nothing on the
+# host (every call has its own AX_HOME), so no guard may call it, and a call
+# fails like any other unexpected one. With `ax-down` the CLI does not run at
+# all (the one an apply left half installed).
 AX_SHIM = r"""#!/usr/bin/env python3
 import os
 import sys
@@ -1037,15 +1062,41 @@ from pathlib import Path
 
 WORLD = Path(os.environ["RELOCK_TEST_HOME"]) / "world"
 args = sys.argv[1:]
+if (WORLD / "ax-down").exists():
+    sys.exit("ax: the CLI does not run")
 if args == ["get", "tasks", "-a", "default"]:
     if (WORLD / "ax-server-down").exists():
         sys.exit("Error: dial tcp: connect: connection refused")
     print("NAME   ATESPACE   PHASE   ACTOR   WORKER-IP   AGE")
     sys.stdout.write((WORLD / "tasks").read_text())
-elif args == ["tunnel", "list"]:
-    sys.stdout.write((WORLD / "tunnels").read_text())
 else:
     sys.exit(f"unexpected ax call: {args}")
+"""
+
+# `fuser FILE`, as far as the window asks it: exit 0 when a process has the file
+# open, 1 when none has (the real one scans /proc the same way). With
+# world/fuser.rc it exits with that code, whatever the file: a tool that failed.
+FUSER_SHIM = r"""#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ["RELOCK_TEST_HOME"])
+forced = HOME / "world/fuser.rc"
+if forced.exists():
+    sys.exit(int(forced.read_text()))
+target = os.path.realpath(sys.argv[-1])
+for entry in Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        for descriptor in (entry / "fd").iterdir():
+            if os.path.realpath(os.readlink(descriptor)) == target:
+                print(entry.name)
+                sys.exit(0)
+    except OSError:
+        continue
+sys.exit(1)
 """
 
 # The wrapper of the playbooks and `ax-tarea`: they only record that they ran.
@@ -1099,7 +1150,68 @@ sudo() {
     esac
   )
 }
-systemctl() { cat "${T}/world/scopes"; }
+# systemctl list-units, as far as the window asks it: it lists the scopes of
+# world/scopes the way systemd would, so only a command line that selects what
+# the window wants finds it. The state and the unit patterns filter, a call
+# without --no-legend gets the header and the footer, and any other call
+# fails. The command line of every call is kept.
+systemctl() {
+  local arg state="" patterns=() legend=1 scope=0 unit load active sub rest
+  local pattern hit listed=0
+  printf '%s\n' "$*" >>"${T}/run/systemctl.log"
+  if [[ "$1" != list-units ]]; then
+    echo "unexpected systemctl call: $*" >&2
+    return 2
+  fi
+  shift
+  for arg in "$@"; do
+    case "${arg}" in
+    --state=*) state=${arg#--state=} ;;
+    --type=scope) scope=1 ;;
+    --no-legend) legend=0 ;;
+    --plain | --no-pager) ;;
+    -*)
+      echo "unexpected systemctl flag: ${arg}" >&2
+      return 2
+      ;;
+    *) patterns+=("${arg}") ;;
+    esac
+  done
+  if ((scope == 0)); then
+    echo "unexpected systemctl call (not scopes only): $*" >&2
+    return 2
+  fi
+  if ((legend)); then
+    echo 'UNIT LOAD ACTIVE SUB DESCRIPTION'
+  fi
+  while read -r unit load active sub rest; do
+    if [[ -z "${unit}" ]]; then
+      continue
+    fi
+    if [[ -n "${state}" && "${active}" != "${state}" ]]; then
+      continue
+    fi
+    hit=1
+    if ((${#patterns[@]})); then
+      hit=0
+      for pattern in "${patterns[@]}"; do
+        # shellcheck disable=SC2053
+        if [[ "${unit}" == ${pattern} ]]; then
+          hit=1
+        fi
+      done
+    fi
+    if ((hit)); then
+      printf '%s\n' "${unit} ${load} ${active} ${sub} ${rest}"
+      listed=$((listed + 1))
+    fi
+  done <"${T}/world/scopes"
+  if ((legend)); then
+    echo "${listed} loaded units listed."
+  fi
+}
+# The window waits with `sleep`: here it only records that it did.
+sleep() { printf '%s\n' "$*" >>"${T}/run/sleep.log"; }
 """
 
 # The rollback loop of the window as it was before the guards: a forget that
@@ -1140,6 +1252,8 @@ STEP_12_COMPARE = 'must diff <(sudo -- cat "${RELOCK}/baseline/memory.txt"'
 RECOVER = 'sudo -- test -f "${RELOCK}/window.env"'
 ROLLBACK = 'forget_one substrate "${LAYOUT}" "${TAG_SUB}" "${new}"'
 ROLLBACK_PREV = 'record_is "${PREV:?}" ${MERGE:+"${MERGE}"}'
+ROLLBACK_BEFORE = "deployed_last\nmust ./scripts"
+STEP_0_START = "office_idle\nlab_idle\nhost_memory\ndeployed_last"
 TRANSIENT = "LEFTOVER='"
 RECOVERY = "scripts/host_global_operation_lock.py recover"
 CLI_CHAIN = 'sha256sum "${IN}/ax/ax"'
@@ -1168,6 +1282,54 @@ def make_directories(path: Path) -> None:
 def sha1(label: str) -> str:
     """A commit-shaped value, assembled here (a literal would be scanned)."""
     return hashlib.sha256(label.encode()).hexdigest()[:40]
+
+
+def worker_pod(
+    digest: str, *, ready: bool = True, deleting: bool = False
+) -> dict[str, Any]:
+    """A pod of the worker Deployment, as `kubectl get pods -o json` lists it."""
+    document: dict[str, Any] = {
+        "metadata": {"name": "ax-1"},
+        "spec": {
+            "containers": [{"image": f"localhost:5001/ateom-gvisor:{TAG}@{digest}"}]
+        },
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]
+        },
+    }
+    if deleting:
+        document["metadata"]["deletionTimestamp"] = "2026-10-12T12:00:00Z"
+    return document
+
+
+@contextlib.contextmanager
+def holding(lock: Path) -> Iterator[subprocess.Popen[str]]:
+    """Another process that keeps the lock file open and locked, as a session does."""
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, sys, time\n"
+                "handle = open(sys.argv[1])\n"
+                "fcntl.flock(handle, fcntl.LOCK_EX)\n"
+                "print('held', flush=True)\n"
+                "time.sleep(120)\n"
+            ),
+            str(lock),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if holder.stdout is None or holder.stdout.readline().strip() != "held":
+            raise AssertionError("the holder did not take the lock")
+        yield holder
+    finally:
+        holder.kill()
+        holder.wait()
+        if holder.stdout is not None:
+            holder.stdout.close()
 
 
 class Sandbox:
@@ -1211,6 +1373,10 @@ class Sandbox:
             self.executable(self.root / "bin" / name, source)
         self.executable(self.root / "sbin/ax", AX_SHIM)
         self.executable(self.root / "sbin/ax-tarea", TAREA_SHIM)
+        self.executable(self.root / "bin/fuser", FUSER_SHIM)
+        # With the real fuser (a test that can have it) the paths stay as the
+        # host has them.
+        self.real_fuser = False
         (self.root / "run/lock").touch(mode=0o600)
         (self.root / "run/lock").chmod(0o600)
         self.live = self.root / "backups/ax-lab/images"
@@ -1396,20 +1562,53 @@ class Sandbox:
         return self.merge
 
     # What the host holds.
-    def write_record(self, revision: str) -> None:
-        """/opt/dockerswarm/deployments/ax-lab.yml, as deployment_metadata writes it."""
+    def write_record(self, revision: str, *, deployed: bool = True) -> None:
+        """/opt/dockerswarm/deployments/ax-lab.yml, as deployment_metadata writes it.
+
+        That role writes the record of the last invocation in the same apply
+        (`deployed`).
+        """
         (self.root / "deployments/ax-lab.yml").write_text(
             '---\nschema_version: 1\ncomponent: "ax-lab"\n'
             f'revision: "{revision}"\nprofile: "production"\n'
         )
+        if deployed:
+            self.write_deployed("ax-lab", revision)
+
+    def write_deployed(self, playbook: str, revision: str) -> None:
+        """/opt/dockerswarm/DEPLOYED_VERSION.yml: the last invocation of any playbook."""
+        (self.root / "DEPLOYED_VERSION.yml").write_text(
+            "---\nschema_version: 2\n"
+            "semantics: components-updated-by-last-invocation\n"
+            f'revision: "{revision}"\nprofile: "production"\n'
+            f'playbook: "{playbook}"\ncomponents:\n  - "{playbook}"\n'
+        )
+
+    def settle(self) -> None:
+        """Back to an idle lab with the record the window saved, markers gone."""
+        for marker in (self.root / "run").glob("*.marker"):
+            marker.unlink()
+        if not (self.root / "bin/fuser").exists():
+            self.executable(self.root / "bin/fuser", FUSER_SHIM)
+        self.reset_world()
+        self.write_record(self.prev)
+        for log in ("deploy.log", "tarea.log", "systemctl.log", "sleep.log"):
+            (self.root / "run" / log).unlink(missing_ok=True)
 
     def reset_world(self) -> None:
         """The lab idle: the Oficina paused, nothing running, memory to spare."""
         world = self.root / "world"
         (world / "containers").write_text("")
         (world / "tasks").write_text("")
-        (world / "tunnels").write_text("No active tunnels found in ~/.ax/tunnels.\n")
-        (world / "scopes").write_text("")
+        # What systemd lists besides the scopes the window looks for: a scope of
+        # ax-tarea that is not running (failed), and one that is not the lab's.
+        (world / "scopes").write_text(
+            "ax-tarea-9.scope loaded failed failed ax-tarea\n"
+            "session-3.scope loaded active running Session 3 of User admin\n"
+        )
+        for name in ("worker-reads", "fuser.rc", "ax-server-down", "ax-down"):
+            (world / name).unlink(missing_ok=True)
+        shutil.rmtree(world / "worker-pods.d", ignore_errors=True)
         (world / "rollout.rc").write_text("0")
         (world / "deploy.rc").write_text("0")
         (world / "tarea.rc").write_text("0")
@@ -1454,6 +1653,25 @@ class Sandbox:
         (self.root / "world/worker-pods.json").write_text(
             json.dumps({"items": workers})
         )
+
+    def write_worker_reads(self, *reads: list[dict[str, Any]]) -> None:
+        """What each successive read of the worker pods answers (the last repeats)."""
+        directory = self.root / "world/worker-pods.d"
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir()
+        for number, workers in enumerate(reads):
+            (directory / f"{number:02d}.json").write_text(
+                json.dumps({"items": workers})
+            )
+        (self.root / "world/worker-reads").unlink(missing_ok=True)
+
+    def worker_reads(self) -> int:
+        counter = self.root / "world/worker-reads"
+        return int(counter.read_text()) if counter.exists() else 0
+
+    def sleeps(self) -> list[str]:
+        log = self.root / "run/sleep.log"
+        return log.read_text().splitlines() if log.exists() else []
 
     def write_cgroup(
         self,
@@ -1529,6 +1747,7 @@ class Sandbox:
             ("/var/backups/dockerswarm", f"{root}/backups"),
             ("/run/lock/dockerswarm-*.marker", f"{root}/run/*.marker"),
             ("/opt/dockerswarm/deployments", f"{root}/deployments"),
+            ("/opt/dockerswarm/DEPLOYED_VERSION.yml", f"{root}/DEPLOYED_VERSION.yml"),
             ("/opt/dockerswarm/ax-lab/bin", f"{root}/bin"),
             ("/usr/local/sbin/ax", f"{root}/sbin/ax"),
             ("/usr/bin/docker", f"{root}/bin/docker"),
@@ -1538,6 +1757,8 @@ class Sandbox:
             (self.PLACEHOLDER, f"PR_HEAD={self.pr_head}"),
         ):
             text = text.replace(host, here)
+        if not self.real_fuser:
+            text = text.replace("/usr/bin/fuser", f"{root}/bin/fuser")
         return text
 
     def definitions(self) -> list[str]:
@@ -1915,7 +2136,10 @@ class WindowAuditDocsTests(unittest.TestCase):
             "todos los playbooks",
             "`validate-iac.sh` y `lint.sh`",
             "los tests del repositorio que corren bajo ese lock",
-            "las sondas de la Oficina (operaciones `ax-office-*`)",
+            (
+                "las sondas que las sesiones de agente lanzan sobre la Oficina"
+                " (operaciones `ax-office-*`: la Oficina es un pod y no toma el lock)"
+            ),
             "`lock_free` mira con `fuser` que nadie tiene abierto `/run/lock/dockerswarm-iac.lock`",
             "toda sesión de agente del host",
             "en este host corren varias a la vez",
@@ -1992,11 +2216,15 @@ class WindowAuditDocsTests(unittest.TestCase):
                 self.assertLess(guard, first_locked)
         # And the reads that open the window and the rollback.
         for anchor in (
-            block_with("office_idle\nlab_idle", without="record_is"),
-            block_with(ROLLBACK),
+            block_with(STEP_0_START),
             block_with(STEP_11_READS),
+            block_with(ROLLBACK_PREV),
+            block_with(ROLLBACK_BEFORE),
         ):
-            self.assertIn(MARKERS_GUARD, statements(anchor))
+            self.assertEqual(statements(anchor)[0], MARKERS_GUARD)
+        # The rollback loop lifts the STOP that sent the operator here, and
+        # only then refuses a marker.
+        self.assertEqual(statements(block_with(ROLLBACK))[:2], ["HALT=", MARKERS_GUARD])
 
     # -- Oficina ---------------------------------------------------------------
     def test_the_oficina_is_paused_read_back_and_read_again_before_the_apply(
@@ -2229,6 +2457,7 @@ class WindowAuditDocsTests(unittest.TestCase):
             self,
             twelve,
             [
+                'expect_pinned 7 "${OUT}"',
                 'expect_pinned 4 "${OUT}"',
                 'worker_gate "${WORKER_NEW}"',
                 "/usr/local/sbin/ax-tarea",
@@ -2239,6 +2468,10 @@ class WindowAuditDocsTests(unittest.TestCase):
         )
         for fragment in (
             "el rollout del despliegue `ax` de `ax-workers` (hasta 300 s)",
+            (
+                "el pod se relee hasta 30 veces, con 10 s de pausa, unos 5 minutos como el"
+                " rollout"
+            ),
             "exactamente un pod de worker que no se esté terminando",
             "con el digest nuevo de `ateom-gvisor` y listo",
             "una prueba de humo de solo lectura, como la del cambio 4",
@@ -2253,6 +2486,7 @@ class WindowAuditDocsTests(unittest.TestCase):
         criteria = flat(section("### Criterios de aborto"))
         for fragment in (
             "no termina en 300 s",
+            "con el digest nuevo de `ateom-gvisor` y listo tras las 30 lecturas del paso 12",
             "o la prueba de humo falla",
             "Un worker viejo en `Terminating` no es un fallo",
         ):
@@ -2272,31 +2506,95 @@ class WindowAuditDocsTests(unittest.TestCase):
             self.assertIn(fragment, tarea)
         self.assertIn("credential_directory: /etc/dockerswarm/ax", contract)
 
-    def test_ate_setup_memory_is_measured_or_accepted_and_its_oom_is_read(self) -> None:
+    def test_ate_setup_memory_is_stated_as_measured_and_accepted_and_its_oom_is_read(
+        self,
+    ) -> None:
         zero = flat(step_text(0))
         for fragment in (
-            "medido en un clúster kind desechable con los pines nuevos",
+            # The fact: when, where, with what, and what the runs are.
+            "Hay una medida, del 2026-10-12, de una ejecución desechable de la CI",
+            "en un clúster kind con los pines nuevos y los límites del laboratorio",
+            "(192 MiB sin swap, 0,5 CPU, 256 PIDs, 600 s por rollout y 6 480 s en total)",
+            "que no se fusionó ni es una receta",
+            "38249431882, 38251504380 y 38254971937 de `apptolast/DockerSwarmInfrastrcture`",
+            "son solo la evidencia",
+            # The numbers.
+            "58 765 312 bytes (56,0 MiB, el 29,2 % del tope)",
+            "contra 49,6 y 51,9 MiB con los pines anteriores",
+            "sin OOM",
+            "el contador `max` de `memory.events` a 0",
+            "un margen de 3,4 veces",
+            "seis cargas sustituidas al actualizar y las doce listas",
+            "un reinicio de `postgres-0` por una carrera de arranque",
+            "Es el `memory_peak_bytes` que imprime el gestor",
+            # What it does not prove.
+            "Lo que esa medida no prueba",
+            "ningún worker vivo durante el relevo de `atelet`",
+            "ni AX sobre Substrate",
+            "ni un clúster poblado con los objetos de AX",
+            "ni este kernel ni este Docker",
+            "ni la marcha atrás",
+            # The gate, and the slot of the record.
+            "la aceptación explícita del propietario",
+            "acepta, en el registro de la ventana, que la medida vale para este host",
+            "para el `ate-setup` nuevo y para el anterior de la marcha atrás",
+            "y sin ella no se pasa del paso 0",
             "como mucho 134 MiB (140 509 184 bytes)",
             "un margen de al menos 58 MiB, el 30 % del tope",
-            "`memory_peak_bytes`",
-            "la aceptación explícita del propietario",
-            "la aceptación cubre los dos",
-            "«Pico de `ate-setup`»",
+            "«Pico de `ate-setup`» del registro lleva la medida de la CI (56,0 MiB)",
+            "la aceptación (quién y cuándo)",
+            "el `memory_peak_bytes` que informe la instalación real",
+            "en un apply correcto el rol no lo imprime y se anota «no informado»",
+            "solo un fallo lo deja a la vista",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, zero)
-        # The threshold is the cap less 30 %, in MiB and in bytes.
+        # It is not "measured before every run" any more, and nothing asks for
+        # a cluster the host cannot have.
+        self.assertNotIn(
+            "medido en un clúster kind desechable con los pines nuevos", zero
+        )
+        # The numbers are the ones of the runs: the worst peak, from its bytes.
         cap = 192
+        cap_bytes = cap * 1024 * 1024
         self.assertIn(f"memory_limit_mib: {cap}\n", read("config/ax-lab.yml"))
+        peak = 58_765_312
+        self.assertEqual(f"{peak / 1024 / 1024:.1f}".replace(".", ","), "56,0")
+        self.assertEqual(f"{100 * peak / cap_bytes:.1f}".replace(".", ","), "29,2")
+        self.assertEqual(f"{cap_bytes / peak:.1f}".replace(".", ","), "3,4")
+        # The runs with the old pins, in the same unit as the peak above.
+        controls = [
+            f"{control / 1024 / 1024:.1f}" for control in (52_043_776, 54_452_224)
+        ]
+        self.assertEqual(controls, ["49.6", "51.9"])
+        # The bar the window keeps: the cap less 30 %, in MiB and in bytes, and
+        # the measurement is far inside it.
         limit = 134
         self.assertGreaterEqual((cap - limit) / cap, 0.30)
         self.assertLess((cap - (limit + 1)) / cap, 0.30)
         self.assertEqual(limit * 1024 * 1024, 140_509_184)
-        # The stale text is gone: it runs under 192 MiB, and never ran there.
+        self.assertLess(peak, limit * 1024 * 1024)
+        self.assertLess(peak / cap_bytes, 0.30)
+        # The stale text is gone: it runs under 192 MiB, never ran there on this
+        # host, and was measured once, off the host.
         install = flat(section("### Instalación de Substrate", read("docs/AX.md")))
         self.assertIn("192 MiB sin swap (96 MiB reservados)", install)
         self.assertNotIn("256 MiB sin swap", install)
-        self.assertIn("Su consumo real no se ha medido nunca", install)
+        self.assertIn("En este host su consumo real no se ha medido nunca", install)
+        self.assertIn("el peor pico fue de 56,0 MiB, el 29,2 % del tope", install)
+        risk = flat(section("### Riesgo aceptado"))
+        self.assertNotIn("exige haber medido", risk)
+        self.assertNotIn(
+            "o la aceptación explícita del propietario de no haberlo hecho", risk
+        )
+        for fragment in (
+            "El paso 0 dice qué prueba esa medida y qué no",
+            "exige que el propietario acepte, en el registro de la ventana, que vale para este host",
+            "el relevo de `atelet` con workers vivos",
+            "el riesgo operativo principal de la ventana",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, risk)
         criteria = flat(section("### Criterios de aborto"))
         for fragment in (
             "tarea fallida «Install Substrate with the pinned ate-setup only on drift»",
@@ -2305,6 +2603,7 @@ class WindowAuditDocsTests(unittest.TestCase):
             "`aborted` (`timeout` o `mem_available_floor`",
             "201 326 592 bytes del tope de 192 MiB",
             "el rol no imprime ese resultado ni lo guarda",
+            "de ahí que el paso 0 se apoye en la medida de la CI y en la aceptación del propietario",
             "Un fallo así no deja contenedor",
             "`installing` en `state/substrate.json`",
             "No se reintenta a ciegas",
@@ -2313,7 +2612,7 @@ class WindowAuditDocsTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, criteria)
-        self.assertEqual(cap * 1024 * 1024, 201_326_592)
+        self.assertEqual(cap_bytes, 201_326_592)
         # The keys the text names are the keys the manager prints.
         printed = manager.Outcome().metrics()
         for key in (
@@ -2362,6 +2661,11 @@ class WindowAuditDocsTests(unittest.TestCase):
             "lab_memory >\"${WORK}/memory.txt\" || stop 'la línea base de memoria'",
             baseline,
         )
+        # The directory is root-only, 0700, and made before anything is put in it.
+        self.assertEqual(
+            baseline[0],
+            'must sudo -- install -d -o root -g root -m 0700 "${RELOCK}/baseline"',
+        )
         eleven = flat(step_text(11))
         positions(
             self,
@@ -2389,7 +2693,16 @@ class WindowAuditDocsTests(unittest.TestCase):
         ):
             self.assertIn(fragment, criteria)
         zero = flat(step_text(0))
-        self.assertIn("está saturado por la caché de página", zero)
+        # What it says of memory.peak is that it is not informative, not only
+        # why: "no sirve" / "no informa y no se anota".
+        for fragment in (
+            "El `memory.peak` del nodo no sirve para eso",
+            "está saturado por la caché de página (supera su propio `memory.max`)",
+            "así que no informa y no se anota",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, zero)
+        self.assertNotIn("El `memory.peak` del nodo sirve", zero)
         compare = flat(block_with(STEP_12_COMPARE, without="worker_gate"))
         for fragment in (
             'baseline/memory.txt" | oom_lines',
@@ -2449,7 +2762,7 @@ class WindowAuditDocsTests(unittest.TestCase):
                 "office_idle lab_scopes host_memory",
                 f"{DEPLOY} --check",
                 f"{DEPLOY} --confirm-production",
-                '--registry localhost:5001 --layout "${LAYOUT}" --tag "${TAG_SUB}" "${OLD_SUB[@]}"',
+                '--registry 127.0.0.1:5001 --layout "${LAYOUT}" --tag "${TAG_SUB}" "${OLD_SUB[@]}"',
                 'expect_pinned 7 "${OUT}"',
                 '"${OLD_KO[@]}" "${BUILDX[@]}"',
                 'expect_pinned 4 "${OUT}"',
@@ -2487,7 +2800,7 @@ class WindowAuditDocsTests(unittest.TestCase):
         self.assertNotIn("NEW_", code)
         self.assertNotIn("CLI_NEW", code)
         # The before-apply variant ends on a --check from PREV with nothing to do.
-        before = statements(block_with('record_is "${PREV:?}"\nmust ./scripts'))
+        before = statements(block_with(ROLLBACK_BEFORE))
         self.assertEqual(before[-1], f"must {DEPLOY} --check")
         self.assertIn("`changed=0`", text)
 
@@ -2645,6 +2958,7 @@ class WindowAuditDocsTests(unittest.TestCase):
             "load_facts",
             "save_window",
             "record_is",
+            "deployed_last",
             "office_path",
             "office_idle",
             "lab_scopes",
@@ -2671,6 +2985,559 @@ class WindowAuditDocsTests(unittest.TestCase):
         )
 
 
+def normalized(block: str) -> list[str]:
+    """The statements of a block, each on one line with single spaces."""
+    return [" ".join(line.split()) for line in statements(block)]
+
+
+SPAN = re.compile(r"`([^`]+)`")
+
+
+def messages(text: str) -> set[str]:
+    """The backticked spans of a text that are more than one word (no fences)."""
+    unfenced = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    return {span for span in SPAN.findall(flat(unfenced)) if " " in span}
+
+
+# What step 10, and the abort criterion about it, may quote from the role: the
+# five reports --check prints (main.yml, inspect.yml, web_read.yml,
+# node_core_pattern_read.yml), and the lines that must NOT show up.
+STEP_10_PRINTED = {
+    "the existing node has its reviewed preboot sysctl mask",
+    (
+        "then, only where they differ: proxy_arp, proxy_ndp, the registry mirror and"
+        " the local-registry-hosting ConfigMap inside the node"
+    ),
+    "restore into the registry: <imagen>",
+    "install Substrate with ate-setup: state, workloads",
+    "AX is read once the lab node runs and Substrate matches its pinned install",
+    "the web panel is read once AX matches its pinned install",
+    "ax-web-edge runs as reviewed",
+}
+STEP_10_NOT_PRINTED = {
+    "back up from the registry",
+    "in neither backup nor registry",
+    "the apply stops",
+    "build with the fallback toolbox",
+    "kind create cluster",
+}
+# Backticked, so they are quoted as lines of the output; not code.
+STEP_10_CODE = {"git diff --stat"}
+# Role messages of the AX plan that a --check at step 10 cannot print (AX is
+# read only once Substrate matches), so no span of step 10 may start with them.
+AX_PLAN_ONLY = (
+    "apply AX server-side",
+    "AX matches its pinned install",
+    "recreate",
+    "set --route-timeout",
+    "set --",
+    "apply the web panel server-side",
+    "the web panel matches its pinned install",
+)
+
+
+class WindowSecondRoundDocsTests(unittest.TestCase):
+    """What the second round of reviews found, held in the text."""
+
+    # -- The registry is read at its address, not at `localhost` ---------------
+    def test_no_registry_argument_of_the_window_names_localhost(self) -> None:
+        text = flat(window())
+        arguments = re.findall(r"--registry (\S+)", text)
+        # Step 12 (two sets) and the verification after the rollback (two).
+        self.assertEqual(len(arguments), 4, arguments)
+        self.assertEqual(set(arguments), {"127.0.0.1:5001"})
+        reads = re.findall(r"image-status --image-set (\S+) --registry (\S+)", text)
+        self.assertEqual(len(reads), 4, reads)
+        for block in bash_blocks(window()):
+            self.assertNotIn("localhost", block)
+        # And why: the host resolves `localhost` to ::1 first, which is closed.
+        twelve = flat(step_text(12))
+        for fragment in (
+            "`127.0.0.1:5001`, nunca por `localhost`",
+            "resuelve primero a `::1`",
+            "120 s de conexión por imagen",
+            "unos 22 minutos sin imprimir nada",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, twelve)
+        # The role names it the same way.
+        self.assertIn("127.0.0.1", read("ansible/roles/ax_lab/tasks/images_read.yml"))
+
+    # -- The rollback starts by lifting the STOP that sent the operator there --
+    def test_the_rollback_block_leads_with_the_decision_to_go_back(self) -> None:
+        lines = statements(block_with(ROLLBACK))
+        self.assertEqual(lines[0], "HALT=")
+        self.assertEqual(lines.count("HALT="), 1)
+        prose = flat(
+            section("### Marcha atrás de la ventana de resiembra").split("```bash", 1)[
+                0
+            ]
+        )
+        self.assertIn("con la decisión de volver atrás, que levanta el `STOP`", prose)
+
+    # -- Step 10 quotes the role, no more than the role prints in --check ------
+    def test_step_ten_and_its_criterion_quote_only_what_the_role_prints(self) -> None:
+        # The classifier is not vacuous: the lines kept out are lines of the role.
+        plan = read("ansible/roles/ax_lab/tasks/main.yml")
+        panel = read("ansible/roles/ax_lab/tasks/web_read.yml")
+        for forbidden in (
+            "apply AX server-side: ",
+            "AX matches its pinned install",
+            '"recreate "',
+            '"set " ~ ax_lab_ax_router_arg',
+        ):
+            with self.subTest(role_line=forbidden):
+                self.assertIn(forbidden, plan)
+        self.assertIn("apply the web panel server-side: ", panel)
+        self.assertIn("the web panel matches its pinned install", panel)
+        step = step_text(10)
+        self.assertEqual(
+            messages(step),
+            STEP_10_PRINTED | STEP_10_NOT_PRINTED | STEP_10_CODE,
+        )
+        criteria = section("### Criterios de aborto")
+        item = next(
+            part
+            for part in re.split(r"\n- ", criteria)
+            if part.startswith("el `--check` del paso 10")
+        )
+        self.assertEqual(
+            messages(item),
+            {
+                "back up from the registry",
+                "in neither backup nor registry",
+                "the apply stops",
+                "restore into the registry",
+                "git diff --stat",
+            },
+        )
+        # Nowhere in the criteria either (the rollback section may: after a failed
+        # apply a --check does read AX).
+        for span in messages(criteria):
+            with self.subTest(criteria_span=span):
+                self.assertFalse(span.startswith(AX_PLAN_ONLY), span)
+        # Step 10 may say that those lines are NOT printed, but never quote one
+        # of the lines that only the apply (or AX read once Substrate matches)
+        # produces, as something to see.
+        for text in (messages(step), messages(item)):
+            for span in text:
+                with self.subTest(span=span):
+                    self.assertFalse(span.startswith(AX_PLAN_ONLY), span)
+        # The whole-step wording that the audit disproved stays out.
+        flat_step = flat(step)
+        for phrase in ("apply AX server-side", "set --route-timeout", "recreate "):
+            self.assertNotIn(f"`{phrase}", flat_step)
+
+    # -- The blocks that open the window and every apply, statement by statement
+    def test_the_ordered_statements_of_the_reads_are_pinned(self) -> None:
+        markers = MARKERS_GUARD
+        self.assertEqual(
+            normalized(block_with(STEP_0_START)),
+            [
+                markers,
+                "lock_free",
+                "office_idle",
+                "lab_idle",
+                "host_memory",
+                "deployed_last",
+            ],
+        )
+        self.assertEqual(
+            normalized(block_with(STEP_11_READS)),
+            [
+                markers,
+                "lock_free",
+                'record_is "${PREV:?}"',
+                "office_idle",
+                "lab_idle",
+                "host_memory",
+                "no_transient",
+            ],
+        )
+        self.assertEqual(
+            normalized(block_with(ROLLBACK_PREV)),
+            [
+                markers,
+                "lock_free",
+                'record_is "${PREV:?}" ${MERGE:+"${MERGE}"}',
+                "office_idle",
+                "lab_scopes",
+                "host_memory",
+                "no_transient",
+                f"must {DEPLOY} --check",
+            ],
+        )
+        self.assertEqual(
+            normalized(block_with(ROLLBACK_BEFORE)),
+            [
+                markers,
+                'record_is "${PREV:?}"',
+                "deployed_last",
+                f"must {DEPLOY} --check",
+            ],
+        )
+
+    def test_the_ordered_statements_of_the_baseline_and_the_recovery_are_pinned(
+        self,
+    ) -> None:
+        self.assertEqual(
+            normalized(block_with(STEP_11_BASELINE)),
+            [
+                'must sudo -- install -d -o root -g root -m 0700 "${RELOCK}/baseline"',
+                "lab_memory >\"${WORK}/memory.txt\" || stop 'la línea base de memoria'",
+                "pod_table unreplaced >\"${WORK}/restarts.txt\" || stop 'los reinicios'",
+                "pod_table replaced >\"${WORK}/replaced.txt\" || stop 'los pods sustituidos'",
+                "for file in memory restarts replaced; do",
+                (
+                    'must sudo -- install -m 0600 -o root -g root "${WORK}/${file}.txt"'
+                    ' "${RELOCK}/baseline/"'
+                ),
+                "done",
+                'must cat "${WORK}/memory.txt" "${WORK}/restarts.txt"',
+            ],
+        )
+        recovery = normalized(one_block(section("### Recuperar la shell"), RECOVER))
+        self.assertEqual(
+            recovery,
+            [
+                (
+                    'sudo -- test -f "${RELOCK}/window.env"'
+                    ' || stop "falta ${RELOCK}/window.env: el paso 2 no llegó a guardarlo"'
+                ),
+                "PR_HEAD='' PREV='' MERGE=''",
+                "while IFS='=' read -r key value; do",
+                'case "${key}" in',
+                'PR_HEAD | PREV | MERGE) printf -v "${key}" \'%s\' "${value}" ;;',
+                '*) stop "window.env trae una clave desconocida: ${key}" ;;',
+                "esac",
+                'done < <(sudo -- cat "${RELOCK}/window.env")',
+                (
+                    '[[ "${PR_HEAD}" =~ ^[0-9a-f]{40}$ && "${PREV}" =~ ^[0-9a-f]{40}$ ]]'
+                    " || stop 'window.env no trae PR_HEAD y PREV completos'"
+                ),
+                (
+                    '[[ -z "${MERGE}" || "${MERGE}" =~ ^[0-9a-f]{40}$ ]]'
+                    " || stop 'el MERGE de window.env no es un commit completo'"
+                ),
+                'must git cat-file -e "${PREV}^{commit}"',
+                'must git merge-base --is-ancestor "${PREV}" "${PR_HEAD}"',
+                "WORK=$(mktemp -d) || stop 'mktemp'",
+                "for file in sub-old sub-new ax-old ax-new; do",
+                'must sudo -- cat "${RELOCK}/plans/${file}.json" >"${WORK}/${file}.json"',
+                "done",
+                'must mkdir -p "${WORK}/prev/config"',
+                (
+                    'must sudo -- cat "${RELOCK}/plans/ax-lab-old.yml"'
+                    ' >"${WORK}/prev/config/ax-lab.yml"'
+                ),
+                "OLD_CFG=${WORK}/prev/config/ax-lab.yml",
+                'load_plans "${WORK}"',
+                'load_facts "${WORK}" "${OLD_CFG}"',
+                (
+                    "printf 'PR_HEAD=%s PREV=%s MERGE=%s HALT=[%s]\\n'"
+                    ' "${PR_HEAD}" "${PREV}" "${MERGE}" "${HALT}"'
+                ),
+            ],
+        )
+
+    def test_the_functions_that_read_the_host_are_pinned_statement_by_statement(
+        self,
+    ) -> None:
+        blocks = bash_blocks(window())
+        self.assertEqual(
+            normalized(function_body(blocks, "lab_scopes")),
+            [
+                (
+                    "lab_scopes() { # sin ax-tarea ni ax en marcha: una lectura local"
+                    " de systemd"
+                ),
+                (
+                    "out systemctl list-units --type=scope --state=active --plain"
+                    " --no-legend --no-pager 'ax-tarea-*' 'ax-cli-*' || return 1"
+                ),
+                "[[ -z \"${OUT}\" ]] || stop 'hay un ax-tarea o un ax en marcha'",
+                "}",
+            ],
+        )
+        self.assertEqual(
+            normalized(function_body(blocks, "lock_free"))[1:],
+            [
+                "local status=0",
+                "if ! sudo -- test -x /usr/bin/fuser; then",
+                "stop 'falta /usr/bin/fuser (paquete psmisc): no se puede leer el lock'",
+                "return 1",
+                "fi",
+                (
+                    "sudo -- /usr/bin/fuser /run/lock/dockerswarm-iac.lock >/dev/null 2>&1"
+                    " || status=$?"
+                ),
+                'case "${status}" in',
+                "0)",
+                (
+                    "stop 'alguien tiene el lock host-global: otra sesión, validate-iac"
+                    " o lint'"
+                ),
+                ";;",
+                "1) ;;",
+                '*) stop "fuser salió con ${status}: no se puede leer el lock" ;;',
+                "esac",
+                "}",
+            ],
+        )
+        self.assertEqual(
+            normalized(function_body(blocks, "deployed_last"))[1:],
+            [
+                "local playbook revision recorded",
+                (
+                    "playbook=$(sed -n 's/^playbook: \"\\([a-z-]*\\)\"$/\\1/p'"
+                    ' "${DEPLOYED}")'
+                ),
+                (
+                    "revision=$(sed -n 's/^revision: \"\\([a-f0-9]\\{40\\}\\)\"$/\\1/p'"
+                    ' "${DEPLOYED}")'
+                ),
+                (
+                    "recorded=$(sed -n 's/^revision: \"\\([a-f0-9]\\{40\\}\\)\"$/\\1/p'"
+                    ' "${RECORD}")'
+                ),
+                'if [[ -z "${playbook}" || -z "${recorded}" ]]; then',
+                'stop "${DEPLOYED} sin playbook, o ${RECORD} sin commit"',
+                (
+                    'elif [[ "${playbook}" != ax-lab || "${revision}" != "${recorded}" ]];'
+                    " then"
+                ),
+                (
+                    'stop "${DEPLOYED} nombra ${playbook} en ${revision}, no ax-lab en"'
+                    ' "${recorded}: otro playbook corrió el último"'
+                ),
+                "fi",
+                "}",
+            ],
+        )
+        # The patterns are the ones the role writes: playbook and revision.
+        template = read(
+            "ansible/roles/deployment_metadata/templates/deployed-version.yml.j2"
+        )
+        self.assertIn('playbook: "{{ deployment_metadata_playbook }}"', template)
+        self.assertIn('revision: "{{ deployment_metadata_source_revision }}"', template)
+        component = read(
+            "ansible/roles/deployment_metadata/templates/component-version.yml.j2"
+        )
+        self.assertIn(
+            'revision: "{{ deployment_metadata_source_revision }}"', component
+        )
+
+    def test_the_container_removal_is_guarded_by_its_name_check_and_by_must(
+        self,
+    ) -> None:
+        guard = [
+            block
+            for block in bash_blocks(section("### Un marker retenido"))
+            if statements(block) == ["no_transient"]
+        ]
+        self.assertEqual(len(guard), 1)
+        removal = normalized(block_with(TRANSIENT))
+        self.assertEqual(
+            removal,
+            [
+                "LEFTOVER='NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA'",
+                'if [[ "${LEFTOVER}" =~ ^ax-lab-(ate-setup|build-[a-z-]+)$ ]]; then',
+                "HALT=",
+                "else",
+                "stop 'LEFTOVER no es un contenedor transitorio del gestor'",
+                "fi",
+                (
+                    'out sudo -- /usr/bin/docker ps --all --filter "name=^${LEFTOVER}\\$"'
+                    " --filter status=exited --format '{{.Names}}'"
+                ),
+                'if [[ -z "${HALT}" && "${OUT}" != "${LEFTOVER}" ]]; then',
+                'stop "${LEFTOVER} no está parado: se espera"',
+                "fi",
+                'must sudo -- /usr/bin/docker logs --tail 200 "${LEFTOVER}"',
+                (
+                    "must sudo -- /usr/bin/python3"
+                    " scripts/host_global_operation_lock.py run"
+                    " --operation ax-lab-transient -- /usr/bin/docker rm"
+                    ' "${LEFTOVER}"'
+                ),
+                "no_transient",
+            ],
+        )
+        # The STOP is only lifted inside the branch of a name the manager owns,
+        # and nothing outside `if`, `must`, `out` and the guard runs a command.
+        self.assertEqual(removal.index("HALT="), 2)
+        marker = flat(section("### Un marker retenido"))
+        for fragment in (
+            "Se pega sola, y su salida dice el nombre del contenedor",
+            "en un host limpio no imprime nada y no hace falta nada más",
+            "se pega este segundo bloque, solo entonces",
+            "pero solo si el nombre es el de un transitorio del gestor",
+            "el `STOP` sigue y nada de lo que viene después corre",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, marker)
+        # The guard is first, and the removal is the second block, in that order.
+        text = section("### Un marker retenido")
+        self.assertLess(text.index("\nno_transient\n```"), text.index("LEFTOVER='"))
+
+    # -- Step 12 and the rollback verification pin both sets -------------------
+    def test_step_twelve_asserts_the_pins_of_both_sets_in_the_registry(self) -> None:
+        block = normalized(one_block(step_text(12), "expect_pinned 7"))
+        self.assertEqual(
+            block[:4],
+            [
+                (
+                    "out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py"
+                    " image-status --image-set substrate --registry 127.0.0.1:5001"
+                    ' --layout "${LAYOUT}" --tag "${TAG_SUB}" "${NEW_SUB[@]}"'
+                ),
+                'expect_pinned 7 "${OUT}"',
+                (
+                    "out sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py"
+                    " image-status --image-set ax --registry 127.0.0.1:5001"
+                    ' --layout "${LAYOUT}" --tag "${TAG_AX}" "${NEW_KO[@]}" "${BUILDX[@]}"'
+                ),
+                'expect_pinned 4 "${OUT}"',
+            ],
+        )
+        self.assertNotIn("expect_complete", "\n".join(block))
+        # The same on the way back, with the old pins.
+        back = normalized(
+            one_block(
+                section("### Marcha atrás de la ventana de resiembra"),
+                "expect_pinned 7",
+            )
+        )
+        self.assertEqual(back[1], 'expect_pinned 7 "${OUT}"')
+        self.assertEqual(back[3], 'expect_pinned 4 "${OUT}"')
+        self.assertIn('"${OLD_SUB[@]}"', back[0])
+        self.assertIn('"${OLD_KO[@]}"', back[2])
+
+    # -- The abort criteria cover what no rollback does -------------------------
+    def test_an_abort_before_the_forget_resumes_the_queue(self) -> None:
+        criteria = section("### Criterios de aborto")
+        item = next(
+            part
+            for part in re.split(r"\n- ", criteria)
+            if part.startswith("falla una orden o una aserción de los pasos 1 a 8")
+        )
+        text = flat(item)
+        for fragment in (
+            "Antes del `forget` (pasos 1 a 4) la copia viva no se ha tocado",
+            "no hay marcha atrás que reanude la cola",
+            "hay que reanudar la cola y leerla de vuelta (el último bloque del paso 13)",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+        # The reads that stop the window before it starts leave the queue
+        # paused just the same, and say so.
+        self.assertIn(
+            "Si la ventana no sigue, la cola se reanuda como en el primer punto",
+            flat(criteria),
+        )
+        rules = flat(section("### Reglas de la ventana de resiembra"))
+        self.assertIn(
+            "o al abortar antes del `forget`, donde no hay marcha atrás", rules
+        )
+
+    # -- `ax tunnel list` is no guard -------------------------------------------
+    def test_ax_tunnel_list_is_not_a_guard_of_the_window(self) -> None:
+        for block in bash_blocks(window()):
+            self.assertNotIn("tunnel", block)
+        criteria = flat(section("### Criterios de aborto"))
+        self.assertNotIn("una Task, un túnel", criteria)
+        self.assertIn("(un túnel es un scope `ax-cli-*`)", criteria)
+        rollback = flat(section("### Marcha atrás de la ventana de resiembra"))
+        self.assertNotIn("los scopes y los túneles son locales", rollback)
+        self.assertIn(
+            "los scopes son locales y no ejecutan la CLI de AX, que tras el paso 11 es"
+            " la nueva",
+            rollback,
+        )
+        # The repository says the same of the command, and why.
+        self.assertIn(
+            "`ax tunnel list` siempre sale vacío, a propósito",
+            read("ansible/roles/ax_lab/templates/ejemplos/LEEME.md.j2"),
+        )
+        self.assertIn(
+            "AX_HOME=$(mktemp -d", read("ansible/roles/ax_lab/templates/ax/ax.sh.j2")
+        )
+
+    # -- What the CI saw of postgres ----------------------------------------------
+    def test_a_postgres_restart_is_read_and_not_taken_for_a_rollback(self) -> None:
+        seen = flat(section("### Lo que se ve durante el apply"))
+        for fragment in (
+            (
+                "`postgres-0`, que el apply no sustituye, reinició una vez por"
+                " `FailedPostStartHook`"
+            ),
+            "también con los pines anteriores",
+            "ninguna actualización de un clúster asentado añadió otro",
+            "es un reinicio más que la línea base y se lee su causa antes de decidir",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, seen)
+        criteria = flat(section("### Criterios de aborto"))
+        for fragment in (
+            (
+                "un reinicio de `postgres-0` por `FailedPostStartHook` es una carrera de"
+                " arranque que la CI vio también con los pines anteriores"
+            ),
+            "se lee su causa antes de decidir",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, criteria)
+
+    # -- The last invocation of any playbook ------------------------------------
+    def test_the_last_invocation_record_is_read_and_its_exception_is_written(
+        self,
+    ) -> None:
+        zero = flat(step_text(0))
+        for fragment in (
+            (
+                "`deployed_last`, que solo va aquí y antes del `--check` de la marcha"
+                " atrás anterior al apply"
+            ),
+            "lee `DEPLOYED_VERSION.yml`, que cada playbook reescribe",
+            (
+                "se detiene si el último fue otro que `ax-lab` o no está en el commit"
+                " del registro"
+            ),
+            "seguir con `HALT=` es aceptarlo sabiéndolo",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, zero)
+        rollback = flat(section("### Marcha atrás de la ventana de resiembra"))
+        for fragment in (
+            (
+                "o `changed=1` si en el paso 0 se aceptó con `HALT=` que"
+                " `DEPLOYED_VERSION.yml` nombraba a otro playbook"
+            ),
+            "`deployed_last` lo vuelve a leer antes",
+            "uno más si en el paso 0 se aceptó lo de `DEPLOYED_VERSION.yml`",
+            "(o `changed=1`, lo de `DEPLOYED_VERSION.yml` aceptado en el paso 0)",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, rollback)
+        criteria = flat(section("### Criterios de aborto"))
+        self.assertIn(
+            "`DEPLOYED_VERSION.yml` con otro playbook que `ax-lab` como último",
+            criteria,
+        )
+        self.assertIn(
+            "`MemAvailable` por debajo de 3 GiB; `fuser` ausente; un contenedor"
+            " transitorio del gestor;",
+            criteria,
+        )
+        self.assertIn(
+            "si se acepta, se levanta con `HALT=` y se pega solo la última orden"
+            " del bloque",
+            rollback,
+        )
+        rules = flat(section("### Reglas de la ventana de resiembra"))
+        self.assertIn("(`deployed_last` lo lee en el paso 0)", rules)
+
+
 def yaml_load(text: str) -> Any:
     import yaml
 
@@ -2693,7 +3560,12 @@ EXECUTION_TOOLS = ("bash", "jq", "sha256sum", "find", "grep")
     all(shutil.which(tool) for tool in EXECUTION_TOOLS)
     and all(
         Path(path).exists()
-        for path in ("/usr/bin/python3", "/usr/bin/install", "/usr/bin/cp")
+        for path in (
+            "/usr/bin/python3",
+            "/usr/bin/install",
+            "/usr/bin/cp",
+            "/usr/bin/mv",
+        )
     ),
     "the window's tools are not installed",
 )
@@ -2797,6 +3669,78 @@ class WindowExecutionTests(unittest.TestCase):
         host.assert_clean(self, result)
         host.assert_live(self, "old")
         self.assertEqual(host.cli.read_bytes(), host.CLI_OLD)
+
+    def test_the_rollback_runs_after_a_stop_at_every_step_that_changed_something(
+        self,
+    ) -> None:
+        # An operator reaches the rollback through a STOP, so the first line of
+        # its block, `HALT=`, is the way back: without it every `must` of the
+        # block answers "STOP previo" and nothing is restored.
+        rollback = block_with(ROLLBACK)
+        self.assertEqual(statements(rollback)[0], "HALT=")
+        self.assertTrue(rollback.startswith("HALT=\n"))
+        blind = rollback.removeprefix("HALT=\n")
+        stages = {
+            "after the forget": [STEP_5],
+            "after the seed": [STEP_5, STEP_6],
+            "after the CLI": [STEP_5, STEP_6, STEP_8],
+        }
+        for label, steps in stages.items():
+            with self.subTest(stage=label):
+                host = Sandbox(self)
+                self.snapshot(host)
+                result = host.run(
+                    *(block_with(step) for step in steps),
+                    "stop 'a failed step'",
+                    rollback,
+                )
+                self.assertIn("STOP: a failed step", result.output)
+                self.assertEqual(result.halt, "", result.output)
+                self.assertFalse(host.marker, result.output)
+                self.assertEqual(
+                    [call for call in host.calls() if call["code"] != 0], []
+                )
+                host.assert_live(self, "old")
+                self.assertEqual(host.cli.read_bytes(), host.CLI_OLD)
+                # The control: the same paste, without the first line, goes
+                # nowhere, and what was done stays done.
+                held = Sandbox(self)
+                self.snapshot(held)
+                result = held.run(
+                    *(block_with(step) for step in steps),
+                    "stop 'a failed step'",
+                    blind,
+                )
+                self.assertEqual(result.halt, "a failed step", result.output)
+                self.assertIn("STOP previo, no se ejecuta", result.output)
+                for name in held.moved():
+                    self.assertNotEqual(held.named(name), held.old[name]["digest"])
+
+    def test_the_corrupt_blob_fallback_puts_the_whole_snapshot_back(self) -> None:
+        host = Sandbox(self)
+        self.snapshot(host)
+        self.apply(host)
+        fallback = one_block(
+            section("### Marcha atrás de la ventana de resiembra"),
+            "ASIDE=${LAYOUT}.aparte-",
+        )
+        new_index = (host.live / "index.json").read_bytes()
+        result = host.run(fallback)
+        host.assert_clean(self, result)
+        host.assert_live(self, "old")
+        # The damaged copy is kept aside, not deleted.
+        aside = list(host.live.parent.glob("images.aparte-*"))
+        self.assertEqual(len(aside), 1)
+        self.assertEqual((aside[0] / "index.json").read_bytes(), new_index)
+        # What the loop of the rollback still has to do is the CLI, and the
+        # whole of it passes on the restored copy without asking the lock for
+        # the images again.
+        self.assertEqual(host.cli.read_bytes(), host.CLI_NEW)
+        asked = len(host.calls())
+        again = host.run(block_with(ROLLBACK))
+        host.assert_clean(self, again)
+        self.assertEqual(host.cli.read_bytes(), host.CLI_OLD)
+        self.assertEqual(len(host.calls()), asked + 1)
 
     def test_the_rollback_loop_before_the_guards_locked_itself_out(self) -> None:
         # The control: the loop the window had, on the state a window stopped
@@ -3011,9 +3955,11 @@ class WindowReadsExecutionTests(unittest.TestCase):
                 ),
                 "AX tiene Tasks",
             ),
-            "AX has a tunnel": (
-                lambda h: (h.root / "world/tunnels").write_text("PID  LOCAL  REMOTE\n"),
-                "AX tiene túneles",
+            "an ax (a tunnel is its scope) is running": (
+                lambda h: (h.root / "world/scopes").write_text(
+                    "ax-cli-4242-1.scope loaded active running ax\n"
+                ),
+                "ax-tarea o un ax en marcha",
             ),
             "an ax-tarea is running": (
                 lambda h: (h.root / "world/scopes").write_text(
@@ -3042,31 +3988,52 @@ class WindowReadsExecutionTests(unittest.TestCase):
     def test_a_holder_of_the_global_lock_stops_the_reads(self) -> None:
         host = Sandbox(self)
         host.assert_clean(self, host.run("lock_free"))
-        holder = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import fcntl, sys, time\n"
-                    "handle = open(sys.argv[1])\n"
-                    "fcntl.flock(handle, fcntl.LOCK_EX)\n"
-                    "print('held', flush=True)\n"
-                    "time.sleep(120)\n"
-                ),
-                str(host.root / "run/lock"),
-            ],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        self.addCleanup(holder.wait)
-        self.addCleanup(holder.kill)
-        self.assertEqual(holder.stdout.readline().strip(), "held")
-        result = host.run(self.start_block())
-        self.assertTrue(result.halt, result.output)
-        self.assertIn("alguien tiene el lock host-global", result.output)
-        holder.kill()
-        holder.wait()
+        with holding(host.root / "run/lock"):
+            result = host.run(self.start_block())
+            self.assertTrue(result.halt, result.output)
+            self.assertIn("alguien tiene el lock host-global", result.output)
         host.assert_clean(self, host.run(self.start_block()))
+
+    @unittest.skipUnless(Path("/usr/bin/fuser").exists(), "psmisc is not installed")
+    def test_lock_free_with_the_real_fuser(self) -> None:
+        # The same read with the tool of the host, where it is installed: free
+        # is exit 1, held is exit 0, and a file nobody can read is neither.
+        host = Sandbox(self)
+        host.real_fuser = True
+        host.assert_clean(self, host.run("lock_free"))
+        with holding(host.root / "run/lock"):
+            held = host.run("lock_free")
+            self.assertIn("alguien tiene el lock host-global", held.output)
+            self.assertTrue(held.halt)
+
+    def test_lock_free_stops_when_fuser_cannot_tell(self) -> None:
+        # Fail closed: a missing tool, or any exit code but 0 and 1, is not
+        # "free". (The sandbox's fuser answers like the real one: 0 or 1.)
+        host = Sandbox(self)
+        for code in (0, 2, 127):
+            with self.subTest(code=code):
+                host.settle()
+                (host.root / "world/fuser.rc").write_text(str(code))
+                result = host.run("lock_free\nmust echo not reached")
+                self.assertTrue(result.halt, result.output)
+                self.assertIn(
+                    "STOP previo, no se ejecuta: echo not reached", result.output
+                )
+                if code == 0:
+                    self.assertIn("alguien tiene el lock host-global", result.output)
+                else:
+                    self.assertIn(f"fuser salió con {code}", result.output)
+        host.settle()
+        (host.root / "world/fuser.rc").write_text("1")
+        host.assert_clean(self, host.run("lock_free"))
+        host.settle()
+        (host.root / "bin/fuser").unlink()
+        missing = host.run("lock_free\nmust echo not reached")
+        # (The sandbox maps /usr/bin/fuser to its own, so the name differs.)
+        self.assertIn("STOP: falta ", missing.output)
+        self.assertIn("/bin/fuser (paquete psmisc)", missing.output)
+        self.assertTrue(missing.halt, missing.output)
+        self.assertIn("STOP previo, no se ejecuta: echo not reached", missing.output)
 
     def test_three_gib_exactly_is_enough(self) -> None:
         host = Sandbox(self)
@@ -3152,41 +4119,75 @@ class WindowReadsExecutionTests(unittest.TestCase):
         (host.root / "world/containers").write_text("")
         host.assert_clean(self, host.run(block_with(ROLLBACK)))
 
+    @staticmethod
+    def leftover_blocks() -> tuple[str, str]:
+        """The guard pasted alone, and the removal pasted when it named a container."""
+        guard = [
+            block
+            for block in bash_blocks(section("### Un marker retenido"))
+            if statements(block) == ["no_transient"]
+        ]
+        if len(guard) != 1:
+            raise AssertionError("the guard must be a block of its own")
+        return guard[0], block_with(TRANSIENT)
+
+    def test_the_guard_comes_first_and_a_clean_host_needs_no_removal(self) -> None:
+        guard, removal = self.leftover_blocks()
+        placeholder = "NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA"
+        host = Sandbox(self)
+        # A clean host: the guard alone passes, prints nothing, and that is all.
+        clean = host.run(guard)
+        host.assert_clean(self, clean)
+        self.assertEqual(clean.output.strip(), "@@HALT=[]")
+        # The removal is not needed. Pasted by mistake, with its placeholder, it
+        # stops by itself: no docker, no lock, no marker, no error of docker.
+        mistaken = host.run(guard, removal)
+        self.assertTrue(mistaken.halt, mistaken.output)
+        self.assertEqual(
+            mistaken.halt, "LEFTOVER no es un contenedor transitorio del gestor"
+        )
+        self.assertIn(placeholder, removal)
+        self.assertNotIn("No such container", mistaken.output)
+        self.assertNotIn("log of", mistaken.output)
+        self.assertEqual(host.calls(), [])
+        self.assertFalse(host.marker)
+
     def test_a_stopped_container_is_removed_under_the_lock_and_a_running_one_is_not(
         self,
     ) -> None:
-        removal = block_with(TRANSIENT)
+        guard, removal = self.leftover_blocks()
+        placeholder = "NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA"
         host = Sandbox(self)
-        (host.root / "world/containers").write_text("ax-lab-ate-setup\tUp 3 minutes\n")
-        running = host.run(
-            removal.replace(
-                TRANSIENT + "NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA'",
-                "LEFTOVER='ax-lab-ate-setup'",
-            )
+        containers = host.root / "world/containers"
+        # Running: the guard names it and stops, the removal waits and asks
+        # for nothing (a docker rm of a running container would leave the
+        # direct marker).
+        containers.write_text("ax-lab-ate-setup\tUp 3 minutes\n")
+        running = host.run(guard, removal.replace(placeholder, "ax-lab-ate-setup"))
+        self.assertIn(
+            "STOP: contenedor transitorio del gestor: ax-lab-ate-setup", running.output
         )
-        self.assertTrue(running.halt, running.output)
-        self.assertIn("no está parado: se espera", running.output)
-        # Nothing asked the lock: a docker rm of a running container would have
-        # failed and left the direct marker.
+        self.assertEqual(running.halt, "ax-lab-ate-setup no está parado: se espera")
         self.assertEqual(host.calls(), [])
         self.assertFalse(host.marker)
-        self.assertIn("ax-lab-ate-setup", (host.root / "world/containers").read_text())
-        # A name that is not the manager's is refused before anything runs.
-        other = host.run(
-            removal.replace("NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA", "kind-registry")
-        )
-        self.assertIn("no es un contenedor transitorio del gestor", other.output)
-        self.assertEqual(host.calls(), [])
-        # Stopped: the logs, the removal under the lock with its operation, and
-        # the guard passes after it.
-        (host.root / "world/containers").write_text(
-            "ax-lab-ate-setup\tExited (137) 2 minutes ago\n"
-        )
-        stopped = host.run(
-            removal.replace("NOMBRE_QUE_IMPRIMIÓ_LA_GUARDA", "ax-lab-ate-setup")
-        )
-        # The guard at the top of the block prints the name and stops, which is
-        # what it is there for; `HALT=` is the decision, and the end passes.
+        self.assertNotIn("log of", running.output)
+        self.assertIn("ax-lab-ate-setup", containers.read_text())
+        # A name that is not the manager's is refused before anything runs, and
+        # the STOP of the guard stays.
+        containers.write_text("ax-lab-ate-setup\tExited (137) 2 minutes ago\n")
+        for other in ("kind-registry", "ax-lab-ate-setup-old", "ax-lab-builder"):
+            with self.subTest(other=other):
+                refused = host.run(guard, removal.replace(placeholder, other))
+                self.assertTrue(refused.halt, refused.output)
+                self.assertIn(
+                    "LEFTOVER no es un contenedor transitorio del gestor",
+                    refused.output,
+                )
+                self.assertEqual(host.calls(), [])
+                self.assertNotIn("log of", refused.output)
+        # Stopped: the guard names it, the logs, the removal under the lock with
+        # its operation, and the closing guard passes.
+        stopped = host.run(guard, removal.replace(placeholder, "ax-lab-ate-setup"))
         self.assertIn(
             "STOP: contenedor transitorio del gestor: ax-lab-ate-setup", stopped.output
         )
@@ -3198,7 +4199,9 @@ class WindowReadsExecutionTests(unittest.TestCase):
             [call["argv"][:3] for call in host.calls()],
             [["run", "--operation", "ax-lab-transient"]],
         )
-        self.assertEqual((host.root / "world/containers").read_text(), "")
+        self.assertEqual(containers.read_text(), "")
+        # What is left of the host is clean for the guard.
+        host.assert_clean(self, host.run(guard))
 
     def test_the_baseline_and_its_comparison_catch_a_moved_counter_and_a_restart(
         self,
@@ -3232,6 +4235,7 @@ class WindowReadsExecutionTests(unittest.TestCase):
         base = host.run(block_with(STEP_11_BASELINE))
         host.assert_clean(self, base)
         saved = host.relock / "baseline"
+        self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((saved / "memory.txt").stat().st_mode), 0o600)
         memory = (saved / "memory.txt").read_text().splitlines()
         self.assertIn("kind-control-plane memory.events oom_kill 65", memory)
@@ -3318,26 +4322,7 @@ class WindowReadsExecutionTests(unittest.TestCase):
         host.assert_clean(self, host.run(compare))
 
     def test_the_worker_gate_wants_one_ready_pod_with_the_new_digest(self) -> None:
-        def pod(
-            digest: str, *, ready: bool = True, deleting: bool = False
-        ) -> dict[str, Any]:
-            document: dict[str, Any] = {
-                "metadata": {"name": "ax-1"},
-                "spec": {
-                    "containers": [
-                        {"image": f"localhost:5001/ateom-gvisor:{TAG}@{digest}"}
-                    ]
-                },
-                "status": {
-                    "conditions": [
-                        {"type": "Ready", "status": "True" if ready else "False"}
-                    ]
-                },
-            }
-            if deleting:
-                document["metadata"]["deletionTimestamp"] = "2026-10-12T12:00:00Z"
-            return document
-
+        pod = worker_pod
         host = Sandbox(self)
         new = host.old["ateom-gvisor"]["digest"]
         old = sha(b"the old worker")
@@ -3459,12 +4444,14 @@ class WindowReadsExecutionTests(unittest.TestCase):
             (host.root / "run/deploy.log").read_text().splitlines(),
             ["--playbook ax-lab --local --check"],
         )
-        # What does not need it still stops: a scope of ax-tarea, a tunnel,
-        # a job of the Oficina, the memory of the host.
+        # What does not need it still stops: a scope of ax or of ax-tarea, a
+        # job of the Oficina, the memory of the host.
         for label, prepare in {
-            "a tunnel": lambda: (host.root / "world/tunnels").write_text("PID LOCAL\n"),
-            "a scope": lambda: (host.root / "world/scopes").write_text(
-                "ax-cli-1.scope loaded active running\n"
+            "an ax (its tunnels are its scope)": lambda: (
+                host.root / "world/scopes"
+            ).write_text("ax-cli-1.scope loaded active running\n"),
+            "an ax-tarea": lambda: (host.root / "world/scopes").write_text(
+                "ax-tarea-1.scope loaded active running\n"
             ),
             "a job": lambda: host.write_office(
                 paused=True, schedules=[], statuses=["en_curso"]
@@ -3525,12 +4512,372 @@ class WindowReadsExecutionTests(unittest.TestCase):
         # Before the apply nothing else is named: the record names PREV alone.
         host.reset_world()
         host.write_record(host.prev)
-        before = block_with('record_is "${PREV:?}"\nmust ./scripts')
+        before = block_with(ROLLBACK_BEFORE)
         clean = host.run(before)
         host.assert_clean(self, clean)
         host.write_record(host.merge)
         refused = host.run(before)
         self.assertTrue(refused.halt, refused.output)
+
+    # -- The reads that open the window and each apply, block by block ---------
+    # The blocks that decide whether an apply may start are pasted as written,
+    # and each thing that must stop them is put in the host in turn.
+    GUARD_BLOCKS: ClassVar[dict[str, str]] = {
+        "the start of the window": STEP_0_START,
+        "the reads before the apply": STEP_11_READS,
+        "the guards of the PREV apply": ROLLBACK_PREV,
+    }
+
+    def run_guard(self, host: Sandbox, name: str) -> types.SimpleNamespace:
+        anchor = self.GUARD_BLOCKS[name]
+        if anchor == ROLLBACK_PREV:
+            return host.run(block_with(anchor), prelude=f"MERGE={host.merge}\n")
+        return host.run(block_with(anchor))
+
+    def settle_guard(self, host: Sandbox, name: str) -> None:
+        host.settle()
+        if self.GUARD_BLOCKS[name] == ROLLBACK_PREV:
+            # After a good apply the record names the commit of the merge.
+            host.write_record(host.merge)
+
+    def test_every_read_before_an_apply_stops_the_block_that_holds_it(self) -> None:
+        everywhere = tuple(self.GUARD_BLOCKS)
+        later = everywhere[1:]
+        cases: list[tuple[str, Any, str, tuple[str, ...]]] = [
+            (
+                "memory just under 3 GiB",
+                lambda h: (h.root / "meminfo").write_text("MemAvailable: 3145727 kB\n"),
+                "faltan 3 GiB",
+                everywhere,
+            ),
+            (
+                "a marker of the lock wrapper",
+                lambda h: (h.root / "run/direct.marker").write_text("{}"),
+                "test -z",
+                everywhere,
+            ),
+            (
+                "a marker of ansible",
+                lambda h: (h.root / "run/ansible.marker").write_text("{}"),
+                "test -z",
+                everywhere,
+            ),
+            (
+                "an ax is running",
+                lambda h: (h.root / "world/scopes").write_text(
+                    "ax-cli-7-1.scope loaded active running ax\n"
+                ),
+                "ax-tarea o un ax en marcha",
+                everywhere,
+            ),
+            (
+                "an ax-tarea is running",
+                lambda h: (h.root / "world/scopes").write_text(
+                    "ax-tarea-7.scope loaded active running ax-tarea\n"
+                ),
+                "ax-tarea o un ax en marcha",
+                everywhere,
+            ),
+            (
+                "AX has a Task",
+                lambda h: (h.root / "world/tasks").write_text(
+                    "t1  default  Running  a  b  5m\n"
+                ),
+                "AX tiene Tasks",
+                everywhere[:2],
+            ),
+            (
+                "ax-server does not answer (the reads before an apply need it)",
+                lambda h: (h.root / "world/ax-server-down").write_text(""),
+                "connection refused",
+                everywhere[:2],
+            ),
+            (
+                "a job of the Oficina is running",
+                lambda h: h.write_office(
+                    paused=True, schedules=[], statuses=["en_curso"]
+                ),
+                "trabajo en marcha",
+                everywhere,
+            ),
+            (
+                "the queue of the Oficina is not paused",
+                lambda h: h.write_office(paused=False, schedules=[], statuses=[]),
+                "no está en pausa",
+                everywhere,
+            ),
+            (
+                "fuser is not installed",
+                lambda h: (h.root / "bin/fuser").unlink(),
+                "(paquete psmisc): no se puede leer el lock",
+                everywhere,
+            ),
+            (
+                "fuser fails",
+                lambda h: (h.root / "world/fuser.rc").write_text("2"),
+                "fuser salió con 2",
+                everywhere,
+            ),
+            (
+                "a container of the manager is left",
+                lambda h: (h.root / "world/containers").write_text(
+                    "ax-lab-ate-setup\tExited (137) 2 minutes ago\n"
+                ),
+                "contenedor transitorio del gestor",
+                later,
+            ),
+            (
+                "the record moved",
+                lambda h: h.write_record(sha1("an apply of someone else")),
+                "un apply ajeno movió el registro",
+                later,
+            ),
+            (
+                "the last invocation was another playbook",
+                lambda h: h.write_deployed("edge", h.prev),
+                "otro playbook corrió el último",
+                everywhere[:1],
+            ),
+        ]
+        host = Sandbox(self)
+        for name in everywhere:
+            self.settle_guard(host, name)
+            with self.subTest(block=name, case="the idle lab"):
+                host.assert_clean(self, self.run_guard(host, name))
+            for label, prepare, message, blocks in cases:
+                if name not in blocks:
+                    continue
+                with self.subTest(block=name, case=label):
+                    self.settle_guard(host, name)
+                    prepare(host)
+                    result = self.run_guard(host, name)
+                    self.assertTrue(result.halt, result.output)
+                    self.assertIn(message, result.output)
+                    # The check of the PREV apply, the last line of its block,
+                    # was held back by the STOP.
+                    self.assertFalse((host.root / "run/deploy.log").exists())
+
+    def test_a_holder_of_the_lock_stops_each_block_that_holds_a_read(self) -> None:
+        host = Sandbox(self)
+        with holding(host.root / "run/lock"):
+            for name in self.GUARD_BLOCKS:
+                with self.subTest(block=name):
+                    self.settle_guard(host, name)
+                    result = self.run_guard(host, name)
+                    self.assertTrue(result.halt, result.output)
+                    self.assertIn("alguien tiene el lock host-global", result.output)
+                    self.assertFalse((host.root / "run/deploy.log").exists())
+        for name in self.GUARD_BLOCKS:
+            with self.subTest(block=name, holder="gone"):
+                self.settle_guard(host, name)
+                host.assert_clean(self, self.run_guard(host, name))
+
+    def test_the_scope_read_asks_systemd_for_the_active_scopes_of_ax(self) -> None:
+        host = Sandbox(self)
+        # The idle lab has a failed ax-tarea scope and an unrelated active one:
+        # systemd lists them for another question, not for this one.
+        host.assert_clean(self, host.run("lab_scopes"))
+        self.assertEqual(
+            (host.root / "run/systemctl.log").read_text().splitlines(),
+            [
+                (
+                    "list-units --type=scope --state=active --plain --no-legend"
+                    " --no-pager ax-tarea-* ax-cli-*"
+                )
+            ],
+        )
+        everything = host.run("systemctl list-units --type=scope --plain --no-legend")
+        for unit in ("ax-tarea-9.scope", "session-3.scope"):
+            self.assertIn(unit, everything.output)
+        active = host.run(
+            "systemctl list-units --type=scope --state=active --plain --no-legend"
+        )
+        self.assertNotIn("ax-tarea-9.scope", active.output)
+        self.assertIn("session-3.scope", active.output)
+        # Scopes of ax that are not running do not stop the window.
+        (host.root / "world/scopes").write_text(
+            "ax-cli-1-1.scope loaded failed failed ax\n"
+            "ax-tarea-2.scope loaded inactive dead ax-tarea\n"
+            "ax-cli-3-3.scope loaded active exited ax\n"
+        )
+        stopped = host.run("lab_scopes")
+        # (`exited` is still `active` to systemd: that one is running as far as
+        # the read can tell, and it stops.)
+        self.assertTrue(stopped.halt, stopped.output)
+        (host.root / "world/scopes").write_text(
+            "ax-cli-1-1.scope loaded failed failed ax\n"
+            "ax-tarea-2.scope loaded inactive dead ax-tarea\n"
+        )
+        host.assert_clean(self, host.run("lab_scopes"))
+        # The CLI is never run by the scope read: it passes with the CLI down.
+        (host.root / "world/ax-down").write_text("")
+        host.assert_clean(self, host.run("lab_scopes"))
+        self.assertTrue(host.run("lab_idle").halt)
+
+    def test_the_last_invocation_must_be_ax_lab_at_the_commit_of_the_record(
+        self,
+    ) -> None:
+        host = Sandbox(self)
+        host.assert_clean(self, host.run("deployed_last"))
+        elsewhere = sha1("another commit")
+        for label, prepare, message in (
+            (
+                "another playbook ran last",
+                lambda: host.write_deployed("edge", host.prev),
+                f"nombra edge en {host.prev}, no ax-lab en {host.prev}",
+            ),
+            (
+                "ax-lab ran last, at another commit",
+                lambda: host.write_deployed("ax-lab", elsewhere),
+                f"nombra ax-lab en {elsewhere}, no ax-lab en {host.prev}",
+            ),
+            (
+                "the record names no playbook",
+                lambda: (host.root / "DEPLOYED_VERSION.yml").write_text(
+                    f'revision: "{host.prev}"\n'
+                ),
+                "sin playbook",
+            ),
+            (
+                "there is no record at all",
+                (host.root / "DEPLOYED_VERSION.yml").unlink,
+                "sin playbook",
+            ),
+        ):
+            with self.subTest(case=label):
+                host.settle()
+                prepare()
+                result = host.run("deployed_last\nmust echo not reached")
+                self.assertTrue(result.halt, result.output)
+                self.assertIn(message, result.output)
+                self.assertIn(
+                    "STOP previo, no se ejecuta: echo not reached", result.output
+                )
+        host.settle()
+        host.write_deployed("edge", host.prev)
+        self.assertIn("otro playbook corrió el último", host.run("deployed_last").halt)
+        # The decision to go on is HALT=, and it is the operator's.
+        accepted = host.run("deployed_last", "HALT=", "must echo reached")
+        self.assertEqual(accepted.halt, "", accepted.output)
+        self.assertIn("reached", accepted.output.replace("not reached", ""))
+
+    def test_the_rollback_before_the_apply_reads_the_last_invocation_first(
+        self,
+    ) -> None:
+        host = Sandbox(self)
+        block = block_with(ROLLBACK_BEFORE)
+        host.assert_clean(self, host.run(block))
+        self.assertEqual(
+            (host.root / "run/deploy.log").read_text().splitlines(),
+            ["--playbook ax-lab --local --check"],
+        )
+        host.settle()
+        host.write_deployed("edge", host.prev)
+        stopped = host.run(block)
+        self.assertIn("otro playbook corrió el último", stopped.halt)
+        self.assertFalse((host.root / "run/deploy.log").exists())
+        # Accepted at the step-0 read, the operator lifts the STOP and runs the
+        # last line of the block: the check goes on.
+        host.settle()
+        host.write_deployed("edge", host.prev)
+        accepted = host.run(block.replace("deployed_last\n", "deployed_last\nHALT=\n"))
+        self.assertEqual(accepted.halt, "", accepted.output)
+        self.assertEqual(
+            (host.root / "run/deploy.log").read_text().splitlines(),
+            ["--playbook ax-lab --local --check"],
+        )
+
+    def test_the_worker_gate_rereads_the_pod_a_bounded_number_of_times(self) -> None:
+        host = Sandbox(self)
+        new = host.old["ateom-gvisor"]["digest"]
+        old = sha(b"the old worker")
+        gate = 'worker_gate "${WORKER_NEW}"'
+        # `rollout status` said done before the WorkerPool controller changed
+        # the Deployment: the old pod, then the old one beside the new one that
+        # is not ready, then only the new one.
+        host.write_worker_reads(
+            [worker_pod(old)],
+            [worker_pod(old)],
+            [worker_pod(old), worker_pod(new, ready=False)],
+            [worker_pod(old, deleting=True), worker_pod(new)],
+        )
+        result = host.run(gate)
+        host.assert_clean(self, result)
+        self.assertEqual(host.worker_reads(), 4)
+        self.assertEqual(host.sleeps(), ["10", "10", "10"])
+        # A pod that is right at once is read once, with no pause.
+        host.settle()
+        host.write_worker_reads([worker_pod(new)])
+        host.assert_clean(self, host.run(gate))
+        self.assertEqual((host.worker_reads(), host.sleeps()), (1, []))
+        # One that never gets there is read 30 times, 29 pauses of 10 s (about
+        # the 300 s of the rollout), and is a STOP.
+        host.settle()
+        host.write_worker_reads([worker_pod(old)])
+        never = host.run(gate + "\nmust echo not reached")
+        self.assertTrue(never.halt, never.output)
+        self.assertIn("no hay un único pod de worker listo", never.halt)
+        self.assertEqual(host.worker_reads(), 30)
+        self.assertEqual(host.sleeps(), ["10"] * 29)
+        self.assertIn("STOP previo, no se ejecuta: echo not reached", never.output)
+        # A rollout that does not finish reads no pod at all.
+        host.settle()
+        host.write_worker_reads([worker_pod(new)])
+        (host.root / "world/rollout.rc").write_text("1")
+        timed_out = host.run(gate)
+        self.assertTrue(timed_out.halt, timed_out.output)
+        self.assertEqual((host.worker_reads(), host.sleeps()), (0, []))
+
+    def test_expect_pinned_wants_the_registry_pinned_and_the_copy_complete(
+        self,
+    ) -> None:
+        host = Sandbox(self)
+
+        def verdict(count: int, registry: Any, backup: Any, check: str) -> str:
+            document = json.dumps({"registry": registry, "backup": backup})
+            result = host.run(f"{check} {count} {shlex.quote(document)}")
+            return result.halt
+
+        pinned = {"a": "pinned", "b": "pinned"}
+        complete = {"a": "complete", "b": "complete"}
+        self.assertEqual(verdict(2, pinned, complete, "expect_pinned"), "")
+        for label, registry, backup, count in (
+            ("a tag the registry moved", {"a": "pinned", "b": "moved"}, complete, 2),
+            (
+                "an image the registry lacks",
+                {"a": "pinned", "b": "missing"},
+                complete,
+                2,
+            ),
+            ("no registry read", None, complete, 2),
+            (
+                "an image missing from the copy",
+                pinned,
+                {"a": "complete", "b": "missing"},
+                2,
+            ),
+            ("one image too few", {"a": "pinned"}, {"a": "complete"}, 2),
+        ):
+            with self.subTest(case=label):
+                self.assertIn(
+                    "se esperaban 2 imágenes fijadas en el registro y completas",
+                    verdict(count, registry, backup, "expect_pinned"),
+                )
+        # expect_complete reads the copy only, which is why step 12 asks for
+        # expect_pinned: a registry that kept the old tags passes it.
+        moved = {"a": "pinned", "b": "moved"}
+        self.assertEqual(verdict(2, moved, complete, "expect_complete"), "")
+
+    def test_the_queue_is_resumed_and_read_back_by_the_last_block_of_step_13(
+        self,
+    ) -> None:
+        resume = one_block(step_text(13), "queue_paused == false")
+        host = Sandbox(self)
+        # The person has not pressed «Reanudar la cola» yet.
+        paused = host.run(resume)
+        self.assertEqual(paused.halt, "la cola de la Oficina sigue en pausa")
+        host.write_office(paused=False, schedules=[], statuses=["hecho"])
+        host.assert_clean(self, host.run(resume))
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the lock needs /proc")
@@ -3759,6 +5106,62 @@ class WindowRepositoryExecutionTests(unittest.TestCase):
         self.assertTrue(lost.halt, lost.output)
         control.assert_live(self, "new")
 
+    def test_the_recovery_stops_on_what_window_env_must_not_hold(self) -> None:
+        host = Sandbox(self, repo=True)
+        # Steps 1 and 2 leave the facts in RELOCK, and the shell is lost.
+        first = host.run(
+            block_with(STEP_1),
+            block_with(STEP_1_FACTS),
+            block_with(STEP_2),
+            inject=False,
+        )
+        host.assert_clean(self, first)
+        saved = host.relock / "window.env"
+        good = saved.read_text()
+        merge = host.merge_pr()
+        host.git("fetch", "--quiet", "origin")
+        recover = block_with(RECOVER)
+        host.assert_clean(self, host.run(recover, inject=False))
+        cases = {
+            "a key it does not know": (
+                good + "EVIL=1\n",
+                "window.env trae una clave desconocida: EVIL",
+            ),
+            "a key that would be run": (
+                good + "PATH=/tmp\n",
+                "window.env trae una clave desconocida: PATH",
+            ),
+            "a PREV that is not a full commit": (
+                good.replace(host.prev, host.prev[:12]),
+                "window.env no trae PR_HEAD y PREV completos",
+            ),
+            "a MERGE that is not a full commit": (
+                good + "MERGE=abc123\n",
+                "el MERGE de window.env no es un commit completo",
+            ),
+            "a PREV the clone does not have": (
+                good.replace(host.prev, sha1("a commit nobody made")),
+                "git cat-file -e",
+            ),
+            "a PREV that is not behind the head of the PR": (
+                good.replace(host.prev, merge),
+                "git merge-base --is-ancestor",
+            ),
+        }
+        for label, (content, message) in cases.items():
+            with self.subTest(case=label):
+                saved.write_text(content)
+                result = host.run(recover, inject=False)
+                self.assertTrue(result.halt, result.output)
+                self.assertIn(message, result.halt)
+        saved.write_text(good)
+        host.assert_clean(self, host.run(recover, inject=False))
+        # No window.env at all: nothing to recover from.
+        saved.unlink()
+        missing = host.run(recover, inject=False)
+        self.assertIn("falta", missing.halt)
+        self.assertIn("el paso 2 no llegó a guardarlo", missing.halt)
+
     def test_the_artifacts_extracted_under_the_umask_of_sudo_pass_the_checks(
         self,
     ) -> None:
@@ -3837,6 +5240,27 @@ class StaleFallbackTextTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, flat(unreleased))
         self.assertIn("ax-lab-images.yml", read("images/ax/README.md"))
+
+    def test_the_changelog_does_not_claim_the_measurement_before_every_run(
+        self,
+    ) -> None:
+        unreleased = flat(read("CHANGELOG.md").split("\n## [0.1.0]", 1)[0])
+        self.assertNotIn(
+            "mide `ate-setup` bajo su tope de 192 MiB antes de correrlo", unreleased
+        )
+        for fragment in (
+            "cita la medida de `ate-setup` bajo su tope de 192 MiB",
+            "una ejecución desechable de la CI el 2026-10-12: 56,0 MiB, el 29,2 % del tope",
+            "con lo que prueba y lo que no",
+            "exige que el propietario acepte que vale para el host antes de correrlo",
+            "que la guarda del lock falle cerrada sin `fuser`",
+            "que `127.0.0.1:5001` sustituya a `localhost`",
+            "que `ax tunnel list` deje de ser guarda",
+            "que `DEPLOYED_VERSION.yml` se lea al empezar",
+            "el reintento acotado del pod del worker",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, unreleased)
 
 
 if __name__ == "__main__":
