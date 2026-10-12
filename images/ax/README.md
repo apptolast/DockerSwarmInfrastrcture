@@ -1,9 +1,13 @@
 # AX: parche y manifiestos fijados
 
-Entradas de AX que el laboratorio (`docs/AX.md`, «AX») fija por su sha256 y
-que solo usa el job `reproduce-ax` de
-`.github/workflows/ax-lab-reproducibility.yml`. El host nunca compila AX:
-sus imágenes se siembran desde el laboratorio manual.
+Entradas de AX que el laboratorio (`docs/AX.md`, «AX») fija por su sha256.
+Las usan el job `reproduce-ax` de
+`.github/workflows/ax-lab-reproducibility.yml`, que comprueba con ellas lo
+que se puede reconstruir, y el job `ax` de
+`.github/workflows/ax-lab-images.yml`, que aplica el parche, reconstruye la
+CLI y las imágenes de ax-controller y ax-server e imprime los manifiestos que
+se versionan aquí. El host nunca compila AX: sus imágenes se siembran desde
+el laboratorio manual.
 
 ## `google-ax-375.patch`
 
