@@ -132,12 +132,13 @@ planificación del Swarm y sin tocar sus redes overlay.
 | `config/capacity-profiles.yml` | Grupo `ax-lab` de `host_containers`, solo en el plan activo `organizationweb` |
 | `scripts/validate-ax-lab.py` | Valida el contrato sin red, lo cruza con la capacidad y renderiza el sysctl, la configuración de kind y los manifiestos de AX; con `--substrate-plan` y `--ax-plan` imprime los planes de los jobs de reproducibilidad, y con `--ax-manifests-sha256` el sha256 de cada manifiesto de AX |
 | `scripts/manage-ax-lab-substrate.py` | Lee, copia, respalda y restaura las imágenes de Substrate y, con `--image-set ax`, las de AX; como reserva compila las de Substrate, retira de la copia la entrada de un digest anterior y ejecuta `ate-setup` acotado |
-| `.github/workflows/ax-lab-reproducibility.yml` | Recompila las imágenes de Substrate desde el commit fijado y exige sus digests; de AX, recompila la CLI, el binario del runner y las imágenes ko y exige lo que se puede probar |
+| `.github/workflows/ax-lab-reproducibility.yml` | Recompila las imágenes de Substrate desde el commit fijado y exige sus digests; de AX, recompila la CLI, el binario del runner (con `images.runner_toolbox`, si está fijada) y las imágenes ko y exige lo que se puede probar. Solo compila y compara |
+| `.github/workflows/ax-lab-images.yml` | Compila las mismas entradas, exige los pines, prueba que la copia de seguridad puede sembrarse con ellas y sube los dos artefactos que consume la ventana de resiembra (ver «Imágenes compiladas en la CI y ventana de resiembra») |
 | `ansible/playbooks/ax-lab.yml` | Lock host-global, `capacity_preflight`, rol `ax_lab` y metadatos de despliegue |
 | `ansible/roles/ax_lab/` | Prerrequisitos del host, prueba de propiedad, ciclo de vida del clúster y del registro, imágenes e instalación de Substrate y de AX |
 | `ansible/roles/ax_lab/templates/kind-config.yaml.j2` | Configuración de kind |
 | `ansible/roles/ax_lab/templates/ax/` | Manifiestos de AX y las herramientas del operador `ax` y `ax-tarea` |
-| `images/ax/` | El parche google/ax#375 byte a byte y los manifiestos fijados de las dos imágenes ko |
+| `images/ax/` | El parche google/ax#375 byte a byte, los manifiestos fijados de las dos imágenes ko y, cuando `config/ax-lab.yml` los fija, los parches de módulos de AX y de Substrate, que solo tocan `go.mod` y `go.sum` |
 | `images/ax-task-runner/`, `images/ax-agents/` | Las entradas con las que el laboratorio manual compiló las imágenes del runner y de agentes, como registro de su procedencia |
 | `ansible/roles/ax_lab/templates/ax-web.yaml.j2`, `tasks/web*.yml` | El panel web y su reenviador (ver [AX_WEB.md](AX_WEB.md)) |
 | `ansible/roles/ax_lab/templates/ejemplos/`, `files/ejemplos/` | Los ejemplos y los clientes remotos del propietario (ver «Ejemplos») |
@@ -187,10 +188,11 @@ El validador rechaza:
   distinto de las siete revisadas o sin `sha256:<64 hex>` (solo
   `ate-setup` puede quedar pendiente); otro directorio de copia que
   `/var/backups/dockerswarm/ax-lab/images`; una imagen de herramientas que
-  no sea `golang:1.27.1` por digest; una compilación de reserva con más
-  memoria, reserva, CPU o PIDs que el nodo, CPU no entera, sin el suelo de
-  `MemAvailable` y el margen operativo de `config/capacity.yml` o con un
-  tiempo fuera de 600 a 7 200 s; una instalación con otro router que
+  no sea `golang:1.27.1` por digest (`golang:1.27.2` una vez fijados los
+  parches de módulos); una compilación de reserva con más memoria, reserva,
+  CPU o PIDs que el nodo, CPU no entera, sin el suelo de `MemAvailable` y el
+  margen operativo de `config/capacity.yml` o con un tiempo fuera de 600 a
+  7 200 s; una instalación con otro router que
   `envoy` (ni `agentgateway` ni sdsmint, que no tienen clave), con más
   memoria o CPU de las que el plan de capacidad que ejecuta el laboratorio
   deja libres bajo el presupuesto de límites (192 MiB y 500m hoy), sin el
@@ -200,7 +202,20 @@ El validador rechaza:
   `atelet-<versión>`, sin alguna imagen instalada o con referencias upstream
   sin tag y digest;
 - en `ax_lab_substrate_fallback_builds`, una imagen desconocida, repetida o
-  sin digest que reproducir;
+  sin digest que reproducir, y cualquier imagen en cuanto
+  `sources.substrate.modules_patch` está fijado: el host nunca parchea ni
+  vendoriza Substrate (ver «Compilación de reserva»);
+- en los campos de resiembra, todos opcionales (`images.runner_toolbox`,
+  `sources.ax.modules_patch` con `path` y `sha256`, y
+  `sources.substrate.modules_patch` con `path`, `sha256` y `tree`): un
+  parche sin el otro o sin `images.runner_toolbox`; una imagen del runner
+  que no sea `golang:1.27.1`; un parche en otra ruta que
+  `images/ax/google-ax-modules.patch` (AX) o
+  `images/ax/substrate-modules.patch` (Substrate), cuyos bytes no den su
+  sha256, que toque algo más que `go.mod` y `go.sum` o que añada una línea
+  `replace` o `exclude`; y un `tree` que no sea un id de árbol de git de 40
+  caracteres hexadecimales en minúscula (ver «Imágenes compiladas en la CI y
+  ventana de resiembra»);
 - para AX: un parche que no sea `images/ax/google-ax-375.patch` o cuyos
   bytes no den su sha256; otras imágenes que las cuatro revisadas o sin
   `sha256:<64 hex>`; un manifiesto ko versionado cuyos bytes no den el
@@ -547,10 +562,12 @@ Agent Substrate se instala en el commit fijado en `sources.substrate`
 
 - un apply normal del host nunca compila: solo verifica e instala imágenes
   fijadas por digest;
-- las imágenes llegan, por este orden, desde la copia de seguridad sembrada
-  desde el laboratorio manual y desde el registro local; compilarlas en el
-  host es una reserva explícita que el propietario autoriza imagen a imagen
-  (ver «Compilación de reserva»);
+- las imágenes llegan, por este orden, desde la copia de seguridad (sembrada
+  desde el laboratorio manual o, con los campos de resiembra fijados, desde
+  los artefactos de la CI) y desde el registro local; mientras
+  `sources.substrate.modules_patch` no esté fijado, compilarlas en el host es
+  una reserva explícita que el propietario autoriza imagen a imagen (ver
+  «Compilación de reserva»), y una vez fijado el host no compila ninguna;
 - Substrate se instala con `ate-setup` de upstream en modo precompilado, y
   solo cuando lo instalado difiere de lo fijado (ver «Instalación de
   Substrate»).
@@ -636,12 +653,13 @@ del registro o de su volumen y de recrear el clúster, no de perder el host
 La copia nunca guarda un mismo `<nombre>:67253354` con dos digests. Si un
 cambio revisado fija otro digest para una imagen con la misma versión (un
 digest del laboratorio manual que la CI no reproduce y el propietario
-sustituye por el de la CI, o un nuevo `ate-setup` tras cambiar la imagen de
-herramientas), todo `--check` y todo apply se detienen en `image-status`
-con «names `<nombre>`:67253354 with another digest» hasta retirar la entrada
-del digest anterior. Se retira con el mismo lock, desde el checkout del
-cambio que fija el nuevo, nombrando el digest anterior exacto; los blobs se
-quedan, porque son direccionables por contenido:
+sustituye por el de la CI, un nuevo `ate-setup` tras cambiar la imagen de
+herramientas o las imágenes que la CI compila con los parches de módulos),
+todo `--check` y todo apply se detienen en `image-status` con «names
+`<nombre>`:67253354 with another digest» hasta retirar la entrada del digest
+anterior. Se retira con el mismo lock, desde el checkout del cambio que fija
+el nuevo, nombrando el digest anterior exacto; los blobs se quedan, porque
+son direccionables por contenido:
 
 ```bash
 sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
@@ -652,10 +670,14 @@ sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
 
 Dice `forgotten`, o `absent` si ya no estaba, y se niega si la entrada
 nombra otro digest. Después, la imagen nueva llega como cualquier otra que
-falte: desde el registro si ya la sirve con su digest, o compilándola con la
-reserva (ver «Compilación de reserva»). El registro puede seguir
-sirviendo el digest anterior bajo ese tag; el apply lo trata como un tag
-movido y lo restaura desde la copia.
+falte: desde el registro si ya la sirve con su digest o, mientras el host
+conserve la reserva (ver «Compilación de reserva»), compilándola. Con los
+campos de resiembra fijados el host nunca la compila: el digest nuevo entra
+en la copia con `seed-layout`, desde los artefactos de la CI (ver «Imágenes
+compiladas en la CI y ventana de resiembra»), y por eso un re-pin pasa
+siempre por `forget` más `seed-layout`, en una ventana. El registro puede
+seguir sirviendo el digest anterior bajo ese tag; el apply lo trata como un
+tag movido y lo restaura desde la copia.
 
 ### Semilla desde el laboratorio manual
 
@@ -698,6 +720,20 @@ laboratorio manual nunca tuvo imagen de `ate-setup`: esa llega por la
 compilación de reserva (ver «Ventana del laboratorio»).
 
 ### Compilación de reserva
+
+Es la reserva de antes de los campos de resiembra, y solo existe mientras
+`sources.substrate.modules_patch` no esté fijado. Con ese campo, las
+imágenes de Substrate que fija el contrato salen de un árbol parcheado (un
+parche que solo toca `go.mod` y `go.sum`) y vendorizado (`go mod vendor`) en
+la CI; el host solo tiene el checkout limpio del commit fijado y la imagen
+`images.toolbox`, así que nunca podría reproducir esos digests, y
+`ate-setup` lee sus manifiestos de ese checkout, que tiene que seguir
+limpio. Por eso, una vez fijado el campo, el host nunca parchea ni
+vendoriza Substrate, el validador rechaza una
+`ax_lab_substrate_fallback_builds` que no esté vacía y re-fijar una imagen
+pasa por `forget` más `seed-layout` (ver «Copia de seguridad» e «Imágenes
+compiladas en la CI y ventana de resiembra»). Lo que sigue describe la
+reserva mientras el campo no está fijado.
 
 Solo compila una imagen que cumpla todo esto:
 
@@ -758,13 +794,24 @@ fijada por su commit completo:
    commit, las imágenes y los límites;
 2. hace checkout de `agent-substrate/substrate` en ese commit completo y
    exige el árbol limpio;
-3. compila cada imagen con exactamente la compilación de reserva del rol
+3. si `sources.substrate.modules_patch` está fijado, comprueba su sha256, lo
+   aplica con `git apply --index` (solo puede tocar `go.mod` y `go.sum`),
+   ejecuta `go mod vendor` en la imagen `images.toolbox` y exige que el
+   árbol raíz de git que resulta (`git write-tree`) sea el `tree` fijado. El
+   parche y el `vendor/` quedan preparados en el índice y nunca en un
+   commit: Go sella `vcs.modified` desde el árbol preparado y un commit
+   añadiría una revisión que no se reproduce. El host no hace nada de esto
+   (ver «Compilación de reserva»);
+4. compila cada imagen con exactamente la compilación de reserva del rol
    (`manage-ax-lab-substrate.py build`, con `sudo` como en el host) y las
    restaura en un `registry:3` desechable en la loopback del runner;
-4. exige que cada tag apunte al digest fijado, y resume en el run cada
+5. exige que cada tag apunte al digest fijado, y resume en el run cada
    digest compilado, sus segundos y su pico de memoria.
 
-No publica nada fuera del runner ni usa credenciales. La prueba de extremo
+Este workflow solo compila y compara: no publica nada fuera del runner, no
+sube artefactos y no usa credenciales. Los artefactos que consume la ventana
+de resiembra los sube su hermano `ax-lab-images.yml` (ver «Imágenes
+compiladas en la CI y ventana de resiembra»). La prueba de extremo
 a extremo en kind es del cambio 5. Su primer run con compilación (run
 36187353468, 2026-09-25) reprodujo exactamente los seis digests del
 laboratorio manual e imprimió el de `ate-setup`, que el propio cambio 3 fija
@@ -781,6 +828,14 @@ fijar en un cambio revisado el digest de la CI y añadir la imagen a
 tiene y la CI no publica nada, y quitarla de la orden de la semilla. Si la
 copia ya guardaba esa imagen con el digest anterior, `forget` retira antes
 esa entrada (ver «Copia de seguridad»).
+
+Eso vale mientras `sources.substrate.modules_patch` no esté fijado. Con él
+fijado, ninguna imagen de Substrate se compila en el host y el validador no
+admite otra cosa que `ax_lab_substrate_fallback_builds: []`: el digest que no
+coincide es siempre el de la CI, se corrige en un cambio revisado con el que
+imprime el run, y la copia lo recibe con `forget` más `seed-layout` desde los
+artefactos de `ax-lab-images.yml`, nunca compilándolo en el host (ver
+«Imágenes compiladas en la CI y ventana de resiembra»).
 
 ### Instalación de Substrate
 
@@ -991,8 +1046,10 @@ de google/ax#375 (ver «Parche local»), sobre el Substrate de la sección
 anterior. Las mismas tres reglas que para Substrate, más una:
 
 - un apply normal del host nunca compila AX: sus imágenes y su CLI llegan
-  sembradas, una sola vez, desde el laboratorio manual (ver «Semilla de
-  AX»), y el rol solo las copia, las restaura y las verifica por digest;
+  sembradas, la primera vez desde el laboratorio manual (ver «Semilla de
+  AX») y en un re-pin desde los artefactos de la CI (ver «Imágenes
+  compiladas en la CI y ventana de resiembra»), y el rol solo las copia, las
+  restaura y las verifica por digest;
 - no hay compilación de reserva de AX: una imagen que falte en la copia y
   en el registro detiene el apply;
 - el plano de control y el WorkerPool se aplican del lado del servidor y
@@ -1047,8 +1104,9 @@ un directorio `0700`), y el rol la instala en
 `/opt/dockerswarm/ax-lab/bin/ax` (`root:root 0755`) solo si su sha256
 difiere, después de exigir que la copia tenga el sha256 fijado
 (`ax.cli_sha256`). Está enlazada dinámicamente (`CGO_ENABLED=1`, `Makefile`
-de AX, línea 36) contra la glibc 2.41 de la imagen `golang:1.27.1`; el host
-tiene la 2.43.
+de AX, línea 36) contra la glibc de la imagen de herramientas con la que se
+compila (la 2.41 en `golang:1.27.1`); el host tiene la 2.43, y
+`ax-lab-images.yml` falla si la CLI que sube necesita una glibc más nueva.
 
 ### Semilla de AX
 
@@ -1099,14 +1157,23 @@ las cuatro `--image` tiene que decir `complete` para las cuatro. El
 `acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7`, el de
 `ax.cli_sha256`. Solo entonces se sigue con la retirada.
 
+Esa semilla es la del laboratorio manual y ya está hecha. Un re-pin posterior
+de las imágenes de ko o de la CLI no vuelve a usar `export`, porque el
+laboratorio manual ya no existe: se siembra con `seed-layout` desde los
+artefactos de la CI, tras retirar con `forget` las entradas anteriores (ver
+«Imágenes compiladas en la CI y ventana de resiembra»).
+
 ### Reproducibilidad de AX
 
 El job `reproduce-ax` de `.github/workflows/ax-lab-reproducibility.yml`
 prueba en la CI pública lo que se puede probar de esas pins, sin publicar
 nada ni usar credenciales:
 
-1. lee de `validate-ax-lab.py --ax-plan` el commit de AX, el parche, el de
-   Substrate, la imagen `golang:1.27.1` y la base de ko;
+1. lee de `validate-ax-lab.py --ax-plan` el commit de AX, el parche (y el
+   de módulos, si está fijado), el de Substrate, la imagen de herramientas
+   (`golang:1.27.1` mientras no haya parches de módulos), la del runner
+   (`images.runner_toolbox`, o la de herramientas si no está fijada) y la
+   base de ko;
 2. clona google/ax con todos sus tags (el binario lleva la
    pseudo-versión `v0.3.1-0.20260924134026-f009cc81c9a5+dirty`, que Go
    deriva del tag `v0.3.0`) y exige ese commit, el árbol limpio y
@@ -1115,16 +1182,26 @@ nada ni usar credenciales:
 4. comprueba el sha256 del parche, lo aplica con `git apply --index` (sin
    commit: los binarios del laboratorio manual llevan `vcs.modified=true`)
    y exige que `git diff --cached` dé ese mismo sha256;
-5. recompila la CLI y el binario del runner con las opciones exactas del
-   `Makefile` (líneas 36 y 49) en la imagen `golang:1.27.1` fijada, y exige
-   sus sha256 (`ax.cli_sha256` y `ax.task_runner_binary_sha256`);
+5. recompila el binario del runner y la CLI con las opciones exactas del
+   `Makefile` (líneas 49 y 36) y exige sus sha256
+   (`ax.task_runner_binary_sha256` y `ax.cli_sha256`). El runner va primero,
+   con solo el primer parche y en la imagen `images.runner_toolbox`
+   (`golang:1.27.1`), porque su pin describe el binario que llevan dentro las
+   imágenes sembradas, y Go incrusta en él la versión de cada módulo: con
+   otro toolchain o tras la subida de módulos no se reproduciría (ver «Lo que
+   no se puede codificar fielmente»). Después, si `sources.ax.modules_patch`
+   está fijado, comprueba su sha256 y lo aplica encima con
+   `git apply --index` (solo `go.mod` y `go.sum`, sin commit), y la CLI se
+   compila con él en la imagen `images.toolbox`;
 6. recompila con ko v0.19.1 (el de `hack/tools/ko/go.mod` de Substrate,
-   línea 89) `ax-controller` y `ax-server`, con la base
+   línea 89) `ax-controller` y `ax-server`, con ambos parches, con la base
    `cgr.dev/chainguard/static@sha256:41e17ed8…` (`ax.ko_base_image`), y
    exige que cada manifiesto sea igual al fijado de `images/ax/manifests`
    salvo la anotación `org.opencontainers.image.base.name`, que ko escribe
    con la referencia de la base: `…:latest` en el laboratorio manual,
-   `…@sha256:…` en la CI. La configuración y las capas son las mismas;
+   `…@sha256:…` en la CI. La configuración y las capas son las mismas. Con
+   `sources.ax.modules_patch` fijado exige además el digest exacto de cada
+   imagen;
 7. vuelve a ejecutar `go test ./...` con el parche y falla si aparece un
    paquete que no fallaba ya sin él.
 
@@ -1141,7 +1218,12 @@ nada ni usar credenciales:
   `images/ax-agents/` como registro de su procedencia (con sus sha256 en
   `tests/test_ax_lab_ax_contract.py`), y reconstruirlas sería un cambio
   revisado con pins nuevos. Lo que sí se prueba es el binario del runner
-  que llevan dentro (paso 5 de «Reproducibilidad de AX»).
+  que llevan dentro (paso 5 de «Reproducibilidad de AX»). Rama K: la
+  resiembra con los parches de módulos no las toca. `ax-task-runner` y
+  `ax-agents` se quedan sembradas tal como están, con Go 1.27.1 y con los
+  módulos de antes de la subida, así que los hallazgos de `govulncheck` de
+  su binario (la biblioteca estándar y `golang.org/x/net`) siguen abiertos
+  (ver «Imágenes compiladas en la CI y ventana de resiembra»).
 - La copia de las imágenes vive en el mismo host: perder el host es
   perderlas, igual que las de Substrate (ver «Límites conocidos»).
 - La prueba de ko depende de que `cgr.dev` siga sirviendo el digest de la
@@ -1553,7 +1635,9 @@ creó. Por eso los cambios 2 y 3 se fusionan juntos, en la ventana en la que
 se siembran las copias de Substrate y de AX, se retira el laboratorio manual
 y se aplica `ax-lab` (ver «Ventana del laboratorio»). El cambio 4 los sigue
 en su propia ventana (ver «Ventana del cambio 4»). Una vez retirado, su
-ausencia ya no detiene nada.
+ausencia ya no detiene nada. La misma regla vale para un cambio que re-fija
+las imágenes ya sembradas: se fusiona dentro de su ventana, después de la
+siembra (ver «Imágenes compiladas en la CI y ventana de resiembra»).
 
 ## Ventana del laboratorio
 
@@ -1653,6 +1737,581 @@ con la autorreparación de `ax-tarea`, que borra pods de workers. Substrate
 no se toca: `atenet-router` conserva `--route-timeout=1h`, que no molesta,
 hasta que `ate-setup` lo reinstale, y las copias de las imágenes de AX y de
 la CLI siguen en `/var/backups/dockerswarm/ax-lab`.
+
+## Imágenes compiladas en la CI y ventana de resiembra
+
+Las imágenes de Substrate y las dos de ko de AX se fijaron primero con los
+digests del laboratorio manual (ver «Semilla desde el laboratorio manual» y
+«Semilla de AX»). Esta sección describe cómo se fijan en su lugar las que
+compila la CI con los módulos de Go actualizados y cómo las siembra el
+propietario en la copia de seguridad. Es solo el mecanismo: ningún digest,
+hash ni valor de pin figura aquí, porque la ventana los toma siempre de los
+planes que imprime el validador. Mientras `config/ax-lab.yml` no fije los
+campos de resiembra, nada de esto cambia el comportamiento del laboratorio.
+
+### Los campos de resiembra
+
+Son tres claves opcionales de `config/ax-lab.yml`. Un contrato sin ellas
+valida y se comporta como antes:
+
+- `images.runner_toolbox`: la imagen `golang:1.27.1`, por digest, con la que
+  `reproduce-ax` recompila el binario del runner (ver «Rama K»);
+- `sources.ax.modules_patch` (`path` y `sha256`):
+  `images/ax/google-ax-modules.patch`, un segundo parche de AX, encima del de
+  google/ax#375, que solo toca `go.mod` y `go.sum`;
+- `sources.substrate.modules_patch` (`path`, `sha256` y `tree`):
+  `images/ax/substrate-modules.patch`, el equivalente de Substrate, también
+  solo de `go.mod` y `go.sum`. La CI regenera `vendor/` con `go mod vendor`
+  en lugar de versionar su diff, y `tree` es el árbol raíz de git
+  (`git write-tree`) después de aplicar el parche, vendorizar y ejecutar
+  `git add --all`, sin commit. AX no tiene `tree`: `git apply` sobre el
+  commit fijado con dos parches fijados por su sha256 es determinista.
+
+Los dos parches se fijan juntos y exigen `images.runner_toolbox`. Con ellos,
+el validador exige que `images.toolbox` sea `golang:1.27.2` y que
+`ax_lab_substrate_fallback_builds` esté vacía: el host nunca parchea ni
+vendoriza Substrate, y un digest nuevo entra en la copia solo con
+`seed-layout` (ver «Compilación de reserva»). `--substrate-plan` y
+`--ax-plan` imprimen los parches y, el de AX, la imagen del runner y el tag;
+los workflows y la ventana leen solo esos planes, ya validados.
+
+### El workflow de imágenes
+
+`.github/workflows/ax-lab-images.yml`, con los jobs `substrate` y `ax`,
+compila las mismas entradas que `ax-lab-reproducibility.yml`, con los mismos
+pasos, y añade lo que aquel no hace:
+
+- exige los pines: los siete digests de Substrate y el sha256 de la CLI
+  siempre, y los de las dos imágenes ko cuando `sources.ax.modules_patch`
+  está fijado (antes no pueden coincidir con los del laboratorio manual por
+  la anotación `base.name`; ver «Reproducibilidad de AX»). Un pin que no
+  coincide falla el job después de imprimir todo lo compilado, y no sube nada;
+- deja las capas preparadas como las recibirá el host y prueba con ellas, en
+  un layout de prueba del runner, `seed-layout`, `forget`, `image-status` y
+  otra vez `seed-layout`, antes de subir;
+- falla si la CLI necesita una glibc más nueva que la 2.43 del host;
+- sube, solo en un push a `main` y en `workflow_dispatch` (un pull request
+  compila y prueba, pero no sube), los artefactos
+  `ax-lab-substrate-oci-layout` (el layout OCI de las siete imágenes) y
+  `ax-lab-ax-artifacts` (la CLI, el layout de cada imagen ko y sus
+  manifiestos).
+
+No usa credenciales ni publica en ningún registro: el artefacto es lo único
+que sale del runner, como con `ax-web-oci-layout` (ver [AX_WEB.md](AX_WEB.md),
+«Imagen»). `ax-lab-reproducibility.yml` sigue solo compilando y comparando, y
+recompila el binario del runner con `images.runner_toolbox`.
+
+### Rama K
+
+`ax-task-runner` y `ax-agents` son imágenes de buildx que no se pueden
+recompilar byte a byte (ver «Lo que no se puede codificar fielmente»). La
+ventana no las toca: se quedan sembradas tal como están, con sus pines, con
+Go 1.27.1 y con los módulos de antes de la subida, así que los hallazgos de
+`govulncheck` de su binario siguen abiertos. Para que
+`ax.task_runner_binary_sha256` siga describiendo lo que llevan dentro,
+`reproduce-ax` compila ese binario con `images.runner_toolbox`, solo con el
+primer parche y antes del de módulos. Reconstruirlas sería otro cambio
+revisado.
+
+### Riesgo aceptado
+
+Las imágenes y la CLI que salen de la CI se ejecutan por primera vez en
+producción: la CI las compila, comprueba sus digests y prueba que la copia
+puede sembrarse con ellas, pero nada las arranca antes (la prueba de extremo
+a extremo en kind sigue sin existir; ver «Reproducibilidad»). La única red de
+seguridad es la marcha atrás desde la instantánea del paso 2, y el
+propietario aceptó este riesgo.
+
+### Reglas de la ventana de resiembra
+
+- **Pines de los planes.** Los nuevos salen de
+  `validate-ax-lab.py --substrate-plan` y `--ax-plan` en el head del PR; los
+  anteriores, de los mismos planes en el commit que
+  `/opt/dockerswarm/deployments/ax-lab.yml` registra como último aplicado,
+  que es el que describe lo que guarda la copia. Nada se teclea: el paso 1 lo
+  calcula y lo comprueba.
+- **Nada lee la copia viva con el contrato nuevo antes del `forget`.** Ni el
+  `--check` del playbook ni `image-status`: la copia nombra los mismos
+  `<nombre>:<tag>` con otro digest, `image-status` se detiene con «names …
+  with another digest», las lecturas del rol fallan y el wrapper retiene un
+  marker que hay que recuperar (ver «Stale marker recovery» en
+  `CLAUDE.md`). La instantánea y el ensayo usan otros layouts y no cuentan.
+- **El PR de pines se fusiona dentro de la ventana, después de la siembra,
+  nunca antes.** Es la regla del repositorio (ver «Por qué este cambio solo
+  se fusiona en la ventana» y «Semilla de AX»): con los pines nuevos en
+  `main` y la copia aún con los anteriores, todo apply de `ax-lab` y todo
+  release de `ax-web`, que usan el mismo fichero y el mismo playbook, se
+  detienen en `image-status`.
+- **La siembra sale del head verde del PR, desacoplado**
+  (`git checkout --detach`), con los artefactos de una ejecución
+  `workflow_dispatch` de `ax-lab-images.yml` sobre ese head exacto. Si los
+  artefactos caducaron, se repite esa ejecución sobre el mismo head: vuelve
+  a exigir los pines.
+- **Congelación.** Desde el `forget` hasta el último `changed=0`, ningún
+  release de `ax-web` se fusiona y ningún `ax-lab` corre (`--check`
+  incluido) salvo los de esta ventana. Se avisa antes a quien publica
+  releases.
+- **Exclusiva**, de un solo operador, fuera de las ventanas de medida del
+  Observatorio y en una sola sesión de `tmux`, para que un corte de SSH no
+  deje un apply a medias; todas las órdenes corren en esa misma shell.
+
+### Precondiciones de la ventana de resiembra
+
+Paso 0, antes de tocar nada:
+
+- Sin trabajo de AX en marcha: `sudo ax get tasks -a default` y
+  `sudo ax tunnel list` no listan ninguna Task ni ningún túnel (se suspenden
+  o se borran antes), y
+  `systemctl list-units --type=scope --state=active --plain --no-legend
+  'ax-tarea-*' 'ax-cli-*'` no imprime nada. Las guardas del rol solo miran
+  esos scopes, no lo que la Oficina despacha por `ax-server`.
+- La cola de la Oficina, vacía y releída justo antes, y avisada la persona
+  que la use: el apply puede cortar su conexión con AX (ver
+  [AX_WEB.md](AX_WEB.md), «Ventana de la Oficina»).
+- Una sesión de `tmux` abierta, y las dos descargas de la ejecución sobre el
+  head del PR (los zip de `ax-lab-substrate-oci-layout` y de
+  `ax-lab-ax-artifacts`) en un directorio del propietario, no en un tmpfs.
+- La línea base, para compararla al final: los reinicios de los pods de
+  `kube-system`, `ate-system` y `ax-system`, el `memory.peak` y el
+  `memory.events.local` del nodo (las lecturas del paso 6 de «Ventana del
+  cambio 4») y `grep MemAvailable /proc/meminfo`.
+- Una copia del estado del PVC de la Oficina (`ax-web-state`) y del de Redis
+  (`ax-redis-data`) en un directorio de root `0700` bajo
+  `/var/backups/dockerswarm/`, como en las ventanas anteriores (ver
+  [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)).
+- En la CI, en verde sobre el head del PR: `validate`, los dos jobs de
+  `ax-lab-reproducibility.yml` y los dos de `ax-lab-images.yml`.
+
+### Pasos de la ventana de resiembra
+
+Las variables y las funciones de los pasos 1 y 2 viven en la shell de
+`tmux`, así que el resto de los pasos las usa tal cual. Una orden o una
+aserción que falla detiene la ventana: se decide entonces entre seguir y
+la marcha atrás, según los criterios de aborto.
+
+1. En el clon operativo, como `admin` (uid y gid 1001) y sin `sudo`, desde
+   el head del PR y sin tocar nada: calcular los pines y comprobarlos.
+   `PR_HEAD` es el commit completo sobre el que corrió `ax-lab-images.yml`.
+
+   ```bash
+   git fetch origin
+   git checkout --detach "${PR_HEAD:?}"
+   test -z "$(git status --porcelain --untracked-files=normal)"
+   PREV=$(sed -n 's/^revision: "\([a-f0-9]\{40\}\)"$/\1/p' \
+     /opt/dockerswarm/deployments/ax-lab.yml)
+   git merge-base --is-ancestor "${PREV:?}" HEAD
+   WORK=$(mktemp -d)
+   mkdir "${WORK}/prev"
+   git archive "${PREV}" | tar -x -C "${WORK}/prev"
+   plan() { .venv/bin/python "$1/scripts/validate-ax-lab.py" "$2"; }
+   plan . --substrate-plan >"${WORK}/sub-new.json"
+   plan . --ax-plan >"${WORK}/ax-new.json"
+   plan "${WORK}/prev" --substrate-plan >"${WORK}/sub-old.json"
+   plan "${WORK}/prev" --ax-plan >"${WORK}/ax-old.json"
+   pins() {
+     jq -r --arg key "$2" '.[$key] | to_entries[] | select(.value != null)
+       | "--image=\(.key)=\(.value)"' "$1"
+   }
+   sorted() { printf '%s\n' "$@" | LC_ALL=C sort; }
+   mapfile -t NEW_SUB < <(pins "${WORK}/sub-new.json" images)
+   mapfile -t OLD_SUB < <(pins "${WORK}/sub-old.json" images)
+   mapfile -t NEW_KO < <(pins "${WORK}/ax-new.json" ko_images)
+   mapfile -t OLD_KO < <(pins "${WORK}/ax-old.json" ko_images)
+   mapfile -t STALE_SUB < <(LC_ALL=C comm -23 \
+     <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
+   mapfile -t MOVED_SUB < <(LC_ALL=C comm -13 \
+     <(sorted "${OLD_SUB[@]}") <(sorted "${NEW_SUB[@]}"))
+   mapfile -t STALE_KO < <(LC_ALL=C comm -23 \
+     <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
+   mapfile -t MOVED_KO < <(LC_ALL=C comm -13 \
+     <(sorted "${OLD_KO[@]}") <(sorted "${NEW_KO[@]}"))
+   [[ ${#NEW_SUB[@]} -eq 7 && ${#OLD_SUB[@]} -eq 7 ]]
+   [[ ${#NEW_KO[@]} -eq 2 && ${#OLD_KO[@]} -eq 2 ]]
+   [[ ${#STALE_SUB[@]} -gt 0 && ${#STALE_SUB[@]} -eq ${#MOVED_SUB[@]} ]]
+   [[ ${#STALE_KO[@]} -gt 0 && ${#STALE_KO[@]} -eq ${#MOVED_KO[@]} ]]
+   ```
+
+   `STALE_*` son los pines anteriores de las imágenes que cambian y
+   `MOVED_*`, sus pines nuevos; el `forget` usa los primeros y la siembra los
+   segundos. Las dos imágenes de buildx y la del panel no cambian en esta
+   ventana, y las aserciones del bloque siguiente lo comprueban. Las
+   etiquetas y los sha256 de la CLI salen de los planes y, lo que el plan
+   anterior no trae, del contrato anterior (`cfg`):
+
+   ```bash
+   cfg() {
+     .venv/bin/python -c '
+   import functools, sys, yaml
+   node = yaml.safe_load(open(sys.argv[1]))["ax_lab"]
+   print(functools.reduce(lambda part, key: part[key], sys.argv[2:], node))
+   ' "$@"
+   }
+   OLD_CFG=${WORK}/prev/config/ax-lab.yml
+   TAG_SUB=$(jq -r .version "${WORK}/sub-new.json")
+   TAG_AX=$(jq -r .tag "${WORK}/ax-new.json")
+   CLI_NEW=$(jq -r .cli_sha256 "${WORK}/ax-new.json")
+   CLI_OLD=$(jq -r .cli_sha256 "${WORK}/ax-old.json")
+   [[ "${TAG_SUB}" == "$(jq -r .version "${WORK}/sub-old.json")" ]]
+   [[ "${TAG_AX}" == "$(cfg "${OLD_CFG}" ax tag)" ]]
+   BUILDX=()
+   for name in ax-task-runner ax-agents; do
+     BUILDX+=("--image=${name}=$(cfg config/ax-lab.yml ax images "${name}")")
+     [[ "${BUILDX[-1]}" == \
+       "--image=${name}=$(cfg "${OLD_CFG}" ax images "${name}")" ]]
+   done
+   WEB_TAG=$(cfg "${OLD_CFG}" web image tag)
+   WEB_PIN="--image=ax-web=$(cfg "${OLD_CFG}" web image digest)"
+   [[ "${WEB_TAG}" == "$(cfg config/ax-lab.yml web image tag)" ]]
+   [[ "${WEB_PIN}" == \
+     "--image=ax-web=$(cfg config/ax-lab.yml web image digest)" ]]
+   RELOCK=/var/backups/dockerswarm/ax-lab-relock
+   LAYOUT=/var/backups/dockerswarm/ax-lab/images
+   CLI_BACKUP=/var/backups/dockerswarm/ax-lab/binaries/ax
+   SNAP_LAYOUT=${RELOCK}/images
+   SNAP_CLI=${RELOCK}/ax
+   IN=${RELOCK}/in
+   REH=${RELOCK}/rehearsal
+   expect_all() { # n valor salida: n entradas, todas con ese valor
+     printf '%s\n' "$3"
+     jq -e --argjson n "$1" --arg v "$2" \
+       'length == $n and all(.[]; . == $v)' <<<"$3" >/dev/null
+   }
+   expect_complete() { # n salida: n imágenes, todas completas en la copia
+     printf '%s\n' "$2"
+     jq -e --argjson n "$1" \
+       '.backup | length == $n and all(.[]; . == "complete")' \
+       <<<"$2" >/dev/null
+   }
+   expect_pinned() { # n salida: como expect_complete, y fijadas en el registro
+     printf '%s\n' "$2"
+     jq -e --argjson n "$1" '
+       (.registry | length == $n and all(.[]; . == "pinned"))
+       and (.backup | length == $n and all(.[]; . == "complete"))
+     ' <<<"$2" >/dev/null
+   }
+   ```
+
+   Si el tag de Substrate o el de AX cambiara, la copia no tendría dos
+   digests bajo un mismo nombre y esta ventana no haría falta; los
+   `[[ ... ]]` de las etiquetas la detienen entonces.
+
+2. La instantánea, antes de que nada se mute. Se copia la copia de seguridad
+   entera y la CLI con `cp -a`, bajo el lock host-global y nunca con
+   `cp -al` (el gestor rechaza ficheros con otros enlaces duros), y se
+   prueba con `image-status` sobre la instantánea, con los pines anteriores,
+   en los tres conjuntos: Substrate, AX y el panel. `df` tiene que mostrar
+   espacio para la copia (unos 250 MB de Substrate y 480 MB de AX, ver
+   «Copia de seguridad» e «Imágenes de AX»), los artefactos y el ensayo:
+
+   ```bash
+   df -h /var/backups
+   sudo -- install -d -o root -g root -m 0700 "${RELOCK}"
+   sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+     --operation ax-lab-seed -- /usr/bin/cp -a "${LAYOUT}" "${SNAP_LAYOUT}"
+   sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+     --operation ax-lab-seed -- /usr/bin/cp -a "${CLI_BACKUP}" "${SNAP_CLI}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set substrate --layout "${SNAP_LAYOUT}" \
+     --tag "${TAG_SUB}" "${OLD_SUB[@]}")
+   expect_complete 7 "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set ax --layout "${SNAP_LAYOUT}" \
+     --tag "${TAG_AX}" "${OLD_KO[@]}" "${BUILDX[@]}")
+   expect_complete 4 "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set web --layout "${SNAP_LAYOUT}" \
+     --tag "${WEB_TAG}" "${WEB_PIN}")
+   expect_complete 1 "${OUT}"
+   [[ "$(sudo -- sha256sum "${SNAP_CLI}" | cut -d' ' -f1)" == "${CLI_OLD}" ]]
+   ```
+
+   Sin una instantánea completa y legible por el gestor, no se sigue.
+
+3. Extraer los artefactos como root en directorios de root `0700`, nunca
+   bajo `/home` ni en un tmpfs, porque el gestor rechaza lo que no es de
+   root o es escribible por otros. `SUBSTRATE_ZIP` y `AX_ZIP` son los zip
+   descargados. Después, la CLI, que se comprueba antes de instalarla: su
+   sha256 contra el pin, `chmod 0700` (la extracción no conserva el bit de
+   ejecución), una ejecución de `--help` en el host (o `ldd` si no la
+   admite) y la glibc del host. La ejecución de la CI ya falló si la CLI
+   pedía una glibc más nueva que la 2.43, pero solo esta ejecución prueba el
+   binario en el host:
+
+   ```bash
+   sudo -- install -d -o root -g root -m 0700 "${IN}" "${IN}/substrate" \
+     "${IN}/ax"
+   sudo -- /usr/bin/python3 -I -m zipfile -e "${SUBSTRATE_ZIP:?}" \
+     "${IN}/substrate"
+   sudo -- /usr/bin/python3 -I -m zipfile -e "${AX_ZIP:?}" "${IN}/ax"
+   test -z "$(sudo -- find "${IN}" \( -perm /022 -o ! -user root \) -print)"
+   sudo -- jq . "${IN}/substrate/pins.json" "${IN}/ax/pins.json"
+   [[ "$(sudo -- sha256sum "${IN}/ax/ax" | cut -d' ' -f1)" == "${CLI_NEW}" ]]
+   sudo -- chmod 0700 "${IN}/ax/ax"
+   sudo -- "${IN}/ax/ax" --help >/dev/null
+   getconf GNU_LIBC_VERSION
+   ```
+
+   Los `pins.json` dicen de qué ejecución y con qué pines se compiló cada
+   artefacto; tienen que ser los de los planes.
+
+4. El ensayo: sembrar los pines nuevos en un layout de prueba y comprobarlos
+   con `image-status`, con los mismos artefactos y las mismas órdenes que la
+   siembra real y sin tocar la copia viva. Lo que falle aquí (un zip malo,
+   otro dueño, un pin que falta, un blob corrupto) falla antes del `forget`:
+
+   ```bash
+   sudo -- install -d -o root -g root -m 0700 "${REH}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     seed-layout --image-set substrate --source "${IN}/substrate" \
+     --layout "${REH}/images" --tag "${TAG_SUB}" "${MOVED_SUB[@]}")
+   expect_all "${#MOVED_SUB[@]}" seeded "${OUT}"
+   for pin in "${MOVED_KO[@]}"; do
+     name=${pin#--image=}; name=${name%%=*}
+     OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+       seed-layout --image-set ax --source "${IN}/ax/ko-${name}" \
+       --layout "${REH}/images" --tag "${TAG_AX}" "${pin}")
+     expect_all 1 seeded "${OUT}"
+   done
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set substrate --layout "${REH}/images" \
+     --tag "${TAG_SUB}" "${MOVED_SUB[@]}")
+   expect_complete "${#MOVED_SUB[@]}" "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set ax --layout "${REH}/images" \
+     --tag "${TAG_AX}" "${MOVED_KO[@]}")
+   expect_complete "${#MOVED_KO[@]}" "${OUT}"
+   sudo -- rm -rf "${REH:?}"
+   ```
+
+5. El `forget`, por los digests anteriores literales de los planes del
+   commit aplicado, para que la guarda de digest exacto compruebe algo: si
+   la entrada nombra otro digest, el gestor se niega y no cambia esa imagen
+   (el bucle no es atómico: las anteriores en orden alfabético ya están
+   retiradas). Los blobs se quedan, y no hay orden que vuelva a añadir una
+   entrada salvo `seed-layout` desde una fuente que la liste: la instantánea
+   es el camino de vuelta. Desde aquí rige la congelación:
+
+   ```bash
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
+     --image-set substrate --layout "${LAYOUT}" --tag "${TAG_SUB}" \
+     "${STALE_SUB[@]}")
+   expect_all "${#STALE_SUB[@]}" forgotten "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
+     --image-set ax --layout "${LAYOUT}" --tag "${TAG_AX}" \
+     "${STALE_KO[@]}")
+   expect_all "${#STALE_KO[@]}" forgotten "${OUT}"
+   ```
+
+6. La siembra real, siempre con `--image-set` explícito (`seed-layout` toma
+   `web` por defecto), con los pines nuevos de los planes. Una imagen ko por
+   llamada, porque el `index.json` de cada layout de ko lista solo la suya.
+   Si falla, no es atómica: las anteriores en orden alfabético quedan
+   sembradas. Entonces se repite la orden, que da `present` para esas, y se
+   juzga con el `image-status` del paso 7 y no con `expect_all`, que en la
+   repetición ya no ve `seeded` en todas:
+
+   ```bash
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     seed-layout --image-set substrate --source "${IN}/substrate" \
+     --layout "${LAYOUT}" --tag "${TAG_SUB}" "${MOVED_SUB[@]}")
+   expect_all "${#MOVED_SUB[@]}" seeded "${OUT}"
+   for pin in "${MOVED_KO[@]}"; do
+     name=${pin#--image=}; name=${name%%=*}
+     OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+       seed-layout --image-set ax --source "${IN}/ax/ko-${name}" \
+       --layout "${LAYOUT}" --tag "${TAG_AX}" "${pin}")
+     expect_all 1 seeded "${OUT}"
+   done
+   ```
+
+7. Comprobar la copia, de solo lectura y sin registro, con los pines nuevos
+   de los tres conjuntos. Las dos imágenes de buildx y la del panel prueban
+   que el `forget` y la siembra no las tocaron.
+
+   ```bash
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set substrate --layout "${LAYOUT}" \
+     --tag "${TAG_SUB}" "${NEW_SUB[@]}")
+   expect_complete 7 "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set ax --layout "${LAYOUT}" \
+     --tag "${TAG_AX}" "${NEW_KO[@]}" "${BUILDX[@]}")
+   expect_complete 4 "${OUT}"
+   OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+     image-status --image-set web --layout "${LAYOUT}" \
+     --tag "${WEB_TAG}" "${WEB_PIN}")
+   expect_complete 1 "${OUT}"
+   ```
+
+8. La copia de la CLI, que el rol exige con el sha256 fijado también en
+   `--check` (`ax_host.yml`) y que sustituye a la única copia anterior, la
+   de la instantánea. Ya se comprobó su sha256, su ejecución y su glibc en el
+   paso 3:
+
+   ```bash
+   sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+     --operation ax-lab-seed -- /usr/bin/install -o root -g root -m 0600 \
+     "${IN}/ax/ax" "${CLI_BACKUP}"
+   [[ "$(sudo -- sha256sum "${CLI_BACKUP}" | cut -d' ' -f1)" == "${CLI_NEW}" ]]
+   ```
+
+9. Fusionar el PR de pines, ahora y no antes, con `main` congelado, y dejar
+   el clon operativo en el commit de fusión, limpio y con los mismos planes
+   que se sembraron. A partir de aquí, `main` y la copia coinciden:
+
+   ```bash
+   git fetch origin
+   git checkout --detach origin/main
+   test -z "$(git status --porcelain --untracked-files=normal)"
+   plan . --substrate-plan | diff - "${WORK}/sub-new.json"
+   plan . --ax-plan | diff - "${WORK}/ax-new.json"
+   ```
+
+10. `--check`, con el wrapper como `admin` y sin `sudo` (`--local` ejecuta
+    Ansible por `sudo` él mismo). Leerlo entero: `image-status` no se
+    detiene, cada imagen re-fijada aparece movida en el registro y completa
+    en la copia (se importa), nada está perdido, la deriva de Substrate
+    muestra su reinstalación, el rol anuncia el despliegue de `ax-controller`
+    y de `ax-server`, y el sha256 de la CLI coincide. Qué pods se reinician
+    exactamente no se ha medido:
+
+    ```bash
+    ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+    ```
+
+11. El apply. El rol importa los tags movidos desde la copia (la
+    importación sobrescribe un tag movido), reinstala Substrate si sus
+    cargas derivan y despliega las dos imágenes de AX con su digest:
+
+    ```bash
+    ./scripts/deploy-ansible.sh --playbook ax-lab --local --confirm-production
+    ```
+
+12. Verificar, con el registro, sin dar nada por bueno hasta tener todo:
+
+    ```bash
+    OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+      image-status --image-set substrate --registry localhost:5001 \
+      --layout "${LAYOUT}" --tag "${TAG_SUB}" "${NEW_SUB[@]}")
+    expect_pinned 7 "${OUT}"
+    OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+      image-status --image-set ax --registry localhost:5001 \
+      --layout "${LAYOUT}" --tag "${TAG_AX}" "${NEW_KO[@]}" "${BUILDX[@]}")
+    expect_pinned 4 "${OUT}"
+    for cli in /opt/dockerswarm/ax-lab/bin/ax "${CLI_BACKUP}"; do
+      [[ "$(sudo -- sha256sum "${cli}" | cut -d' ' -f1)" == "${CLI_NEW}" ]]
+    done
+    ./scripts/deploy-ansible.sh --playbook ax-lab --local --check
+    ```
+
+    Las dos CLI tienen que dar `ax.cli_sha256` (la aserción lo exige) y el
+    último `--check` tiene que informar `changed=0`. Después, el resto de
+    «Verificación» (nodo `Ready`, DaemonSet `atelet`, `sudo ax get tasks -a
+    default`) y la línea base del paso 0: los mismos reinicios de pods,
+    `oom 0` en el `memory.events.local` del nodo y `oom_kill 0` en el del
+    registro, y el `memory.peak` y el `MemAvailable` anotados para
+    [CAPACITY.md](CAPACITY.md).
+
+13. Cerrar. Solo con el último `changed=0` termina la congelación. Se
+    borran los artefactos extraídos y los planes; la instantánea
+    (`${SNAP_LAYOUT}` y `${SNAP_CLI}`) se conserva hasta que el propietario
+    acepte la resiembra, y entonces se borra `${RELOCK}`. La ventana se
+    registra como las anteriores (ver
+    [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md)):
+
+    ```bash
+    sudo -- rm -rf "${IN:?}"
+    rm -rf "${WORK:?}"
+    ```
+
+### Criterios de aborto
+
+La ventana se detiene, y según dónde pare se recorre la marcha atrás, cuando:
+
+- falla una orden o una aserción de los pasos 1 a 8. Antes del `forget`
+  (pasos 1 a 4) la copia viva no se ha tocado y solo se borran el ensayo y
+  los artefactos extraídos; desde el paso 5 se deshace por imagen, desde la
+  instantánea;
+- el `--check` del paso 10 se detiene, informa algo perdido o un plan que no
+  es el descrito, o el apply del paso 11 falla. Un apply fallido retiene un
+  marker del wrapper, que se recupera con el procedimiento de `CLAUDE.md`
+  antes de volver a usar el wrapper;
+- una carga no está lista dentro del tiempo de espera de rollout del rol: los
+  600 s de `substrate.install.rollout_timeout_seconds` para Substrate y los
+  treinta intentos de diez segundos de `kubectl rollout status` para los
+  Deployments de `ax-system`. Es marcha atrás y no un reintento, porque esa
+  imagen no se ha ejecutado nunca antes;
+- tras el apply, un `oom` u `oom_kill` distinto de cero, más reinicios que
+  la línea base en `kube-system` o en una carga que el apply no sustituyó, o
+  una CLI que no responde.
+
+### Marcha atrás de la ventana de resiembra
+
+Se hace por imagen y desde la instantánea del paso 2, con los pines
+anteriores. Que una imagen ya esté restaurada, o ausente, cuenta como hecha:
+el `forget` de un digest nuevo que ya no está dice `absent` o se niega
+porque la entrada ya nombra el anterior, y lo decide el `seed-layout`
+siguiente, que da `present` si está completa. Por eso el bucle se puede
+repetir tras una marcha atrás interrumpida. Con las variables de los pasos
+1 y 2 todavía en la shell:
+
+```bash
+for old in "${STALE_SUB[@]}"; do
+  name=${old#--image=}; name=${name%%=*}
+  new=$(printf '%s\n' "${MOVED_SUB[@]}" | grep -F -- "--image=${name}=")
+  sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
+    --image-set substrate --layout "${LAYOUT}" --tag "${TAG_SUB}" \
+    "${new}" || echo "${name}: ausente o ya restaurada"
+  sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
+    --image-set substrate --source "${SNAP_LAYOUT}" --layout "${LAYOUT}" \
+    --tag "${TAG_SUB}" "${old}"
+done
+for old in "${STALE_KO[@]}"; do
+  name=${old#--image=}; name=${name%%=*}
+  new=$(printf '%s\n' "${MOVED_KO[@]}" | grep -F -- "--image=${name}=")
+  sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py forget \
+    --image-set ax --layout "${LAYOUT}" --tag "${TAG_AX}" \
+    "${new}" || echo "${name}: ausente o ya restaurada"
+  sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py seed-layout \
+    --image-set ax --source "${SNAP_LAYOUT}" --layout "${LAYOUT}" \
+    --tag "${TAG_AX}" "${old}"
+done
+OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+  image-status --image-set substrate --layout "${LAYOUT}" \
+  --tag "${TAG_SUB}" "${OLD_SUB[@]}")
+expect_complete 7 "${OUT}"
+OUT=$(sudo -- /usr/bin/python3 scripts/manage-ax-lab-substrate.py \
+  image-status --image-set ax --layout "${LAYOUT}" \
+  --tag "${TAG_AX}" "${OLD_KO[@]}" "${BUILDX[@]}")
+expect_complete 4 "${OUT}"
+sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
+  --operation ax-lab-seed -- /usr/bin/install -o root -g root -m 0600 \
+  "${SNAP_CLI}" "${CLI_BACKUP}"
+[[ "$(sudo -- sha256sum "${CLI_BACKUP}" | cut -d' ' -f1)" == "${CLI_OLD}" ]]
+```
+
+Hay dos variantes, según hasta dónde llegó la ventana:
+
+- **Antes del apply** (de los pasos 5 a 10, con nada aplicado): solo la copia
+  y la CLI se movieron, y el registro y el nodo siguen con lo anterior. El
+  bucle y la restauración de la CLI bastan, y no hace falta ningún apply.
+- **Después del apply** (desde el paso 11): además del bucle y de la CLI,
+  `git checkout --detach "${PREV}"` y, desde ese commit, `--check` y
+  `--confirm-production` de `ax-lab`. El apply ve los tags del registro
+  movidos a los digests nuevos, importa los anteriores desde la copia
+  restaurada y las cargas vuelven a ellos. No se ha comprobado que el
+  registro siga sirviendo por digest los manifiestos anteriores una vez
+  movidos sus tags: no se usa `export` desde él, la fuente es la copia
+  restaurada.
+
+En las dos variantes, desde el `forget` hasta que la marcha atrás termina no
+corre ningún apply de `ax-lab` ni de `ax-web` desde `main`. Si el PR de pines
+ya estaba fusionado (pasos 9 en adelante), se fusiona ese mismo día un PR que
+lo revierta, y hasta entonces `main` sigue sin servir para aplicar nada,
+porque pide digests que la copia ya no guarda: la congelación termina cuando
+el revert está fusionado y un `--check` desde `main` informa `changed=0`. Si
+el PR de pines no llegó a fusionarse, se queda sin fusionar hasta repetir la
+ventana.
 
 ## Retirar el laboratorio manual
 
@@ -1868,6 +2527,13 @@ es un cambio revisado: quitar la parte de `.dockerignore`, rehacer la de
 `internal/substrate/client.go` sobre google/ax#395, recompilar las cuatro
 imágenes fuera del host y fijarlas de nuevo. Solo la CI aplica el parche;
 el host nunca compila AX.
+
+Cuando `sources.ax.modules_patch` está fijado, la CI aplica además, encima y
+también con `git apply --index`, un segundo parche,
+`images/ax/google-ax-modules.patch`, que solo toca `go.mod` y `go.sum` y no
+cambia el primero: el sha256 de `google-ax-375.patch` sigue siendo el que fija
+`sources.ax.patch`. Sirve a la CLI y a las dos imágenes de ko; el binario del
+runner se compila sin él (ver «Reproducibilidad de AX», paso 5).
 
 ## Credenciales
 
