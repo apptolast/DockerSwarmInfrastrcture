@@ -727,6 +727,10 @@ class AxValidatorTests(unittest.TestCase):
                                 "672533541dbfcd29084e4de2475267088bda3651"
                             ),
                             "toolbox_image": document()["ax_lab"]["images"]["toolbox"],
+                            "runner_toolbox_image": document()["ax_lab"]["images"][
+                                "toolbox"
+                            ],
+                            "tag": AX_TAG,
                             "ko_base_image": document()["ax_lab"]["ax"][
                                 "ko_base_image"
                             ],

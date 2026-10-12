@@ -20,14 +20,20 @@ subnet and the same limits as its host_containers.ax-lab entry, and its
 agent office: the state volume, the queue and retention bounds and the
 seeded projects, public GitHub repositories whose Swarm service and public
 host name, when set, are the ones config/image-channels.yml and the service
-catalogs declare. It rejects secret-like keys and values anywhere in the
-file, then renders the role's sysctl file, kind configuration, AX manifests
-and web panel manifest and checks them against the contract: AX is never
-published, never granted RBAC and never mounts a Kubernetes API token, and
-the panel is published only as its one NodePort on the kind bridge, runs
-non-root and read-only (but for its state volume) under the restricted Pod
-Security Standard, reaches the Internet only on HTTPS, and renders no
-Secret.
+catalogs declare. Once the lab is relocked, three optional fields come
+together or not at all: images.runner_toolbox, the Go release that built the
+binary inside the deployed AX images, and the go.mod/go.sum-only patch that
+bumps the modules of each source, sources.ax.modules_patch and
+sources.substrate.modules_patch (the latter with the root git tree of the
+patched, vendored checkout); the toolbox then moves to the relocked Go
+release and the host never builds Substrate. It rejects secret-like keys and
+values anywhere in the file, then renders the role's sysctl file, kind
+configuration, AX manifests and web panel manifest and checks them against
+the contract: AX is never published, never granted RBAC and never mounts a
+Kubernetes API token, and the panel is published only as its one NodePort on
+the kind bridge, runs non-root and read-only (but for its state volume)
+under the restricted Pod Security Standard, reaches the Internet only on
+HTTPS, and renders no Secret.
 It reads nothing outside this repository, so CI runs it without a production
 host.
 """
@@ -195,6 +201,8 @@ SOURCE_REPOSITORIES = {
     "substrate": "https://github.com/agent-substrate/substrate",
 }
 COMMIT_RE = re.compile(r"[a-f0-9]{40}")
+# A git tree id has the shape of a commit id.
+TREE_RE = re.compile(r"[a-f0-9]{40}")
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 VERSION_RE = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 # Official release asset hosts and the exact linux-amd64 asset path.
@@ -213,9 +221,20 @@ IMAGE_REPOSITORIES = {
     "toolbox": "docker.io/library/golang",
     "web_toolbox": "docker.io/library/golang",
 }
-# The Go release the manual lab built every pinned image with; Substrate's
-# go.mod at the pinned commit says `go 1.27.0` with no toolchain line.
+# Pinned only once the lab is relocked (see RELOCKED_TOOLBOX_TAG): the Go
+# image that built the binary inside the deployed ax-task-runner and
+# ax-agents images. A key of the mapping above would be mandatory.
+OPTIONAL_IMAGE_REPOSITORIES = {"runner_toolbox": "docker.io/library/golang"}
+# The Go release the manual lab built every pinned image with, and the
+# toolbox's release until the lab is relocked; Substrate's go.mod at the
+# pinned commit says `go 1.27.0` with no toolchain line.
 REVIEWED_TOOLBOX_TAG = "1.27.1"
+# The toolbox's release once both modules patches are set: the one that
+# clears the standard-library advisories reported for the release above.
+RELOCKED_TOOLBOX_TAG = "1.27.2"
+# The Go release that built the binary inside the deployed ax-task-runner and
+# ax-agents images, which a relock does not rebuild.
+REVIEWED_RUNNER_TOOLBOX_TAG = "1.27.1"
 # The Go release ax-web is built and vetted with (.github/workflows/ax-web.yml).
 REVIEWED_WEB_TOOLBOX_TAG = "1.27.2"
 IMAGE_RE = re.compile(
@@ -313,6 +332,23 @@ AX_KEYS = {
 AX_KO_IMAGES = ("ax-controller", "ax-server")
 AX_IMAGES = (*AX_KO_IMAGES, "ax-task-runner", "ax-agents")
 AX_PATCH = "images/ax/google-ax-375.patch"
+# Once the lab is relocked each source also takes a patch of its go.mod and
+# go.sum only, applied after the one above. Both live under images/ax/ on
+# purpose: the workflow triggers and the sensitive-path guard already cover
+# that directory.
+AX_MODULES_PATCH = "images/ax/google-ax-modules.patch"
+SUBSTRATE_MODULES_PATCH = "images/ax/substrate-modules.patch"
+# The `diff --git` headers of such a patch, in order, and its size limit.
+GOMOD_PATCH_HEADERS = ("a/go.mod b/go.mod", "a/go.sum b/go.sum")
+GOMOD_PATCH_MAX_BYTES = 65536
+# A go.mod directive that redirects or hides a module is never added, nor is
+# any `=>` (a replace line inside a block does not start with the keyword).
+GOMOD_PATCH_FORBIDDEN_RE = re.compile(r"\s*(?:replace|exclude)(?=[\s(]|$)")
+# What a line of a go.mod and go.sum patch may start with: a hunk line, a
+# hunk header, the no-newline marker, a file header or its index line. Mode,
+# rename, copy, similarity, new or deleted file and binary markers start with
+# anything else.
+GOMOD_PATCH_LINE_STARTS = (" ", "+", "-", "@", "\\", "diff --git ", "index ")
 # The exact manifests the manual lab pushed for the ko images: their bytes
 # hash to the pins, and the reproducibility workflow compares a rebuild's
 # config and layers with them.
@@ -596,6 +632,15 @@ def exact_keys(value: Any, keys: set[str], context: str) -> dict[str, Any]:
     return value
 
 
+def keys_between(
+    value: Any, required: set[str], optional: set[str], context: str
+) -> dict[str, Any]:
+    """Like exact_keys, but the optional keys may be present or absent."""
+    if not isinstance(value, dict) or not required <= set(value) <= required | optional:
+        raise AxLabError(f"{context}: unexpected or missing keys")
+    return value
+
+
 def reject_secret_like(value: Any, context: str = "config") -> None:
     """Refuse credential-shaped keys or values anywhere in the document."""
     if isinstance(value, dict):
@@ -702,8 +747,10 @@ def file_sha256(relative_path: str) -> str:
 def validate_sources(sources: Any) -> None:
     exact_keys(sources, set(SOURCE_REPOSITORIES), "sources")
     for name, repository in SOURCE_REPOSITORIES.items():
-        keys = {"repository", "commit", "patch"} if name == "ax" else None
-        source = exact_keys(sources[name], keys or {"repository", "commit"}, name)
+        required = {"repository", "commit"}
+        if name == "ax":
+            required.add("patch")
+        source = keys_between(sources[name], required, {"modules_patch"}, name)
         if source["repository"] != repository:
             raise AxLabError(f"source {name} must use its upstream repository")
         if not isinstance(source["commit"], str) or not COMMIT_RE.fullmatch(
@@ -717,6 +764,101 @@ def validate_sources(sources: Any) -> None:
         raise AxLabError("the AX patch sha256 must be 64 lowercase hex")
     if file_sha256(patch["path"]) != patch["sha256"]:
         raise AxLabError(f"{AX_PATCH} does not hash to its reviewed sha256")
+    if "modules_patch" in sources["ax"]:
+        validate_modules_patch(
+            sources["ax"]["modules_patch"],
+            "ax",
+            AX_MODULES_PATCH,
+            {"path", "sha256"},
+            patch["sha256"],
+        )
+    if "modules_patch" in sources["substrate"]:
+        validate_modules_patch(
+            sources["substrate"]["modules_patch"],
+            "substrate",
+            SUBSTRATE_MODULES_PATCH,
+            {"path", "sha256", "tree"},
+        )
+
+
+def read_patch_text(relative_path: str) -> bytes:
+    try:
+        return (ROOT / relative_path).read_bytes()
+    except OSError as error:
+        raise AxLabError(f"cannot read {relative_path}: {error}") from error
+
+
+def validate_gomod_patch_text(data: bytes, context: str) -> None:
+    """Accept a patch of go.mod then go.sum and of nothing else.
+
+    A patch that renames, copies, creates, deletes or re-modes a file, is
+    binary, adds a replace or exclude directive, or carries a file header git
+    would read as another file (`git apply` also takes a plain `--- a/x` and
+    `+++ b/x` pair that has no `diff --git` line before it) is refused: it
+    could pull code the reviewed modules never named.
+    """
+    if not 0 < len(data) <= GOMOD_PATCH_MAX_BYTES:
+        raise AxLabError(f"{context} must hold 1 to {GOMOD_PATCH_MAX_BYTES} bytes")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AxLabError(f"{context} must be UTF-8 text") from error
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    if not lines or not lines[0].startswith("diff --git "):
+        raise AxLabError(f"{context} must start with a git file header")
+    headers = []
+    old_line = new_line = ""
+    for number, line in enumerate(lines, start=1):
+        if not line.startswith(GOMOD_PATCH_LINE_STARTS):
+            raise AxLabError(f"{context}:{number}: not a plain go.mod or go.sum hunk")
+        if line.startswith("diff --git "):
+            headers.append(line.removeprefix("diff --git "))
+            old, _, new = headers[-1].partition(" ")
+            old_line, new_line = f"--- {old}", f"+++ {new}"
+        elif (line.startswith("--- ") and line != old_line) or (
+            line.startswith("+++ ") and line != new_line
+        ):
+            raise AxLabError(f"{context}:{number}: names a file its header does not")
+        elif line.startswith("+") and (
+            GOMOD_PATCH_FORBIDDEN_RE.match(line[1:]) or "=>" in line
+        ):
+            raise AxLabError(f"{context}:{number}: adds a replace or exclude")
+    if headers != list(GOMOD_PATCH_HEADERS):
+        raise AxLabError(f"{context} must patch go.mod and then go.sum, only")
+
+
+def validate_gomod_patch(relative_path: str) -> None:
+    validate_gomod_patch_text(read_patch_text(relative_path), relative_path)
+
+
+def validate_modules_patch(
+    patch: Any,
+    name: str,
+    path: str,
+    keys: set[str],
+    other_sha256: str | None = None,
+) -> None:
+    """A source's go.mod and go.sum patch, pinned by its sha256 like the other."""
+    exact_keys(patch, keys, f"{name} modules patch")
+    if patch["path"] != path:
+        raise AxLabError(f"the {name} modules patch must be the vendored {path}")
+    if not isinstance(patch["sha256"], str) or not SHA256_RE.fullmatch(patch["sha256"]):
+        raise AxLabError(f"the {name} modules patch sha256 must be 64 lowercase hex")
+    if patch["sha256"] == other_sha256:
+        raise AxLabError(f"the {name} modules patch must not be the #375 patch")
+    # The root git tree of the checkout once the patch is applied, `go mod
+    # vendor` has run and everything is staged: the pin of the build's input.
+    if "tree" in keys and (
+        not isinstance(patch["tree"], str) or not TREE_RE.fullmatch(patch["tree"])
+    ):
+        raise AxLabError(
+            "the Substrate modules patch tree must be a 40-hex git tree id"
+        )
+    if file_sha256(path) != patch["sha256"]:
+        raise AxLabError(f"{path} does not hash to its reviewed sha256")
+    validate_gomod_patch(path)
 
 
 def validate_binary_url(name: str, url: Any, version: str) -> None:
@@ -749,9 +891,14 @@ def validate_binaries(binaries: Any) -> None:
 
 
 def validate_images(images: Any) -> dict[str, re.Match[str]]:
-    exact_keys(images, set(IMAGE_REPOSITORIES), "images")
+    keys_between(
+        images, set(IMAGE_REPOSITORIES), set(OPTIONAL_IMAGE_REPOSITORIES), "images"
+    )
     references = {}
-    for name, repository in IMAGE_REPOSITORIES.items():
+    expected = {**IMAGE_REPOSITORIES, **OPTIONAL_IMAGE_REPOSITORIES}
+    for name, repository in expected.items():
+        if name not in images:
+            continue
         reference = images[name]
         match = IMAGE_RE.fullmatch(reference) if isinstance(reference, str) else None
         if match is None:
@@ -1152,7 +1299,9 @@ def validate_substrate(
     return substrate
 
 
-def validate_fallback_builds(value: Any, substrate: dict[str, Any]) -> None:
+def validate_fallback_builds(
+    value: Any, substrate: dict[str, Any], relocked: bool = False
+) -> None:
     """The images the owner lets the role build here, each once and pinned."""
     if not isinstance(value, list) or len(set(map(str, value))) != len(value):
         raise AxLabError("ax_lab_substrate_fallback_builds must list distinct images")
@@ -1161,6 +1310,16 @@ def validate_fallback_builds(value: Any, substrate: dict[str, Any]) -> None:
             raise AxLabError(f"fallback build {name!r} is not a Substrate image")
         if substrate["images"][name] is None:
             raise AxLabError(f"fallback build {name} has no pinned digest to reproduce")
+    # Last, so that the two messages above keep winning. The host builds the
+    # pristine pinned checkout in the toolbox, which can never reproduce the
+    # digests of a patched, vendored build, and ate-setup reads its manifests
+    # from that checkout.
+    if relocked and value:
+        raise AxLabError(
+            "ax_lab_substrate_fallback_builds must be empty while "
+            "sources.substrate.modules_patch is set: the host never patches or "
+            "vendors the Substrate checkout"
+        )
 
 
 def validate_worker_pool(pool: Any, cluster: dict[str, Any], reserve: Any) -> None:
@@ -1511,6 +1670,17 @@ def validate_web(
     return web
 
 
+def relocked_state(sources: dict[str, Any], images: dict[str, Any]) -> bool:
+    """Whether the lab is relocked: both modules patches and the runner toolbox."""
+    patched = [name for name in SOURCE_REPOSITORIES if "modules_patch" in sources[name]]
+    if len(patched) == 1 or (patched and "runner_toolbox" not in images):
+        raise AxLabError(
+            "images.runner_toolbox, sources.ax.modules_patch and "
+            "sources.substrate.modules_patch must be set together"
+        )
+    return bool(patched)
+
+
 def validate_catalog(
     document: Any,
     reserved: dict[str, str] | None = None,
@@ -1540,8 +1710,17 @@ def validate_catalog(
     images = validate_images(lab["images"])
     if images["kind_node"]["tag"] != lab["binaries"]["kubectl"]["version"]:
         raise AxLabError("the kind node image and kubectl must share one version")
-    if images["toolbox"]["tag"] != REVIEWED_TOOLBOX_TAG:
-        raise AxLabError(f"the toolbox must be golang {REVIEWED_TOOLBOX_TAG}")
+    relocked = relocked_state(lab["sources"], images)
+    toolbox_tag = RELOCKED_TOOLBOX_TAG if relocked else REVIEWED_TOOLBOX_TAG
+    if images["toolbox"]["tag"] != toolbox_tag:
+        raise AxLabError(f"the toolbox must be golang {toolbox_tag}")
+    if (
+        "runner_toolbox" in images
+        and images["runner_toolbox"]["tag"] != REVIEWED_RUNNER_TOOLBOX_TAG
+    ):
+        raise AxLabError(
+            f"the runner toolbox must be golang {REVIEWED_RUNNER_TOOLBOX_TAG}"
+        )
     if images["web_toolbox"]["tag"] != REVIEWED_WEB_TOOLBOX_TAG:
         raise AxLabError(
             f"the web toolbox must be golang {REVIEWED_WEB_TOOLBOX_TAG}"
@@ -1558,7 +1737,9 @@ def validate_catalog(
         load_operational_headroom() if headroom is None else headroom,
         load_free_limit_budget() if free is None else free,
     )
-    validate_fallback_builds(document["ax_lab_substrate_fallback_builds"], substrate)
+    validate_fallback_builds(
+        document["ax_lab_substrate_fallback_builds"], substrate, relocked
+    )
     validate_ax(lab["ax"], lab)
     return lab
 
@@ -1566,26 +1747,36 @@ def validate_catalog(
 def substrate_plan(lab: dict[str, Any]) -> dict[str, Any]:
     """What the reproducibility workflow builds and compares, as JSON."""
     substrate = lab["substrate"]
-    return {
+    source = lab["sources"]["substrate"]
+    plan = {
         "version": substrate["version"],
-        "commit": lab["sources"]["substrate"]["commit"],
-        "repository": lab["sources"]["substrate"]["repository"],
+        "commit": source["commit"],
+        "repository": source["repository"],
         "toolbox_image": lab["images"]["toolbox"],
         "registry_image": lab["images"]["registry"],
         "build": substrate["build"],
         "images": substrate["images"],
     }
+    if "modules_patch" in source:
+        plan["modules_patch"] = source["modules_patch"]
+    return plan
 
 
 def ax_plan(lab: dict[str, Any]) -> dict[str, Any]:
     """What the reproducibility workflow rebuilds and compares for AX, as JSON."""
     ax = lab["ax"]
-    return {
-        "commit": lab["sources"]["ax"]["commit"],
-        "repository": lab["sources"]["ax"]["repository"],
-        "patch": lab["sources"]["ax"]["patch"],
+    source = lab["sources"]["ax"]
+    plan = {
+        "commit": source["commit"],
+        "repository": source["repository"],
+        "patch": source["patch"],
         "substrate_commit": lab["sources"]["substrate"]["commit"],
         "toolbox_image": lab["images"]["toolbox"],
+        # The Go that built the binary inside ax-task-runner and ax-agents.
+        "runner_toolbox_image": lab["images"].get(
+            "runner_toolbox", lab["images"]["toolbox"]
+        ),
+        "tag": ax["tag"],
         "ko_base_image": ax["ko_base_image"],
         "ko_images": {name: ax["images"][name] for name in AX_KO_IMAGES},
         "ko_manifests": {
@@ -1594,6 +1785,9 @@ def ax_plan(lab: dict[str, Any]) -> dict[str, Any]:
         "cli_sha256": ax["cli_sha256"],
         "task_runner_binary_sha256": ax["task_runner_binary_sha256"],
     }
+    if "modules_patch" in source:
+        plan["modules_patch"] = source["modules_patch"]
+    return plan
 
 
 def render_sysctl(lab: dict[str, Any]) -> str:
