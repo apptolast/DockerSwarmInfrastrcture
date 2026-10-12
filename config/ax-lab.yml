@@ -33,14 +33,28 @@ ax_lab:
       # google/ax#375 as proposed on arkady-emelyanov/ax local-models
       # (c7fd10b, 89fa366), without its committed __pycache__, byte for byte
       # the diff the manual lab staged over the commit above and built every
-      # AX image from (images/ax/README.md). Only the reproducibility
-      # workflow applies it; the host never compiles AX.
+      # AX image from (images/ax/README.md). Only the CI workflows apply it;
+      # the host never compiles AX.
       patch:
         path: images/ax/google-ax-375.patch
         sha256: 7b8bff50ffc90f06970352f4576ee1dc0d3d9c2fcfb520fea86249beeeae9d72
+      # On top of the first patch: golang.org/x/net v0.60.0 and what it
+      # needs, go.mod and go.sum only (images/ax/README.md). The CLI and the
+      # ko images are built with both.
+      modules_patch:
+        path: images/ax/google-ax-modules.patch
+        sha256: 7e785a737ea02c3e134004224e4fe5470cef9daa4716759e752748990588de4f
     substrate:
       repository: https://github.com/agent-substrate/substrate
       commit: 672533541dbfcd29084e4de2475267088bda3651
+      # go.mod and go.sum only: the modules that clear the vulnerability
+      # findings. The CI workflows apply it and run `go mod vendor`; the
+      # root git tree they write is what `tree` pins. The host never patches
+      # or vendors the Substrate checkout.
+      modules_patch:
+        path: images/ax/substrate-modules.patch
+        sha256: 3625954af1aea377b7f5207c67d1139d4113b02b3a7c1dd3412a4bde095ab8c7
+        tree: a5544cb04ccf93ac763e83d16bef67c642ee4b0b
   # Official linux-amd64 release assets. Each sha256 is the one upstream
   # publishes next to the asset (kind-linux-amd64.sha256sum on the kind
   # release, kubectl.sha256 on dl.k8s.io).
@@ -65,19 +79,23 @@ ax_lab:
     # AX's own Redis (deploy/redis.yaml, line 40, at sources.ax), by digest.
     redis: "docker.io/library/redis:7-alpine@sha256:\
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
-    # The official Go image that the explicit fallback build and the
-    # reproducibility workflow run: Go 1.27.1 (Substrate's go.mod says
-    # `go 1.27.0`), git and make. The manual lab built every pinned
-    # Substrate image in this exact digest.
-    toolbox: "docker.io/library/golang:1.27.1@sha256:\
-      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    # The official Go image that the CI workflows build the Substrate images,
+    # the ax CLI and the ko images of AX with: Go 1.27.2 (Substrate's go.mod
+    # says `go 1.27.0`), git and make. It clears the standard-library
+    # advisories that govulncheck reported for 1.27.1.
+    toolbox: "docker.io/library/golang:1.27.2@sha256:\
+      5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
     # The official Go image that ax-web (images/ax-web, the Oficina) is built
-    # and vetted with: Go 1.27.2, which clears the standard-library
-    # advisories that govulncheck reported for 1.27.1 (.github/workflows/
-    # ax-web.yml). Substrate and the AX lab binaries above keep 1.27.1, the
-    # toolchain their pinned digests were built with.
+    # and vetted with (.github/workflows/ax-web.yml): the same Go 1.27.2.
     web_toolbox: "docker.io/library/golang:1.27.2@sha256:\
       5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    # Go 1.27.1, the toolchain the manual lab built the binary inside the
+    # deployed ax-task-runner and ax-agents images with. Those two images
+    # are seeded as they are and never rebuilt; the reproducibility workflow
+    # rebuilds the runner binary with this image and the first AX patch only
+    # to prove task_runner_binary_sha256.
+    runner_toolbox: "docker.io/library/golang:1.27.1@sha256:\
+      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
   # The kind cluster the role creates when it is absent and reconciles
   # afterwards (docs/AX.md, «Ciclo de vida del clúster»). kind names the
   # node <name>-control-plane and attaches it to its fixed Docker network

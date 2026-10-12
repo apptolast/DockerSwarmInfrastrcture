@@ -723,12 +723,15 @@ class AxValidatorTests(unittest.TestCase):
                             "commit": "f009cc81c9a571073bc1dd58cd2ed934bf2d5b1c",
                             "repository": "https://github.com/google/ax",
                             "patch": document()["ax_lab"]["sources"]["ax"]["patch"],
+                            "modules_patch": document()["ax_lab"]["sources"]["ax"][
+                                "modules_patch"
+                            ],
                             "substrate_commit": (
                                 "672533541dbfcd29084e4de2475267088bda3651"
                             ),
                             "toolbox_image": document()["ax_lab"]["images"]["toolbox"],
                             "runner_toolbox_image": document()["ax_lab"]["images"][
-                                "toolbox"
+                                "runner_toolbox"
                             ],
                             "tag": AX_TAG,
                             "ko_base_image": document()["ax_lab"]["ax"][

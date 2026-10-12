@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -778,6 +779,69 @@ class PlanTests(RelockCase):
         self.assertEqual(
             "modules_patch" in VALIDATOR.ax_plan(lab),
             "modules_patch" in document()["ax_lab"]["sources"]["ax"],
+        )
+
+
+class ReviewedModulesPatchesTests(unittest.TestCase):
+    """The two patches the relocked config pins are the ones that were measured.
+
+    Both were generated in CI (go get and go mod tidy on the pinned commits,
+    git diff --cached --full-index --binary) and checked there: AX builds and
+    passes its eight test packages, and govulncheck on Go 1.27.2 reports
+    nothing; Substrate builds, vets and reports nothing once `go mod vendor`
+    has run. Nothing but go.mod and go.sum moves.
+    """
+
+    REVIEWED = {
+        AX_MODULES_PATCH: (
+            2418,
+            "7e785a737ea02c3e134004224e4fe5470cef9daa4716759e752748990588de4f",
+            [("3", "3", "go.mod"), ("6", "6", "go.sum")],
+        ),
+        SUBSTRATE_MODULES_PATCH: (
+            13580,
+            "3625954af1aea377b7f5207c67d1139d4113b02b3a7c1dd3412a4bde095ab8c7",
+            [("16", "16", "go.mod"), ("38", "38", "go.sum")],
+        ),
+    }
+
+    def test_each_patch_is_byte_for_byte_the_reviewed_one(self) -> None:
+        for path, (size, sha256, _) in self.REVIEWED.items():
+            data = (ROOT / path).read_bytes()
+            with self.subTest(path=path):
+                self.assertEqual(len(data), size)
+                self.assertEqual(hashlib.sha256(data).hexdigest(), sha256)
+
+    def test_each_patch_moves_only_go_mod_and_go_sum(self) -> None:
+        for path, (_, _, numstat) in self.REVIEWED.items():
+            completed = subprocess.run(
+                ["git", "apply", "--numstat", str(ROOT / path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            with self.subTest(path=path):
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(
+                    [tuple(line.split("\t")) for line in completed.stdout.splitlines()],
+                    numstat,
+                )
+
+    def test_the_config_pins_them_by_these_hashes(self) -> None:
+        sources = document()["ax_lab"]["sources"]
+        self.assertEqual(
+            sources["ax"]["modules_patch"],
+            {"path": AX_MODULES_PATCH, "sha256": self.REVIEWED[AX_MODULES_PATCH][1]},
+        )
+        self.assertEqual(
+            {
+                key: sources["substrate"]["modules_patch"][key]
+                for key in ("path", "sha256")
+            },
+            {
+                "path": SUBSTRATE_MODULES_PATCH,
+                "sha256": self.REVIEWED[SUBSTRATE_MODULES_PATCH][1],
+            },
         )
 
 

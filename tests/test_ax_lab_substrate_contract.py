@@ -447,7 +447,7 @@ class SubstrateValidatorTests(unittest.TestCase):
         for value, message in (
             (
                 "docker.io/library/golang:1.26.0@sha256:" + "a" * 64,
-                "toolbox must be golang 1.27.1",
+                "toolbox must be golang 1.27.2",
             ),
             (
                 "docker.io/library/debian:1.27.1@sha256:" + "a" * 64,
@@ -492,10 +492,19 @@ class SubstrateValidatorTests(unittest.TestCase):
             document.update(ax_lab_substrate_fallback_builds=["ate-setup"])
 
         self.rejected(pending_fallback, "no pinned digest to reproduce")
-        allowed = copy.deepcopy(self.document)
-        allowed["ax_lab"]["substrate"]["images"]["ate-setup"] = ATE_SETUP
-        allowed["ax_lab_substrate_fallback_builds"] = ["ate-setup"]
-        self.module.validate_catalog(allowed, self.reserved)
+
+        # Once the modules patches are configured the host never builds a
+        # Substrate image: its pristine checkout cannot reproduce a patched,
+        # vendored digest. tests/test_ax_lab_relock_contract.py covers the
+        # legacy state, where a pinned fallback build is still accepted.
+        def fallback_on_a_relocked_lab(document: dict[str, Any]) -> None:
+            document["ax_lab"]["substrate"]["images"]["ate-setup"] = ATE_SETUP
+            document.update(ax_lab_substrate_fallback_builds=["ate-setup"])
+
+        self.rejected(
+            fallback_on_a_relocked_lab,
+            "must be empty while sources.substrate.modules_patch is set",
+        )
         self.rejected(
             lambda document: document.pop("ax_lab_substrate_fallback_builds"),
             "config: unexpected",
@@ -581,6 +590,7 @@ class SubstrateValidatorTests(unittest.TestCase):
                 "registry_image": lab["images"]["registry"],
                 "build": lab["substrate"]["build"],
                 "images": lab["substrate"]["images"],
+                "modules_patch": lab["sources"]["substrate"]["modules_patch"],
             },
         )
 
