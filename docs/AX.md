@@ -212,10 +212,14 @@ El validador rechaza:
   que no sea `golang:1.27.1`; un parche en otra ruta que
   `images/ax/google-ax-modules.patch` (AX) o
   `images/ax/substrate-modules.patch` (Substrate), cuyos bytes no den su
-  sha256, que toque algo más que `go.mod` y `go.sum` o que añada una línea
-  `replace` o `exclude`; y un `tree` que no sea un id de árbol de git de 40
-  caracteres hexadecimales en minúscula (ver «Imágenes compiladas en la CI y
-  ventana de resiembra»);
+  sha256, que toque algo más que `go.mod` y `go.sum`, que añada una línea
+  `replace`, `exclude`, `go`, `toolchain`, `godebug`, `tool`, `ignore` o
+  `retract` o cualquier `=>`, que lleve un retorno de carro, un separador de
+  línea Unicode o una marca de orden de bytes, que tenga una línea suelta
+  entre sus cabeceras `diff --git`, `index`, `---` y `+++` o entre sus
+  hunks, o un hunk con más o menos líneas que las que cuenta su cabecera; y
+  un `tree` que no sea un id de árbol de git de 40 caracteres hexadecimales
+  en minúscula (ver «Imágenes compiladas en la CI y ventana de resiembra»);
 - para AX: un parche que no sea `images/ax/google-ax-375.patch` o cuyos
   bytes no den su sha256; otras imágenes que las cuatro revisadas o sin
   `sha256:<64 hex>`; un manifiesto ko versionado cuyos bytes no den el

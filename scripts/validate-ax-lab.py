@@ -341,14 +341,32 @@ SUBSTRATE_MODULES_PATCH = "images/ax/substrate-modules.patch"
 # The `diff --git` headers of such a patch, in order, and its size limit.
 GOMOD_PATCH_HEADERS = ("a/go.mod b/go.mod", "a/go.sum b/go.sum")
 GOMOD_PATCH_MAX_BYTES = 65536
-# A go.mod directive that redirects or hides a module is never added, nor is
+# A go.mod directive that redirects or hides a module (replace, exclude), or
+# moves the language version, the toolchain, the GODEBUG defaults, the tools
+# or the ignored directories, or retracts a version, is never added, nor is
 # any `=>` (a replace line inside a block does not start with the keyword).
-GOMOD_PATCH_FORBIDDEN_RE = re.compile(r"\s*(?:replace|exclude)(?=[\s(]|$)")
+# The lookahead keeps a module path such as go.uber.org/atomic out of it. A
+# line added inside a block of those directives that the file already has
+# carries no keyword and is not seen here.
+GOMOD_PATCH_FORBIDDEN_RE = re.compile(
+    r"\s*(?:replace|exclude|go|toolchain|godebug|tool|ignore|retract)(?=[\s(]|$)"
+)
 # What a line of a go.mod and go.sum patch may start with: a hunk line, a
 # hunk header, the no-newline marker, a file header or its index line. Mode,
 # rename, copy, similarity, new or deleted file and binary markers start with
 # anything else.
 GOMOD_PATCH_LINE_STARTS = (" ", "+", "-", "@", "\\", "diff --git ", "index ")
+# A file of the patch is its diff --git, index, --- and +++ lines and then
+# whole hunks, as `git diff --full-index` writes it for a file whose mode
+# did not change. The counts of a hunk header are optional when they are 1.
+GOMOD_PATCH_SHAPE = "a file is its diff --git, index, --- and +++ lines, then hunks"
+GOMOD_PATCH_INDEX_RE = re.compile(r"index [0-9a-f]{7,64}\.\.[0-9a-f]{7,64} 100644")
+GOMOD_PATCH_HUNK_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?")
+# Git cuts a patch into lines at \n alone, while Go reads a bare carriage
+# return as a blank and Python's splitlines also cuts at the others: none of
+# them, nor a byte order mark, is in a patch the validator and git must read
+# the same way.
+GOMOD_PATCH_BREAK_RE = re.compile("[\r\v\f\x1c-\x1e\x85\u2028\u2029\ufeff]")
 # The exact manifests the manual lab pushed for the ko images: their bytes
 # hash to the pins, and the reproducibility workflow compares a rebuild's
 # config and layers with them.
@@ -788,14 +806,79 @@ def read_patch_text(relative_path: str) -> bytes:
         raise AxLabError(f"cannot read {relative_path}: {error}") from error
 
 
+def validate_gomod_patch_file(lines: list[str], first: int, context: str) -> None:
+    """One file of the patch, from its `diff --git` line to the next one.
+
+    Its index, --- and +++ lines come in that order, each in its place and
+    nowhere else, and then come whole hunks, each of exactly the lines its
+    header counts, so that git reads the very lines the validator did.
+    """
+    old, _, new = lines[0].removeprefix("diff --git ").partition(" ")
+    named = (f"--- {old}", f"+++ {new}")
+    owed_old = owed_new = hunks = 0
+    for offset, line in enumerate(lines):
+        where = f"{context}:{first + offset}"
+        if not line.startswith(GOMOD_PATCH_LINE_STARTS):
+            raise AxLabError(f"{where}: not a plain go.mod or go.sum hunk")
+        if offset == 0:
+            continue
+        if offset == 1:
+            if not GOMOD_PATCH_INDEX_RE.fullmatch(line):
+                raise AxLabError(f"{where}: {GOMOD_PATCH_SHAPE}")
+        elif offset < 4:
+            if not line.startswith(named[offset - 2][:4]):
+                raise AxLabError(f"{where}: {GOMOD_PATCH_SHAPE}")
+            if line != named[offset - 2]:
+                raise AxLabError(f"{where}: names a file its header does not")
+        elif line.startswith(("--- ", "+++ ", "index ")):
+            raise AxLabError(f"{where}: carries a second file header")
+        elif line[0] == "@":
+            if owed_old or owed_new:
+                raise AxLabError(f"{where}: fewer lines than its hunk header counts")
+            counts = GOMOD_PATCH_HUNK_RE.fullmatch(line)
+            if counts is None:
+                raise AxLabError(f"{where}: not a hunk header")
+            owed_old, owed_new = (
+                1 if count is None else int(count) for count in counts.groups()
+            )
+            hunks += 1
+        elif line[0] == "\\":
+            if offset < 5 or lines[offset - 1][0] not in " +-":
+                raise AxLabError(f"{where}: a no-newline marker needs a line before it")
+        else:
+            if line[0] == "+" and (
+                GOMOD_PATCH_FORBIDDEN_RE.match(line[1:]) or "=>" in line
+            ):
+                raise AxLabError(
+                    f"{where}: adds a replace, exclude, go, toolchain, godebug, tool,"
+                    " ignore or retract directive, or a =>"
+                )
+            if line[0] != "+":
+                owed_old -= 1
+            if line[0] != "-":
+                owed_new -= 1
+            if owed_old < 0 or owed_new < 0:
+                raise AxLabError(f"{where}: more lines than its hunk header counts")
+    where = f"{context}:{first + len(lines) - 1}"
+    if not hunks:
+        raise AxLabError(f"{where}: a file without a hunk")
+    if owed_old or owed_new:
+        raise AxLabError(f"{where}: fewer lines than its hunk header counts")
+
+
 def validate_gomod_patch_text(data: bytes, context: str) -> None:
     """Accept a patch of go.mod then go.sum and of nothing else.
 
     A patch that renames, copies, creates, deletes or re-modes a file, is
-    binary, adds a replace or exclude directive, or carries a file header git
-    would read as another file (`git apply` also takes a plain `--- a/x` and
-    `+++ b/x` pair that has no `diff --git` line before it) is refused: it
-    could pull code the reviewed modules never named.
+    binary, adds a replace, exclude, go, toolchain, godebug, tool, ignore or
+    retract directive, carries a file header git would read as another file
+    (`git apply` also takes a plain `--- a/x` and `+++ b/x` pair that has no
+    `diff --git` line before it), or holds a line out of its place (a stray
+    one between the headers, or between or after the hunks, that git would
+    skip or read as part of another file) is refused: it could pull code the
+    reviewed modules never named. A line added inside a block that go.mod
+    already has carries no directive keyword: what a patch adds there is for
+    the sha256 pin and the review to cover.
     """
     if not 0 < len(data) <= GOMOD_PATCH_MAX_BYTES:
         raise AxLabError(f"{context} must hold 1 to {GOMOD_PATCH_MAX_BYTES} bytes")
@@ -803,30 +886,25 @@ def validate_gomod_patch_text(data: bytes, context: str) -> None:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise AxLabError(f"{context} must be UTF-8 text") from error
+    if GOMOD_PATCH_BREAK_RE.search(text):
+        raise AxLabError(
+            f"{context} must hold no carriage return, line separator or byte order mark"
+        )
     lines = text.split("\n")
     if lines[-1] == "":
         lines.pop()
     if not lines or not lines[0].startswith("diff --git "):
         raise AxLabError(f"{context} must start with a git file header")
-    headers = []
-    old_line = new_line = ""
+    files: list[tuple[int, list[str]]] = []
     for number, line in enumerate(lines, start=1):
-        if not line.startswith(GOMOD_PATCH_LINE_STARTS):
-            raise AxLabError(f"{context}:{number}: not a plain go.mod or go.sum hunk")
         if line.startswith("diff --git "):
-            headers.append(line.removeprefix("diff --git "))
-            old, _, new = headers[-1].partition(" ")
-            old_line, new_line = f"--- {old}", f"+++ {new}"
-        elif (line.startswith("--- ") and line != old_line) or (
-            line.startswith("+++ ") and line != new_line
-        ):
-            raise AxLabError(f"{context}:{number}: names a file its header does not")
-        elif line.startswith("+") and (
-            GOMOD_PATCH_FORBIDDEN_RE.match(line[1:]) or "=>" in line
-        ):
-            raise AxLabError(f"{context}:{number}: adds a replace or exclude")
+            files.append((number, []))
+        files[-1][1].append(line)
+    headers = [file_lines[0].removeprefix("diff --git ") for _, file_lines in files]
     if headers != list(GOMOD_PATCH_HEADERS):
         raise AxLabError(f"{context} must patch go.mod and then go.sum, only")
+    for first, file_lines in files:
+        validate_gomod_patch_file(file_lines, first, context)
 
 
 def validate_gomod_patch(relative_path: str) -> None:
