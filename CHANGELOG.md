@@ -122,7 +122,12 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   ventana: pines siempre de los planes validados, instantánea, ensayo,
   `forget` por los digests anteriores, `seed-layout --image-set` explícito,
   congelación de `ax-web` y de `ax-lab`, criterios de aborto y marcha atrás
-  por imagen. Las imágenes `ax-task-runner` y `ax-agents` no se recompilan
+  por imagen. Cada orden con lock (`forget`, `seed-layout`, la copia de la
+  CLI) se decide con una comprobación previa, porque una rechazada deja
+  `/run/lock/dockerswarm-direct.marker` y bloquea la siguiente; las
+  guardas detienen la ventana y el marker retenido se recupera con el
+  procedimiento de `CLAUDE.md`. Las imágenes `ax-task-runner` y `ax-agents` no
+  se recompilan
   (Rama K): siguen con Go 1.27.1 y sus módulos, y sus hallazgos de
   `govulncheck` permanecen. Las imágenes y la CLI nuevas se ejecutan por
   primera vez en producción y la única red de seguridad es la marcha atrás

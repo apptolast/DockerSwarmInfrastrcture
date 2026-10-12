@@ -707,6 +707,21 @@ def digests(
     return {name: images[name]["digest"] for name in names}
 
 
+def tree(root: Path) -> dict[str, tuple[int, int, int, bytes | None]]:
+    """Every path under root with what a write would change: its kind, mode,
+    modification time (the directories' too) and bytes."""
+    seen = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        status = path.lstat()
+        seen[str(path.relative_to(root))] = (
+            stat.S_IFMT(status.st_mode),
+            stat.S_IMODE(status.st_mode),
+            status.st_mtime_ns,
+            path.read_bytes() if stat.S_ISREG(status.st_mode) else None,
+        )
+    return seen
+
+
 class RelockCase(unittest.TestCase):
     """The backup layout a relock window changes, and the sources it reads.
 
@@ -923,6 +938,28 @@ class SeedLayoutSourceTests(RelockCase):
                 for path in (self.backup / "blobs/sha256").iterdir():
                     self.assertEqual(sha(path.read_bytes()), "sha256:" + path.name)
 
+    def test_the_source_is_never_written_by_a_refused_or_an_accepted_seed(
+        self,
+    ) -> None:
+        write_build_output(
+            self.source, {name: self.new[name] for name in manager.IMAGE_NAMES}, TAG
+        )
+        pins = digests(self.new, manager.IMAGE_NAMES)
+        before = tree(self.source)
+        # Refused after the source was read for the images that sort first.
+        last = max(pins)
+        stale = {**pins, last: self.old[last]["digest"]}
+        with self.assertRaisesRegex(
+            manager.SubstrateError, f"does not list {stale[last]}"
+        ):
+            self.seed(self.source, TAG, stale)
+        self.assertEqual(tree(self.source), before)
+        self.assertEqual(self.seed(self.source, TAG, pins)[last], "seeded")
+        self.assertEqual(
+            self.status(TAG, pins), dict.fromkeys(sorted(pins), "complete")
+        )
+        self.assertEqual(tree(self.source), before)
+
 
 class ReseedTests(RelockCase):
     """Re-pinning under the same version: forget the old pin, seed the new."""
@@ -1098,6 +1135,56 @@ class ReseedTests(RelockCase):
             self.complete(manager.AX_IMAGE_NAMES),
         )
         self.assertEqual(self.index(), original)
+
+    def test_a_corrupt_blob_left_in_the_backup_refuses_a_re_seed(self) -> None:
+        # forget never deletes a blob, so a re-pin or a rollback finds the
+        # files of the entry it dropped on disk: a damaged one stops the seed
+        # and no entry is added.
+        name = "ateapi"
+        image, pin = self.new[name], {name: self.new_pins[name]}
+        self.forget(TAG, {name: self.old_pins[name]})
+        for blob, body in image["blobs"].items():
+            with self.subTest(blob=blob):
+                self.assertEqual(self.seed(self.source, TAG, pin), {name: "seeded"})
+                # Same length: a longer file is refused as too large instead.
+                blob_path(self.backup, blob).write_bytes(b"x" * len(body))
+                try:
+                    self.assertEqual(self.forget(TAG, pin), {name: "forgotten"})
+                    forgotten = self.index_bytes()
+                    with self.assertRaisesRegex(
+                        manager.SubstrateError, f"blob {blob} is corrupt in"
+                    ):
+                        self.seed(self.source, TAG, pin)
+                    self.assertIsNone(self.named(name, TAG))
+                    self.assertEqual(self.index_bytes(), forgotten)
+                    self.assertEqual(self.status(TAG, pin), {name: "missing"})
+                finally:
+                    # So that one failing blob does not fail the next.
+                    blob_path(self.backup, blob).write_bytes(body)
+                    self.forget(TAG, pin)
+        self.assertEqual(self.seed(self.source, TAG, pin), {name: "seeded"})
+        self.assertEqual(self.status(TAG, pin), {name: "complete"})
+
+    def test_a_seed_is_proven_again_once_it_is_copied(self) -> None:
+        # The check after the copy is its own guard: here the blob is damaged
+        # after the copy verified it, which the check before it cannot see.
+        name = "ateapi"
+        pin = {name: self.new_pins[name]}
+        blob, body = list(self.new[name]["blobs"].items())[-1]
+        self.forget(TAG, {name: self.old_pins[name]})
+        copy = manager.copy_to_layout
+
+        def copy_then_damage(*arguments: Any) -> None:
+            copy(*arguments)
+            blob_path(self.backup, blob).write_bytes(b"x" * len(body))
+
+        with (
+            mock.patch.object(manager, "copy_to_layout", copy_then_damage),
+            self.assertRaisesRegex(
+                manager.SubstrateError, f"blob {blob} is corrupt in"
+            ),
+        ):
+            self.seed(self.source, TAG, pin)
 
 
 class ArgumentTests(unittest.TestCase):
@@ -2209,6 +2296,27 @@ class RelockCommandTests(RelockCase):
         refused = self.run_main(*argv, "--image", f"ateapi={other}")
         self.assertEqual(refused.code, 1)
         self.assertIn("is not one known image", refused.stderr)
+
+    def test_a_source_that_is_missing_or_no_layout_is_refused_and_left_alone(
+        self,
+    ) -> None:
+        pins = {"ateapi": self.new["ateapi"]["digest"]}
+        missing = self.seed_command("substrate", self.source, TAG, pins)
+        self.assertEqual(missing.code, 1)
+        self.assertIn(f"{self.source} does not exist", missing.stderr)
+        # Neither the source nor the backup was created for it.
+        self.assertFalse(self.source.exists())
+        self.assertFalse(self.backup.exists())
+        # A directory that is no layout is refused as it is, not completed.
+        self.source.mkdir()
+        self.source.chmod(0o755)
+        (self.source / "pins.json").write_text("{}")
+        before = tree(self.source)
+        other = self.seed_command("substrate", self.source, TAG, pins)
+        self.assertEqual(other.code, 1)
+        self.assertIn(f"{self.source} is not an OCI image layout", other.stderr)
+        self.assertEqual(tree(self.source), before)
+        self.assertFalse(self.backup.exists())
 
     def test_a_forget_that_fails_partway_prints_nothing_and_is_finished_per_image(
         self,
