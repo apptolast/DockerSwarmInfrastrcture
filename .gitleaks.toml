@@ -24,3 +24,13 @@ regexes = [
   '''(?m)^API sha256:313446ebc241ec2812c2d5dcbfb5618a3bc398253e9b4e78b55b6730c650216d\r?$''',
   '''(?m)^API sha256:1276d6e618f5ab6aadfa816244f5022a2393cd46d2c8c09a6d5bde1e8ec9f49b\r?$''',
 ]
+
+[[allowlists]]
+description = "go.sum checksum lines inside the go.mod and go.sum module patches of images/ax: public module hashes, not credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^(?:/repo/)?images/ax/(?:google-ax|substrate)-modules\.patch$''']
+regexes = [
+  '''(?m)^(?:[ +-]|@@ -[0-9,]+ \+[0-9,]+ @@ )[a-z0-9][a-z0-9./_-]* v[0-9][0-9A-Za-z.+_-]*(?:/go\.mod)? h1:[A-Za-z0-9+/]{43}=\r?$''',
+]

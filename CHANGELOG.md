@@ -108,6 +108,30 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Added
 
+- Mecanismo para resembrar las imágenes del laboratorio AX compiladas en la
+  CI, sin cambiar ningún pin. Tres campos opcionales de `config/ax-lab.yml`
+  (`images.runner_toolbox`, `sources.ax.modules_patch` y
+  `sources.substrate.modules_patch`: parches que solo tocan `go.mod` y
+  `go.sum`; Substrate se vendoriza en la CI con `go mod vendor` y fija el
+  árbol raíz de git) y el workflow `ax-lab-images.yml`, que compila las
+  mismas entradas que `ax-lab-reproducibility`, exige los pines, prueba
+  `seed-layout`, `forget` e `image-status` con los layouts y sube los
+  artefactos `ax-lab-substrate-oci-layout` y `ax-lab-ax-artifacts` solo en un
+  push a `main` y a mano. `docs/AX.md` gana la sección «Imágenes compiladas
+  en la CI y ventana de resiembra», con el procedimiento genérico de la
+  ventana: pines siempre de los planes validados, instantánea, ensayo,
+  `forget` por los digests anteriores, `seed-layout --image-set` explícito,
+  congelación de `ax-web` y de `ax-lab`, criterios de aborto y marcha atrás
+  por imagen. Cada orden con lock (`forget`, `seed-layout`, la copia de la
+  CLI) se decide con una comprobación previa, porque una rechazada deja
+  `/run/lock/dockerswarm-direct.marker` y bloquea la siguiente; las
+  guardas detienen la ventana y el marker retenido se recupera con el
+  procedimiento de `CLAUDE.md`. Las imágenes `ax-task-runner` y `ax-agents` no
+  se recompilan
+  (Rama K): siguen con Go 1.27.1 y sus módulos, y sus hallazgos de
+  `govulncheck` permanecen. Las imágenes y la CLI nuevas se ejecutan por
+  primera vez en producción y la única red de seguridad es la marcha atrás
+  desde la instantánea, riesgo que el propietario aceptó.
 - Consejero para los agentes de la Oficina: un agente Claude puede tener un
   modelo consejero (`advisor`, por defecto Opus), que el modelo ejecutor consulta
   cuando se atasca (`--advisor`). El coste de cada modelo del trabajo se guarda
@@ -779,6 +803,13 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ### Changed
 
+- `docs/AX.md` distingue el estado sin campos de resiembra, que no cambia,
+  del estado con ellos en la compilación de reserva, en la reproducibilidad
+  de Substrate y de AX y en la semilla de AX: con ellos el host nunca
+  parchea ni vendoriza Substrate, el validador exige
+  `ax_lab_substrate_fallback_builds: []` y un re-pin pasa por `forget` más
+  `seed-layout`, no por la compilación de reserva. `images/ax/README.md` dice
+  que también `ax-lab-images.yml` lee el parche y los manifiestos.
 - Reparto de modelos del equipo de semilla: Haiku para lo rutinario, Sonnet para
   lo complejo y Opus solo como consejero. Solo afecta a las instalaciones nuevas:
   los agentes ya creados conservan su configuración.

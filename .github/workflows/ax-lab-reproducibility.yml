@@ -6,21 +6,32 @@ name: AX lab reproducibility
 # as its explicit fallback (scripts/manage-ax-lab-substrate.py build), then
 # restores them into a throwaway registry:3 on the runner's loopback and
 # requires each digest to equal its pin. It proves the pins are reproducible
-# from source, so the production host never has to compile them.
+# from source, so the production host never has to compile them. Once the
+# config sets sources.substrate.modules_patch, the checkout is patched and
+# vendored before the build (staged, never committed) and the tree that
+# results is pinned too.
 #
 # A second job does the same for what can be proven of AX: from the pinned
 # commit with the vendored #375 patch, the ax CLI and the task runner binary
 # byte for byte, and the ko images of ax-controller and ax-server up to the
-# one annotation that names the base image by tag. The runner and the agents
-# images were built with buildx from live apt, pip and npm registries and
-# cannot be rebuilt byte for byte: they are only ever seeded (docs/AX.md,
-# «Lo que no se puede codificar fielmente»).
+# one annotation that names the base image by tag. Once the config sets
+# sources.ax.modules_patch, the CLI and the ko images are built with the
+# toolbox images.toolbox and both patches, and each ko image must also equal
+# its pin digest for digest. The task runner binary is rebuilt from the tree
+# with only the first patch, in images.runner_toolbox: it is the one inside
+# the images that stay as seeded, and no newer toolbox or module bump can
+# reproduce it. The runner and the agents images were built with buildx from
+# live apt, pip and npm registries and cannot be rebuilt byte for byte: they
+# are only ever seeded (docs/AX.md, «Lo que no se puede codificar
+# fielmente»).
 #
 # It only builds. Nothing is published to any registry outside the runner,
 # no credential is used, and the kind end-to-end run belongs to a later
 # change (docs/AX.md, «Reproducibilidad»). A pin that is still pending, or
 # that differs from what the build produces, fails the job and lists the
-# digest the build produced in the run summary.
+# digest the build produced in the run summary. The sibling workflow
+# ax-lab-images.yml builds the same inputs with the same steps and keeps the
+# layouts the production window consumes.
 
 "on":
   pull_request:
@@ -104,6 +115,66 @@ jobs:
           [[ "$(git -C substrate rev-parse HEAD)" == "${COMMIT}" ]]
           dirty="$(git -C substrate status --porcelain --untracked-files=all)"
           [[ -z "${dirty}" ]]
+
+      # The manager mounts the checkout read-only, so the patch and go mod
+      # vendor run here, in the pinned toolbox. The checkout is left staged,
+      # never committed: Go stamps vcs.modified from the staged tree, and a
+      # commit would add a revision no rebuild could reproduce. The trees are
+      # only recorded here, so every digest is still printed when one
+      # differs; the last step compares them with the pin.
+      - name: Apply the Substrate modules patch and vendor the modules
+        run: |
+          set -euo pipefail
+          plan="${RUNNER_TEMP}/plan.json"
+          if ! jq -e .modules_patch "${plan}" >/dev/null; then
+            echo "No Substrate modules patch is configured."
+            exit 0
+          fi
+          patch="$(jq -er .modules_patch.path "${plan}")"
+          sha="$(jq -er .modules_patch.sha256 "${plan}")"
+          pinned="$(jq -er .modules_patch.tree "${plan}")"
+          echo "${sha}  ${patch}" | sha256sum --check --strict
+          paths="$(
+            git -C substrate apply --numstat "${GITHUB_WORKSPACE}/${patch}" |
+              cut -f3 | sort | paste -sd' '
+          )"
+          [[ "${paths}" == "go.mod go.sum" ]]
+          git -C substrate apply --index "${GITHUB_WORKSPACE}/${patch}"
+          mkdir -p "${RUNNER_TEMP}/go/home"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "${GITHUB_WORKSPACE}/substrate:/src/substrate" \
+            --volume "${RUNNER_TEMP}/go:/go-cache" \
+            --env GOTOOLCHAIN=local \
+            --env GOCACHE=/go-cache/build --env GOMODCACHE=/go-cache/mod \
+            --env HOME=/go-cache/home \
+            --workdir /src/substrate \
+            "$(jq -r .toolbox_image "${plan}")" \
+            bash -c 'set -euo pipefail; go mod vendor; go mod verify'
+          git -C substrate add --all
+          # add --all skips an ignored file, and the pinned tree would then
+          # cover less than the tree the build compiles.
+          skipped="$(
+            git -C substrate status --porcelain --ignored \
+              --untracked-files=all -- vendor | awk '/^(!!|[?][?]) /'
+          )"
+          if [[ -n "${skipped}" ]]; then
+            echo "add --all left vendored files out of the tree:"
+            echo "${skipped}"
+            exit 1
+          fi
+          tree="$(git -C substrate write-tree)"
+          vendor="$(git -C substrate rev-parse "${tree}:vendor")"
+          jq -n --arg tree "${tree}" --arg vendor "${vendor}" \
+            '{tree: $tree, vendor: $vendor}' \
+            >"${RUNNER_TEMP}/substrate-trees.json"
+          {
+            echo "## Substrate tree after the modules patch"
+            echo ""
+            echo "- tree: \`${tree}\`"
+            echo "- vendor/ subtree: \`${vendor}\`"
+            echo "- pinned tree: \`${pinned}\`"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Start a throwaway registry on the runner's loopback
         run: |
@@ -195,11 +266,26 @@ jobs:
               | "| " + (map(tostring) | join(" | ")) + " |"
             ' "${builds}"
           } >>"${GITHUB_STEP_SUMMARY}"
+          status=0
           jq --exit-status --slurp --slurpfile plan "${plan}" '
             (map(.name) | sort) == ($plan[0].images | keys | sort)
             and all(.[]; .digest != null
               and $plan[0].images[.name] == .digest)
-          ' "${builds}"
+          ' "${builds}" || status=1
+          if jq -e .modules_patch "${plan}" >/dev/null; then
+            pinned="$(jq -er .modules_patch.tree "${plan}")"
+            built="$(
+              jq -r '.tree // "none"' "${RUNNER_TEMP}/substrate-trees.json" \
+                2>/dev/null || echo none
+            )"
+            {
+              echo ""
+              echo "Substrate tree after the modules patch: pinned" \
+                "\`${pinned}\`, built \`${built}\`"
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+            [[ "${built}" == "${pinned}" ]] || status=1
+          fi
+          exit "${status}"
 
   reproduce-ax:
     name: Rebuild what can be proven of the pinned AX images
@@ -311,8 +397,60 @@ jobs:
           staged="$(git -C ax diff --cached | sha256sum | cut -d' ' -f1)"
           [[ "${staged}" == "${sha}" ]]
 
-      # Makefile, lines 36 and 49, at the pinned commit.
-      - name: Rebuild the ax CLI and the task runner binary
+      # Makefile, line 49, at the pinned commit. The binary inside the images
+      # that stay as seeded was built from this tree with the first patch
+      # only and the toolbox of its day (images.runner_toolbox): Go embeds the
+      # module versions and the toolchain in it, so neither a later patch nor
+      # a newer toolbox can reproduce it. It is rebuilt before both.
+      - name: Rebuild the task runner binary with its own toolbox
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}/ax:/src/ax" \
+            --volume "${RUNNER_TEMP}/ax-out:/out" \
+            --volume "${RUNNER_TEMP}/go:/go-cache" \
+            --env GOTOOLCHAIN=local --env GOFLAGS=-mod=readonly \
+            --env GOCACHE=/go-cache/build --env GOMODCACHE=/go-cache/mod \
+            --env GIT_CONFIG_COUNT=1 \
+            --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/src/ax \
+            --workdir /src/ax \
+            "$(jq -r .runner_toolbox_image "${RUNNER_TEMP}/ax-plan.json")" \
+            bash -c '
+              set -euo pipefail
+              GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+                -ldflags="-s -w" -o /out/ax-task-runner ./cmd/ax-task-runner
+            '
+
+      # On top of the first patch, in the same index: only go.mod and go.sum
+      # move. Nothing is pinned for the tree it writes: git apply is
+      # deterministic for the pinned commit and two patches pinned by sha256.
+      - name: Apply the AX modules patch on top of the vendored one
+        run: |
+          set -euo pipefail
+          plan="${RUNNER_TEMP}/ax-plan.json"
+          if ! jq -e .modules_patch "${plan}" >/dev/null; then
+            echo "No AX modules patch is configured."
+            exit 0
+          fi
+          modules="$(jq -er .modules_patch.path "${plan}")"
+          sha="$(jq -er .modules_patch.sha256 "${plan}")"
+          echo "${sha}  ${modules}" | sha256sum --check --strict
+          paths="$(
+            git -C ax apply --numstat "${GITHUB_WORKSPACE}/${modules}" |
+              cut -f3 | sort | paste -sd' '
+          )"
+          [[ "${paths}" == "go.mod go.sum" ]]
+          git -C ax apply --index "${GITHUB_WORKSPACE}/${modules}"
+          tree="$(git -C ax write-tree)"
+          {
+            echo "## AX tree after both patches"
+            echo ""
+            echo "- tree: \`${tree}\` (not pinned)"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      # Makefile, line 36, at the pinned commit.
+      - name: Rebuild the ax CLI
         run: |
           set -euo pipefail
           docker run --rm \
@@ -329,8 +467,6 @@ jobs:
             bash -c '
               set -euo pipefail
               go build -trimpath -ldflags="-s -w" -o /out/ax ./cmd/ax
-              GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
-                -ldflags="-s -w" -o /out/ax-task-runner ./cmd/ax-task-runner
               go version -m /out/ax | head -3
             '
 
@@ -367,16 +503,28 @@ jobs:
               done
             '
 
+      # Pinned and built values are printed first, so a failing comparison
+      # leaves them in the log and in the run summary.
       - name: Require the rebuilt binaries and ko images to match their pins
         run: |
           set -euo pipefail
           plan="${RUNNER_TEMP}/ax-plan.json"
           out="${RUNNER_TEMP}/ax-out"
           sudo chmod -R a+rX "${out}"
-          [[ "$(sha256sum "${out}/ax" | cut -d' ' -f1)" \
-            == "$(jq -r .cli_sha256 "${plan}")" ]]
-          [[ "$(sha256sum "${out}/ax-task-runner" | cut -d' ' -f1)" \
-            == "$(jq -r .task_runner_binary_sha256 "${plan}")" ]]
+          cli="$(sha256sum "${out}/ax" | cut -d' ' -f1)"
+          runner="$(sha256sum "${out}/ax-task-runner" | cut -d' ' -f1)"
+          pinned_cli="$(jq -r .cli_sha256 "${plan}")"
+          pinned_runner="$(jq -r .task_runner_binary_sha256 "${plan}")"
+          {
+            echo "## AX binaries rebuilt from source"
+            echo ""
+            echo "| Binary | Pinned | Built |"
+            echo "| --- | --- | --- |"
+            echo "| ax | \`${pinned_cli}\` | \`${cli}\` |"
+            echo "| ax-task-runner | \`${pinned_runner}\` | \`${runner}\` |"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          [[ "${cli}" == "${pinned_cli}" ]]
+          [[ "${runner}" == "${pinned_runner}" ]]
           python3 - "${plan}" "${out}" <<'PY'
           import json
           import pathlib
@@ -398,6 +546,10 @@ jobs:
               print(name, "rebuilt as", entry["digest"], "pinned", pin)
               if built != pinned:
                   sys.exit(f"{name}: the rebuild differs beyond {BASE_NAME}")
+              # With the modules patch the images are CI builds, so the
+              # annotation is no excuse: the digest itself is the pin.
+              if plan.get("modules_patch") and entry["digest"] != pin:
+                  sys.exit(f"{name}: the rebuilt digest is not the pin")
           PY
 
       # google/ax#375 comes with tests of its own; none may fail that did
