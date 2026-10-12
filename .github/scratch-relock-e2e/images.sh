@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Scratch end-to-end run (never merged): the images move into the lab
+# registry exactly as the role moves them, through the manager and never
+# through docker pull and push. `seed-ko` copies the two ko layouts the build
+# produced into the root-only layout the Substrate build already filled (what
+# the owner's window does with seed-layout). `import` imports the seven
+# Substrate images and the two ko images with the manager's import command
+# and the tags the config names, and requires every one to be pinned.
+set -euo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "${HERE}/lib.sh"
+
+ax_tag="$(cfg .ax.tag)"
+tag="$(cfg .substrate.version)"
+registry="127.0.0.1:$(cfg .registry.host_port)"
+keep="${RUNNER_TEMP}/keep/ax"
+names=(ax-controller ax-server)
+
+# The ko images as built, by the digest their layouts list.
+ko_args() {
+  local name
+  for name in "${names[@]}"; do
+    printf -- '--image=%s=%s\n' "${name}" \
+      "$(jq -r '.manifests[0].digest' "${keep}/ko-${name}/index.json")"
+  done
+}
+
+seed_ko() {
+  group "Seed the two ko layouts into the root-only layout"
+  sudo install -d -o root -g root -m 0755 "${SEED}"
+  sudo install -d -o root -g root -m 0700 "${SEED}/in-ax"
+  (
+    cd "${keep}"
+    /usr/bin/python3 -m zipfile -c "${RUNNER_TEMP}/ax-ko.zip" \
+      ko-ax-controller ko-ax-server
+  )
+  sudo -- /usr/bin/python3 -I -m zipfile -e "${RUNNER_TEMP}/ax-ko.zip" \
+    "${SEED}/in-ax"
+  local name pin
+  for name in "${names[@]}"; do
+    pin="$(jq -r '.manifests[0].digest' "${keep}/ko-${name}/index.json")"
+    echo "${name}: built ${pin}, config pin $(cfg ".ax.images[\"${name}\"]")"
+    "${MANAGER[@]}" seed-layout --image-set ax \
+      --source "${SEED}/in-ax/ko-${name}" --layout "${LAYOUT}" \
+      --tag "${ax_tag}" "--image=${name}=${pin}"
+  done
+  endgroup
+}
+
+import_all() {
+  local -a substrate_pins ko_pins
+  mapfile -t substrate_pins < <(all_args)
+  mapfile -t ko_pins < <(ko_args)
+  [[ "${#substrate_pins[@]}" -eq 7 && "${#ko_pins[@]}" -eq 2 ]]
+
+  group "Import the seven Substrate images"
+  "${MANAGER[@]}" import --registry "${registry}" --layout "${LAYOUT}" \
+    --tag "${tag}" "${substrate_pins[@]}"
+  endgroup
+  group "Import the two ko images"
+  "${MANAGER[@]}" import --image-set ax --registry "${registry}" \
+    --layout "${LAYOUT}" --tag "${ax_tag}" "${ko_pins[@]}"
+  endgroup
+
+  group "image-status: every image pinned in the registry, complete in the layout"
+  "${MANAGER[@]}" image-status --registry "${registry}" --layout "${LAYOUT}" \
+    --tag "${tag}" "${substrate_pins[@]}" | tee "${RUNNER_TEMP}/status-substrate.json"
+  jq --exit-status '
+    (.registry | to_entries | all(.value == "pinned"))
+    and (.backup | to_entries | all(.value == "complete"))
+  ' "${RUNNER_TEMP}/status-substrate.json"
+  "${MANAGER[@]}" image-status --image-set ax --registry "${registry}" \
+    --layout "${LAYOUT}" --tag "${ax_tag}" "${ko_pins[@]}" |
+    tee "${RUNNER_TEMP}/status-ax.json"
+  jq --exit-status '
+    (.registry | to_entries | all(.value == "pinned"))
+    and (.backup | to_entries | all(.value == "complete"))
+  ' "${RUNNER_TEMP}/status-ax.json"
+  endgroup
+
+  group "What the registry serves"
+  curl -fsS "http://${registry}/v2/_catalog"
+  echo
+  local name
+  for name in $(curl -fsS "http://${registry}/v2/_catalog" | jq -r '.repositories[]'); do
+    echo "${name}: $(curl -fsS "http://${registry}/v2/${name}/tags/list" | jq -c .tags)"
+  done
+  endgroup
+
+  group "No OOM kill in the registry while it took the images"
+  local id
+  id="$(docker inspect --format '{{.Id}}' "$(cfg .registry.container)")"
+  sudo cat "/sys/fs/cgroup/system.slice/docker-${id}.scope/memory.events"
+  sudo grep -qx 'oom_kill 0' \
+    "/sys/fs/cgroup/system.slice/docker-${id}.scope/memory.events"
+  endgroup
+}
+
+"$@"
