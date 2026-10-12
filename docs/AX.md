@@ -1974,6 +1974,14 @@ vivos, y es el riesgo operativo principal de la ventana.
   `host_memory`, `no_transient` y `worker_gate`)
   hacen lo mismo: llaman a `stop`. Aun así se pega un bloque cada vez y, tras
   un `STOP:`, ningún otro.
+- **Cómo se pega un bloque.** Un pegado simple en `tmux` pierde, sin ningún
+  aviso, las líneas que siguen a la primera orden con `sudo`: `sudo` consume
+  la entrada pendiente de la terminal y esas líneas, guardas incluidas, no
+  llegan a ejecutarse. Un bloque se pega con pegado entre corchetes
+  (`tmux paste-buffer -p`) o se guarda en un fichero y se ejecuta con
+  `source` en la misma shell, que además conserva las variables. Tras pegar
+  uno, se comprueba que la última línea del bloque se ejecutó (por ejemplo,
+  leyendo `HALT` con `echo "[${HALT}]"`) antes de seguir.
 
 ### Precondiciones de la ventana de resiembra
 
@@ -3367,9 +3375,12 @@ sin ninguna orden más de las de arriba:
   (se conserva, por si hay que mirarla), se restaura la instantánea
   completa, se comprueban los tres conjuntos con los pines anteriores y se
   repite el bloque de arriba, que ya solo tiene que dejar la CLI. Es la
-  marcha atrás de todo lo de la copia, no de una imagen:
+  marcha atrás de todo lo de la copia, no de una imagen. Se llega aquí tras
+  un `STOP`, así que el bloque empieza por `HALT=`: la decisión de volver
+  atrás levanta el `STOP`, como en el bloque de la marcha atrás:
 
   ```bash
+  HALT=
   ASIDE=${LAYOUT}.aparte-$(date -u +%Y%m%dT%H%M%SZ)
   must sudo -- /usr/bin/python3 scripts/host_global_operation_lock.py run \
     --operation ax-lab-seed -- /usr/bin/mv "${LAYOUT}" "${ASIDE}"
