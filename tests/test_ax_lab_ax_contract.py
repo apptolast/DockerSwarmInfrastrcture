@@ -51,16 +51,37 @@ from test_ax_lab_substrate_contract import pinned_variables
 WORKFLOW = ROOT / ".github/workflows/ax-lab-reproducibility.yml"
 TEMPLATES = ROLE / "templates/ax"
 AX_TAG = "f009cc8-issue375"
-# Read from the manual lab's registry with `curl -I` on 2026-09-25: the ko
+# What the manual lab's registry served on 2026-09-25 (`curl -I`), kept for the
+# docs test of the historical export command: the config no longer pins the
+# two ko images below. The ko
 # manifests of ax-controller and ax-server, and the linux/amd64 manifests
 # of the buildx indexes ax-task-runner@sha256:5d536baa... and
 # ax-agents@sha256:f82e9848..., whose other entry is an attestation.
-AX_DIGESTS = {
+HISTORIC_AX_DIGESTS = {
     "ax-controller": (
         "sha256:2a744737051c6e877213e25f49ff2408b3399e8f3176f4e203df9c515fc351d2"
     ),
     "ax-server": (
         "sha256:621ce24e8887a6fcbf4d4b31da1dc005e0c54210bc28275a912640b97c2667f1"
+    ),
+    "ax-task-runner": (
+        "sha256:a5f9ee65df155af434ecf06cb79be4beb7d09b2621d05b38730c682925220bd4"
+    ),
+    "ax-agents": (
+        "sha256:d136aebb3f8393e4c994ecd7e4dd4296d5eea7b38e2a32d8087776dae9bb2682"
+    ),
+}
+# The ko images of ax-controller and ax-server are built in CI from the pinned
+# commit with both patches and the toolbox images.toolbox (both lab workflows
+# produce exactly these); the linux/amd64 manifests of the buildx indexes
+# ax-task-runner@sha256:5d536baa... and ax-agents@sha256:f82e9848... (whose
+# other entry is an attestation) are the manual lab's, seeded as they are.
+AX_DIGESTS = {
+    "ax-controller": (
+        "sha256:da767125c37c14e145bfb2bc7c127bf91546c6fdbdfc02910a464b6c01ae3805"
+    ),
+    "ax-server": (
+        "sha256:d679ea4a11078c0b62e926759573b9a414a939d5b800e8fe24dca61700250556"
     ),
     "ax-task-runner": (
         "sha256:a5f9ee65df155af434ecf06cb79be4beb7d09b2621d05b38730c682925220bd4"
@@ -91,7 +112,8 @@ VENDORED = {
         "096ea7487c776216f401d3548664e91bd05356123224c9b71b577bda1f6687d9"
     ),
 }
-CLI_SHA256 = "acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7"
+HISTORIC_CLI_SHA256 = "acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7"
+CLI_SHA256 = "4fc20f80345bbe16ec82588caa043785589e9b60639a88687b3afeccb355db83"
 RUNNER_BINARY_SHA256 = (
     "0bcf4930c56d9a0b2343f8bfd493aa23bff1d4688cb2ddba6b3f0587a283faec"
 )
@@ -344,6 +366,8 @@ class AxValidatorTests(unittest.TestCase):
         )
         # The two vendored ko manifests are the pins, byte for byte: single
         # linux/amd64 OCI manifests on chainguard/static, three layers each.
+        # They are the CI builds, so the annotation names the base image by
+        # the digest ko_base_image pins, not by the tag the manual lab used.
         for name in ("ax-controller", "ax-server"):
             with self.subTest(image=name):
                 path = f"images/ax/manifests/{name}.json"
@@ -355,7 +379,7 @@ class AxValidatorTests(unittest.TestCase):
                 self.assertEqual(len(manifest["layers"]), 3)
                 self.assertEqual(
                     manifest["annotations"]["org.opencontainers.image.base.name"],
-                    "cgr.dev/chainguard/static:latest",
+                    ax["ko_base_image"],
                 )
         # No pin of the dropped OpenAI proxy is left.
         self.assertNotIn("openai_proxy", lab["images"])
@@ -2842,7 +2866,7 @@ class AxRegistrationTests(unittest.TestCase):
             "--tag f009cc8-issue375 --source-naming ko-md5",
             text,
         )
-        for name, digest in AX_DIGESTS.items():
+        for name, digest in HISTORIC_AX_DIGESTS.items():
             with self.subTest(image=name):
                 self.assertIn(f"--image={name}={digest}", text)
         self.assertIn(
@@ -2850,7 +2874,7 @@ class AxRegistrationTests(unittest.TestCase):
             "/var/backups/dockerswarm/ax-lab/binaries/ax",
             text,
         )
-        self.assertIn(CLI_SHA256, text)
+        self.assertIn(HISTORIC_CLI_SHA256, text)
         for section in (
             "## AX",
             "### Imágenes de AX",
