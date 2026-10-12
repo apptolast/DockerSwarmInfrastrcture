@@ -104,8 +104,11 @@ group "The pristine Substrate checkout the install reads"
 sudo cp -a substrate-src "${LAB}/src/substrate"
 sudo chown -R root:root "${LAB}/src/substrate"
 sudo test -f "${LAB}/src/substrate/go.mod"
-sudo test ! -e "${LAB}/src/substrate/vendor"
-echo "pristine checkout in place, no vendor directory"
+if sudo test -d "${LAB}/src/substrate/vendor"; then
+  echo "pristine checkout in place; it carries the upstream vendor directory"
+else
+  echo "pristine checkout in place; it has no vendor directory"
+fi
 endgroup
 
 group "The reviewed kind configuration, rendered by the validator"

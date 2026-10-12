@@ -570,7 +570,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          .github/scratch-relock-e2e/verify.sh diag "c${CAP}"
+          .github/scratch-relock-e2e/verify.sh diag "c${CAP:-none}"
 
       # The production apply runs ate-setup over an installed cluster: the
       # same install again, same cap, as the closest thing to that upgrade
