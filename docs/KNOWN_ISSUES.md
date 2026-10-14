@@ -207,3 +207,66 @@ Con `eth0` de vuelta, un apply de `host-baseline` adopta el fichero.
 - [`crashkernel=` y `kdump-tools.cfg` en Ubuntu Server](https://ubuntu.com/server/docs/how-to/software/kernel-crash-dump/)
 - [Editor de entradas de GRUB](https://www.gnu.org/software/grub/manual/grub/html_node/Menu-entry-editor.html)
 - [`NamePolicy=` y `AlternativeNamesPolicy=` en systemd.link](https://manpages.ubuntu.com/manpages/resolute/en/man5/systemd.link.5.html)
+
+## Traefik se reinicia cada pocos minutos con el host sin memoria
+
+Síntoma: todos los sitios dan `ERR_TIMED_OUT` y desde el propio servidor `curl
+--resolve sitio:443:127.0.0.1 https://sitio/` falla al instante, porque nada
+escucha en `:443`. `docker service ps edge_traefik` muestra una tarea nueva
+cada pocos minutos y las anteriores en `Complete`.
+
+Causa: no es un fallo de Traefik. Con el host en thrashing de memoria (ver
+[OPERATIONS.md](OPERATIONS.md), «Memoria de las sesiones de IA»), su
+healthcheck (`traefik healthcheck`, cada 15 s, 5 s de timeout, 3 reintentos)
+no se ejecuta a tiempo. Swarm da por no sana la tarea y la reemplaza; Traefik
+sale con 0 porque atiende el SIGTERM con `Stopping server gracefully`, y por
+eso la tarea aparece como `Complete` y no como `Failed`. El servicio tiene una
+réplica y `order: stop-first`, así que cada sustitución son segundos sin
+ingress.
+
+Se comprueba en un contenedor ya parado:
+
+```sh
+sudo docker ps -a --filter name=edge_traefik --filter status=exited
+sudo docker inspect CONTENEDOR_PARADO --format \
+  'exit={{.State.ExitCode}} oom={{.State.OOMKilled}}'
+sudo docker inspect CONTENEDOR_PARADO --format '{{.State.Health.Status}}'
+sudo docker inspect CONTENEDOR_PARADO \
+  --format '{{range .State.Health.Log}}{{.Output}}{{end}}'
+```
+
+Un caso como este da `exit=0 oom=false`, estado `unhealthy` y la salida
+`Health check exceeded timeout (5s)` tres veces seguidas. La solución es
+devolver memoria al host, no tocar Traefik: actualizar el servicio durante la
+caída garantiza otro corte. Subir el timeout del healthcheck solo alargaría el
+síntoma y es un cambio del playbook `edge` que decide el propietario.
+
+## AIDE consume 4 GiB y 2 h de CPU cada noche
+
+Síntoma: de madrugada el host entra en thrashing de memoria y Traefik se
+reinicia (ver la entrada anterior). `systemctl status dailyaidecheck.service`
+lo muestra `activating` durante horas, con 3-4 GiB de memoria y un `aide
+--update` en `ps`.
+
+Causa: `dailyaidecheck.timer` lo lanza a diario entre las 01:50 y las 03:50
+(`OnCalendar=*-*-* 01:50:00`, `RandomizedDelaySec=2h`). Debian ejecuta `aide
+--update` sobre una base de referencia del 2026-07-21 que nunca se renueva, y
+`/etc/aide` no excluye `/var/lib/docker`, `/var/lib/containerd`, `/home` ni
+`/srv`: cada noche carga unos 3,2 millones de entradas, de las que unos 3
+millones salen como «añadidas». El repo solo instala los paquetes `aide` y
+`aide-common`; no gestiona la configuración ni el temporizador.
+
+Se comprueba sin recorrer el disco:
+
+```sh
+sudo journalctl -u dailyaidecheck.service --since '7 days ago' \
+  | grep Consumed
+sudo grep -E 'Total number of entries|Added entries' /var/log/aide/aide.log
+```
+
+`Consumed ... CPU time over ... wall clock time, 4.4G memory peak` da la
+duración y el pico de cada noche. Si el servicio está colgado, `sudo systemctl
+stop dailyaidecheck.service` es seguro: construye la base nueva en memoria y
+la escribe al final, así que parado no deja nada a medias. La decisión de
+fondo es del propietario (ver «Pendiente» en
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «AIDE»).

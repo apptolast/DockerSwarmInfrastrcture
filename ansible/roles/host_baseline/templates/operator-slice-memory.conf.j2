@@ -1,0 +1,8 @@
+# Managed by Ansible (host_baseline, tasks/resource-control.yml).
+# MemoryHigh throttles the slice with heavy reclaim and never invokes the OOM
+# killer. MemoryMax is the last resort, and the OOM killer then acts only
+# inside the slice, never on the Swarm stacks. See docs/OPERATIONS.md,
+# "Memoria de las sesiones de IA".
+[Slice]
+MemoryHigh={{ host_baseline_operator_slice_memory_high }}
+MemoryMax={{ host_baseline_operator_slice_memory_max }}

@@ -28,6 +28,35 @@ host_baseline_boot_cmdline_linux_default: >-
 host_baseline_boot_cmdline_dropin: >-
   /etc/default/grub.d/zz-dockerswarm-boot-cmdline.cfg
 
+# user-<uid>.slice agrupa todo lo que `admin` ejecuta: ssh, tmux, las sesiones
+# de IA y sus servidores MCP. Los valores viven en config/host-security.yml.
+host_baseline_operator_slice_memory_high: >-
+  {{ host_security_operator_slice_memory_high }}
+host_baseline_operator_slice_memory_max: >-
+  {{ host_security_operator_slice_memory_max }}
+host_baseline_operator_slice_dropin_dir: >-
+  /etc/systemd/system/user-{{ host_baseline_admin_uid }}.slice.d
+host_baseline_operator_slice_dropin: >-
+  {{ host_baseline_operator_slice_dropin_dir }}/60-dockerswarm-memory.conf
+host_baseline_operator_slice_cgroup: >-
+  /sys/fs/cgroup/user.slice/user-{{ host_baseline_admin_uid }}.slice
+# `systemctl set-property` escribe 50-MemoryHigh.conf y 50-MemoryMax.conf en
+# uno de estos dos directorios, y ambos ganan al drop-in de
+# /etc/systemd/system. El rol retira esos ficheros para que el valor revisado
+# sea el efectivo (`--runtime` usa /run, sin `--runtime` usa /etc).
+host_baseline_operator_slice_override_dirs:
+  - /run/systemd/system.control/user-{{ host_baseline_admin_uid }}.slice.d
+  - /etc/systemd/system.control/user-{{ host_baseline_admin_uid }}.slice.d
+host_baseline_operator_slice_override_names:
+  - MemoryHigh
+  - MemoryMax
+
+host_baseline_tmp_size: "{{ host_security_tmp_size }}"
+host_baseline_tmp_dropin_dir: /etc/systemd/system/tmp.mount.d
+host_baseline_tmp_dropin: >-
+  {{ host_baseline_tmp_dropin_dir }}/60-dockerswarm-size.conf
+host_baseline_tmp_packaged_unit: /usr/lib/systemd/system/tmp.mount
+
 host_baseline_public_interface: >-
   {{ platform_public_interface | default('eth0') }}
 host_baseline_public_ipv4: "{{ platform_public_ipv4 | default('') }}"

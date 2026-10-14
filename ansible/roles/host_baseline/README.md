@@ -250,6 +250,49 @@ edits the entry; add `net.ifnames=0` to the `linux` line and boot it with
 the manual window, and apply `host-baseline`, which rewrites the file with
 the reviewed content.
 
+### Memory of the operator's sessions
+
+`tasks/resource-control.yml` bounds what `admin` runs (Claude Code, Codex,
+their MCP servers, `tmux`), because the host has 16 GiB and no swap and those
+sessions share it with the Swarm stacks. On 2026-10-13 they reached 7.4 GiB,
+3.7 GiB of it `/tmp` files (a tmpfs is RAM), the page cache of Traefik
+thrashed and Swarm replaced it every few minutes: every site was down
+(`docs/DEPLOYMENT_STATUS.md`; `docs/OPERATIONS.md`, "Memoria de las sesiones
+de IA"). The role:
+
+- writes `/etc/systemd/system/user-<uid>.slice.d/60-dockerswarm-memory.conf`
+  with `MemoryHigh` (a throttle: heavy reclaim, never the OOM killer) and
+  `MemoryMax` (the last resort: the OOM killer then acts inside the slice
+  only), from `host_security_operator_slice_memory_high` and `_max`;
+
+- writes `/etc/systemd/system/tmp.mount.d/60-dockerswarm-size.conf`, which
+  changes only the `size=` of `/tmp`. `Options=` in a drop-in replaces the
+  packaged string (checked with a test unit), so the template repeats the
+  other options and the role stops if `/usr/lib/systemd/system/tmp.mount`
+  changes them;
+
+- stops, without changing anything itself, when the slice already holds 90% of
+  `MemoryMax` or more in `anon` plus `shmem`, which is what the kernel cannot
+  reclaim without swap: applying the ceiling would make the OOM killer end
+  live sessions. The tasks before it in the play have already run, and
+  `deploy-ansible.sh` keeps its operation marker after a failed apply, so the
+  runbook asks for the check before applying. It stops under `--check` too,
+  because it only reads;
+
+- removes the `50-MemoryHigh.conf` and `50-MemoryMax.conf` that `systemctl
+  set-property` leaves in `/run/systemd/system.control` or
+  `/etc/systemd/system.control`, which win over the drop-in, and checks that
+  the kernel's `memory.high` and `memory.max` equal the reviewed values.
+
+It never kills a process or deletes a file. It does not remount `/tmp` either:
+`ansible-lint` forbids `mount` through `command` (`command-instead-of-module`)
+and the repository does not install `ansible.posix`, so the drop-in applies at
+the next boot and the live remount is a documented manual step.
+`deploy-ansible.sh` does not run the validator, so the role repeats the rules
+of `scripts/validate-host-security.py`: whole `M` or `G` sizes, `MemoryHigh`
+between 1G and `MemoryMax`, `MemoryMax` at most 6G, and a `/tmp` of at most
+half of `MemoryMax`.
+
 ### No firewall restart on a converged host
 
 `host-baseline.yml` runs the `host_security` role first. That role owns the

@@ -160,6 +160,28 @@ No se debe elevar un límite basándose solo en memoria libre puntual o caché d
 página. Hay que revisar al menos el máximo sostenido, picos, OOM/throttling y
 la ventana de retención correspondiente.
 
+### Sesiones del operador
+
+La reserva de 3 072 MiB cubre el kernel, Docker, containerd y los servicios
+del host, ClamAV incluido; no cubre las sesiones interactivas de `admin`. El
+2026-10-13 esas sesiones llegaron a 7,4 GiB, 3,7 GiB de ellos ficheros de
+`/tmp` (un tmpfs es RAM), y dejaron sin caché de páginas a Traefik (ver
+[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «Caída por memoria de las
+sesiones de IA»).
+
+`host_baseline` acota ahora `user-1001.slice` con `MemoryHigh=4G` y
+`MemoryMax=5G`, y `/tmp` con `2G` (ver [OPERATIONS.md](OPERATIONS.md),
+«Memoria de las sesiones de IA»). Es un sobrecompromiso explícito y acotado:
+el techo agregado de los límites duros de los stacks (12 397 MiB) más los 3
+584 MiB protegidos ya suman los 15 981 MiB de la máquina, de modo que 5 GiB
+para las sesiones solo caben mientras los stacks usen menos que sus límites.
+El 2026-10-13, `memory.current` de `system.slice` (Docker, ClamAV y el resto
+de servicios, caché de páginas incluida) era de 7,7 GiB con el laboratorio en
+marcha. Si todos los stacks llegaran a sus límites a la vez, los 5 GiB de las
+sesiones no cabrían, y el kernel actuaría dentro del slice del operador antes
+que sobre los stacks. El propietario aceptó ese riesgo el 2026-10-13 y
+descartó el swap, que cambiaría `required_swap_mib: 0`.
+
 ## Stacks externos
 
 Tres stacks Swarm corren en este host sin estar definidos en este

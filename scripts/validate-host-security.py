@@ -31,6 +31,14 @@ BOOT_CMDLINE_KEYS = (
     "host_security_boot_cmdline_linux",
     "host_security_boot_cmdline_linux_default",
 )
+# A systemd or tmpfs size: whole MiB or GiB. Both read the suffixes as powers
+# of 1024, and nothing else (no fraction, no `%`, no `infinity`) can be bounded.
+MEMORY_SIZE = re.compile(r"([1-9][0-9]{0,3})([MG])")
+# The 2026-10-13 outage began with the operator slice at 7.4 GiB: a hard
+# ceiling above 6 GiB would not have prevented it. Below 1 GiB the kernel would
+# kill every interactive session on the first build.
+OPERATOR_SLICE_CEILING_MIB = 6144
+OPERATOR_SLICE_FLOOR_MIB = 1024
 
 
 class HostSecurityContractError(RuntimeError):
@@ -175,6 +183,52 @@ def validate_boot_cmdline(contract: dict[str, Any]) -> None:
         )
 
 
+def memory_mib(contract: dict[str, Any], key: str) -> int:
+    """One bounded size from the contract, in MiB."""
+    value = contract.get(key)
+    match = MEMORY_SIZE.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        raise HostSecurityContractError(
+            f"{key} must be a whole number of M or G, such as 512M or 4G"
+        )
+    return int(match[1]) * (1024 if match[2] == "G" else 1)
+
+
+def validate_memory_bounds(contract: dict[str, Any]) -> None:
+    """Check the memory bounds host_baseline sets for the operator's sessions."""
+    # MemoryHigh solo frena (reclamo intenso, sin OOM) y MemoryMax es el ultimo
+    # recurso: el orden importa, y el techo duro no puede volver a permitir el
+    # 7,4 GiB del 2026-10-13. Las paginas de un tmpfs cuentan en el cgroup de
+    # quien las escribe y, sin swap, no se pueden recuperar: si /tmp pudiera
+    # llenar el slice, el OOM killer mataria todos los procesos y la memoria
+    # seguiria ocupada. Por eso /tmp deja a los procesos la mitad del techo.
+    high = memory_mib(contract, "host_security_operator_slice_memory_high")
+    maximum = memory_mib(contract, "host_security_operator_slice_memory_max")
+    tmp = memory_mib(contract, "host_security_tmp_size")
+    if high >= maximum:
+        raise HostSecurityContractError(
+            "host_security_operator_slice_memory_high must stay below "
+            "host_security_operator_slice_memory_max: MemoryHigh throttles "
+            "and MemoryMax is the last resort"
+        )
+    if maximum > OPERATOR_SLICE_CEILING_MIB:
+        raise HostSecurityContractError(
+            "host_security_operator_slice_memory_max must not exceed 6G: the "
+            "2026-10-13 outage began with the operator slice at 7.4 GiB"
+        )
+    if high < OPERATOR_SLICE_FLOOR_MIB:
+        raise HostSecurityContractError(
+            "host_security_operator_slice_memory_high must be at least 1G, or "
+            "the kernel would throttle every interactive session at start"
+        )
+    if tmp * 2 > maximum:
+        raise HostSecurityContractError(
+            "host_security_tmp_size must leave the operator slice at least "
+            "half of its MemoryMax for processes: tmpfs pages are charged to "
+            "the cgroup that wrote them and cannot be reclaimed without swap"
+        )
+
+
 def validate(document: Any, now: datetime) -> None:
     contract = require_mapping(document, "host-security contract")
     if contract.get("host_security_apt_update_policy") != ("promoted-snapshot-only"):
@@ -314,6 +368,7 @@ def validate(document: Any, now: datetime) -> None:
             )
 
     validate_boot_cmdline(contract)
+    validate_memory_bounds(contract)
 
 
 def main() -> int:

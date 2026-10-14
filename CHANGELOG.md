@@ -6,6 +6,34 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Memoria de las sesiones de IA
+
+- `host_baseline` acota la memoria de lo que ejecuta `admin` (Claude Code,
+  Codex, sus servidores MCP): un drop-in de `user-1001.slice` con
+  `MemoryHigh=4G` y `MemoryMax=5G`, y otro de `tmp.mount` que limita `/tmp`,
+  que es RAM, a `2G`. Los valores viven en `config/host-security.yml` y
+  `scripts/validate-host-security.py` los valida (también en el rol, porque
+  `deploy-ansible.sh` no ejecuta el validador). El rol se detiene, sin cambiar
+  nada él mismo, si el slice ya retiene el 90 % del techo en memoria que el
+  kernel no puede recuperar (`deploy-ansible.sh` conserva su marker tras un
+  apply fallido, así que el runbook pide comprobarlo antes), retira los
+  `systemctl set-property` previos y comprueba `memory.high` y `memory.max`
+  del kernel. No hace `remount` de `/tmp` (`ansible-lint` prohíbe `mount` por
+  `command`): el drop-in manda desde el siguiente arranque y el remount en
+  vivo es un paso manual documentado.
+
+- Motivo: el 2026-10-13 esas sesiones llegaron a 7,4 GiB en un servidor sin
+  swap, 3,7 GiB de ellos ficheros de `/tmp`. La caché de páginas de Traefik
+  entró en thrashing, su healthcheck de 5 s falló tres veces seguidas y Swarm
+  lo reemplazó cada pocos minutos: todos los sitios sin servicio. Es la cuarta
+  caída de la familia (2026-09-26, dos; 2026-10-09). El 2026-10-14 hubo una
+  quinta con otra causa, `aide --update` (4,4 GiB y 2 h de CPU cada noche,
+  sobre una base de julio con 3 millones de «añadidas»), y su temporizador
+  queda detenido a la espera del propietario. Sin swap por decisión del
+  propietario. Documentado en `docs/OPERATIONS.md` («Memoria de las sesiones
+  de IA»), `docs/CAPACITY.md` («Sesiones del operador»),
+  `docs/KNOWN_ISSUES.md` y `docs/DEPLOYMENT_STATUS.md`.
+
 ### Oficina 1.0.8
 
 - Versión 1.0.8 de `ax-web`. Acumulados de consumo de las ventanas de

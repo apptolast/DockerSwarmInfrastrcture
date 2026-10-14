@@ -775,6 +775,155 @@ Después:
 `live-restore` no conserva el plano de control de Swarm durante un reinicio de
 Docker.
 
+## Memoria de las sesiones de IA
+
+El servidor tiene 16 GiB y no tiene swap (`required_swap_mib: 0` en
+`config/capacity.yml`). Las sesiones interactivas de `admin` (Claude Code,
+Codex, sus servidores MCP, `tmux`) comparten máquina con Swarm, y un tmpfs es
+RAM que, sin swap, el kernel no puede devolver. El 2026-10-13 esas sesiones
+llegaron a 7,4 GiB, 3,7 GiB de ellos ficheros de `/tmp`: la memoria disponible
+bajó a 1,8 GiB, la caché de páginas de Traefik entró en thrashing (`vmstat`
+marcó unos 2,3 GB/s de lectura de disco y un 88 % de CPU en el kernel, con
+load 173) y su healthcheck falló tres veces seguidas con `Health check
+exceeded timeout (5s)`. Swarm lo reemplazó cada 3-5 minutos y todos los sitios
+quedaron sin servicio (ver [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md),
+«Caída por memoria de las sesiones de IA»). Los incidentes del 2026-09-26 y
+del 2026-10-09 son de la misma familia, y sus mitigaciones eran de
+comportamiento (`nice`, menos procesos en paralelo, un límite en cada
+ejecución pesada): no impiden que la siguiente sesión llene la memoria.
+
+### Qué fija el repositorio
+
+`host_baseline` (`tasks/resource-control.yml`) escribe dos drop-ins con los
+valores de `config/host-security.yml`:
+
+- `/etc/systemd/system/user-1001.slice.d/60-dockerswarm-memory.conf`, con
+  `MemoryHigh=4G` y `MemoryMax=5G` para todo lo que `admin` ejecuta.
+  `MemoryHigh` frena el slice con reclamo intenso y nunca invoca al OOM
+  killer; `MemoryMax` es el último recurso, y el OOM killer actúa solo dentro
+  del slice, nunca sobre los stacks.
+
+- `/etc/systemd/system/tmp.mount.d/60-dockerswarm-size.conf`, con `size=2G`
+  para `/tmp`. Ubuntu lo monta al 50 % de la RAM (7,9 GiB) y la documentación
+  del kernel advierte de que sobredimensionar un tmpfs bloquea la máquina,
+  porque el OOM killer no puede liberar esa memoria. Las páginas de un tmpfs
+  cuentan en el cgroup de quien las escribe: el validador exige que `/tmp`
+  deje a los procesos del slice al menos la mitad de `MemoryMax`. `Options=`
+  en un drop-in sustituye a la cadena entera de la unidad del paquete (se
+  comprobó con una unidad de prueba), así que la plantilla repite las demás
+  opciones y el rol se detiene si `/usr/lib/systemd/system/tmp.mount` las
+  cambia.
+
+No hay swap, por decisión del propietario del 2026-10-13: conserva el contrato
+de capacidad sin overcommit (`required_swap_mib: 0`).
+
+### Aplicarlo
+
+`deploy-ansible.sh --playbook host-baseline`, primero con `--check` (ver
+«Secuencia de cambio»). Es un paso del propietario. Antes, con las sesiones de
+IA cerradas o ociosas y sin ficheros grandes en `/tmp`, se comprueba lo que el
+slice retiene sin poder devolverlo (procesos más ficheros de `/tmp`):
+
+```sh
+awk '/^(anon|shmem) /{s+=$2} END{printf "%.2f GiB\n", s/2^30}' \
+  /sys/fs/cgroup/user.slice/user-1001.slice/memory.stat
+```
+
+Debe ser menor que 4,5 GiB, el 90 % de `MemoryMax=5G`. El apply y
+`validate-iac.sh` corren en este mismo slice: `sudo` no saca un proceso del
+scope de su sesión, y Ansible por ssh como `admin` tampoco. Con el slice
+lleno, el OOM killer podría terminar un apply o una validación a mitad en un
+host sin alta disponibilidad, así que se cierran sesiones y se libera `/tmp`
+antes de aplicar o de validar.
+
+1. Si aun así el slice retiene el 90 % de `MemoryMax` o más en memoria que el
+   kernel no puede recuperar (`anon` más `shmem` de `memory.stat`), este
+   control se detiene, también con `--check`: fijar el techo en ese estado
+   haría que el OOM killer terminase sesiones vivas. No cambia nada él mismo,
+   pero las tareas anteriores del play (`host_security` y el resto de
+   `host_baseline`) ya se aplicaron, y `deploy-ansible.sh` conserva su marker
+   tras un apply fallido: hay que recuperarlo («Recuperar un marker
+   abandonado») antes del siguiente apply. Por eso se comprueba antes. Se
+   cierran sesiones ociosas o se mueven los ficheros de `/tmp` a disco.
+
+2. El rol retira los `50-MemoryHigh.conf` y `50-MemoryMax.conf` que deja
+   `systemctl set-property` (en `/run/systemd/system.control` con `--runtime`,
+   en `/etc/systemd/system.control` sin él), porque ganan al drop-in, y
+   comprueba que `memory.high` y `memory.max` del kernel valen lo revisado.
+
+3. El rol no hace `remount` de `/tmp`: `ansible-lint`
+   (`command-instead-of-module`) prohíbe `mount` por `command` y el repo no
+   instala `ansible.posix`. El drop-in manda desde el siguiente arranque. Para
+   acotarlo ya, con `/tmp` por debajo de 2G (`df /tmp`; el kernel no permite
+   un tamaño menor que el uso), `sudo mount -o remount,size=2G /tmp`. Según la
+   documentación del kernel, `size` se puede cambiar en un remount, y se
+   deshace con `sudo mount -o remount,size=50% /tmp`.
+
+### Techo provisional hasta el apply
+
+Mientras el PR no esté aplicado se puede acotar el slice en caliente. Nunca
+por debajo de lo que ya retiene, o el kernel matará sesiones vivas:
+
+```sh
+awk '/^(anon|shmem) /{s+=$2} END{printf "%.2f GiB\n", s/2^30}' \
+  /sys/fs/cgroup/user.slice/user-1001.slice/memory.stat
+sudo systemctl set-property --runtime user-1001.slice \
+  MemoryHigh=4G MemoryMax=5G
+```
+
+`--runtime` se pierde en el siguiente reinicio, y el apply lo retira. Si el
+primer comando muestra más de 4 GiB, se fija antes un techo más alto (el
+2026-10-13 se usó 6G y 7G) y se aprieta cuando las sesiones vayan acabando.
+Debe quedar anotado en `docs/DEPLOYMENT_STATUS.md`, «Estado temporal fuera del
+repositorio».
+
+### Diagnosticar y recuperar una caída así
+
+Solo lectura primero. Un `vmstat` con `bi` en cientos de MB/s y `sy` por
+encima del 50 % es thrashing de la caché de páginas. Si el slice del operador
+está por debajo de su techo, el culpable es otro: el desglose de
+`system.slice` lo dice (el 2026-10-14 fue `dailyaidecheck.service`, ver
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md)):
+
+```sh
+vmstat 1 3
+for d in /sys/fs/cgroup/system.slice/*/; do
+  echo "$(( $(cat $d/memory.current) / 1048576 )) $(basename $d)"
+done | sort -rn | head -8
+cat /sys/fs/cgroup/user.slice/user-1001.slice/memory.current
+awk '/^(anon|shmem) /' /sys/fs/cgroup/user.slice/user-1001.slice/memory.stat
+du -sh /tmp/claude-1001 /tmp
+sudo docker service ps edge_traefik --no-trunc
+sudo docker inspect CONTENEDOR_PARADO \
+  --format '{{range .State.Health.Log}}{{.Output}}{{end}}'
+```
+
+Para liberar `/tmp` sin perder nada: copiar lo grande y regenerable a
+`~/.cache/`, comparar el número de ficheros y los bytes, renombrar el
+directorio original, enlazar la copia con un enlace simbólico en su sitio y
+solo entonces borrar el renombrado. No se mueve nada que un proceso tenga
+abierto o haya escrito hace poco. Nunca `grep -r` sobre `/home/admin` con el
+host asfixiado, ni `pkill -f` con un patrón que aparezca en la propia línea de
+órdenes: mataría la shell.
+
+### Claude Code y `/tmp`
+
+Claude Code crea `/tmp/claude-<uid>` (`/tmp/claude-1001` aquí), donde cae el
+scratchpad de cada sesión. Su documentación define `CLAUDE_CODE_TMPDIR` para
+cambiarlo: añade `/claude-{uid}/` a la ruta, se fija «en tu shell, en los user
+settings o en los managed settings» y se ignora en la configuración de
+proyecto y local. No está codificado aquí porque las sesiones nacen de un
+proceso `server` que se arrancó fuera de este repositorio, y las que hay hoy
+no llevan `CLAUDE_CODE_TMPDIR` ni `TMPDIR`. Hasta comprobar que una sesión
+nueva lo hereda, la protección son los dos techos de arriba.
+
+### Riesgo aceptado
+
+El techo de 5 GiB supera los 3 GiB que `docs/CAPACITY.md` reserva para todo el
+host: es un sobrecompromiso explícito, no un hueco del presupuesto (ver allí,
+«Sesiones del operador»). Solo sacar las sesiones de IA de este servidor lo
+elimina.
+
 ## Logging
 
 El daemon usa `local` por defecto. Sus ficheros internos no se manipulan:
