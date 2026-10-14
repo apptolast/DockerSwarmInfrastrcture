@@ -944,10 +944,13 @@ no detecta nada.
   de `host_security_aide_protected_paths`.
 
 - `/etc/systemd/system/dailyaidecheck.service.d/60-dockerswarm-limits.conf`:
-  `MemoryHigh=1536M`, `MemoryMax=2G`, `RuntimeMaxSec=3h`, `Nice=19`, E/S
+  `MemoryHigh=1536M`, `MemoryMax=2G`, `TimeoutStartSec=3h`, `Nice=19`, E/S
   inactiva, `CPUWeight=20` y `OOMScoreAdjust=1000`. Si el árbol vuelve a
   crecer, el OOM killer mata a AIDE dentro de su cgroup, no a producción, y
-  una ejecución que se eterniza se corta a las 3 h.
+  una ejecución que se eterniza se corta a las 3 h. El tope es
+  `TimeoutStartSec` y no `RuntimeMaxSec` porque la unidad es `Type=oneshot` y
+  systemd.service(5) dice que `RuntimeMaxSec` no tiene efecto sobre ellas (se
+  comprobó con una unidad de prueba).
 
 El rol no renueva la base ni activa el temporizador: aceptar el estado actual
 del host como referencia es una decisión de seguridad, que tomó el propietario
@@ -966,7 +969,10 @@ sudo aide --config=/etc/aide/aide.conf -p f:/home/admin/.ssh/authorized_keys
 2. `sudo systemctl start dailyaidecheck.service` (con `--no-block` no espera).
    Corre `aide --update` como `_aide` con los límites nuevos: lee la base de
    julio, recorre lo que queda y escribe `/var/lib/aide/aide.db.new`. No toca
-   la base de referencia mientras `COPYNEWDB=no`.
+   la base de referencia mientras `COPYNEWDB=no`. La unidad tiene
+   `StartLimitBurst=1` en 7200 s: si la primera ejecución falla y se repite
+   antes de dos horas, systemd la rechaza hasta un `sudo systemctl
+   reset-failed dailyaidecheck.service`.
 
 3. Leer el informe de `/var/log/aide/aide.log`. Compara con julio, así que es
    la ocasión de ver qué cambió en el host desde entonces (README.Debian de

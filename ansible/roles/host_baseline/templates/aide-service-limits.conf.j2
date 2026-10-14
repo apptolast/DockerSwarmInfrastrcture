@@ -2,11 +2,13 @@
 # AIDE is the last unit to get CPU and I/O and the first to die: a nightly run
 # that took 4.4 GiB and 2 h of CPU left the host without page cache on
 # 2026-10-14. Past MemoryMax the OOM killer acts inside this unit only.
+# TimeoutStartSec, not RuntimeMaxSec: the unit is Type=oneshot and
+# systemd.service(5) says RuntimeMaxSec has no effect on it.
 [Service]
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=20
 MemoryHigh={{ host_baseline_aide_memory_high }}
 MemoryMax={{ host_baseline_aide_memory_max }}
-RuntimeMaxSec={{ host_baseline_aide_runtime_max }}
+TimeoutStartSec={{ host_baseline_aide_start_timeout }}
 OOMScoreAdjust=1000

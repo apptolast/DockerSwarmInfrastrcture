@@ -314,7 +314,7 @@ host without swap it left Traefik without page cache. The role:
 
 - writes
   `/etc/systemd/system/dailyaidecheck.service.d/60-dockerswarm-limits.conf`
-  (`MemoryHigh`, `MemoryMax`, `RuntimeMaxSec`, `Nice=19`, idle I/O,
+  (`MemoryHigh`, `MemoryMax`, `TimeoutStartSec`, `Nice=19`, idle I/O,
   `CPUWeight=20`, `OOMScoreAdjust=1000`) and checks, with `systemd_service`
   (read-only with only a name), the values systemd enforces.
 

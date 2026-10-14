@@ -391,7 +391,10 @@ host_security_aide_protected_paths:
 # garantizan que, si el árbol vuelve a crecer, el OOM killer mata a AIDE dentro
 # de su cgroup y nunca a producción. Nice, E/S inactiva, peso de CPU bajo y
 # OOMScoreAdjust alto lo hacen el último en recibir recursos y el primero en
-# morir; `RuntimeMaxSec` corta una ejecución que se eterniza.
+# morir; `TimeoutStartSec` corta una ejecución que se eterniza. La unidad es
+# `Type=oneshot` y systemd.service(5) dice que `RuntimeMaxSec` no tiene
+# efecto sobre ellas. Se comprobó con una unidad de prueba: con
+# `RuntimeMaxSec=5s` acabó a los 26 s y con `TimeoutStartSec=5s`, a los 5 s.
 host_security_aide_memory_high: 1536M
 host_security_aide_memory_max: 2G
-host_security_aide_runtime_max: 3h
+host_security_aide_start_timeout: 3h

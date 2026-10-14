@@ -48,7 +48,7 @@ AIDE_EXCLUDED_PATH = re.compile(r"/[^\s]*\$")
 # ceiling above 4 GiB would not have prevented that outage.
 AIDE_MEMORY_CEILING_MIB = 4096
 AIDE_MEMORY_FLOOR_MIB = 512
-AIDE_RUNTIME_MAX = re.compile(r"[1-4]h")
+AIDE_START_TIMEOUT = re.compile(r"[1-4]h")
 # Regenerable noise that must stay excluded: it held 2.8 M of the 3.0 M entries.
 AIDE_MUST_EXCLUDE = (
     "/var/lib/containerd",
@@ -314,9 +314,9 @@ def validate_aide(contract: dict[str, Any]) -> None:
             "could not hold its database"
         )
     require_match(
-        AIDE_RUNTIME_MAX,
-        contract.get("host_security_aide_runtime_max"),
-        "host_security_aide_runtime_max must be 1h to 4h: the run took 2-4 h "
+        AIDE_START_TIMEOUT,
+        contract.get("host_security_aide_start_timeout"),
+        "host_security_aide_start_timeout must be 1h to 4h: the run took 2-4 h "
         "and one that never ends is the outage",
     )
 

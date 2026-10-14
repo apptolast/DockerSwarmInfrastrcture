@@ -33,7 +33,7 @@
       - >-
         host_baseline_aide_memory_high | human_to_bytes
         >= 512 * 1024 * 1024
-      - host_baseline_aide_runtime_max is match("[1-4]h$")
+      - host_baseline_aide_start_timeout is match("[1-4]h$")
       - host_baseline_aide_protected_paths | length > 0
       - >-
         host_baseline_aide_protected_paths
@@ -47,7 +47,7 @@
       none of them may reach a protected path (.ssh, /etc, the binaries, /boot),
       MemoryHigh must be at least 512M and below MemoryMax, MemoryMax at most 4G
       (AIDE peaked at 4.4 GiB on the night of the 2026-10-14 outage) and
-      RuntimeMaxSec between 1h and 4h.
+      TimeoutStartSec between 1h and 4h.
     quiet: true
 
 # El rol no instala AIDE: lo hace host_security. Sin su directorio de reglas no
@@ -149,15 +149,15 @@
         host_baseline_aide_unit.status.MemoryMax
         == (host_baseline_aide_memory_max | human_to_bytes | string)
       - >-
-        host_baseline_aide_unit.status.RuntimeMaxUSec
-        == host_baseline_aide_runtime_max
+        host_baseline_aide_unit.status.TimeoutStartUSec
+        == host_baseline_aide_start_timeout
       - host_baseline_aide_unit.status.Nice == "19"
       - host_baseline_aide_unit.status.IOSchedulingClass == "3"
       - host_baseline_aide_unit.status.CPUWeight == "20"
       - host_baseline_aide_unit.status.OOMScoreAdjust == "1000"
     fail_msg: >-
       systemd does not enforce the reviewed limits on dailyaidecheck.service
-      (MemoryHigh, MemoryMax, RuntimeMaxSec, Nice 19, idle I/O, CPUWeight 20,
+      (MemoryHigh, MemoryMax, TimeoutStartSec, Nice 19, idle I/O, CPUWeight 20,
       OOMScoreAdjust 1000). Another drop-in may override
       {{ host_baseline_aide_unit_dropin }}: run
       systemctl cat dailyaidecheck.service.

@@ -17,7 +17,7 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
   del 2026-10-13 (estimación, no medida) y dejan vigilados `.ssh`, los
   dotfiles, `/etc`, los binarios, `/boot`, `/opt` y `/srv`. Un drop-in de
   `dailyaidecheck.service` fija `MemoryHigh=1536M`, `MemoryMax=2G`,
-  `RuntimeMaxSec=3h`, `Nice=19`, E/S inactiva, `CPUWeight=20` y
+  `TimeoutStartSec=3h`, `Nice=19`, E/S inactiva, `CPUWeight=20` y
   `OOMScoreAdjust=1000`. El validador exige que ninguna regla alcance las
   rutas de `host_security_aide_protected_paths`, que las de ruido sigan
   excluidas y que AIDE no pase de 4G (el rol repite las reglas, porque

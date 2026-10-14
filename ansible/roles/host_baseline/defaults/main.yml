@@ -64,7 +64,7 @@ host_baseline_aide_excluded_paths: "{{ host_security_aide_excluded_paths }}"
 host_baseline_aide_protected_paths: "{{ host_security_aide_protected_paths }}"
 host_baseline_aide_memory_high: "{{ host_security_aide_memory_high }}"
 host_baseline_aide_memory_max: "{{ host_security_aide_memory_max }}"
-host_baseline_aide_runtime_max: "{{ host_security_aide_runtime_max }}"
+host_baseline_aide_start_timeout: "{{ host_security_aide_start_timeout }}"
 host_baseline_aide_config: /etc/aide/aide.conf
 host_baseline_aide_rules_dir: /etc/aide/aide.conf.d
 host_baseline_aide_rules_file: >-

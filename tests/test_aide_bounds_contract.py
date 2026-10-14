@@ -51,7 +51,7 @@ VARIABLES = {
     "host_baseline_aide_protected_paths": PROTECTED,
     "host_baseline_aide_memory_high": "1536M",
     "host_baseline_aide_memory_max": "2G",
-    "host_baseline_aide_runtime_max": "3h",
+    "host_baseline_aide_start_timeout": "3h",
 }
 
 
@@ -80,7 +80,7 @@ class AideValidatorTests(unittest.TestCase):
     PROTECTED = "host_security_aide_protected_paths"
     HIGH = "host_security_aide_memory_high"
     MAX = "host_security_aide_memory_max"
-    RUNTIME = "host_security_aide_runtime_max"
+    RUNTIME = "host_security_aide_start_timeout"
 
     def setUp(self) -> None:
         self.contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
@@ -325,7 +325,7 @@ class AideRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                     self.bounds(
                         host_baseline_aide_memory_high=high,
                         host_baseline_aide_memory_max=maximum,
-                        host_baseline_aide_runtime_max=runtime,
+                        host_baseline_aide_start_timeout=runtime,
                     ),
                 )
 
@@ -362,9 +362,9 @@ class AideRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             "high below 512M": {"host_baseline_aide_memory_high": "511M"},
             "a B suffix": {"host_baseline_aide_memory_max": "2GB"},
             "infinity": {"host_baseline_aide_memory_max": "infinity"},
-            "five hours": {"host_baseline_aide_runtime_max": "5h"},
-            "minutes": {"host_baseline_aide_runtime_max": "90m"},
-            "no limit": {"host_baseline_aide_runtime_max": "infinity"},
+            "five hours": {"host_baseline_aide_start_timeout": "5h"},
+            "minutes": {"host_baseline_aide_start_timeout": "90m"},
+            "no limit": {"host_baseline_aide_start_timeout": "infinity"},
         }
         for label, change in rejected.items():
             with self.subTest(label):
@@ -448,10 +448,26 @@ class AideRoleTests(AnsibleTaskAssertions, unittest.TestCase):
                 "CPUWeight=20",
                 "MemoryHigh=1536M",
                 "MemoryMax=2G",
-                "RuntimeMaxSec=3h",
+                "TimeoutStartSec=3h",
                 "OOMScoreAdjust=1000",
             ],
         )
+
+    def test_the_run_limit_is_a_start_timeout_because_the_unit_is_oneshot(self) -> None:
+        # dailyaidecheck.service is Type=oneshot, and systemd.service(5) says
+        # RuntimeMaxSec has no effect on those: a oneshot with RuntimeMaxSec=5s
+        # and a 25 s command ended with Result=success after 26 s, and with
+        # TimeoutStartSec=5s it ended after 5 s with Result=timeout.
+        settings = rules(render(LIMITS_TEMPLATE))
+        self.assertIn("TimeoutStartSec=3h", settings)
+        self.assertFalse(
+            [line for line in settings if line.startswith("RuntimeMaxSec")]
+        )
+        defaults = yaml.safe_load(
+            (PROJECT_ROOT / ROLE / "defaults/main.yml").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("host_baseline_aide_runtime_max", defaults)
+        self.assertIn("host_baseline_aide_start_timeout", defaults)
 
     # -- what systemd really enforces ---------------------------------------
 
@@ -460,7 +476,7 @@ class AideRoleTests(AnsibleTaskAssertions, unittest.TestCase):
         reviewed = {
             "MemoryHigh": "1610612736",
             "MemoryMax": "2147483648",
-            "RuntimeMaxUSec": "3h",
+            "TimeoutStartUSec": "3h",
             "Nice": "19",
             "IOSchedulingClass": "3",
             "CPUWeight": "20",
@@ -484,8 +500,8 @@ class AideRoleTests(AnsibleTaskAssertions, unittest.TestCase):
             "no memory ceiling": {"MemoryMax": "infinity"},
             "no memory throttle": {"MemoryHigh": "infinity"},
             "a larger ceiling": {"MemoryMax": "4294967296"},
-            "no run time limit": {"RuntimeMaxUSec": "infinity"},
-            "another run time": {"RuntimeMaxUSec": "4h"},
+            "no run time limit": {"TimeoutStartUSec": "infinity"},
+            "another run time": {"TimeoutStartUSec": "4h"},
             "normal priority": {"Nice": "0"},
             "best-effort I/O": {"IOSchedulingClass": "2"},
             "default CPU weight": {"CPUWeight": "100"},
@@ -706,7 +722,7 @@ class AideDocsTests(unittest.TestCase):
         for expected in (
             f"MemoryHigh={LIVE['host_security_aide_memory_high']}",
             f"MemoryMax={LIVE['host_security_aide_memory_max']}",
-            f"RuntimeMaxSec={LIVE['host_security_aide_runtime_max']}",
+            f"TimeoutStartSec={LIVE['host_security_aide_start_timeout']}",
             "05_dockerswarm_excludes",
             "--config-check",
             "-p d:/var/lib/docker",
