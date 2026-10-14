@@ -57,6 +57,22 @@ host_baseline_tmp_dropin: >-
   {{ host_baseline_tmp_dropin_dir }}/60-dockerswarm-size.conf
 host_baseline_tmp_packaged_unit: /usr/lib/systemd/system/tmp.mount
 
+# AIDE: los valores viven en config/host-security.yml. Debian lee solo los
+# ficheros de aide.conf.d cuyo nombre casa con ^[a-zA-Z0-9_-]+$ (aide.conf:
+# `@@x_include`), por orden lexico.
+host_baseline_aide_excluded_paths: "{{ host_security_aide_excluded_paths }}"
+host_baseline_aide_protected_paths: "{{ host_security_aide_protected_paths }}"
+host_baseline_aide_memory_high: "{{ host_security_aide_memory_high }}"
+host_baseline_aide_memory_max: "{{ host_security_aide_memory_max }}"
+host_baseline_aide_runtime_max: "{{ host_security_aide_runtime_max }}"
+host_baseline_aide_config: /etc/aide/aide.conf
+host_baseline_aide_rules_dir: /etc/aide/aide.conf.d
+host_baseline_aide_rules_file: >-
+  {{ host_baseline_aide_rules_dir }}/05_dockerswarm_excludes
+host_baseline_aide_unit_dropin_dir: /etc/systemd/system/dailyaidecheck.service.d
+host_baseline_aide_unit_dropin: >-
+  {{ host_baseline_aide_unit_dropin_dir }}/60-dockerswarm-limits.conf
+
 host_baseline_public_interface: >-
   {{ platform_public_interface | default('eth0') }}
 host_baseline_public_ipv4: "{{ platform_public_ipv4 | default('') }}"

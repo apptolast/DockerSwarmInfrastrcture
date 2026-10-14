@@ -39,6 +39,23 @@ MEMORY_SIZE = re.compile(r"([1-9][0-9]{0,3})([MG])")
 # kill every interactive session on the first build.
 OPERATOR_SLICE_CEILING_MIB = 6144
 OPERATOR_SLICE_FLOOR_MIB = 1024
+# One AIDE non-recursive negative rule (`-regex`, AIDE 0.19): a path from the
+# root with no whitespace (a space would start the rule's restriction field)
+# that ends in `$`, so it matches that directory and nothing that merely starts
+# like it. AIDE anchors the expression at the start of the path itself.
+AIDE_EXCLUDED_PATH = re.compile(r"/[^\s]*\$")
+# The nightly AIDE run peaked at 4.4 GiB and took ~2 h of CPU on 2026-10-14: a
+# ceiling above 4 GiB would not have prevented that outage.
+AIDE_MEMORY_CEILING_MIB = 4096
+AIDE_MEMORY_FLOOR_MIB = 512
+AIDE_RUNTIME_MAX = re.compile(r"[1-4]h")
+# Regenerable noise that must stay excluded: it held 2.8 M of the 3.0 M entries.
+AIDE_MUST_EXCLUDE = (
+    "/var/lib/containerd",
+    "/var/lib/docker",
+    "/home/admin/.cache",
+    "/tmp/claude-1001",
+)
 
 
 class HostSecurityContractError(RuntimeError):
@@ -229,6 +246,81 @@ def validate_memory_bounds(contract: dict[str, Any]) -> None:
         )
 
 
+def validate_aide(contract: dict[str, Any]) -> None:
+    """Check the exclusions and limits host_baseline sets for the AIDE run."""
+    # Un `-regex` mal escrito o demasiado ancho dejaria sin vigilar justo lo que
+    # AIDE existe para vigilar (.ssh, /etc, los binarios), y uno demasiado
+    # estrecho devuelve los 3 millones de entradas que tumbaron el servidor el
+    # 2026-10-14. Por eso se exige a la vez que cada regla tenga la forma
+    # revisada, que ninguna alcance las rutas protegidas y que las de ruido
+    # sigan excluidas. Los limites impiden que AIDE vuelva a pasar de 4 GiB.
+    excluded = contract.get("host_security_aide_excluded_paths")
+    protected = contract.get("host_security_aide_protected_paths")
+    for key, value in (
+        ("host_security_aide_excluded_paths", excluded),
+        ("host_security_aide_protected_paths", protected),
+    ):
+        if not isinstance(value, list) or not value:
+            raise HostSecurityContractError(f"{key} must be a non-empty list")
+    for rule in excluded:
+        require_match(
+            AIDE_EXCLUDED_PATH,
+            rule,
+            "host_security_aide_excluded_paths holds a rule that is not a path "
+            f"without whitespace ending in $: {rule!r}",
+        )
+        try:
+            re.compile(rule)
+        except re.error as error:
+            raise HostSecurityContractError(
+                f"host_security_aide_excluded_paths holds an invalid regex: {rule!r}"
+            ) from error
+    if len(set(excluded)) != len(excluded):
+        raise HostSecurityContractError(
+            "host_security_aide_excluded_paths declares a rule more than once"
+        )
+    for path in protected:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise HostSecurityContractError(
+                "host_security_aide_protected_paths must hold absolute paths"
+            )
+        for rule in excluded:
+            if re.match(rule, path):
+                raise HostSecurityContractError(
+                    f"the AIDE exclusion {rule!r} would stop watching the "
+                    f"protected path {path}"
+                )
+    for path in AIDE_MUST_EXCLUDE:
+        if not any(re.match(rule, path) for rule in excluded):
+            raise HostSecurityContractError(
+                f"no AIDE exclusion covers {path}, which held millions of "
+                "entries on 2026-10-14"
+            )
+    high = memory_mib(contract, "host_security_aide_memory_high")
+    maximum = memory_mib(contract, "host_security_aide_memory_max")
+    if high >= maximum:
+        raise HostSecurityContractError(
+            "host_security_aide_memory_high must stay below "
+            "host_security_aide_memory_max"
+        )
+    if maximum > AIDE_MEMORY_CEILING_MIB:
+        raise HostSecurityContractError(
+            "host_security_aide_memory_max must not exceed 4G: the 2026-10-14 "
+            "outage began with AIDE at 3.4-4.4 GiB"
+        )
+    if high < AIDE_MEMORY_FLOOR_MIB:
+        raise HostSecurityContractError(
+            "host_security_aide_memory_high must be at least 512M, or AIDE "
+            "could not hold its database"
+        )
+    require_match(
+        AIDE_RUNTIME_MAX,
+        contract.get("host_security_aide_runtime_max"),
+        "host_security_aide_runtime_max must be 1h to 4h: the run took 2-4 h "
+        "and one that never ends is the outage",
+    )
+
+
 def validate(document: Any, now: datetime) -> None:
     contract = require_mapping(document, "host-security contract")
     if contract.get("host_security_apt_update_policy") != ("promoted-snapshot-only"):
@@ -369,6 +461,7 @@ def validate(document: Any, now: datetime) -> None:
 
     validate_boot_cmdline(contract)
     validate_memory_bounds(contract)
+    validate_aide(contract)
 
 
 def main() -> int:

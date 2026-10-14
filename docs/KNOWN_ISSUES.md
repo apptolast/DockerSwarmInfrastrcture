@@ -267,6 +267,8 @@ sudo grep -E 'Total number of entries|Added entries' /var/log/aide/aide.log
 `Consumed ... CPU time over ... wall clock time, 4.4G memory peak` da la
 duración y el pico de cada noche. Si el servicio está colgado, `sudo systemctl
 stop dailyaidecheck.service` es seguro: construye la base nueva en memoria y
-la escribe al final, así que parado no deja nada a medias. La decisión de
-fondo es del propietario (ver «Pendiente» en
-[DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «AIDE»).
+la escribe al final, así que parado no deja nada a medias. El propietario
+eligió el 2026-10-14 excluir lo regenerable, renovar la base y limitar la
+unidad: `host_baseline` (`tasks/aide.yml`) lo codifica, y los pasos manuales
+(primera ejecución, leer el informe, promover la base, activar el
+temporizador) están en [OPERATIONS.md](OPERATIONS.md), «AIDE».

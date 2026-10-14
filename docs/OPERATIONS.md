@@ -917,6 +917,73 @@ proceso `server` que se arrancó fuera de este repositorio, y las que hay hoy
 no llevan `CLAUDE_CODE_TMPDIR` ni `TMPDIR`. Hasta comprobar que una sesión
 nueva lo hereda, la protección son los dos techos de arriba.
 
+### AIDE
+
+AIDE comprueba cada noche la integridad de los ficheros (`dailyaidecheck`).
+Hasta el 2026-10-14 gastaba 4,1-4,4 GiB y casi 2 h de CPU por noche (ver
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md)) sobre una base de referencia del
+2026-07-21 que nunca se renovó: `/etc/default/aide` trae `COMMAND=update` y
+`COPYNEWDB=no`, así que construye una base nueva cada noche, la compara con la
+de julio y no la promueve. Con tres millones de entradas «añadidas» el informe
+no detecta nada.
+
+`host_baseline` (`tasks/aide.yml`) hace dos cosas, con los valores de
+`config/host-security.yml`:
+
+- `/etc/aide/aide.conf.d/05_dockerswarm_excludes`: seis reglas negativas no
+  recursivas (`-regex`, AIDE 0.19) que dejan fuera lo regenerable:
+  `/var/lib/containerd`, `/var/lib/docker`, `/var/lib/apptolast-tmp-archive`,
+  las cachés y copias de trabajo de `/home/admin`,
+  `/opt/dockerswarm/ax-lab/cache` y `src`, y los hijos de `/tmp`. Según el
+  informe del 2026-10-13 quitan 2 813 634 de las 3 001 595 entradas «añadidas»
+  y dejan unas 354 000 entradas (estimación, no medida), unos 0,4 GiB. Siguen
+  vigilados `.ssh`, los dotfiles, `/etc`, los binarios, `/boot`, `/opt` y
+  `/srv`. AIDE ancla cada expresión al inicio de la ruta y cada una acaba en
+  `$`, así que `/var/lib/containerd-otro` y `/home/admin/.cache2` siguen
+  vigilados. El validador exige que ninguna regla alcance las rutas protegidas
+  de `host_security_aide_protected_paths`.
+
+- `/etc/systemd/system/dailyaidecheck.service.d/60-dockerswarm-limits.conf`:
+  `MemoryHigh=1536M`, `MemoryMax=2G`, `RuntimeMaxSec=3h`, `Nice=19`, E/S
+  inactiva, `CPUWeight=20` y `OOMScoreAdjust=1000`. Si el árbol vuelve a
+  crecer, el OOM killer mata a AIDE dentro de su cgroup, no a producción, y
+  una ejecución que se eterniza se corta a las 3 h.
+
+El rol no renueva la base ni activa el temporizador: aceptar el estado actual
+del host como referencia es una decisión de seguridad, que tomó el propietario
+el 2026-10-14. Mientras tanto el temporizador está desactivado. Tras aplicar
+`host-baseline`, en este orden:
+
+1. Comprobar con el propio AIDE que la configuración es válida y que lo
+   excluido lo está y lo importante no (`[ ]` es excluido, `[x]` vigilado):
+
+```sh
+sudo aide --config=/etc/aide/aide.conf --config-check
+sudo aide --config=/etc/aide/aide.conf -p d:/var/lib/docker
+sudo aide --config=/etc/aide/aide.conf -p f:/home/admin/.ssh/authorized_keys
+```
+
+2. `sudo systemctl start dailyaidecheck.service` (con `--no-block` no espera).
+   Corre `aide --update` como `_aide` con los límites nuevos: lee la base de
+   julio, recorre lo que queda y escribe `/var/lib/aide/aide.db.new`. No toca
+   la base de referencia mientras `COPYNEWDB=no`.
+
+3. Leer el informe de `/var/log/aide/aide.log`. Compara con julio, así que es
+   la ocasión de ver qué cambió en el host desde entonces (README.Debian de
+   `aide-common` lo recomienda al reconstruir la base). Las entradas
+   «eliminadas» de rutas ahora excluidas son esperadas.
+
+4. Solo si el informe es aceptable, promover la base nueva:
+
+```sh
+sudo install -o root -g root -m 0600 \
+  /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
+
+5. `sudo systemctl enable --now dailyaidecheck.timer`. A la mañana siguiente,
+   `sudo journalctl -u dailyaidecheck.service | grep Consumed` debe mostrar un
+   pico muy por debajo de los 2 GiB y una duración corta.
+
 ### Riesgo aceptado
 
 El techo de 5 GiB supera los 3 GiB que `docs/CAPACITY.md` reserva para todo el

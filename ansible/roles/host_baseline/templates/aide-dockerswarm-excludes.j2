@@ -1,0 +1,9 @@
+# Managed by Ansible (host_baseline, tasks/aide.yml).
+# Non-recursive negative rules (AIDE 0.19): a matching directory is excluded and
+# its children are never traversed, so none of its entries is held in memory.
+# AIDE anchors each expression at the start of the path (implicit ^); each one
+# ends in $ so that only that directory matches. See docs/OPERATIONS.md,
+# "Memoria de las sesiones de IA", section "AIDE".
+{% for path in host_baseline_aide_excluded_paths %}
+-{{ path }}
+{% endfor %}

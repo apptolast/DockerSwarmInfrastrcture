@@ -6,6 +6,32 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### AIDE acotado y recortado
+
+- `host_baseline` (`tasks/aide.yml`) excluye de AIDE lo regenerable con seis
+  reglas negativas no recursivas (`-regex`, AIDE 0.19) en
+  `/etc/aide/aide.conf.d/05_dockerswarm_excludes`: `/var/lib/containerd`,
+  `/var/lib/docker`, `/var/lib/apptolast-tmp-archive`, las cachés y copias de
+  trabajo de `/home/admin`, `/opt/dockerswarm/ax-lab/{cache,src}` y los hijos
+  de `/tmp`. Quitan 2 813 634 de las 3 001 595 entradas «añadidas» del informe
+  del 2026-10-13 (estimación, no medida) y dejan vigilados `.ssh`, los
+  dotfiles, `/etc`, los binarios, `/boot`, `/opt` y `/srv`. Un drop-in de
+  `dailyaidecheck.service` fija `MemoryHigh=1536M`, `MemoryMax=2G`,
+  `RuntimeMaxSec=3h`, `Nice=19`, E/S inactiva, `CPUWeight=20` y
+  `OOMScoreAdjust=1000`. El validador exige que ninguna regla alcance las
+  rutas de `host_security_aide_protected_paths`, que las de ruido sigan
+  excluidas y que AIDE no pase de 4G (el rol repite las reglas, porque
+  `deploy-ansible.sh` no ejecuta el validador). Comprueba la configuración con
+  `aide --config-check` y lo que systemd aplica con `systemd_service`.
+
+- Motivo: el 2026-10-14 `aide --update` llevaba 4 h 26 min con 3,4 GiB cuando
+  se detuvo a mano, y desde al menos el 2026-10-08 gastaba cada noche 4,1-4,4
+  GiB y casi 2 h de CPU sobre una base del 2026-07-21 con 3 millones de
+  entradas «añadidas». Sin swap, dejó sin caché de páginas a Traefik y tumbó
+  todos los sitios. El rol no renueva la base ni activa el temporizador (es
+  una decisión de seguridad del propietario): los pasos están en
+  `docs/OPERATIONS.md` («AIDE»).
+
 ### Memoria de las sesiones de IA
 
 - `host_baseline` acota la memoria de lo que ejecuta `admin` (Claude Code,

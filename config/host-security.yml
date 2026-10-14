@@ -339,3 +339,59 @@ host_security_operator_slice_memory_max: 5G
 # deben dejar al slice del operador al menos la mitad de su MemoryMax para
 # los procesos (scripts/validate-host-security.py lo exige).
 host_security_tmp_size: 2G
+
+# AIDE, la comprobación diaria de integridad de ficheros (paquetes `aide` y
+# `aide-common`, unidad `dailyaidecheck`). El 2026-10-14 tumbó el servidor:
+# `aide --update` corría cada noche con 4,1-4,4 GiB de pico y casi 2 h de CPU
+# (4 h 26 min esa noche) sobre una base de referencia del 2026-07-21 que nunca
+# se renovó. El informe del 2026-10-13 contaba 3 167 981 entradas, 3 001 595 de
+# ellas «añadidas»: 1,31 M en /var/lib/containerd, 0,39 M en /var/lib/docker,
+# 0,91 M en /home/admin (cachés, copias de trabajo, `scratch-*`) y unas 30 000
+# en /tmp. Un informe con tres millones de diferencias no detecta nada y su base
+# cabe en memoria a razón de ~1 KiB por entrada.
+#
+# Cada ruta es una regla negativa NO recursiva de AIDE 0.19 (`-regex`): el
+# directorio que casa se excluye y no se recorre, así que ninguno de sus hijos
+# llega a la memoria. AIDE ancla la expresión al principio de la ruta completa
+# (`^` implícito), y cada una acaba en `$` para casar solo con ese directorio:
+# `/var/lib/containerd-otro` y `/home/admin/.cache2` siguen vigilados. Lo que
+# se excluye es contenido regenerable (capas de imágenes, cachés, copias de
+# trabajo, /tmp, que es un tmpfs); sigue vigilado todo lo demás, y en
+# particular `.ssh`, los dotfiles, /etc, los binarios, /boot, /opt y /srv.
+# El validador exige que ninguna regla alcance a las rutas de
+# `host_security_aide_protected_paths`.
+host_security_aide_excluded_paths:
+  - '/var/lib/containerd$'
+  - '/var/lib/docker$'
+  - '/var/lib/apptolast-tmp-archive$'
+  - '/home/admin/(\.cache|\.npm|\.nvm|\.claude|\.claude-scratch-archive|\.codex|infraestructure|scratch-[^/]+|codex-[^/]+)$'
+  - '/opt/dockerswarm/ax-lab/(cache|src)$'
+  - '/tmp/[^/]+$'
+host_security_aide_protected_paths:
+  - /etc
+  - /etc/passwd
+  - /etc/ssh/sshd_config
+  - /etc/dockerswarm/crowdsec
+  - /usr/bin/sudo
+  - /usr/sbin/sshd
+  - /boot/vmlinuz
+  - /root/.ssh/authorized_keys
+  - /home/admin/.ssh
+  - /home/admin/.ssh/authorized_keys
+  - /home/admin/.bashrc
+  - /opt/dockerswarm
+  - /opt/dockerswarm/ax-lab/bin
+  - /srv/dockerswarm
+  - /var/lib/aide
+  - /tmp
+
+# Límites de dailyaidecheck.service (drop-in de systemd). Con ~354 000 entradas
+# (estimación sobre el informe del 2026-10-13, no medida) AIDE necesita unos
+# 0,4 GiB, o el doble con `--update`: 1,5 GiB suave y 2 GiB duros dejan margen y
+# garantizan que, si el árbol vuelve a crecer, el OOM killer mata a AIDE dentro
+# de su cgroup y nunca a producción. Nice, E/S inactiva, peso de CPU bajo y
+# OOMScoreAdjust alto lo hacen el último en recibir recursos y el primero en
+# morir; `RuntimeMaxSec` corta una ejecución que se eterniza.
+host_security_aide_memory_high: 1536M
+host_security_aide_memory_max: 2G
+host_security_aide_runtime_max: 3h
