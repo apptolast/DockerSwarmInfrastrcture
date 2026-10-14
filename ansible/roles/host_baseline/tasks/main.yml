@@ -28,3 +28,6 @@
 
 - name: Put CrowdSec before the Docker public-port allowlist
   ansible.builtin.import_tasks: crowdsec-docker.yml
+
+- name: Bound the memory of the operator interactive sessions
+  ansible.builtin.import_tasks: resource-control.yml

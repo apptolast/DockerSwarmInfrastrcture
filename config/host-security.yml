@@ -314,3 +314,28 @@ host_security_boot_cmdline_linux:
 host_security_boot_cmdline_linux_default:
   - autoinstall
   - ds=nocloud-net
+
+# Techo de memoria de las sesiones interactivas del operador (Claude Code,
+# Codex, sus servidores MCP y todo lo que `admin` lance a mano):
+# host_baseline lo fija en un drop-in de user-<uid>.slice. El servidor no
+# tiene swap y su presupuesto (docs/CAPACITY.md) reserva 3 GiB para todo el
+# host sin contar estas sesiones. El 2026-10-13 llegaron a 7,4 GiB, 3,7 GiB de
+# ellos ficheros de /tmp (un tmpfs es RAM), la memoria disponible bajó a
+# 1,8 GiB, la caché de páginas de Traefik entró en thrashing (~2,3 GB/s de
+# lectura de disco, 88 % de CPU en el kernel) y su healthcheck de 5 s falló
+# tres veces seguidas: Swarm lo reemplazó cada 3-5 minutos y todos los sitios
+# quedaron sin servicio. MemoryHigh frena al slice (reclamo intenso) sin
+# matar nada; MemoryMax es el último recurso y el OOM killer actúa solo
+# dentro del slice, nunca sobre los stacks. El propietario eligió 4 GiB / 5 GiB
+# el 2026-10-13 y descartó el swap. Ver docs/OPERATIONS.md, «Memoria de las
+# sesiones de IA».
+host_security_operator_slice_memory_high: 4G
+host_security_operator_slice_memory_max: 5G
+
+# Tamaño máximo de /tmp (tmpfs). Ubuntu lo monta con size=50 % de la RAM
+# (7,9 GiB aquí) y la documentación del kernel avisa de que un tmpfs
+# sobredimensionado bloquea la máquina porque el OOM killer no puede liberar
+# esa memoria. Sus páginas cuentan en el cgroup de quien las escribe, así que
+# deben dejar al slice del operador al menos la mitad de su MemoryMax para
+# los procesos (scripts/validate-host-security.py lo exige).
+host_security_tmp_size: 2G

@@ -322,6 +322,22 @@ Cambiado a mano el 2026-10-05, en la ventana de parcheo:
   para compilar el laboratorio se desactivó y se borró el 2026-09-25, antes
   de cualquier apply. El host vuelve a cumplir `required_swap_mib: 0`.
 
+- Techo de memoria provisional de las sesiones de IA (2026-10-13, 19:49 UTC):
+  `systemctl set-property --runtime user-1001.slice MemoryHigh=6G
+  MemoryMax=7G`, en `/run/systemd/system.control/`. Se pierde en el siguiente
+  reinicio y el apply de `host-baseline` con `tasks/resource-control.yml` lo
+  retira. Además, `~/.cache/tmpfs-offload/satisfactory-server-6e1964cc/refs`
+  sustituye a un directorio de `/tmp` y este lo enlaza. Sale de esta lista
+  cuando se aplique el cambio.
+
+- Temporizador de AIDE detenido (2026-10-14, 05:15 UTC): `sudo systemctl stop
+  dailyaidecheck.timer`. No se desactiva, así que vuelve solo al reiniciar el
+  host; se restaura sin reiniciar con `sudo systemctl start
+  dailyaidecheck.timer`. Sale de esta lista cuando el propietario decida qué
+  hacer con AIDE (ver «Pendiente»). Mientras tanto no hay comprobación de
+  integridad de ficheros, y la que había no detectaba nada útil (3 millones de
+  entradas «añadidas» cada noche).
+
 ## Aplicado y verificado
 
 | Capa | Resultado |
@@ -1367,6 +1383,100 @@ proyecto, y Grace lo aprobó) y lo revisó una persona otra vez. Horas en UTC:
 - Sin verificar: el aspecto en un móvil de las líneas nuevas, y ningún
   trabajo de Codex tiene dato (Codex está desactivado).
 
+### Caída por memoria de las sesiones de IA (2026-10-13)
+
+Desde las 19:14 UTC como mínimo y hasta las 19:43 todos los sitios dejaron de
+responder, `monitor.apptolast.com` incluido. Traefik, el único punto de
+entrada, estaba en un bucle de reinicios. Horas en UTC.
+
+- Causa: las sesiones de IA de `admin` (`user-1001.slice`) ocupaban 7,4 GiB de
+  los 16 GiB del host, sin swap y sin ningún techo. 3,7 GiB eran `shmem`, es
+  decir, ficheros de `/tmp` (3,5 GB en total, 2,7 GB en un solo scratchpad,
+  casi todo clones de git de referencia). Otros 3,4 GiB eran procesos: Codex
+  con 1,3 GB tras 8 días, seis sesiones de Claude Code y cinco servidores MCP
+  de `chrome-devtools`.
+
+- Efecto: `MemAvailable` bajó a 1,8 GB. `vmstat` marcó unos 2,3 GB/s de
+  lectura de disco y un 88 % de CPU en el kernel (la caché de páginas de los
+  binarios se expulsaba y se releía sin parar), con load 173, 191 y 150 y una
+  presión de memoria `some` del 70 %. A las 19:30:54 hubo un OOM global que
+  mató `otelcol-contrib` de un pod del laboratorio (`oom_score_adj` 1000), y
+  el `kube-apiserver` del laboratorio se reiniciaba.
+
+- Mecanismo: el healthcheck de Traefik (`traefik healthcheck`, cada 15 s, 5 s
+  de timeout, 3 reintentos) no llegaba a ejecutarse a tiempo. Cada contenedor
+  parado trae en `.State.Health.Log` tres veces `Health check exceeded timeout
+  (5s)`, con `OOMKilled=false` y salida 0, porque Traefik atiende el SIGTERM
+  de Swarm con `Stopping server gracefully`. Swarm lo reemplazó cada 3-5
+  minutos y, entre un reinicio y otro, nada escuchaba en `:443`.
+
+- Recuperación, sin tocar Swarm ni Traefik: se copiaron 2,16 GB de clones de
+  referencia (`scratchpad/refs`, 34 842 ficheros) de `/tmp` a
+  `~/.cache/tmpfs-offload/satisfactory-server-6e1964cc/refs`, se comprobaron
+  el número de ficheros y los bytes y se sustituyó el directorio por un enlace
+  simbólico antes de liberar la RAM. `/tmp` bajó de 3,5 a 1,5 GB,
+  `MemAvailable` subió de 2,3 a 4,2 GiB, el load bajó de 173 a 6 en menos de
+  cinco minutos, la lectura de disco bajó a 24-130 MB/s y Traefik quedó
+  estable. `monitor.apptolast.com` respondió `200` en 24 ms desde la IP
+  pública. No se cerró ninguna sesión.
+
+- Techo provisional: a las 19:49 se aplicó en runtime `MemoryHigh=6G` y
+  `MemoryMax=7G` a `user-1001.slice` (ver «Estado temporal fuera del
+  repositorio»). El propietario eligió 4G y 5G, pero el slice retenía 4,7 GiB
+  que el kernel no puede recuperar y un `MemoryMax` de 5 GiB habría matado
+  sesiones vivas.
+
+- Cambio permanente: `host_baseline`, `tasks/resource-control.yml` (ver
+  [OPERATIONS.md](OPERATIONS.md), «Memoria de las sesiones de IA»). Es la
+  cuarta caída de esta familia: el 2026-09-26 (dos, arriba) y el 2026-10-09
+  fueron las anteriores, y sus mitigaciones eran de comportamiento. El
+  2026-10-14 hubo una quinta, de AIDE (abajo).
+
+### Caída por AIDE (2026-10-14)
+
+Unas horas después de la caída anterior, y con el techo de las sesiones ya
+puesto, todo el ingress volvió a caer por la misma vía (Traefik en bucle de
+reinicios por su healthcheck) con otra causa. Horas en UTC.
+
+- Causa: `dailyaidecheck.service` ejecutó `aide --update` a las 00:44 y a las
+  05:05 llevaba más de 4 horas con 3,4 GiB de RSS (`memory.current` de
+  `system.slice` pasó de 7,7 a 9,9 GiB). `rkhunter` (`cron.daily`) se le sumó
+  hacia las 04:28. Las sesiones de IA estaban en 5,3 GiB, por debajo de su
+  techo provisional: esta vez no eran el problema.
+
+- Efecto: `MemAvailable` en 1,8 GiB, lectura de disco de 1,6 GB/s, 80 % de CPU
+  en el kernel y load 208, 226 y 208. A las 05:05-05:06 el OOM killer mató
+  `envoy`, `atenet` y `rustfs` de pods del laboratorio. Las tareas de Traefik
+  acabaron `Failed` hacia las 04:33 y las 05:01.
+
+- Por qué AIDE es el estresor: según el journal, desde al menos el 2026-10-08
+  consume cada noche entre 1 h 52 min y 2 h 11 min de CPU de un núcleo, con
+  4,1-4,4 GiB de pico. El 2026-10-13 tardó 3 h 14 min y el 2026-10-14 4 h 26
+  min. Su base de referencia, `/var/lib/aide/aide.db`, es del 2026-07-21 y
+  nunca se renovó: el informe del 2026-10-13 cuenta 3 167 981 entradas y 3 001
+  595 «añadidas» (capas de Docker, el laboratorio kind, cachés), sin ninguna
+  exclusión para `/var/lib/docker`, `/var/lib/containerd`, `/home` ni `/srv`.
+  Un informe con tres millones de diferencias no detecta nada. El repo solo
+  instala el paquete (`config/host-security.yml`); no gestiona su
+  configuración, su base ni su temporizador.
+
+- Recuperación, sin tocar Swarm ni Traefik: a las 05:11 se detuvo
+  `dailyaidecheck.service`. Construye la base nueva en memoria y la escribe al
+  final, así que parado no deja nada a medias. `MemAvailable` pasó de 1,8 a
+  5,3 GiB y los procesos ejecutables de 132 a 27. Swarm relanzó a la vez 19
+  servicios caídos durante la noche. Un minuto después Traefik llevaba 49 s en
+  marcha y `monitor.apptolast.com` respondía `200` en 25 ms, y hacia las 05:15
+  el load de un minuto era 12,9. A las 05:15 se detuvo también
+  `dailyaidecheck.timer` (ver «Estado temporal fuera del repositorio»), cuya
+  siguiente ejecución era la del 2026-10-15 a las 01:20.
+
+- `satisfactory-companions_web` estaba en `1/1` la noche anterior y a las
+  05:16 estaba en `0/1`, con todas sus tareas en `desired=Shutdown` y la
+  última `Complete` hacía 2 h. Es una pila externa y no se tocó; sin verificar
+  la causa.
+
+- Lo que falta es del propietario: qué hacer con AIDE (ver «Pendiente»).
+
 ## Runtime regenerado
 
 El árbol anterior quedó apartado como
@@ -1382,6 +1492,48 @@ El árbol anterior quedó apartado como
 - 35 Docker Secrets de workloads instalados.
 
 ## Pendiente
+
+### Memoria de las sesiones de IA
+
+Pasos que quedan del propietario tras el PR de `resource-control.yml`:
+
+- Aplicar `host-baseline` (primero `--check`) con el slice por debajo de 4,5
+  GiB retenidos, que se comprueba antes con el `awk` de «Memoria de las
+  sesiones de IA» en OPERATIONS.md: si no, el apply se detiene y deja un
+  marker que recuperar. Cerrar sesiones ociosas o mover scratch de `/tmp` a
+  disco.
+
+- `sudo mount -o remount,size=2G /tmp` si no se espera al siguiente arranque
+  (ver «Memoria de las sesiones de IA» en OPERATIONS.md).
+
+- Probar que una sesión nueva hereda `CLAUDE_CODE_TMPDIR` (shell, user
+  settings o managed settings; no vale la configuración de proyecto) y, si sí,
+  fijarlo en un directorio del disco.
+
+- Decidir si el healthcheck de Traefik (5 s de timeout, 3 reintentos) debe
+  tolerar un host bajo presión de memoria. Toca `edge`, que reinicia el
+  ingress (ver [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
+
+### AIDE
+
+Decisión del propietario, tras la caída del 2026-10-14:
+
+- Excluir de AIDE `/var/lib/docker`, `/var/lib/containerd`, los datos del
+  laboratorio kind y las cachés de `/home`, y renovar la base de referencia
+  (aceptar el estado actual del host como confiable). Es lo único que la
+  devuelve a un tamaño razonable y a producir un informe útil. Recomendado.
+
+- Acotarlo sin cambiar su alcance: con un `MemoryMax` por debajo de sus
+  3,4-4,4 GiB el kernel lo mata cada noche, es decir, sigue sin funcionar.
+
+- Quitarlo (`aide`, `aide-common` y su temporizador). Sin comprobación de
+  integridad de ficheros.
+
+Sea cual sea, hay que codificarlo en `host_security` y acotar la unidad con
+límites de memoria, CPU y E/S (el repo hoy solo instala el paquete). El
+temporizador está parado, no desactivado: un reinicio del host, como el de la
+ventana de parcheo pendiente, lo reactiva. Se decide antes de reiniciar, o
+mientras tanto se ejecuta `sudo systemctl disable dailyaidecheck.timer`.
 
 ### `kernel.core_pattern` y el nodo kind
 

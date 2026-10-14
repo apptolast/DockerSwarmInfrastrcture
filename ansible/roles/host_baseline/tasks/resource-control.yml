@@ -1,0 +1,265 @@
+---
+# El 2026-10-13 las sesiones de IA de `admin` llegaron a 7,4 GiB de los 16 GiB
+# del host, que no tiene swap, y 3,7 GiB de ellos eran ficheros de /tmp (un
+# tmpfs es RAM). La cache de paginas de Traefik entro en thrashing, su
+# healthcheck de 5 s fallo tres veces seguidas y Swarm lo reemplazo cada pocos
+# minutos: todos los sitios sin servicio (docs/DEPLOYMENT_STATUS.md). Este
+# fichero da a esas sesiones un techo propio, el de user-<uid>.slice, y acota
+# /tmp, para que quedarse sin memoria mate sesiones y nunca produccion. El rol
+# no mata procesos ni borra ficheros: si el techo no cabe en lo que el slice
+# usa ahora, se detiene antes de tocar nada.
+
+# scripts/validate-host-security.py impone las mismas reglas, pero
+# deploy-ansible.sh no lo ejecuta, asi que el rol las repite.
+- name: Verify the operator memory bounds are whole M or G sizes
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_operator_slice_memory_high
+        is match("[1-9][0-9]{0,3}[MG]$")
+      - >-
+        host_baseline_operator_slice_memory_max
+        is match("[1-9][0-9]{0,3}[MG]$")
+      - host_baseline_tmp_size is match("[1-9][0-9]{0,3}[MG]$")
+      - >-
+        host_baseline_operator_slice_memory_high | human_to_bytes
+        < host_baseline_operator_slice_memory_max | human_to_bytes
+      - >-
+        host_baseline_operator_slice_memory_max | human_to_bytes
+        <= 6 * 1024 * 1024 * 1024
+      - >-
+        host_baseline_operator_slice_memory_high | human_to_bytes
+        >= 1024 * 1024 * 1024
+      - >-
+        host_baseline_tmp_size | human_to_bytes * 2
+        <= host_baseline_operator_slice_memory_max | human_to_bytes
+    fail_msg: >-
+      The operator memory bounds must be whole numbers of M or G, with
+      MemoryHigh at least 1G and below MemoryMax, MemoryMax at most 6G (the
+      2026-10-13 outage began at 7.4 GiB) and a /tmp size of at most half of
+      MemoryMax, because tmpfs pages are charged to the slice that wrote them.
+    quiet: true
+
+# anon y shmem son lo que el kernel no puede devolver sin swap: los procesos y
+# los ficheros de /tmp. La cache de ficheros si se recupera. `anon_thp`,
+# `shmem_thp` y similares quedan fuera a proposito: `match` ancla al principio
+# y exige el espacio tras la palabra.
+- name: Read the memory accounting of the operator slice
+  ansible.builtin.slurp:
+    src: "{{ host_baseline_operator_slice_cgroup }}/memory.stat"
+  register: host_baseline_operator_slice_stat
+
+- name: Measure the memory the operator slice cannot give back
+  ansible.builtin.set_fact:
+    host_baseline_operator_slice_unreclaimable: >-
+      {{
+        (host_baseline_operator_slice_stat.content | b64decode).splitlines()
+        | select("match", "(anon|shmem) [0-9]+$")
+        | map("split", " ")
+        | map("last")
+        | map("int")
+        | sum
+      }}
+
+# Fijar MemoryMax por debajo de lo que el slice ya retiene haria que el OOM
+# killer terminase sesiones vivas en el acto. Se detiene tambien con --check:
+# es una lectura y avisa de que el apply se negaria. deploy-ansible.sh conserva
+# su marker tras un apply fallido (scripts/deploy-ansible.sh), asi que el
+# runbook pide comprobar el slice antes de aplicar y llegar aqui es la red.
+- name: Refuse a memory ceiling the operator slice already approaches
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_operator_slice_unreclaimable | int * 10
+        < host_baseline_operator_slice_memory_max | human_to_bytes * 9
+    fail_msg: >-
+      The operator slice holds
+      {{ host_baseline_operator_slice_unreclaimable | int | human_readable }}
+      that the kernel cannot reclaim (processes plus /tmp files), at or above
+      90% of the reviewed MemoryMax of
+      {{ host_baseline_operator_slice_memory_max }}. Applying the ceiling now
+      would make the OOM killer end live sessions, so this control changed
+      nothing, although earlier tasks of the same play may have. The operation
+      marker is retained after a failed apply: recover it before the next
+      apply (docs/OPERATIONS.md, "Recuperar un marker abandonado"). Close idle
+      sessions or move scratch files from /tmp to disk first, and check the
+      slice before applying (docs/OPERATIONS.md, "Memoria de las sesiones de
+      IA").
+    quiet: true
+
+# Options= sustituye a la cadena entera de la unidad del paquete (se comprobo
+# con una unidad de prueba: `Options=` en un drop-in no acumula), asi que la
+# plantilla repite las demas opciones y solo cambia size=. Si el paquete las
+# cambia, el rol se detiene en vez de fijar una copia obsoleta.
+- name: Read the packaged tmp.mount unit
+  ansible.builtin.slurp:
+    src: "{{ host_baseline_tmp_packaged_unit }}"
+  register: host_baseline_tmp_packaged
+
+- name: Render the /tmp drop-in candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_tmp_candidate: >-
+      {{ lookup("ansible.builtin.template", "tmp-mount-size.conf.j2") }}
+
+- name: Verify the /tmp drop-in only changes the size of the packaged mount
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_tmp_candidate.splitlines() | reject("match", "#")
+        | list | first == "[Mount]"
+      - >-
+        host_baseline_tmp_candidate.splitlines() | reject("match", "#")
+        | list | length == 2
+      - >-
+        (host_baseline_tmp_packaged.content | b64decode).splitlines()
+        | select("match", "Options=")
+        | map("regex_replace", "size=[^,]*",
+        "size=" ~ host_baseline_tmp_size)
+        | list
+        == host_baseline_tmp_candidate.splitlines()
+        | select("match", "Options=") | list
+    fail_msg: >-
+      The /tmp drop-in does not repeat the options of the packaged tmp.mount
+      with only size= changed, so installing it would pin an outdated copy.
+      Review {{ host_baseline_tmp_packaged_unit }} and
+      templates/tmp-mount-size.conf.j2 before applying.
+    quiet: true
+
+- name: Render the operator slice candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_operator_slice_candidate: >-
+      {{ lookup("ansible.builtin.template", "operator-slice-memory.conf.j2") }}
+
+- name: Verify the operator slice candidate
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_operator_slice_candidate.splitlines()
+        | reject("match", "#") | list
+        == [
+          "[Slice]",
+          "MemoryHigh=" ~ host_baseline_operator_slice_memory_high,
+          "MemoryMax=" ~ host_baseline_operator_slice_memory_max
+        ]
+    fail_msg: >-
+      The rendered operator slice drop-in is not exactly [Slice] with the
+      reviewed MemoryHigh and MemoryMax.
+    quiet: true
+
+- name: Create the operator slice drop-in directory
+  ansible.builtin.file:
+    path: "{{ host_baseline_operator_slice_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Sin `when`, para que `--check --diff` muestre el cambio.
+- name: Install the reviewed memory ceiling of the operator slice
+  ansible.builtin.template:
+    src: operator-slice-memory.conf.j2
+    dest: "{{ host_baseline_operator_slice_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Host baseline reload systemd
+
+# Un `systemctl set-property` anterior gana al drop-in de /etc/systemd/system
+# y se queda en el slice hasta el siguiente reinicio, o para siempre si no se
+# uso --runtime. Se retira para que el valor revisado sea el efectivo.
+- name: Remove live-only memory overrides that would shadow the reviewed ceiling
+  ansible.builtin.file:
+    path: "{{ item.0 }}/50-{{ item.1 }}.conf"
+    state: absent
+  loop: >-
+    {{
+      host_baseline_operator_slice_override_dirs
+      | product(host_baseline_operator_slice_override_names)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.0 }}/50-{{ item.1 }}.conf"
+  notify: Host baseline reload systemd
+
+- name: Create the /tmp mount drop-in directory
+  ansible.builtin.file:
+    path: "{{ host_baseline_tmp_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the reviewed size of the /tmp tmpfs
+  ansible.builtin.template:
+    src: tmp-mount-size.conf.j2
+    dest: "{{ host_baseline_tmp_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Host baseline reload systemd
+
+- name: Apply the unit changes before verification
+  ansible.builtin.meta: flush_handlers
+
+# memory.high y memory.max son lo que el kernel aplica de verdad, no lo que
+# systemd cree haber pedido.
+- name: Read the ceilings the kernel enforces on the operator slice
+  ansible.builtin.slurp:
+    src: "{{ host_baseline_operator_slice_cgroup }}/{{ item }}"
+  loop:
+    - memory.high
+    - memory.max
+  register: host_baseline_operator_slice_kernel
+  when: not ansible_check_mode
+
+- name: Verify the kernel enforces the reviewed ceilings
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_operator_slice_kernel.results[0].content
+        | b64decode | trim
+        == (host_baseline_operator_slice_memory_high | human_to_bytes
+        | string)
+      - >-
+        host_baseline_operator_slice_kernel.results[1].content
+        | b64decode | trim
+        == (host_baseline_operator_slice_memory_max | human_to_bytes
+        | string)
+    fail_msg: >-
+      The kernel does not enforce the reviewed memory.high and memory.max on
+      the operator slice. A live-only override may still shadow the drop-in:
+      look for 50-MemoryHigh.conf and 50-MemoryMax.conf under
+      /run/systemd/system.control and /etc/systemd/system.control, and run
+      systemctl show -p MemoryHigh -p MemoryMax on the slice.
+    quiet: true
+  when: not ansible_check_mode
+
+# El rol no hace `remount`: ansible-lint (command-instead-of-module) prohibe
+# `mount` por command y el repo no instala ansible.posix. El drop-in manda
+# desde el proximo montaje; el remount en vivo es un paso manual y reversible
+# (docs/OPERATIONS.md), como el reinicio que el rol de arranque tampoco hace.
+- name: Read the live options of the /tmp mount
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/findmnt
+      - --noheadings
+      - --output
+      - OPTIONS
+      - --mountpoint
+      - /tmp
+  register: host_baseline_tmp_live_options
+  changed_when: false
+  check_mode: false
+
+- name: Report a /tmp that still has the packaged size
+  ansible.builtin.debug:
+    msg: >-
+      /tmp is still mounted with the packaged size. The drop-in applies at the
+      next boot. To cap it now, once /tmp holds less than
+      {{ host_baseline_tmp_size }}: sudo mount -o
+      remount,size={{ host_baseline_tmp_size }} /tmp
+      (docs/OPERATIONS.md, "Memoria de las sesiones de IA").
+  when:
+    - >-
+      "size=" ~ (host_baseline_tmp_size | human_to_bytes // 1024) ~ "k"
+      not in host_baseline_tmp_live_options.stdout | trim | split(",")

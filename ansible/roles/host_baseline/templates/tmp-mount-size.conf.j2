@@ -1,0 +1,6 @@
+# Managed by Ansible (host_baseline, tasks/resource-control.yml).
+# Options= replaces the whole string of the packaged tmp.mount, so every other
+# option is repeated verbatim and only size= differs (packaged: size=50%%).
+# The role refuses to apply if the package changes them.
+[Mount]
+Options=mode=1777,strictatime,nosuid,nodev,size={{ host_baseline_tmp_size }},nr_inodes=1m,x-systemd.graceful-option=usrquota
