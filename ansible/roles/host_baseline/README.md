@@ -293,6 +293,37 @@ of `scripts/validate-host-security.py`: whole `M` or `G` sizes, `MemoryHigh`
 between 1G and `MemoryMax`, `MemoryMax` at most 6G, and a `/tmp` of at most
 half of `MemoryMax`.
 
+### AIDE, trimmed and bounded
+
+`tasks/aide.yml` stops the nightly `aide --update` from taking down the host.
+Until 2026-10-14 it peaked at 4.1-4.4 GiB and ~2 h of CPU every night over a
+reference database from 2026-07-21 that was never renewed (3 167 981 entries,
+3 001 595 of them "added": container layers, caches, working copies), and on a
+host without swap it left Traefik without page cache. The role:
+
+- writes `/etc/aide/aide.conf.d/05_dockerswarm_excludes`: one non-recursive
+  negative rule (`-regex`, AIDE 0.19) per path of
+  `host_security_aide_excluded_paths`. AIDE anchors each expression at the
+  start of the path and each one ends in `$`, so only that directory matches
+  and it is not traversed. `.ssh`, the dotfiles, `/etc`, the binaries,
+  `/boot`, `/opt` and `/srv` stay watched, and the validator refuses any rule
+  that reaches `host_security_aide_protected_paths`;
+
+- runs `aide --config-check` on the merged configuration, which fails with the
+  file and line of a malformed rule;
+
+- writes
+  `/etc/systemd/system/dailyaidecheck.service.d/60-dockerswarm-limits.conf`
+  (`MemoryHigh`, `MemoryMax`, `TimeoutStartSec`, `Nice=19`, idle I/O,
+  `CPUWeight=20`, `OOMScoreAdjust=1000`) and checks, with `systemd_service`
+  (read-only with only a name), the values systemd enforces.
+
+It never initialises or updates the AIDE database and it never enables the
+timer: accepting the host as it is today as the new reference is a security
+decision, and `docs/OPERATIONS.md` ("AIDE") lists the manual steps in order.
+The Debian script copies a new database over the reference only when
+`COPYNEWDB` in `/etc/default/aide` says so, and it ships as `no`.
+
 ### No firewall restart on a converged host
 
 `host-baseline.yml` runs the `host_security` role first. That role owns the

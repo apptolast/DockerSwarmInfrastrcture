@@ -526,14 +526,19 @@ class OperatorMemoryRoleShapeTests(unittest.TestCase):
         cls.tasks = yaml.safe_load(cls.text)
         cls.by_name = {task["name"]: task for task in cls.tasks}
 
-    def test_the_role_applies_the_control_last(self) -> None:
-        # A failure here must never block a control that already worked.
+    def test_the_role_applies_the_control_after_every_older_one(self) -> None:
+        # A failure here must never block a control that already worked: it
+        # comes after crowdsec-docker.yml, the last control before it. Later
+        # controls (AIDE) go after it for the same reason.
         main = yaml.safe_load(
             (PROJECT_ROOT / ROLE / "tasks/main.yml").read_text(encoding="utf-8")
         )
         imports = [task["ansible.builtin.import_tasks"] for task in main]
-        self.assertEqual(imports[-1], "resource-control.yml")
-        self.assertEqual(imports[-2], "crowdsec-docker.yml")
+        self.assertEqual(
+            imports.index("resource-control.yml"),
+            imports.index("crowdsec-docker.yml") + 1,
+        )
+        self.assertEqual(imports[-1], "aide.yml")
 
     def test_the_only_command_the_role_runs_is_a_read(self) -> None:
         commands = [
@@ -777,7 +782,8 @@ class OperatorMemoryDocsTests(unittest.TestCase):
         # The AIDE timer was stopped by hand during the 2026-10-14 outage and
         # must come back through a reviewed decision, never by forgetting it.
         self.assertIn("sudo systemctl stop dailyaidecheck.timer", temporary)
-        self.assertIn("sudo systemctl start dailyaidecheck.timer", temporary)
+        self.assertIn("sudo systemctl disable dailyaidecheck.timer", temporary)
+        self.assertIn("sudo systemctl enable --now dailyaidecheck.timer", temporary)
 
     def test_the_precheck_threshold_is_ninety_percent_of_the_reviewed_ceiling(
         self,

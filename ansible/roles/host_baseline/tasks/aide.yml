@@ -1,0 +1,165 @@
+---
+# El 2026-10-14 `aide --update` llevaba 4 h 26 min corriendo con 3,4 GiB cuando
+# se detuvo a mano: desde al menos el 2026-10-08 gastaba cada noche 4,1-4,4 GiB
+# y casi 2 h de CPU, sobre una base de referencia del 2026-07-21 que nunca se
+# renovo y con 3 millones de entradas «anadidas» (capas de Docker, cache de
+# containerd, copias de trabajo). Sin swap, eso dejo a Traefik sin cache de
+# paginas y tumbo todos los sitios (docs/DEPLOYMENT_STATUS.md). Este fichero
+# excluye de AIDE ese contenido regenerable y limita la unidad, para que un
+# arbol que vuelva a crecer mate a AIDE y nunca a produccion. No renueva la base
+# de referencia ni activa el temporizador: es una decision de seguridad que el
+# runbook deja al propietario (docs/OPERATIONS.md, seccion «AIDE»).
+
+# scripts/validate-host-security.py impone las mismas reglas, pero
+# deploy-ansible.sh no lo ejecuta, asi que el rol las repite.
+- name: Verify the AIDE exclusions and limits
+  ansible.builtin.assert:
+    that:
+      - host_baseline_aide_excluded_paths | length > 0
+      - >-
+        host_baseline_aide_excluded_paths
+        | reject("match", "/[^ \t\r\n]*[$]$") | list | length == 0
+      - >-
+        host_baseline_aide_excluded_paths | unique | list | length
+        == host_baseline_aide_excluded_paths | length
+      - host_baseline_aide_memory_high is match("[1-9][0-9]{0,3}[MG]$")
+      - host_baseline_aide_memory_max is match("[1-9][0-9]{0,3}[MG]$")
+      - >-
+        host_baseline_aide_memory_high | human_to_bytes
+        < host_baseline_aide_memory_max | human_to_bytes
+      - >-
+        host_baseline_aide_memory_max | human_to_bytes
+        <= 4 * 1024 * 1024 * 1024
+      - >-
+        host_baseline_aide_memory_high | human_to_bytes
+        >= 512 * 1024 * 1024
+      - host_baseline_aide_start_timeout is match("[1-4]h$")
+      - host_baseline_aide_protected_paths | length > 0
+      - >-
+        host_baseline_aide_protected_paths
+        | select(
+        "match",
+        "(" ~ host_baseline_aide_excluded_paths | join(")|(") ~ ")"
+        )
+        | list | length == 0
+    fail_msg: >-
+      The AIDE exclusions must be unique paths without whitespace that end in $,
+      none of them may reach a protected path (.ssh, /etc, the binaries, /boot),
+      MemoryHigh must be at least 512M and below MemoryMax, MemoryMax at most 4G
+      (AIDE peaked at 4.4 GiB on the night of the 2026-10-14 outage) and
+      TimeoutStartSec between 1h and 4h.
+    quiet: true
+
+# El rol no instala AIDE: lo hace host_security. Sin su directorio de reglas no
+# hay donde dejar la exclusion y se detiene con un mensaje que lo dice.
+- name: Read the AIDE rules directory
+  ansible.builtin.stat:
+    path: "{{ host_baseline_aide_rules_dir }}"
+  register: host_baseline_aide_rules_dir_state
+
+- name: Verify AIDE is installed
+  ansible.builtin.assert:
+    that:
+      - host_baseline_aide_rules_dir_state.stat.exists | default(false)
+      - host_baseline_aide_rules_dir_state.stat.isdir | default(false)
+    fail_msg: >-
+      {{ host_baseline_aide_rules_dir }} does not exist. host_security installs
+      the aide and aide-common packages; apply it first.
+    quiet: true
+
+- name: Render the AIDE exclusions candidate in memory
+  ansible.builtin.set_fact:
+    host_baseline_aide_candidate: >-
+      {{ lookup("ansible.builtin.template", "aide-dockerswarm-excludes.j2") }}
+
+- name: Verify the AIDE exclusions candidate
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_aide_candidate.splitlines() | reject("match", "#")
+        | list
+        == host_baseline_aide_excluded_paths
+        | map("regex_replace", "^", "-") | list
+    fail_msg: >-
+      The rendered AIDE exclusions are not exactly one non-recursive negative
+      rule per reviewed path.
+    quiet: true
+
+# Sin `when`, para que `--check --diff` muestre el cambio. Un fichero de
+# aide.conf.d con permisos de ejecucion se EJECUTA y su salida es configuracion
+# (README.Debian): 0644, sin bit x, de root.
+- name: Install the AIDE exclusions
+  ansible.builtin.template:
+    src: aide-dockerswarm-excludes.j2
+    dest: "{{ host_baseline_aide_rules_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# `aide --config-check` analiza la configuracion completa, la mezclada, y
+# falla con el fichero y la linea del error (una regla mal escrita sale con
+# codigo 17). Solo lee; un aide.conf roto deja a AIDE sin funcionar, pero no
+# afecta a produccion.
+- name: Check the merged AIDE configuration with aide itself
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/aide
+      - "--config={{ host_baseline_aide_config }}"
+      - --config-check
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Create the AIDE unit drop-in directory
+  ansible.builtin.file:
+    path: "{{ host_baseline_aide_unit_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the AIDE resource limits
+  ansible.builtin.template:
+    src: aide-service-limits.conf.j2
+    dest: "{{ host_baseline_aide_unit_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Host baseline reload systemd
+
+- name: Apply the AIDE unit changes before verification
+  ansible.builtin.meta: flush_handlers
+
+# Con solo `name`, systemd_service no cambia nada y devuelve `status`, las
+# propiedades de `systemctl show`. `ansible-lint` prohibe llamar a systemctl por
+# command (command-instead-of-module).
+- name: Read what systemd enforces on the AIDE unit
+  ansible.builtin.systemd_service:
+    name: dailyaidecheck.service
+  register: host_baseline_aide_unit
+  when: not ansible_check_mode
+
+- name: Verify systemd enforces the reviewed AIDE limits
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_baseline_aide_unit.status.MemoryHigh
+        == (host_baseline_aide_memory_high | human_to_bytes | string)
+      - >-
+        host_baseline_aide_unit.status.MemoryMax
+        == (host_baseline_aide_memory_max | human_to_bytes | string)
+      - >-
+        host_baseline_aide_unit.status.TimeoutStartUSec
+        == host_baseline_aide_start_timeout
+      - host_baseline_aide_unit.status.Nice == "19"
+      - host_baseline_aide_unit.status.IOSchedulingClass == "3"
+      - host_baseline_aide_unit.status.CPUWeight == "20"
+      - host_baseline_aide_unit.status.OOMScoreAdjust == "1000"
+    fail_msg: >-
+      systemd does not enforce the reviewed limits on dailyaidecheck.service
+      (MemoryHigh, MemoryMax, TimeoutStartSec, Nice 19, idle I/O, CPUWeight 20,
+      OOMScoreAdjust 1000). Another drop-in may override
+      {{ host_baseline_aide_unit_dropin }}: run
+      systemctl cat dailyaidecheck.service.
+    quiet: true
+  when: not ansible_check_mode

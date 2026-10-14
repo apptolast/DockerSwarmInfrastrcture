@@ -330,13 +330,14 @@ Cambiado a mano el 2026-10-05, en la ventana de parcheo:
   sustituye a un directorio de `/tmp` y este lo enlaza. Sale de esta lista
   cuando se aplique el cambio.
 
-- Temporizador de AIDE detenido (2026-10-14, 05:15 UTC): `sudo systemctl stop
-  dailyaidecheck.timer`. No se desactiva, así que vuelve solo al reiniciar el
-  host; se restaura sin reiniciar con `sudo systemctl start
-  dailyaidecheck.timer`. Sale de esta lista cuando el propietario decida qué
-  hacer con AIDE (ver «Pendiente»). Mientras tanto no hay comprobación de
-  integridad de ficheros, y la que había no detectaba nada útil (3 millones de
-  entradas «añadidas» cada noche).
+- Temporizador de AIDE desactivado (2026-10-14): `sudo systemctl stop
+  dailyaidecheck.timer` a las 05:15 UTC y, tras la decisión del propietario,
+  `sudo systemctl disable dailyaidecheck.timer`, que sobrevive a los
+  reinicios. Se restaura con `sudo systemctl enable --now
+  dailyaidecheck.timer` después de renovar la base (ver
+  [OPERATIONS.md](OPERATIONS.md), «AIDE»). Mientras tanto no hay comprobación
+  de integridad de ficheros, y la que había no detectaba nada útil (3 millones
+  de entradas «añadidas» cada noche).
 
 ## Aplicado y verificado
 
@@ -1516,24 +1517,22 @@ Pasos que quedan del propietario tras el PR de `resource-control.yml`:
 
 ### AIDE
 
-Decisión del propietario, tras la caída del 2026-10-14:
+Decidido por el propietario el 2026-10-14: excluir de AIDE lo regenerable,
+renovar la base de referencia (aceptar el estado actual del host como
+confiable) y limitar la unidad. Lo codifica `host_baseline`
+(`tasks/aide.yml`); lo que sigue es manual y va en este orden (detalle en
+[OPERATIONS.md](OPERATIONS.md), «AIDE»):
 
-- Excluir de AIDE `/var/lib/docker`, `/var/lib/containerd`, los datos del
-  laboratorio kind y las cachés de `/home`, y renovar la base de referencia
-  (aceptar el estado actual del host como confiable). Es lo único que la
-  devuelve a un tamaño razonable y a producir un informe útil. Recomendado.
+- Aplicar `host-baseline` (primero `--check`), con el slice del operador por
+  debajo de 4,5 GiB retenidos.
 
-- Acotarlo sin cambiar su alcance: con un `MemoryMax` por debajo de sus
-  3,4-4,4 GiB el kernel lo mata cada noche, es decir, sigue sin funcionar.
+- Comprobar con `aide --config-check` y `aide -p`, ejecutar `sudo systemctl
+  start dailyaidecheck.service`, leer `/var/log/aide/aide.log`, promover
+  `aide.db.new` a `aide.db` y activar el temporizador con `sudo systemctl
+  enable --now dailyaidecheck.timer`.
 
-- Quitarlo (`aide`, `aide-common` y su temporizador). Sin comprobación de
+- Hasta entonces el temporizador sigue desactivado y no hay comprobación de
   integridad de ficheros.
-
-Sea cual sea, hay que codificarlo en `host_security` y acotar la unidad con
-límites de memoria, CPU y E/S (el repo hoy solo instala el paquete). El
-temporizador está parado, no desactivado: un reinicio del host, como el de la
-ventana de parcheo pendiente, lo reactiva. Se decide antes de reiniciar, o
-mientras tanto se ejecuta `sudo systemctl disable dailyaidecheck.timer`.
 
 ### `kernel.core_pattern` y el nodo kind
 

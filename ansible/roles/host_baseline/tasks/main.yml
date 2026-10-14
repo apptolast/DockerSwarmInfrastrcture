@@ -31,3 +31,6 @@
 
 - name: Bound the memory of the operator interactive sessions
   ansible.builtin.import_tasks: resource-control.yml
+
+- name: Trim and bound the nightly AIDE run
+  ansible.builtin.import_tasks: aide.yml
