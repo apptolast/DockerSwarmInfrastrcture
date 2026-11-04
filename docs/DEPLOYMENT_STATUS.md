@@ -363,7 +363,17 @@ Visto por el propietario el 2026-11-04: `monitor.apptolast.com` respondía
   proyecto, sin esa red, volvieron solos.
 - También quedaron parados `kind-control-plane`, `kind-registry` y
   `ax-web-edge` (`--restart no` por diseño), así que `ax` y `oficina`
-  respondían `401` al login pero `502` en `/healthz`; los recupera `ax-lab`.
+  respondían `401` al login pero `502` en `/healthz`. Recuperados el
+  2026-11-04 con `ax-lab --local` desde `main` en `4af5512` (clon operativo
+  limpio en detached HEAD, `MemAvailable` 8,2 GiB antes): `--check`
+  `ok=128 changed=2 failed=0` (solo los metadatos de revisión) y apply
+  `ok=346 changed=8 failed=0` (registro, nodo, `proxy_arp`/`proxy_ndp`, un
+  worker anterior al arranque del nodo y el reenviador, sin recrearlo). Las
+  dos esperas de la API y del worker reintentaron y acabaron bien. Repetidos:
+  `--check` `ok=149 changed=0` y apply `ok=339 changed=0`, sin reintentos.
+  Nodo `Ready`, 26 pods `Running`, WorkerPool `ax` 1/1, `oom 0` en el nodo y
+  `oom_kill 0` en el registro; `ax` y `oficina` dan `/healthz` `200` y `/`
+  `401` desde Internet.
 - `satisfactory-companions_radio` está en `0/1`: su tarea terminó con código
   0 y la política es `on-failure`. Es un stack externo; no se toca.
 - El reinicio perdió el límite de memoria de `user-1001.slice` aplicado en
