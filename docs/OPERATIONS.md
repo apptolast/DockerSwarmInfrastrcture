@@ -806,6 +806,24 @@ restaurará el mismo Swarm ID y subirá el artefacto solo después de recuperar 
 daemon. El detalle está en
 [`BACKUP_RECOVERY.md`](BACKUP_RECOVERY.md).
 
+## Comprobación externa de disponibilidad
+
+`.github/workflows/external-uptime.yml` pide cada nombre público desde un
+runner de GitHub cada 30 minutos (y a mano con `workflow_dispatch`). Si
+alguno no responde lo esperado tras tres intentos, abre el issue
+«Disponibilidad: hay nombres públicos caídos», lo mantiene al día editando su
+cuerpo, sin un aviso por ejecución, y lo cierra cuando todo vuelve. GitHub
+avisa del issue por correo a quien vigila el repositorio. Existe porque
+`monitor.apptolast.com` estuvo en `502` 17 días sin que nadie lo viera
+([DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md), «monitor.apptolast.com en 502
+tras el reinicio del 2026-10-18»).
+
+Límites: un `schedule` de GitHub puede retrasarse o perderse con carga, y en
+un repositorio público se desactiva tras 60 días sin actividad
+([Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)).
+Es un aviso de horas, no de minutos. Al añadir, aparcar o retirar un nombre
+público se actualiza su lista y `tests/test_external_uptime_workflow.py`.
+
 ## Mantenimiento
 
 - semanal: disco/inodos, unidades, certificados, backups y markers;
