@@ -207,3 +207,15 @@ Con `eth0` de vuelta, un apply de `host-baseline` adopta el fichero.
 - [`crashkernel=` y `kdump-tools.cfg` en Ubuntu Server](https://ubuntu.com/server/docs/how-to/software/kernel-crash-dump/)
 - [Editor de entradas de GRUB](https://www.gnu.org/software/grub/manual/grub/html_node/Menu-entry-editor.html)
 - [`NamePolicy=` y `AlternativeNamesPolicy=` en systemd.link](https://manpages.ubuntu.com/manpages/resolute/en/man5/systemd.link.5.html)
+
+## Contenedor sin arrancar por `network <red> not found` tras un reinicio
+
+Al arrancar, Docker puede restaurar un contenedor suelto de una red adoptada
+del edge antes de que Swarm tenga esa red. El arranque falla con
+`could not find a network matching network mode <red>: network <red> not
+found` y la política `unless-stopped` no lo reintenta, porque solo actúa tras
+un arranque correcto. Le pasó a `monitor-production-api-1` el 2026-10-18 y
+`monitor.apptolast.com` estuvo en `502` hasta el 2026-11-04
+(`docs/DEPLOYMENT_STATUS.md`, «monitor.apptolast.com en 502 tras el reinicio
+del 2026-10-18»). Lo repara `dockerswarm-edge-adopted-network-restore.service`
+del rol `edge` ([EDGE.md](EDGE.md), «Arranque tras un reinicio»).

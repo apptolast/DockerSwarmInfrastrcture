@@ -97,6 +97,50 @@
   loop_control:
     label: "{{ item.item }}"
 
+# At daemon start Docker may restore a plain container of an adopted network
+# before Swarm has that network, and never retries the failed start: a
+# restart policy only applies after a successful one. On 2026-10-18 that
+# left monitor.apptolast.com at 502 for 17 days (docs/EDGE.md, «Arranque
+# tras un reinicio»). The unit repeats the repair on every docker.service
+# start; the apply runs it once too, so it also heals what is down today.
+- name: Install the adopted-network restore helper
+  ansible.builtin.copy:
+    src: >-
+      {{ playbook_dir }}/../../scripts/restore-adopted-network-containers.py
+    dest: "{{ edge_adopted_network_restore_helper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the adopted-network restore unit
+  ansible.builtin.template:
+    src: "{{ edge_adopted_network_restore_unit }}.service.j2"
+    dest: "/etc/systemd/system/{{ edge_adopted_network_restore_unit }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: edge_adopted_network_restore_unit_file
+
+# Enabled, never started here: a oneshot without RemainAfterExit is inactive
+# after each run, so state=started would report a change on every apply.
+- name: Enable the adopted-network restore unit
+  ansible.builtin.systemd_service:
+    name: "{{ edge_adopted_network_restore_unit }}.service"
+    enabled: true
+    daemon_reload: "{{ edge_adopted_network_restore_unit_file is changed }}"
+
+- name: Restore the containers of the adopted networks
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/python3", edge_adopted_network_restore_helper,
+         "--timeout", "60"]
+        + edge_adopted_attachable_networks
+      }}
+  register: edge_adopted_network_restore
+  changed_when: >-
+    (edge_adopted_network_restore.stdout | from_json).started | length > 0
+
 - name: Create the installed edge configuration directory
   ansible.builtin.file:
     path: "{{ edge_install_root }}/edge/config"

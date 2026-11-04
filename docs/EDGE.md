@@ -286,6 +286,51 @@ Con una réplica y `stop-first`, una interrupción breve es esperable durante
 actualizaciones. Si se requiere cero downtime hay que rediseñar topología,
 publicación y número de nodos; no basta con cambiar `order`.
 
+## Arranque tras un reinicio
+
+Las redes adoptadas (`edge_adopted_attachable_networks`) son overlays de
+Swarm a las que se unen contenedores sueltos desplegados fuera de este
+repositorio: el panel `monitor-production-api-1`, los de `satisfactory` y el
+reenviador `ax-web-edge`. Al arrancar, Docker puede restaurar uno de esos
+contenedores antes de que Swarm tenga su red, y el arranque falla con
+`network <red> not found`. Docker no lo reintenta: «A restart policy only
+takes effect after a container starts successfully»
+([Start containers automatically](https://docs.docker.com/engine/containers/start-containers-automatically/)),
+así que `unless-stopped` no basta. Es una carrera: tras el reinicio del
+2026-10-05 el panel volvió solo, y tras el del 2026-10-18 no (ver
+`docs/DEPLOYMENT_STATUS.md`, «monitor.apptolast.com en 502»).
+
+El rol `edge` instala el auxiliar
+`/usr/local/libexec/restore-adopted-network-containers.py`
+(`scripts/restore-adopted-network-containers.py`) y la unidad `oneshot`
+`dockerswarm-edge-adopted-network-restore.service`, con
+`WantedBy=docker.service`: se ejecuta en cada arranque de `docker.service`,
+también el del host. Para cada red adoptada espera a que exista (hasta
+300 s) y arranca solo los contenedores que cumplen todo esto:
+
+- están en esa red, parados (`exited` o `created`) y no son tareas de Swarm;
+- su política de reinicio es `always` o `unless-stopped`;
+- su error de arranque registrado es exactamente esa red ausente.
+
+Un contenedor parado a mano no lleva ese error y sigue parado; el reenviador
+de AX (`--restart no`) tampoco cambia, porque lo arranca `ax-lab`. Cada apply
+de `edge` ejecuta el auxiliar una vez más (con 60 s de espera), así que el
+apply repara también lo que esté caído en ese momento; informa `changed`
+solo si arrancó algo. `scripts/validate-edge.sh` exige la unidad habilitada.
+
+La ruta de arranque solo se prueba por contrato
+(`tests/test_edge_adopted_network_restore.py`): reproducirla exige reiniciar
+Docker, que detiene todo el clúster. Comprobación tras un reinicio:
+
+```bash
+systemctl status dockerswarm-edge-adopted-network-restore.service
+sudo -- journalctl -b -u dockerswarm-edge-adopted-network-restore.service
+```
+
+La salida es `{"started": [...]}` con lo que arrancó. Si una red no aparece a
+tiempo o falla un arranque, la unidad queda `failed` y sale en
+`systemctl --failed`.
+
 ## Rutas de Satisfactory
 
 Satisfactory se despliega fuera de este repositorio: el proyecto Compose
