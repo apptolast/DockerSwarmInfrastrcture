@@ -340,6 +340,54 @@ las nueve redes overlay aisladas, UFW mantiene exactamente trece reglas de
 egress más `80/tcp` y `443/tcp` de ingress, y `22/tcp` conservó su límite de
 tasa durante todo el proceso.
 
+### monitor.apptolast.com en 502 tras el reinicio del 2026-10-18
+
+Visto por el propietario el 2026-11-04: `monitor.apptolast.com` respondía
+`502` desde el reinicio del host del 2026-10-18. Hechos comprobados en el host
+(horas en CEST):
+
+- El host se apagó a las 10:52:30 y arrancó a las 11:10:39. No hay orden
+  `reboot` en `auth.log`, ni operación de apt ese día, y
+  `Unattended-Upgrade::Automatic-Reboot` está comentado. El journal del
+  sistema de esa ventana ya está rotado, así que la causa no se puede saber
+  desde el host (quizá el proveedor); el propietario no lo sabe.
+- `monitor-production-api-1`, destino `monitor-api:8080` de la ruta
+  `monitorizacion`, quedó `Exited` con `RestartCount` 0 y este error
+  registrado por Docker:
+  `failed to set up container networking: could not find a network matching
+  network mode apptolast-edge-observatorio: network
+  apptolast-edge-observatorio not found`. La red consta creada a las
+  11:10:54, después de que el daemon restaurara el contenedor, y Docker no
+  reintenta un arranque fallido (ver [EDGE.md](EDGE.md), «Arranque tras un
+  reinicio»). Prometheus, Postgres, `node-exporter` y el colector del mismo
+  proyecto, sin esa red, volvieron solos.
+- También quedaron parados `kind-control-plane`, `kind-registry` y
+  `ax-web-edge` (`--restart no` por diseño), así que `ax` y `oficina`
+  respondían `401` al login pero `502` en `/healthz`; los recupera `ax-lab`.
+- `satisfactory-companions_radio` está en `0/1`: su tarea terminó con código
+  0 y la política es `on-failure`. Es un stack externo; no se toca.
+- El reinicio perdió el límite de memoria de `user-1001.slice` aplicado en
+  caliente el 2026-10-13 (lo codifican los borradores #133 y #134) y
+  `dailyaidecheck.timer` sigue deshabilitado.
+- Arreglo inmediato (2026-11-04 20:28 UTC): `sudo -- docker start
+  monitor-production-api-1`, que reutiliza su configuración (el `NetworkID`
+  guardado es el de la red actual). Arrancó en 25 s y la ruta responde `200`
+  en local y desde Internet.
+- El resto de rutas públicas respondía igual que en la última ventana:
+  `openclaw` `503` (aparcado), `edge` y `generadorcodigosqr` `404` en `/`
+  (Shlink responde `200` en `/rest/health`), los logins `401` y los demás
+  `200`, `302` o `307`, con certificados válidos hasta 2026-12-06 o más.
+
+Sin registrar hasta hoy: el apply de `edge` que pasó `edge_traefik` de
+`edge-basicauth-ax-v1` a `edge-basicauth-ax-v2` (#107) se hizo sin ventana
+registrada, y `edge-basicauth-ax-v1` ya no existe. El 2026-11-04 el servicio
+vivo tiene `Version.Index` 159913 y las Configs de la ventana de WinNest
+(`edge-traefik-dynamic-73fcb052d23a21a2` y
+`edge-traefik-static-337ae07283336858`). `Spec` difiere de `PreviousSpec`
+solo en el secret `basicauth_ax` (`v1` a `v2`) y en `DNSConfig: {}`, la
+reescritura que Docker hace al arrancar (2026-10-18 09:10:43 UTC), igual que
+el 2026-10-05.
+
 ### Web de WinNest: ventana de la ruta (2026-10-08)
 
 PR #104 (y #105, que corrige los validadores para Traefik v3.7.14), desde

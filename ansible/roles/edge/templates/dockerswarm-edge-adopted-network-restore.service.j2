@@ -1,0 +1,20 @@
+# Managed by Ansible (edge role). docs/EDGE.md, «Arranque tras un reinicio».
+[Unit]
+Description=Start the containers Docker could not attach to an adopted edge network
+Documentation=https://docs.docker.com/engine/containers/start-containers-automatically/
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {{ edge_adopted_network_restore_helper }} --timeout 300 {{ edge_adopted_attachable_networks | join(' ') }}
+TimeoutStartSec=360
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+
+[Install]
+# Every start of docker.service, the boot included, restores the daemon's
+# containers and so can repeat the race this unit repairs.
+WantedBy=docker.service

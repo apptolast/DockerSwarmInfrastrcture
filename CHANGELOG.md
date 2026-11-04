@@ -6,6 +6,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Arranque de los contenedores de las redes adoptadas
+
+- El rol `edge` instala `scripts/restore-adopted-network-containers.py` y
+  la unidad `dockerswarm-edge-adopted-network-restore.service`, que se
+  ejecuta en cada arranque de `docker.service`. Arranca los contenedores
+  sueltos de una red adoptada que Docker no pudo unir a esa red al arrancar
+  (`network <red> not found`) y que tienen `always` o `unless-stopped`:
+  Docker no reintenta un arranque fallido. Por eso `monitor.apptolast.com`
+  estuvo en `502` desde el reinicio del 2026-10-18 hasta el 2026-11-04. Cada
+  apply de `edge` también lo ejecuta y `scripts/validate-edge.sh` exige la
+  unidad habilitada.
+- `docs/DEPLOYMENT_STATUS.md` registra el incidente y el cambio de
+  `edge-basicauth-ax-v1` a `v2`, aplicado sin ventana registrada.
+
 ### Comprobación externa de disponibilidad
 
 - Workflow `external-uptime.yml`: cada 30 minutos pide desde GitHub los

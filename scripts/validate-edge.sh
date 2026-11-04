@@ -243,6 +243,8 @@ print(group_vars["edge_traefik_access_log_dir"])
   fail "the Traefik access log is not the reviewed 0600 regular file"
 systemctl is-active --quiet dockerswarm-edge-access-log-rotate.timer ||
   fail "the Traefik access log rotation timer is not active"
+systemctl is-enabled --quiet dockerswarm-edge-adopted-network-restore.service ||
+  fail "the adopted-network restore unit is not enabled"
 
 mapfile -t task_containers < <(
   docker ps \

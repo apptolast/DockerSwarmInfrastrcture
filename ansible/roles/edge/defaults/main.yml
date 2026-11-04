@@ -29,6 +29,9 @@ edge_traefik_access_log_rotation_config: >-
   {{ edge_install_root }}/edge/config/traefik-access.logrotate
 edge_traefik_access_log_rotation_state: >-
   /var/lib/logrotate/dockerswarm-edge-access.status
+edge_adopted_network_restore_unit: dockerswarm-edge-adopted-network-restore
+edge_adopted_network_restore_helper: >-
+  /usr/local/libexec/restore-adopted-network-containers.py
 edge_deployment_profile: >-
   {{ deployment_metadata_profile | default("production") }}
 edge_letsencrypt_staging_ca_bundle: >-
