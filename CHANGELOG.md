@@ -6,6 +6,16 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Promoción del snapshot Ubuntu 20261104
+
+- Promueve el snapshot Ubuntu a `20261104T000000Z`: `20261005T000000Z` salió
+  del SLO de 14 días el 2026-10-19 y desde entonces `validate` fallaba en
+  `main` y en cada PR. Cuatro InRelease del snapshot verificados con `gpgv` y
+  la huella de la clave de archivo Ubuntu, y simulación APT conjunta de los
+  trece pins Ubuntu. Sube a su candidato revisado `ca-certificates`, `curl`,
+  `openssh-server` y `sudo`; conserva el SLO y los pins de CrowdSec. No aplica
+  cambios al host. Evidencia: `docs/SNAPSHOT_20261104.md`.
+
 ### Oficina 1.0.8
 
 - Versión 1.0.8 de `ax-web`. Acumulados de consumo de las ventanas de
