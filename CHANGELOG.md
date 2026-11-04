@@ -6,6 +6,14 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Comprobación externa de disponibilidad
+
+- Workflow `external-uptime.yml`: cada 30 minutos pide desde GitHub los
+  nombres públicos y mantiene abierto un issue mientras alguno no responde lo
+  esperado (sin checkout ni actions de terceros, `issues: write`). Antes no
+  había ningún aviso fuera del host, y `monitor.apptolast.com` estuvo en
+  `502` del 2026-10-18 al 2026-11-04 sin que nadie lo viera.
+
 ### Promoción del snapshot Ubuntu 20261104
 
 - Promueve el snapshot Ubuntu a `20261104T000000Z`: `20261005T000000Z` salió

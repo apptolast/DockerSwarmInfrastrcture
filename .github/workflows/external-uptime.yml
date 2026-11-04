@@ -1,0 +1,123 @@
+---
+name: Comprobación externa de disponibilidad
+
+# Pide cada nombre público desde fuera del host. Si alguno no responde lo
+# esperado abre un issue (GitHub avisa por correo a quien vigila el
+# repositorio), lo mantiene al día editando su cuerpo, sin un aviso nuevo
+# cada media hora, y lo cierra cuando todo vuelve.
+#
+# Existe porque monitor.apptolast.com estuvo en 502 del 2026-10-18 al
+# 2026-11-04 sin que nadie lo viera: el panel de monitorización era a la vez
+# lo caído y el aviso (docs/DEPLOYMENT_STATUS.md, «monitor.apptolast.com en
+# 502 tras el reinicio del 2026-10-18»).
+#
+# Límites, de la documentación de GitHub: un `schedule` puede retrasarse o
+# perderse con carga alta, y en un repositorio público se desactiva tras 60
+# días sin actividad. Es un aviso de horas, no de minutos.
+#
+# SEGURIDAD: sin checkout ni actions de terceros; solo `curl` y `gh`, ya
+# instalados en el runner. No se ejecuta en pull requests.
+
+"on":
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write  # abrir, editar y cerrar el issue de disponibilidad
+
+concurrency:
+  group: external-uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Nombres públicos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Probar cada URL con su respuesta esperada
+        id: probe
+        shell: bash
+        # URL y códigos aceptados. Los logins responden 401 sin
+        # credenciales; /healthz de AX y la Oficina llega al panel detrás de
+        # Traefik, así que da 502 si el laboratorio está parado. OpenClaw y
+        # Minecraft están aparcados (config/platform.yml) y no se prueban.
+        run: |
+          set -Eeuo pipefail
+          checks=(
+            "https://monitor.apptolast.com/ 200"
+            "https://ax.apptolast.com/healthz 200"
+            "https://oficina.apptolast.com/healthz 200"
+            "https://kropia.apptolast.com/ 200"
+            "https://n8n.apptolast.com/ 200"
+            "https://minecraft-stats.apptolast.com/ 200"
+            "https://organizacion.apptolast.com/ 200"
+            "https://pablohurtadohg.apptolast.com/ 200"
+            "https://albertohidalgo.apptolast.com/ 200,307"
+            "https://passbolt.apptolast.com/ 200,302"
+            "https://racinggame.apptolast.com/ 200"
+            "https://satisfactory.apptolast.com/ 200"
+            "https://logs-satisfactory.apptolast.com/ 401"
+            "https://winnest.apptolast.com/ 200"
+            "https://generadorcodigosqr.apptolast.com/rest/health 200"
+          )
+          failures=()
+          for check in "${checks[@]}"; do
+            url="${check% *}"
+            expected="${check##* }"
+            code=000
+            # Tres intentos: un reinicio de la tarea de Traefik deja unos
+            # 13 s sin conexiones nuevas (docs/EDGE.md).
+            for attempt in 1 2 3; do
+              code="$(curl --silent --output /dev/null --max-time 20 \
+                --write-out '%{http_code}' "${url}" || true)"
+              [[ ",${expected}," == *",${code},"* ]] && break
+              (( attempt < 3 )) && sleep 15
+            done
+            printf '%s %s (esperado %s)\n' "${code}" "${url}" "${expected}"
+            if [[ ",${expected}," != *",${code},"* ]]; then
+              failures+=("- \`${url}\`: ${code}, esperado ${expected}")
+            fi
+          done
+          {
+            echo "count=${#failures[@]}"
+            echo "report<<REPORT_END"
+            if (( ${#failures[@]} > 0 )); then
+              printf '%s\n' "${failures[@]}"
+            fi
+            echo "REPORT_END"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Abrir, actualizar o cerrar el issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COUNT: ${{ steps.probe.outputs.count }}
+          REPORT: ${{ steps.probe.outputs.report }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository
+            }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -Eeuo pipefail
+          title="Disponibilidad: hay nombres públicos caídos"
+          open="$(gh issue list --state open --limit 100 \
+            --json number,title \
+            --jq "map(select(.title == \"${title}\")) | .[0].number // empty")"
+          if (( COUNT > 0 )); then
+            body="$(printf 'Fallan %s comprobaciones (%s UTC):\n\n%s\n\n%s\n' \
+              "${COUNT}" "$(date -u '+%Y-%m-%d %H:%M')" "${REPORT}" \
+              "${RUN_URL}")"
+            if [[ -n "${open}" ]]; then
+              gh issue edit "${open}" --body "${body}"
+            else
+              gh issue create --title "${title}" --body "${body}"
+            fi
+            echo "::warning::${COUNT} comprobaciones fallan; ver el issue."
+          elif [[ -n "${open}" ]]; then
+            gh issue close "${open}" \
+              --comment "Todo responde lo esperado de nuevo: ${RUN_URL}"
+          fi
