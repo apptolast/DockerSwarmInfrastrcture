@@ -1440,9 +1440,12 @@ Minecraft espera un flag explícito que registre la aceptación de publicar con
 La ventana del 2026-10-05 instaló lo que ofrecía el snapshot
 `20260924T000000Z` y retiró el parser manual de CrowdSec y los ficheros
 manuales de Fail2ban (ver «Parcheo del sistema operativo (2026-10-05)»). El
-repositorio promueve `20261005T000000Z`
-([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md)), que el host adopta con el
-siguiente apply de `host-baseline`.
+repositorio promovió `20261005T000000Z`
+([SNAPSHOT_20261005.md](SNAPSHOT_20261005.md)) y, tras salir del SLO el
+2026-10-19 (`validate` en rojo en `main` desde ese día), `20261104T000000Z`
+([SNAPSHOT_20261104.md](SNAPSHOT_20261104.md)). El host sigue en
+`20260924T000000Z` y adopta el promovido con el siguiente apply de
+`host-baseline`.
 
 Sin bloquear ningún apply quedan:
 

@@ -175,12 +175,12 @@ host_security_crowdsec_allowlist_description: Operator trusted IPs - never ban
 host_security_crowdsec_allowlist_source: /etc/dockerswarm/crowdsec/trusted-ips
 
 # The reviewed Ubuntu archive point. Moving it is an explicit, tested update.
-host_security_ubuntu_snapshot: 20261005T000000Z
+host_security_ubuntu_snapshot: 20261104T000000Z
 host_security_apt_update_policy: promoted-snapshot-only
 host_security_snapshot_max_age_days: 14
 host_security_repository_bootstrap_package_lock:
-  - ca-certificates=20260601~26.04.1
-  - curl=8.18.0-1ubuntu2.7
+  - ca-certificates=20260816ubuntu0.26.04.1
+  - curl=8.18.0-1ubuntu2.8
   - gpg=2.4.8-4ubuntu3.1
   - python3-debian=1.0.1ubuntu2
 host_security_required_packages:
@@ -202,10 +202,10 @@ host_security_package_lock:
   - crowdsec-firewall-bouncer-iptables=0.0.34
   - fail2ban=1.1.0-9
   - logrotate=3.22.0-1build1
-  - openssh-server=1:10.2p1-2ubuntu3.6
+  - openssh-server=1:10.2p1-2ubuntu3.8
   - psad=2.4.6-3build1
   - rsyslog=8.2512.0-1ubuntu4.2
-  - sudo=1.9.17p2-1ubuntu3.1
+  - sudo=1.9.17p2-1ubuntu3.2
   - ufw=0.36.2-9build1
 # These pre-existing tools remain outside the managed minimum until their
 # configurations, data and retention requirements receive a separate,
