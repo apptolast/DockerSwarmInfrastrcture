@@ -594,7 +594,9 @@ Antes:
 1. el snapshot del host es el de `config/host-security.yml` y está dentro del
    SLO de 14 días (`apt-config dump | grep '^APT::Snapshot'`). Si no coincide
    o su SLO ya venció, el apply de `host-baseline` que adopta el snapshot
-   promovido va antes que el reinicio ([SNAPSHOT_20261104.md](SNAPSHOT_20261104.md));
+   promovido va antes que el reinicio ([SNAPSHOT_20261104.md](SNAPSHOT_20261104.md)).
+   Su `--check` no adopta el snapshot: simula los pins contra el promovido
+   en un estado APT temporal y lista en `Inst` lo que el apply moverá;
 2. no hay markers en `/run/lock/dockerswarm-*.marker` ni procesos `apt` o
    `dpkg` en curso;
 3. ninguna deriva registrada detiene el siguiente apply (ver
