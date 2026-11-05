@@ -398,6 +398,44 @@ solo en el secret `basicauth_ax` (`v1` a `v2`) y en `DNSConfig: {}`, la
 reescritura que Docker hace al arrancar (2026-10-18 09:10:43 UTC), igual que
 el 2026-10-05.
 
+### Edge: arranque de las redes adoptadas (2026-11-05)
+
+PR #143, desde `main` en `496a3f4`, por las reglas de «Ventana de aplicación
+de la ruta» de [EDGE.md](EDGE.md), con `--local` desde el clon operativo
+limpio en detached HEAD tras `git fetch --all --prune`. El árbol es el que
+validaron en el host `validate-iac.sh` (1 289 pruebas) y `lint.sh`, y la CI
+del PR. Horas en UTC:
+
+- Paso 1 (00:41): `Version.Index` 159913, no 150536, el de la ventana de
+  WinNest. La diferencia está explicada en «monitor.apptolast.com en 502 tras
+  el reinicio del 2026-10-18»: el secret `basicauth_ax` de `v1` a `v2` (#107)
+  y `DNSConfig: {}`. Las dos Configs vivas,
+  `edge-traefik-dynamic-73fcb052d23a21a2` y
+  `edge-traefik-static-337ae07283336858`, son byte a byte el render de
+  `f9dd86d` (mismo sha256 de `.Spec.Data` y de `.build/edge/*.yml`). Los tres
+  secrets de la ruta de AX muestran su nombre y sus dos etiquetas.
+- `edge_probe` antes: 22 URL, todas con `verify=0`; `monitor` `200`, y
+  `ax` y `oficina` `401` en `/` y `200` en `/healthz`.
+- `edge --check` `ok=52 changed=2 failed=0` (los metadatos). Apply
+  (00:42:13-00:43:43) `ok=128 changed=7 failed=0`: el auxiliar, la unidad y
+  su habilitación, la cabeza del canal de Traefik, la imagen observada y los
+  dos metadatos. «Restore the containers of the adopted networks» informó
+  `ok`, sin nada que arrancar. La tarea `0kple1svxhch` no se relanzó: el spec
+  es idéntico al de antes y la imagen sigue en el mismo digest.
+- `edge_probe` después: idéntico. Servicio con las mismas dos Configs, cinco
+  secrets y 15 redes, y la cuenta de errores de los logs de la tarea a `0`.
+- `systemctl is-enabled dockerswarm-edge-adopted-network-restore.service`:
+  `enabled`, enlazada en `docker.service.wants`. Un `systemctl start` manual
+  terminó con `Result=success` y `{"started": []}`.
+- Repetido (00:44-00:45): `ok=128 changed=0 failed=0`, la misma tarea y el
+  mismo `edge_probe`. Estado final: `Version.Index` 162563 con
+  `edge-traefik-dynamic-73fcb052d23a21a2` y
+  `edge-traefik-static-337ae07283336858`.
+- La ruta de arranque solo se prueba en el próximo reinicio: comprobar
+  entonces `sudo -- journalctl -b -u
+  dockerswarm-edge-adopted-network-restore.service` ([EDGE.md](EDGE.md),
+  «Arranque tras un reinicio»).
+
 ### Web de WinNest: ventana de la ruta (2026-10-08)
 
 PR #104 (y #105, que corrige los validadores para Traefik v3.7.14), desde
