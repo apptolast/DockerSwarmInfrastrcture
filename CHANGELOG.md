@@ -6,6 +6,20 @@ siguen [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### `--check` de `host-baseline` con un snapshot promovido
+
+- Un `--check` no escribe el pin `APT::Snapshot`, así que APT seguía
+  resolviendo contra el snapshot instalado: el 2026-11-05, el primero tras
+  promover `20261104T000000Z` se detuvo con `no available installation
+  candidate for ca-certificates=20260816ubuntu0.26.04.1`. Ningún `--check`
+  podía pasar con una promoción que mueve un pin. Ahora, cuando solo un
+  apply adoptaría el snapshot, `host_security` simula todos los pins contra
+  el snapshot promovido con listas y cache APT en un directorio temporal de
+  `/var/tmp` que borra al terminar, sin tocar las listas del host ni dpkg.
+  Exige salida 0 sin `Remv`, y un paquete en su versión anterior solo pasa
+  si la simulación lo actualiza exactamente al pin. Ese `--check` tampoco
+  ejecuta ya el `apt-get update` real de la instalación de dependencias.
+
 ### Arranque de los contenedores de las redes adoptadas
 
 - El rol `edge` instala `scripts/restore-adopted-network-containers.py` y

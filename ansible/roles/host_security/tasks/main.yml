@@ -303,6 +303,61 @@
     owner: root
     group: root
     mode: "0644"
+  register: host_security_snapshot_pin
+
+# Un --check no escribe el pin anterior: APT sigue resolviendo contra el
+# snapshot instalado, donde un pin que el snapshot promovido mueve no tiene
+# candidato. En ese caso el --check no instala nada y, en su lugar, simula
+# todos los pins contra el snapshot promovido, con listas y cache APT en un
+# directorio temporal que borra al terminar: nunca toca las listas del host
+# ni dpkg, cuyo estado real es el que la simulación resuelve.
+- name: Detect a promoted snapshot that only an apply adopts
+  ansible.builtin.set_fact:
+    host_security_snapshot_pending: >-
+      {{ ansible_check_mode and host_security_snapshot_pin is changed }}
+
+- name: Simulate the package locks against the promoted snapshot
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ["/usr/bin/bash", "-c", host_security_snapshot_simulation_script,
+         "simulate", host_security_ubuntu_snapshot]
+        + host_security_repository_bootstrap_package_lock
+        + host_security_package_lock
+      }}
+  vars:
+    host_security_snapshot_simulation_script: |
+      set -euo pipefail
+      snapshot=$1
+      shift
+      state=$(mktemp -d /var/tmp/dockerswarm-snapshot-check.XXXXXX)
+      trap 'rm -rf -- "$state"' EXIT
+      chmod 0755 "$state"
+      install -d -m 0755 "$state/lists" "$state/cache"
+      install -d -o _apt -g root -m 0700 "$state/lists/partial"
+      apt=(/usr/bin/apt-get -q -o "APT::Snapshot=$snapshot"
+        -o "Dir::State::Lists=$state/lists" -o "Dir::Cache=$state/cache"
+        -o APT::Update::Error-Mode=any)
+      "${apt[@]}" update >/dev/null
+      "${apt[@]}" -s install --no-install-recommends "$@"
+  register: host_security_snapshot_simulation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_security_snapshot_pending
+
+- name: Require the promoted snapshot to resolve every package lock
+  ansible.builtin.assert:
+    that:
+      - host_security_snapshot_simulation.rc == 0
+      - >-
+        host_security_snapshot_simulation.stdout_lines
+        | select("match", "^Remv ") | list | length == 0
+    fail_msg: >-
+      The promoted snapshot does not install the package locks without
+      removals: {{ host_security_snapshot_simulation.stderr | default("") }}
+    quiet: true
+  when: host_security_snapshot_pending
 
 - name: Install repository bootstrap dependencies
   ansible.builtin.apt:
@@ -311,6 +366,7 @@
     allow_downgrade: false
     update_cache: true
     cache_valid_time: 3600
+  when: not host_security_snapshot_pending
 
 - name: Create the administrator APT keyring directory
   ansible.builtin.file:
@@ -559,10 +615,24 @@
   changed_when: false
   check_mode: false
 
+# Con un snapshot pendiente, un paquete aún en su versión anterior pasa solo
+# si la simulación lo actualiza exactamente desde esa versión al pin.
 - name: Enforce every locked host-security package version
   ansible.builtin.assert:
     that:
-      - item.stdout == item.item.split("=", 1)[1]
+      - >-
+        item.stdout == item.item.split("=", 1)[1]
+        or (
+          host_security_snapshot_pending
+          and host_security_snapshot_simulation.stdout_lines
+          | select(
+            "match",
+            "^Inst " ~ (item.item.split("=", 1)[0] | regex_escape)
+            ~ " \\[" ~ (item.stdout | regex_escape) ~ "\\] \\("
+            ~ (item.item.split("=", 1)[1] | regex_escape) ~ " "
+          )
+          | list | length == 1
+        )
     fail_msg: >-
       {{ item.item.split("=", 1)[0] }} differs from the reviewed package lock.
     quiet: true
