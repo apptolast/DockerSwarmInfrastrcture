@@ -37,6 +37,46 @@ No se le añade cabecera ni se corrige nada dentro, para no cambiar su
 sha256: por eso el comentario de `internal/substrate/client.go` que dice que
 el runner mantiene `/readyz` en 503 queda desfasado.
 
+## `google-ax-modules.patch`
+
+Segundo parche de AX, sobre el primero y en el mismo índice: solo `go.mod` y
+`go.sum` (2418 bytes, sha256
+`7e785a737ea02c3e134004224e4fe5470cef9daa4716759e752748990588de4f`, el de
+`sources.ax.modules_patch` en `config/ax-lab.yml`). Sube `golang.org/x/net` a
+v0.60.0 y con él `golang.org/x/sys` a v0.48.0 y `golang.org/x/text` a v0.42.0,
+que es lo que corrige los hallazgos de `govulncheck` alcanzables en AX. Se
+generó en la CI con `go get golang.org/x/net@v0.60.0` y `go mod tidy` sobre el
+commit fijado con el primer parche aplicado (`git diff --cached --full-index
+--binary`); compila y pasa los mismos ocho paquetes de tests que antes.
+
+La CLI `ax` y las imágenes de ko de `ax-controller` y `ax-server` se compilan
+con los dos parches. El binario `ax-task-runner` que llevan las imágenes del
+runner y de agentes no: se compila solo con el primero y con
+`images.runner_toolbox` (Go 1.27.1), porque esas dos imágenes se siembran tal
+cual y su sha256 (`ax.task_runner_binary_sha256`) describe el binario que ya
+tienen.
+
+## `substrate-modules.patch`
+
+Parche de Agent Substrate, sobre su commit fijado: solo `go.mod` y `go.sum`
+(13580 bytes, sha256
+`3625954af1aea377b7f5207c67d1139d4113b02b3a7c1dd3412a4bde095ab8c7`, el de
+`sources.substrate.modules_patch` en `config/ax-lab.yml`). Sube los módulos
+que corrigen los seis hallazgos alcanzables de `govulncheck` en dos módulos.
+Substrate versiona `vendor/`, así que la CI aplica el parche, ejecuta
+`go mod vendor` con la imagen `images.toolbox` y deja el árbol preparado sin
+confirmarlo (Go sella `vcs.modified` desde el índice, y un commit añadiría una
+revisión que ninguna recompilación reproduciría). Lo que se fija en
+`modules_patch.tree` es el árbol de git de la raíz que resulta
+(`git write-tree`), de modo que el resultado de `go mod vendor` queda
+comprobado sin versionar los 339 ficheros (1,43 MB) que cambia. El host nunca
+aplica este parche ni vendoriza: su copia de Substrate sigue siendo la
+original.
+
+El validador solo acepta parches que toquen exactamente `go.mod` y `go.sum`
+(en ese orden, sin renombrados, cambios de modo ni binarios) y que no añadan
+directivas `replace` ni `exclude`.
+
 ## `manifests/`
 
 Los manifiestos OCI exactos que ko subió al registro del laboratorio manual

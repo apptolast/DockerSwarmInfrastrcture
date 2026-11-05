@@ -654,14 +654,20 @@ class AxLabValidatorTests(unittest.TestCase):
                 "852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696",
                 "redis": "docker.io/library/redis:7-alpine@sha256:"
                 "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
-                # The image the manual lab's toolbox was built on (the spike's
-                # Dockerfile, FROM line 3), still cached on the host.
-                "toolbox": "docker.io/library/golang:1.27.1@sha256:"
-                "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244",
+                # What the CI workflows build the Substrate images, the ax CLI
+                # and the ko images of AX with: Go 1.27.2.
+                "toolbox": "docker.io/library/golang:1.27.2@sha256:"
+                "5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c",
                 # The image ax-web is built with (images/ax-web), which
                 # .github/workflows/ax-web.yml runs and vets.
                 "web_toolbox": "docker.io/library/golang:1.27.2@sha256:"
                 "5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c",
+                # The image the manual lab's toolbox was built on (the spike's
+                # Dockerfile, FROM line 3), still cached on the host: the
+                # toolchain of the binary inside the deployed task runner and
+                # agents images.
+                "runner_toolbox": "docker.io/library/golang:1.27.1@sha256:"
+                "3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244",
             },
         )
         self.assertEqual(lab["install_root"], "/opt/dockerswarm/ax-lab")

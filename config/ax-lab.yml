@@ -33,14 +33,28 @@ ax_lab:
       # google/ax#375 as proposed on arkady-emelyanov/ax local-models
       # (c7fd10b, 89fa366), without its committed __pycache__, byte for byte
       # the diff the manual lab staged over the commit above and built every
-      # AX image from (images/ax/README.md). Only the reproducibility
-      # workflow applies it; the host never compiles AX.
+      # AX image from (images/ax/README.md). Only the CI workflows apply it;
+      # the host never compiles AX.
       patch:
         path: images/ax/google-ax-375.patch
         sha256: 7b8bff50ffc90f06970352f4576ee1dc0d3d9c2fcfb520fea86249beeeae9d72
+      # On top of the first patch: golang.org/x/net v0.60.0 and what it
+      # needs, go.mod and go.sum only (images/ax/README.md). The CLI and the
+      # ko images are built with both.
+      modules_patch:
+        path: images/ax/google-ax-modules.patch
+        sha256: 7e785a737ea02c3e134004224e4fe5470cef9daa4716759e752748990588de4f
     substrate:
       repository: https://github.com/agent-substrate/substrate
       commit: 672533541dbfcd29084e4de2475267088bda3651
+      # go.mod and go.sum only: the modules that clear the vulnerability
+      # findings. The CI workflows apply it and run `go mod vendor`; the
+      # root git tree they write is what `tree` pins. The host never patches
+      # or vendors the Substrate checkout.
+      modules_patch:
+        path: images/ax/substrate-modules.patch
+        sha256: 3625954af1aea377b7f5207c67d1139d4113b02b3a7c1dd3412a4bde095ab8c7
+        tree: a5544cb04ccf93ac763e83d16bef67c642ee4b0b
   # Official linux-amd64 release assets. Each sha256 is the one upstream
   # publishes next to the asset (kind-linux-amd64.sha256sum on the kind
   # release, kubectl.sha256 on dl.k8s.io).
@@ -65,19 +79,23 @@ ax_lab:
     # AX's own Redis (deploy/redis.yaml, line 40, at sources.ax), by digest.
     redis: "docker.io/library/redis:7-alpine@sha256:\
       858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
-    # The official Go image that the explicit fallback build and the
-    # reproducibility workflow run: Go 1.27.1 (Substrate's go.mod says
-    # `go 1.27.0`), git and make. The manual lab built every pinned
-    # Substrate image in this exact digest.
-    toolbox: "docker.io/library/golang:1.27.1@sha256:\
-      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
+    # The official Go image that the CI workflows build the Substrate images,
+    # the ax CLI and the ko images of AX with: Go 1.27.2 (Substrate's go.mod
+    # says `go 1.27.0`), git and make. It clears the standard-library
+    # advisories that govulncheck reported for 1.27.1.
+    toolbox: "docker.io/library/golang:1.27.2@sha256:\
+      5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
     # The official Go image that ax-web (images/ax-web, the Oficina) is built
-    # and vetted with: Go 1.27.2, which clears the standard-library
-    # advisories that govulncheck reported for 1.27.1 (.github/workflows/
-    # ax-web.yml). Substrate and the AX lab binaries above keep 1.27.1, the
-    # toolchain their pinned digests were built with.
+    # and vetted with (.github/workflows/ax-web.yml): the same Go 1.27.2.
     web_toolbox: "docker.io/library/golang:1.27.2@sha256:\
       5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c"
+    # Go 1.27.1, the toolchain the manual lab built the binary inside the
+    # deployed ax-task-runner and ax-agents images with. Those two images
+    # are seeded as they are and never rebuilt; the reproducibility workflow
+    # rebuilds the runner binary with this image and the first AX patch only
+    # to prove task_runner_binary_sha256.
+    runner_toolbox: "docker.io/library/golang:1.27.1@sha256:\
+      3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244"
   # The kind cluster the role creates when it is absent and reconciles
   # afterwards (docs/AX.md, «Ciclo de vida del clúster»). kind names the
   # node <name>-control-plane and attaches it to its fixed Docker network
@@ -132,29 +150,29 @@ ax_lab:
     # never recomputed.
     version: "67253354"
     # ko images of ./cmd/<name>, single-platform linux/amd64, by the digest
-    # of their manifest: the manual lab's registry serves exactly these.
-    # The registry keeps each as <name>:<version>, ko's --base-import-paths
-    # name, which `ate-setup --image-repo` looks up. The manual lab never
-    # built ate-setup: its digest is the one the ax-lab-reproducibility
-    # workflow built from the pinned commit on 2026-09-25 (run 36187353468),
-    # where the six images above also reproduced exactly.
+    # of their manifest. They are built in CI from the pinned commit with the
+    # modules patch above and the toolbox images.toolbox: the
+    # ax-lab-reproducibility and ax-lab-images workflows build them
+    # independently and both must give exactly these. The registry keeps
+    # each as <name>:<version>, ko's --base-import-paths name, which
+    # `ate-setup --image-repo` looks up.
     images:
       ateapi: >-
-        sha256:c1422c85315e87c0710ec9e22447ea68185f96cd47e10473b75966f79c2d30f3
+        sha256:fd51016ea8d7f00de8d3bf633b9d97923f2d75111e363751380259fc163ec84a
       atecontroller: >-
-        sha256:0893131c560ee326933dc06494c86d31011f48c0c60e8dbebb40aaaed4c80c14
+        sha256:ff974c46eb5db1f6c6d9c95aab0affefde9bca61fd0a7a19cb1f6cf2b05834db
       atelet: >-
-        sha256:8e88c4e0d0289c88cb84f18f679494645700e67bea0e1a4c0bf56f461bf30f7b
+        sha256:d585c82392d034b829ef0775494281787b4cc85ca5100356445a3c1ce1d11837
       atenet: >-
-        sha256:929ca468e20fc7d06e356cb844d3cd5d2d30632db68ba5360adb4850b975fcd9
+        sha256:6459768dc75a80d375ec76cf06ee4f01c6f402ce288e45d4be72e67266d7b14d
       podcertcontroller: >-
-        sha256:2baed2f1e88434f8d018e595c41f7117f06c6af6410b6fbd2210bb79c54c8f99
+        sha256:7cc783627524599a63717d19823d666e6d2e7ee71fc3ed8dae3f98d6a6476cad
       ateom-gvisor: >-
-        sha256:fdd1d0ad3b30578d86f11aaa67740448a8477ce706e70207b8b51a96646592e7
+        sha256:a5044e4ca1d23fdf8e6e9cdea37965977d1e8bc3c2bfa0a58008fed3f3585554
       ate-setup: >-
-        sha256:43c9e2db7a2cdacedcd8515fb7abb561b4b7de60d8e5ef9df3b9d0300c7a1098
+        sha256:f3944a8b00ef94a22a414bbb2b1de2313038ab7c7ff72e1d35e0b65a557a8f69
     # A root-only OCI image layout with a byte-exact copy of every pinned
-    # image: the seed from the manual lab and the restore source.
+    # image: the seed from the CI artifact and the restore source.
     backup_directory: /var/backups/dockerswarm/ax-lab/images
     # The explicit fallback build (ax_lab_substrate_fallback_builds): one
     # image per container, only while the node is not running, inside the
@@ -284,18 +302,19 @@ ax_lab:
     # The tag of the four AX images in the local registry and in the backup
     # layout: the AX commit and the patch the images were built from.
     tag: f009cc8-issue375
-    # Seeded byte for byte from the manual lab's registry, never compiled on
-    # the host, and pinned by the digest of their single-platform manifest.
-    # The two ko images are the manifests the manual lab pushed, vendored in
-    # images/ax/manifests. The runner and the agents images are the linux/amd64
-    # manifests of the buildx indexes the manual lab pushed
-    # (ax-task-runner@sha256:5d536baa..., ax-agents@sha256:f82e9848...),
-    # whose other entry is a build attestation.
+    # Seeded byte for byte, never compiled on the host, and pinned by the
+    # digest of their single-platform manifest. The two ko images are built
+    # in CI with the modules patch and the toolbox images.toolbox; their
+    # manifests are vendored in images/ax/manifests. The runner and the
+    # agents images are the linux/amd64 manifests of the buildx indexes the
+    # manual lab pushed (ax-task-runner@sha256:5d536baa..., ax-agents@
+    # sha256:f82e9848...), whose other entry is a build attestation: they
+    # cannot be rebuilt and are seeded as they are.
     images:
       ax-controller: >-
-        sha256:2a744737051c6e877213e25f49ff2408b3399e8f3176f4e203df9c515fc351d2
+        sha256:da767125c37c14e145bfb2bc7c127bf91546c6fdbdfc02910a464b6c01ae3805
       ax-server: >-
-        sha256:621ce24e8887a6fcbf4d4b31da1dc005e0c54210bc28275a912640b97c2667f1
+        sha256:d679ea4a11078c0b62e926759573b9a414a939d5b800e8fe24dca61700250556
       ax-task-runner: >-
         sha256:a5f9ee65df155af434ecf06cb79be4beb7d09b2621d05b38730c682925220bd4
       ax-agents: >-
@@ -308,9 +327,10 @@ ax_lab:
     # (.ko.yaml, line 15), for the reproducibility workflow only.
     ko_base_image: "cgr.dev/chainguard/static@sha256:\
       41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f"
-    # The ax CLI (Makefile, line 36), dynamically linked: seeded once from
-    # the manual lab into this root-only file and installed from it by sha256.
-    cli_sha256: acd1f36d86557a697c49956110c9f80ba260db2cefb1a6497b166fa43f52ebb7
+    # The ax CLI (Makefile, line 36), dynamically linked: built in CI with
+    # both patches, kept in this root-only file and installed from it by
+    # sha256.
+    cli_sha256: 4fc20f80345bbe16ec82588caa043785589e9b60639a88687b3afeccb355db83
     cli_backup: /var/backups/dockerswarm/ax-lab/binaries/ax
     # Where the controller keeps suspend snapshots: Substrate's kind rustfs
     # bucket (manifests/ate-install/kind/rustfs.yaml, lines 121-126).
