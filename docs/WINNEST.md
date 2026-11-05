@@ -157,8 +157,10 @@ Quedan 192 MiB y 500 mcpu de límites libres, que son el techo de
 nodo del laboratorio AX (ver [AX.md](AX.md), «Capacidad»). Por eso baja de
 224 a 192 MiB (96 MiB reservados, `MemAvailable` mínimo de 704 MiB), con la
 misma CPU, igual que bajó de 256 a 224 MiB cuando entró el reenviador del
-panel web. Solo corre cuando la instalación de Substrate deriva y nada mide
-aún su consumo real: si un día no le basta, el kernel lo mata dentro de su
+panel web. Solo corre cuando la instalación de Substrate deriva y en este
+host nada ha medido aún su consumo real (la CI midió 56,0 MiB el 2026-10-12,
+ver [AX.md](AX.md), «Precondiciones de la ventana de resiembra»): si un día
+no le basta, el kernel lo mata dentro de su
 propio límite y el apply de `ax-lab` falla, sin afectar al resto. El perfil
 `observability` no cambia y no incluye la web. Las cifras vigentes están en
 [CAPACITY.md](CAPACITY.md).
